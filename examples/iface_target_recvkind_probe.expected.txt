@@ -1,0 +1,4 @@
+not a counter
+counter: 5
+switch other
+switch counter: 9

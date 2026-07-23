@@ -985,23 +985,52 @@ LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker*
             }
 
             // Task 4 fix: try BOTH the value-form and pointer-form descriptor/
-            // vtable for every candidate, not just value-form. `T`'s presence in
-            // `impls` means type_interface_satisfied found a matching method —
-            // but that check is permissive about receiver kind (it mangles on
-            // the struct's name alone, never inspecting whether the method's
-            // receiver is `T` or `*T`; see codegen_collect_iface_implementers's
-            // caller, type_interface_satisfied, type_checker.c ~821). So a
-            // pointer-receiver implementer like `func (c *C) Get()` satisfies
-            // the interface in the checker's eyes regardless of whether the
-            // runtime value in hand is value-boxed (`T{...}`) or pointer-boxed
-            // (`&T{...}`) — those two boxings carry DISTINCT descriptor
-            // identities (codegen_interface_box's two branches; Task 5's
-            // `$ptr$` naming). Emitting only the value-form candidate (as
-            // before) silently misses every pointer-boxed implementer — exactly
-            // examples/iface_target_ptr.goo's `&C{n: 5}` shape. A given runtime
-            // descriptor matches at most one of the two forms, so trying both is
-            // safe: exactly one `eq` (or neither, on a genuine miss) is true.
+            // vtable for every candidate, not just value-form. `T`'s presence
+            // in `impls` only means `*T` (the method-set superset) satisfies
+            // target_iface — codegen_collect_iface_implementers deliberately
+            // tests the pointer form so a pointer-receiver implementer is
+            // never dropped from the candidate list (examples/iface_target_
+            // ptr.goo's `&C{n: 5}` shape). Whether `T` itself (the VALUE
+            // form) also satisfies is exactly the receiver-kind question,
+            // now re-checked per-form just below (arc 18) rather than
+            // assumed — so a pointer-receiver implementer contributes only
+            // its pointer-form descriptor/vtable, and a value-boxed `T{...}`
+            // correctly fails to match `x.(I)` / `case I:`. A given runtime
+            // descriptor matches at most one surviving form, so trying both
+            // (once each is confirmed to actually hold) is safe: exactly one
+            // `eq` (or neither, on a genuine miss) is true.
             for (int form = 0; form <= 1; form++) {
+                // Receiver-kind soundness (arc 18): `impls` was built from the
+                // PERMISSIVE pointer-form check (codegen_collect_iface_
+                // implementers tests `*T`, the method-set superset, so a
+                // pointer-receiver implementer is never dropped from the
+                // list). That is correct for DECIDING T is a candidate in
+                // SOME form, but this inner loop tries both forms
+                // unconditionally — before this gate it built a value-form
+                // (form=0) vtable/descriptor for T even when T's value
+                // method set does NOT actually contain a pointer-receiver
+                // interface method, so a value-boxed `T{}` wrongly matched
+                // `x.(I)` / `case I:` (Go requires `&T{}`). Re-check THIS
+                // form's own type against target_iface via the same
+                // checker-level gate direct/embedded assignment already
+                // uses (type_interface_satisfied, type_checker.c) and skip
+                // building this form's descriptor/vtable when it doesn't
+                // hold — the value form is skipped for a pointer-receiver
+                // method, so its descriptor never appears as a candidate
+                // and the runtime compare against a value-boxed T's
+                // descriptor simply never matches.
+                Type* form_type = base;
+                if (form == 1) {
+                    form_type = type_pointer(base);
+                    if (!form_type) continue;
+                }
+                const char* fmethod = NULL;
+                const char* freason = NULL;
+                if (!type_interface_satisfied(checker, target_iface, form_type,
+                                              &fmethod, &freason)) {
+                    continue;
+                }
+
                 // `pos` (review fix, Arc 15 item l): RTTI enumeration over
                 // already-declared implementer types, not a boxing call
                 // site — but codegen_get_or_emit_type_desc unconditionally

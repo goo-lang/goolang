@@ -3116,6 +3116,7 @@ VERIFY_ALL_DEPS := \
     iface-parse-probe \
     iface-satisfaction-probe \
     iface-recv-kind-probe \
+    iface-recv-kind-rtti-probe \
     try-nonerru-probe \
     return-mismatch-probe \
     named-return-reject-probe \
@@ -3604,6 +3605,32 @@ iface-recv-kind-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -ne 0 ]; then echo "iface-recv-kind-probe: FAIL (pointer concrete over-rejected)"; cat build/recvkind_ptr_ok.err; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/recvkind_ptr_ok.err; then echo "iface-recv-kind-probe: FAIL (pointer concrete reached the verifier)"; cat build/recvkind_ptr_ok.err; exit 1; fi
 	@echo "iface-recv-kind-probe: PASS"
+
+# Receiver-kind soundness, RTTI sweep (arc 18): iface-recv-kind-probe above
+# covers the checker-level gate (type_interface_satisfied) at a direct
+# variable declaration — a statically-known concrete type boxed into a
+# statically-known interface. It does NOT reach the closed-world RTTI path
+# (codegen_interface_target_match, interface_codegen.c) that backs `x.(I)` /
+# `case I:` when the OPERAND's static type is a wider interface
+# (`interface{}`) and the target `I` is itself an interface — that path
+# enumerates known implementers at compile time and matches by runtime
+# descriptor identity, entirely independent of type_interface_satisfied's
+# direct-assignment gate. Before this fixture existed, that RTTI path built
+# a value-form vtable for T unconditionally whenever *T (the superset)
+# satisfied I, so a value-boxed `T{...}` wrongly matched `x.(I)` even when
+# I's method has a pointer receiver — this probe pins the single-result
+# panic; examples/iface_target_recvkind_probe.goo (test-golden) pins the
+# comma-ok and type-switch shapes plus the pointer-boxed over-reject guard.
+iface-recv-kind-rtti-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== iface-recv-kind-rtti-probe: value-boxed dynamic type must not match an interface-target assertion requiring a pointer receiver ==="
+	@printf 'package main\ntype Counter interface{ Get() int }\ntype C struct{ n int }\nfunc (c *C) Get() int { return c.n }\nfunc main() { var x interface{} = C{n: 5}\n _ = x.(Counter) }\n' > build/recvkind_rtti_abort.goo
+	@"$(COMPILER)" build/recvkind_rtti_abort.goo -o build/recvkind_rtti_abort.out 2>build/recvkind_rtti_abort.cerr || \
+	  { echo "iface-recv-kind-rtti-probe: FAIL (compile)"; cat build/recvkind_rtti_abort.cerr; exit 1; }
+	@build/recvkind_rtti_abort.out 2>build/recvkind_rtti_abort.err; rc=$$?; \
+	  if [ $$rc -ne 2 ]; then echo "iface-recv-kind-rtti-probe: FAIL (value-boxed concrete wrongly satisfied pointer-receiver interface target, exit $$rc want 2)"; cat build/recvkind_rtti_abort.err; exit 1; fi; \
+	  if ! grep -q "is not Counter" build/recvkind_rtti_abort.err; then echo "iface-recv-kind-rtti-probe: FAIL (no interface-target panic diagnostic)"; cat build/recvkind_rtti_abort.err; exit 1; fi
+	@echo "iface-recv-kind-rtti-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void
 # expression) recovers with that expression's value, so its type must be
