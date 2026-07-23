@@ -71,6 +71,16 @@ type Lane struct {
 	count    int
 	partials []chan float64
 	results  []chan float64
+
+	// M2-B2 (Task 2): per-lane kernel buffers. scratch (width-sized) is
+	// wired by Run — v1 has no memory reclamation, so per-round make()
+	// inside a kernel would leak steps*width floats; one buffer per lane
+	// for the whole Run is the discipline. haloBufL/haloBufR are lazily
+	// sized by StencilStep on first call (radius isn't known to Run) —
+	// one allocation per lane lifetime, then reused every round.
+	scratch  []float64
+	haloBufL []float64
+	haloBufR []float64
 }
 
 // Partition splits arr into `count` equal-width tiles. count is a comptime
@@ -167,6 +177,7 @@ func Run(p Partitioned, steps int, body func(ctx *Lane)) []float64 {
 				count:    p.count,
 				partials: partials,
 				results:  results,
+				scratch:  make([]float64, p.width),
 			}
 			if !l.edgeR {
 				l.sendR = rightward[i]
@@ -340,4 +351,86 @@ func (l *Lane) AllReduceSum(local float64) float64 {
 // max is order-insensitive but the fixed order keeps one code path).
 func (l *Lane) AllReduceMax(local float64) float64 {
 	return l.allReduce(local, true)
+}
+
+// StencilStep runs ONE BSP round of a (2*radius+1)-tap stencil over the
+// lane's own tile: halo exchange of `radius` boundary cells per side, then
+// out[i] = sum_k coeffs[k] * in[i+k-radius] (k ascending — the fixed
+// accumulation order the bit-identity differentials pin), computed into the
+// per-lane scratch buffer and copied back. Callers drive the round loop
+// with ctx.Step(), exactly like a hand-written M1 body.
+//
+// radius is COMPTIME: each distinct radius monomorphizes its own instance
+// (goo_pkg__lanes__StencilStep__n<radius>) in which every loop bound below
+// is a constant — that is the entire specialization payoff (unrolled taps,
+// hoisted coefficient loads, vectorizable inner loop at -O2). A package
+// function, not a Lane method: comptime parameters are still walled on
+// methods (src/types/type_checker.c "not yet supported on methods").
+//
+// Halo protocol for radius >= 2: the M1 channels are cap-1 and carry one
+// float per send, so a radius-r exchange runs r sequential SUB-EXCHANGES.
+// Sub-exchange k ships each lane's k-th-from-edge cell (own[width-1-k]
+// rightward, own[k] leftward) and receives the neighbors' counterparts;
+// each sub-exchange is exactly M1's proven both-sends-then-both-receives
+// cap-1 pattern, so the per-step deadlock-freedom argument applies to each
+// k in turn (no lane starts sub-exchange k+1 before finishing k, because
+// its own receives for k gate it). haloBufL[k] holds the cell k+1 to the
+// left of own[0]; haloBufR[k] the cell k+1 to the right of own[width-1].
+// Edge sides fill from ctx.boundary (Dirichlet 0.0, M1-frozen).
+//
+// len(coeffs) must be exactly 2*radius+1; anything else is a programming
+// error and panics (explicit, never silent).
+func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
+	if len(coeffs) != 2*radius+1 {
+		panic("lanes.StencilStep: len(coeffs) must equal 2*radius+1")
+	}
+	if len(ctx.haloBufL) < radius {
+		ctx.haloBufL = make([]float64, radius)
+	}
+	if len(ctx.haloBufR) < radius {
+		ctx.haloBufR = make([]float64, radius)
+	}
+	own := ctx.own
+	w := len(own)
+
+	for k := 0; k < radius; k++ {
+		if !ctx.edgeR {
+			ctx.sendR <- own[w-1-k]
+		}
+		if !ctx.edgeL {
+			ctx.sendL <- own[k]
+		}
+		if ctx.edgeL {
+			ctx.haloBufL[k] = ctx.boundary
+		} else {
+			ctx.haloBufL[k] = <-ctx.recvL
+		}
+		if ctx.edgeR {
+			ctx.haloBufR[k] = ctx.boundary
+		} else {
+			ctx.haloBufR[k] = <-ctx.recvR
+		}
+	}
+
+	for i := 0; i < w; i++ {
+		acc := 0.0
+		for k := 0; k <= 2*radius; k++ {
+			idx := i + k - radius
+			v := 0.0
+			if idx < 0 {
+				v = ctx.haloBufL[(0-idx)-1]
+			} else {
+				if idx >= w {
+					v = ctx.haloBufR[idx-w]
+				} else {
+					v = own[idx]
+				}
+			}
+			acc = acc + coeffs[k]*v
+		}
+		ctx.scratch[i] = acc
+	}
+	for i := 0; i < w; i++ {
+		own[i] = ctx.scratch[i]
+	}
 }

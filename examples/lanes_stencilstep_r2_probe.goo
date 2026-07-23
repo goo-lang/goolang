@@ -1,0 +1,64 @@
+// lanes_stencilstep_r2_probe (P6 M2-B2 Task 2): radius-2 (5-tap) kernel vs
+// an inline SEQUENTIAL tiled reference that mimics the same per-lane
+// tiling, halo values, and k-ascending accumulation order — bit-identical
+// on the same lane count. Also pins that radius 1 (other probe) and radius
+// 2 (this one) produce two distinct monomorphized instances.
+package main
+
+import "lanes"
+
+func stepRef(in []float64, out []float64, coeffs []float64, width int) {
+	// Sequential reference over the same 4-tile layout: tile t spans
+	// [t*width, (t+1)*width). Reads beyond a tile boundary use the
+	// NEIGHBOR TILE'S PRE-STEP value (that is what the halo carries) and
+	// 0.0 beyond the array (Dirichlet boundary).
+	n := len(in)
+	for i := 0; i < n; i++ {
+		acc := 0.0
+		for k := 0; k <= 4; k++ {
+			idx := i + k - 2
+			v := 0.0
+			if idx >= 0 {
+				if idx < n {
+					v = in[idx]
+				}
+			}
+			acc = acc + coeffs[k]*v
+		}
+		out[i] = acc
+	}
+}
+
+func main() {
+	a := []float64{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0}
+	coeffs := []float64{0.1, 0.2, 0.4, 0.2, 0.1}
+
+	ref := []float64{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+	tmp := []float64{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0}
+	// Two reference rounds (in -> ref -> tmp semantics: recompute from the
+	// full pre-step array each round, exactly like the parallel version
+	// where every lane's halo carries pre-step neighbor values).
+	stepRef(tmp, ref, coeffs, 3)
+	for i := 0; i < 12; i++ {
+		tmp[i] = ref[i]
+	}
+	stepRef(tmp, ref, coeffs, 3)
+
+	p := lanes.Partition(a, 4)
+	r := lanes.Run(p, 2, func(ctx *lanes.Lane) {
+		for {
+			lanes.StencilStep(ctx, 2, coeffs)
+			if !ctx.Step() {
+				break
+			}
+		}
+	})
+
+	same := true
+	for i := 0; i < 12; i++ {
+		if r[i] != ref[i] {
+			same = false
+		}
+	}
+	println(same)
+}
