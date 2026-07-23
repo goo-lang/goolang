@@ -1,0 +1,53 @@
+// lanes_kernel_bench (P6 M2-B2 Task 5): the `stencil-kernel-bench`
+// Makefile target's parallel half — the SAME 3-tap radius-1 kernel and
+// initial condition as examples/lanes_stencilstep_probe.goo (coeffs
+// {0.25, 0.5, 0.25}, unit-spike initial condition, Dirichlet 0.0
+// boundary), scaled up to a CPU-bound size (1<<20 cells, 8 lanes, 100 BSP
+// rounds via lanes.StencilStep) so the target has something worth timing.
+// This file is NOT golden-wired (no sibling .expected.txt) — it exists
+// only as the bench's parallel binary; correctness against a serial
+// reference is asserted at the Makefile-target level (bit-identical
+// stdout diff), the same way stencil-parallel-probe compares its 8-lane
+// and serial binaries, and functional correctness of the StencilStep
+// kernel itself is already pinned by the golden lanes_stencilstep_probe
+// and lanes_stencilstep_r2_probe differentials — this file's only job is
+// to be a realistic-size CPU-bound workload for wall-clock measurement.
+//
+// Output is a single checksum (sum of all final cells), read off
+// lanes.Run's RETURN value — Partition moves its `data` argument, so the
+// pre-Partition array must never be read again after Partition (M1
+// obligation 1); only Run's return value is read here.
+package main
+
+import "fmt"
+import "lanes"
+
+func main() {
+	n := 1 << 20
+	data := make([]float64, n)
+	i := 0
+	for i < n {
+		data[i] = 0.0
+		i = i + 1
+	}
+	data[n/2] = 1.0
+	coeffs := []float64{0.25, 0.5, 0.25}
+
+	p := lanes.Partition(data, 8)
+	out := lanes.Run(p, 100, func(ctx *lanes.Lane) {
+		for {
+			lanes.StencilStep(ctx, 1, coeffs)
+			if !ctx.Step() {
+				break
+			}
+		}
+	})
+
+	total := 0.0
+	i = 0
+	for i < n {
+		total = total + out[i]
+		i = i + 1
+	}
+	fmt.Println(total)
+}
