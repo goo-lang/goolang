@@ -2049,9 +2049,9 @@ lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== lanes-kernel-ir-pin: specialized instance, unroll evidence, no fast-math ==="
 	@"$(COMPILER)" --emit-llvm -O2 examples/lanes_stencilstep_r2_probe.goo -o build/lk_ir.ll >build/lk_ir.err 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "lanes-kernel-ir-pin: FAIL (compile failed)"; cat build/lk_ir.err; exit 1; fi
-	@n=$$(grep -cE '^define[^{]*@"?goo_pkg__lanes__StencilStep__n2"?\(' build/lk_ir.ll); \
-	  if [ "$$n" != "1" ]; then echo "lanes-kernel-ir-pin: FAIL (goo_pkg__lanes__StencilStep__n2: expected exactly 1 define, found $$n)"; exit 1; fi; \
-	  echo "  PASS goo_pkg__lanes__StencilStep__n2 defined exactly once"
+	@n=$$(grep -cE '^define[^{]*@"?goo_pkg__lanes__StencilStep__n2(\.[0-9]+)?"?\(' build/lk_ir.ll); \
+	  if [ "$$n" != "1" ]; then echo "lanes-kernel-ir-pin: FAIL (goo_pkg__lanes__StencilStep__n2 family: expected exactly 1 define, found $$n — a .N-suffixed duplicate means LLVM uniquified a double-emission)"; exit 1; fi; \
+	  echo "  PASS goo_pkg__lanes__StencilStep__n2 defined exactly once (family count, catches .N-uniquified duplicates)"
 	@awk '/^define void @"?goo_pkg__lanes__StencilStep__n2"?\(/,/^}/' build/lk_ir.ll > build/lk_n2_body.ll; \
 	  fmul=$$(grep -c "fmul double" build/lk_n2_body.ll); \
 	  if [ "$$fmul" -lt 5 ]; then \
@@ -2059,11 +2059,11 @@ lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	    cat build/lk_n2_body.ll; exit 1; \
 	  fi; \
 	  echo "  PASS >=5 fmul double in the specialized instance body ($$fmul found — unroll evidence; downgraded from the vector-type predicate, see comment above)"
-	@if grep -qw "fast" build/lk_ir.ll; then \
+	@if grep -qwE "fast|reassoc|nnan|ninf|nsz|arcp|afn|contract" build/lk_ir.ll; then \
 	    echo "lanes-kernel-ir-pin: FAIL (fast-math flags present in the module — would break the bit-identity contract the golden differentials pin)"; \
-	    grep -n "fast" build/lk_ir.ll; exit 1; \
+	    grep -nwE "fast|reassoc|nnan|ninf|nsz|arcp|afn|contract" build/lk_ir.ll; exit 1; \
 	  fi; \
-	  echo "  PASS no fast-math flags anywhere in the module"
+	  echo "  PASS no fast-math flags (incl. individual reassoc/contract/... flags) anywhere in the module"
 	@echo "lanes-kernel-ir-pin: PASS"
 
 # spmd-bench-probe: SPMD harness sub-project, Task 3 — "the proof". Builds a
