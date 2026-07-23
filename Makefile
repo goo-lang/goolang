@@ -121,6 +121,26 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # any of these out fails the link of even a hello-world executable.
 RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o
 
+# M2-B1: vendored NNG (far transport). Pinned tarball, static lib, merged
+# into libgoo_runtime.a below so bin/goo-linked executables need no new
+# link flags. cmake is a build dependency of this rule only.
+NNG_VERSION := 1.12.0
+NNG_TARBALL := third_party/nng-$(NNG_VERSION).tar.gz
+NNG_SHA256  := 50b7264bd8f0901f7ebdf3ec7c48f4e23dd689bbe7b2917d9d8fad58ffd09e5c
+NNG_BUILD   := build/nng
+NNG_LIB     := $(NNG_BUILD)/lib/libnng.a
+
+$(NNG_LIB): $(NNG_TARBALL)
+	@echo "$(NNG_SHA256)  $(NNG_TARBALL)" | sha256sum -c - >/dev/null
+	rm -rf build/nng-src $(NNG_BUILD)
+	mkdir -p build/nng-src
+	tar -xzf $(NNG_TARBALL) -C build/nng-src --strip-components=1
+	cmake -S build/nng-src -B $(NNG_BUILD)/cm -DCMAKE_BUILD_TYPE=Release \
+	  -DBUILD_SHARED_LIBS=OFF -DNNG_TESTS=OFF -DNNG_TOOLS=OFF -DNNG_ENABLE_NNGCAT=OFF \
+	  -DCMAKE_INSTALL_PREFIX=$(abspath $(NNG_BUILD)) -DCMAKE_INSTALL_LIBDIR=lib >/dev/null
+	cmake --build $(NNG_BUILD)/cm -j$(shell nproc) >/dev/null
+	cmake --install $(NNG_BUILD)/cm >/dev/null
+
 # Main targets
 COMPILER = $(BINDIR)/goo
 ANALYZER = $(BINDIR)/goo-analyzer
@@ -211,8 +231,13 @@ $(COMPILER): $(GOO_OBJS) $(COMPILER_SRCS) | $(BINDIR)
 # Runtime library
 runtime-lib: $(RUNTIME_LIB)
 
-$(RUNTIME_LIB): $(RUNTIME_OBJS) | $(LIBDIR)
-	ar rcs $@ $^
+$(RUNTIME_LIB): $(RUNTIME_OBJS) $(NNG_LIB) | $(LIBDIR)
+	rm -f $@
+	{ echo "create $@"; \
+	  for o in $(RUNTIME_OBJS); do echo "addmod $$o"; done; \
+	  echo "addlib $(NNG_LIB)"; \
+	  echo "save"; echo "end"; } | ar -M
+	ranlib $@
 
 # (P5.7: test-pipeline retired — tests/test_runner.c's assertions were
 # near-vacuous (`tokens_found || exit==0` style escape hatches). The golden
