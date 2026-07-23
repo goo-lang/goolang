@@ -4152,6 +4152,50 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
         ok = 0;
     }
 
+    // Mandate B extension (arc 14, k): the struct wall above covers only
+    // TYPE_STRUCT, but codegen_generate_switch_stmt's fallback
+    // LLVMBuildICmp(IntEQ) is exactly as illegal for a slice/map/function/
+    // array/channel-typed tag — the same raw "Invalid operand types for
+    // ICmp instruction" verifier leak the struct wall exists to close.
+    // Slice/map/function are genuinely NON-comparable in Go (`==` itself is
+    // a compile error on them: "invalid operation: slice can only be
+    // compared to nil") — a real language restriction, same wording shape
+    // as the struct wall's non-comparable leg. Array and channel ARE
+    // comparable in Go (switching on either is legal there); walling them
+    // off here is a v1 LOWERING gap, not a language restriction — same
+    // wording shape as the struct wall's comparable leg, and removable by
+    // the same future task. Falls through (no early return), matching the
+    // struct wall's cascade-suppression convention just above.
+    if (tag_type && !type_is_poison(tag_type) && tag_type->kind != TYPE_UNKNOWN) {
+        const char* kind_word = NULL;
+        const char* article = "a";  // "an array" is the one vowel-led kind below
+        int go_comparable = 0;
+        switch (tag_type->kind) {
+            case TYPE_SLICE:    kind_word = "slice";    go_comparable = 0; break;
+            case TYPE_MAP:      kind_word = "map";      go_comparable = 0; break;
+            case TYPE_FUNCTION: kind_word = "function";  go_comparable = 0; break;
+            case TYPE_ARRAY:    kind_word = "array";    go_comparable = 1; article = "an"; break;
+            case TYPE_CHANNEL:  kind_word = "channel";  go_comparable = 1; break;
+            default: break;
+        }
+        if (kind_word) {
+            if (go_comparable) {
+                type_error(checker, sw->tag->pos,
+                           "switch on %s %s-typed value is not supported "
+                           "(v1 limitation: %s-tag switch lowering is not "
+                           "implemented; Go allows this)",
+                           article, kind_word, kind_word);
+            } else {
+                type_error(checker, sw->tag->pos,
+                           "switch on %s %s-typed value is not supported "
+                           "(%s is not comparable, so Go would reject this "
+                           "too)",
+                           article, kind_word, type_to_string(tag_type));
+            }
+            ok = 0;
+        }
+    }
+
     // Mandate A's per-switch dup table — see the doc comment above.
 #define SWITCH_DUP_CASE_MAX_VALUES 64
     uint64_t dup_values[SWITCH_DUP_CASE_MAX_VALUES];
