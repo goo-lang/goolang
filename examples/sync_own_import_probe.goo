@@ -1,0 +1,11 @@
+package main
+
+import "fmt"
+import "./syncimport"
+
+func main() {
+	syncimport.Bump()
+	syncimport.Bump()
+	syncimport.Nap()
+	fmt.Println(syncimport.Count())
+}

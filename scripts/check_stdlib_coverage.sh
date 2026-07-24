@@ -13,9 +13,9 @@
 # Surface extracted:
 #   1. SHIM_TABLE rows                  (src/types/shim_signatures.c)
 #   2. Package VALUE members            (os.Args, math.Pi — expression_checker.c)
-#   3. time.Duration constants          (goo.c: time_export_value calls)
-#   4. Seeded package funcs             (goo.c: time_export_func calls — Sleep/Now)
-#   5. Seeded methods                   (goo.c: sync_export_method + time_export_method)
+#   3. time.Duration constants          (type_checker.c: time_export_value calls)
+#   4. Seeded package funcs             (type_checker.c: time_export_func calls — Sleep/Now)
+#   5. Seeded methods                   (type_checker.c: sync_export_method + time_export_method)
 #   6. goostd exported funcs            (^func [A-Z] in strings/strconv/utf8/bits/
 #      lanes — the REAL stdlib source dirs; test-only goostd packages like
 #      kinds/shapes/mypkg/pkgcheck/fwdref/cpkg are compiler-test fixtures, not
@@ -28,9 +28,9 @@
 #      YAGNI for this milestone — not worth it for one package.)
 #
 # Robustness: every extraction step asserts a sane MINIMUM count and dies
-# loudly if it comes up short — a shim_signatures.c/goo.c rename or move
-# that broke the awk/sed/grep patterns below must be a hard failure, never
-# a silent "extracted zero symbols, vacuously PASS".
+# loudly if it comes up short — a shim_signatures.c/type_checker.c rename or
+# move that broke the awk/sed/grep patterns below must be a hard failure,
+# never a silent "extracted zero symbols, vacuously PASS".
 #
 # Matching is intentionally loose (substring/word-bounded, not full parse):
 # a callable is "covered" if `<pkg>.<Name>(` appears anywhere in a golden
@@ -46,11 +46,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
 SHIM_SRC="src/types/shim_signatures.c"
-GOO_C="src/compiler/goo.c"
+# P6 M2-B1 Task 10: seed_sync_package_exports/seed_time_package_exports (and
+# the time_export_*/sync_export_method calls inside them) moved from goo.c
+# to type_checker.c so a vendored/local package's own `import "sync"`/`"time"`
+# can seed them too (not just main's). Sections 3/4/5 below grep this file.
+SEED_SRC="src/types/type_checker.c"
 EXPR_CHECKER="src/types/expression_checker.c"
 EXAMPLES_DIR="examples"
 
-for f in "$SHIM_SRC" "$GOO_C" "$EXPR_CHECKER"; do
+for f in "$SHIM_SRC" "$SEED_SRC" "$EXPR_CHECKER"; do
     if [ ! -f "$f" ]; then
         echo "check-stdlib-coverage: FAIL (source file moved: $f not found)"
         exit 1
@@ -157,14 +161,14 @@ while IFS=' ' read -r pkg name; do
     record "${pkg}.${name}" "\\b${pkg}\\.${name}\\b" "${pkg}.${name}"
 done <<< "$value_pairs"
 
-# --- 3. time.Duration constants (goo.c: time_export_value calls) --------
-time_value_pairs="$(grep -oE 'time_export_value\(pkg, "[A-Za-z0-9_]+"' "$GOO_C" \
+# --- 3. time.Duration constants (type_checker.c: time_export_value calls) --
+time_value_pairs="$(grep -oE 'time_export_value\(pkg, "[A-Za-z0-9_]+"' "$SEED_SRC" \
     | sed -E 's/time_export_value\(pkg, "([A-Za-z0-9_]+)"/time \1/')"
 
 TIME_VALUE_MIN=4
 time_value_count="$(printf '%s\n' "$time_value_pairs" | grep -c . || true)"
 if [ "${time_value_count:-0}" -lt "$TIME_VALUE_MIN" ]; then
-    echo "check-stdlib-coverage: FAIL (extracted only $time_value_count time Duration constants from $GOO_C, expected >= $TIME_VALUE_MIN — seed_time_package_exports may have moved)"
+    echo "check-stdlib-coverage: FAIL (extracted only $time_value_count time Duration constants from $SEED_SRC, expected >= $TIME_VALUE_MIN — seed_time_package_exports may have moved)"
     exit 1
 fi
 
@@ -173,14 +177,14 @@ while IFS=' ' read -r pkg name; do
     record "${pkg}.${name}" "\\b${pkg}\\.${name}\\b" "${pkg}.${name}"
 done <<< "$time_value_pairs"
 
-# --- 4. Seeded package-level funcs (goo.c: time_export_func calls) ------
-time_func_pairs="$(grep -oE 'time_export_func\(pkg, "[A-Za-z0-9_]+"' "$GOO_C" \
+# --- 4. Seeded package-level funcs (type_checker.c: time_export_func calls) -
+time_func_pairs="$(grep -oE 'time_export_func\(pkg, "[A-Za-z0-9_]+"' "$SEED_SRC" \
     | sed -E 's/time_export_func\(pkg, "([A-Za-z0-9_]+)"/time \1/')"
 
 TIME_FUNC_MIN=2
 time_func_count="$(printf '%s\n' "$time_func_pairs" | grep -c . || true)"
 if [ "${time_func_count:-0}" -lt "$TIME_FUNC_MIN" ]; then
-    echo "check-stdlib-coverage: FAIL (extracted only $time_func_count time package funcs from $GOO_C, expected >= $TIME_FUNC_MIN — seed_time_package_exports may have moved)"
+    echo "check-stdlib-coverage: FAIL (extracted only $time_func_count time package funcs from $SEED_SRC, expected >= $TIME_FUNC_MIN — seed_time_package_exports may have moved)"
     exit 1
 fi
 
@@ -189,14 +193,14 @@ while IFS=' ' read -r pkg name; do
     record "${pkg}.${name}" "\\b${pkg}\\.${name}\\(" "${pkg}.${name}"
 done <<< "$time_func_pairs"
 
-# --- 5. Seeded methods (goo.c: sync_export_method + time_export_method) -
-method_names="$(grep -oE '(sync|time)_export_method\([^,]+,[^,]+, *"[A-Za-z0-9_]+"' "$GOO_C" \
+# --- 5. Seeded methods (type_checker.c: sync_export_method + time_export_method) -
+method_names="$(grep -oE '(sync|time)_export_method\([^,]+,[^,]+, *"[A-Za-z0-9_]+"' "$SEED_SRC" \
     | sed -E 's/.*, *"([A-Za-z0-9_]+)"$/\1/')"
 
 METHOD_MIN=5
 method_count="$(printf '%s\n' "$method_names" | grep -c . || true)"
 if [ "${method_count:-0}" -lt "$METHOD_MIN" ]; then
-    echo "check-stdlib-coverage: FAIL (extracted only $method_count seeded methods from $GOO_C, expected >= $METHOD_MIN — sync/time_export_method call sites may have moved)"
+    echo "check-stdlib-coverage: FAIL (extracted only $method_count seeded methods from $SEED_SRC, expected >= $METHOD_MIN — sync/time_export_method call sites may have moved)"
     exit 1
 fi
 
