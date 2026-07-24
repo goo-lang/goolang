@@ -195,6 +195,109 @@ fixed): a runtime count that is an exact multiple of 256/the operand width
 beyond the coercion width (e.g. `x << k` with `k == 256` for an 8-bit
 operand) truncates before the guard and wraps instead of saturating.
 
+### Nil Semantics (Go Parity)
+
+**Goo adopts Go's nil semantics** for `*T`, `[]T`, `map[K]V`, `chan T`,
+`func(...)`, interfaces, and `error`: all seven are nilable, `nil` is
+assignable and comparable for each, and dereferencing/dispatching through
+one when it is actually nil panics instead of silently misbehaving. `?T`
+(and its pointer form `?*T`) is Goo's separate, opt-in **non-nullable**
+differentiator — a tagged optional that is never Go's untyped nil under the
+hood (see [Nullable Types](#nullable-types) above) — not the default for
+ordinary Go-shaped code. This closes the fork the roadmap's P2.2 left open
+(ADR 0001, `docs/adr/0001-nil-semantics-go-parity-with-emitted-deref-checks.md`).
+
+The table below is the full 24-operation matrix (empirically probed
+2026-07-23, reconstructed here from ADR 0001's Context paragraph plus the
+cells this arc closed). Every row marked "fixed this arc" is pinned by
+`scripts/nil_deref_probe.sh` (11 cases, wired into `make verify-core` as
+`nil-deref-probe`); every other row was already Go-parity before this arc
+and is re-verified by the same probe run or an existing locked fixture.
+
+| # | Operation | Behavior | Status |
+|---|---|---|---|
+| 1 | `*T` assign `nil` / compare `== nil` | typechecks, compiles, compares correctly | works |
+| 2 | `[]T` assign `nil` / compare `== nil` | typechecks, compiles, compares correctly | works |
+| 3 | `map[K]V` assign `nil` / compare `== nil` | typechecks, compiles, compares correctly | works |
+| 4 | `chan T` assign `nil` / compare `== nil` | typechecks, compiles, compares correctly | works |
+| 5 | `func(...)...` assign `nil` / compare `== nil` | typechecks, compiles, compares correctly | works |
+| 6 | nil-map read (`m[k]`) | zero value; comma-ok reports `false` | works |
+| 7 | nil-map write (`m[k] = v`, incl. `m[k] += 1`) | panics `assignment to entry in nil map` (P3.9 decision, 2026-07-10) | works |
+| 8 | nil-map delete (`delete(m, k)`) | no-op | works |
+| 9 | nil-map range (`for k, v := range m`) | zero iterations | works |
+| 10 | nil-slice `len(s)` | `0` | works |
+| 11 | nil-slice `append(s, ...)` | allocates, returns a non-nil result | works |
+| 12 | nil-channel send/recv (`ch <- v`, `<-ch`) | blocks forever — never a silent zero-value success; a nil-channel `select` case is never ready | works |
+| 13 | `close(nil)` (nil channel) | panics `close of nil channel` | works |
+| 14 | pointer deref read (`*p`) | panics (canonical message below) | **fixed this arc** (Task 2) |
+| 15 | pointer deref write (`*p = v`) | panics (canonical message below) | **fixed this arc** (Task 2) |
+| 16 | field read via nil pointer (`p.x`) | panics (canonical message below) | **fixed this arc** (Task 2) |
+| 17 | field write via nil pointer (`p.x = v`) | panics (canonical message below) | **fixed this arc** (Task 2) |
+| 18 | nil-receiver method NOT touching fields (e.g. `p.Tag()` where `Tag` never reads/writes a field) | runs normally — legal Go | works (pre-existing) |
+| 19 | nil-receiver method touching fields (e.g. `p.Get()` where `Get` reads/writes a field) | panics at the field access *inside* the method body — same site as row 16, matching Go's panic location | **fixed this arc** (Task 2) |
+| 20 | nil user-interface dispatch (`var s I; s.M()`) | panics; the call's *arguments* are evaluated before the panic fires (Go's evaluation order) | **fixed this arc** (Task 3) |
+| 21 | typed-nil value in interface dispatch (`var p *T; var s I = p; s.M()`) | runs normally — only a field access inside `M` would panic (row 19) | works (pre-existing) |
+| 22 | `error(nil).Error()` | panics (previously a silent `""` return via a deliberate codegen guard) | **fixed this arc** (Task 4) |
+| 23 | nil-slice index (`s[0]` where `s` is nil) | panics, exit 2 — Go-parity *behavior* | divergent (wording only, see below) |
+| 24 | nil func-value call (`var f func(); f()`) | panics, exit 2 — Go-parity *behavior* | divergent (wording only, see below) |
+
+**Argument-evaluation order on nil-interface dispatch (row 20).** Go
+evaluates a call's arguments, including their side effects, before the call
+itself — and a nil-interface-dispatch panic happens *as part of* the call,
+not before it. Goo matches this: `s.Speak(sideEffect())` on a nil `s` still
+runs `sideEffect()` (and any of its own output) before panicking, even
+though `Speak` never executes. Verified against real `go1.26.1` and pinned
+by the probe's `nil_interface_dispatch_arg_order` case, which asserts the
+side-effecting argument's stdout survives the panic. The check itself lives
+inside `codegen_interface_dispatch`'s dispatch choke point, after argument
+codegen, specifically so the ordering falls out of normal control flow
+rather than needing a separate early check.
+
+**Correctness fix, ride-along with row 15 (Task 2).** Writing through a
+pointer stored in a struct field — `*h.p = v` where `h.p` is itself a
+non-identifier pointer-typed lvalue (as opposed to `*p = v` on a plain
+pointer variable) — was previously a **silent no-op store**: the value was
+written into the field's own slot instead of through the pointer it holds,
+losing the write with no diagnostic. Reconciling the lvalue path to add
+row 15's nil check surfaced and fixed this pre-existing bug as a side
+effect (no behavior change for the plain-identifier case). The reconciled
+path is exercised by the probe's `star_write` and `non_nil_paths` cases.
+
+**The canonical panic.** Rows 14-17, 19, 20, and 22 — the sites this arc
+closed — all route through the same cold, `noreturn` `goo_nil_deref_fail(file,
+line)`, reached via an inline `icmp eq null` + conditional branch at each
+site (arc-17's bounds-check shape, reused verbatim-shaped) — never a
+SIGSEGV/exit-139 crash. Each produces, on stderr, a `nil dereference at
+<file>:<line>` diagnostic line followed by:
+
+```
+panic: runtime error: invalid memory address or nil pointer dereference
+```
+
+and exits with code **2**, matching Go's message text exactly. This is one
+family among several Go-parity panics in the matrix above, not the only
+one: nil-map write (row 7) panics its own `assignment to entry in nil map`
+and `close(nil)` (row 13) panics its own `close of nil channel` — both
+pre-existing, both following the same exit-2 convention, neither routed
+through `goo_nil_deref_fail`.
+
+**Known v1 divergences — message wording only, deliberately not changed
+this arc** (rows 23-24 above; both pre-date ADR 0001 and are out of this
+arc's scope):
+
+- **Nil-slice index** (`s[0]` on a nil slice): Goo panics `bounds check
+  failed` (via the same arc-17 inline bounds-check path every slice index
+  uses — a nil slice has length 0, so any index fails it); Go panics
+  `runtime error: index out of range [0] with length 0`. Exit code 2 and
+  panic-on-any-index behavior match; only the text differs.
+- **Nil func-value call** (`var f func(); f()`): Goo panics `call of nil
+  function` (a pre-existing guard, `codegen_emit_funcnil_check` in
+  `src/codegen/call_codegen.c`); Go panics `runtime error: invalid memory
+  address or nil pointer dereference` (the same message as the pointer/
+  field/interface sites above — Go treats a nil func call as an ordinary
+  nil dereference). Exit code 2 and panic-on-call behavior match; only the
+  text (and the absence of a `nil dereference at file:line` line) differs.
+
 ## Variables and Constants
 
 ### Variables
