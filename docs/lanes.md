@@ -679,7 +679,7 @@ failure) or a probe timeout (`scripts/far-probe.sh`'s 30s-per-rank wrapper
 below), never a quietly-wrong bit. NNG has no flush-on-close primitive at
 all (their docs, not an omission on this side), which is exactly why
 closing this residual for good is a transport-level job — the vtable's
-future AIO-based transport (`src/runtime/far_transport.h`'s ops interface)
+future AIO-based transport (`include/far_transport.h`'s ops interface)
 is the structural fix, not a Goo-level protocol layered on top of a
 transport that fundamentally can't confirm delivery of its last message.
 
