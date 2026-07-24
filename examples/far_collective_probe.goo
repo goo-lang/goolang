@@ -31,18 +31,8 @@ func main() {
 		gotMax := []float64{0.0, 0.0, 0.0, 0.0}
 		p := lanes.Partition(arr, 4)
 		lanes.Run(p, 1, func(ctx *lanes.Lane) {
-			// Bound to a local before the call: a slice-index expression
-			// passed directly as a method-call argument (`ctx.AllReduceSum
-			// (contrib[ctx.ID()])`) trips a pre-existing codegen bug —
-			// LLVM verification fails with "Call parameter type does not
-			// match function signature!" because the GEP pointer isn't
-			// loaded before the call. Reproducible with any method call
-			// (value or pointer receiver) and a slice-index argument; out
-			// of scope for this task, so worked around here the same way
-			// lanes_allreduce_probe.goo already binds to a local first.
-			c := contrib[ctx.ID()]
-			s := ctx.AllReduceSum(c)
-			m := ctx.AllReduceMax(c)
+			s := ctx.AllReduceSum(contrib[ctx.ID()])
+			m := ctx.AllReduceMax(contrib[ctx.ID()])
 			got[ctx.ID()] = s
 			gotMax[ctx.ID()] = m
 		})
@@ -75,12 +65,8 @@ func main() {
 	base := rank * 2
 	p := lanes.Partition(span, 2)
 	lanes.RunFar(p, 1, rank, 2, urlBase, func(ctx *lanes.Lane) {
-		// See the near-mode branch's comment above: bound to a local
-		// before the call to avoid the slice-index-as-call-argument
-		// codegen bug.
-		c := contrib[base+ctx.ID()]
-		s := ctx.AllReduceSum(c)
-		m := ctx.AllReduceMax(c)
+		s := ctx.AllReduceSum(contrib[base+ctx.ID()])
+		m := ctx.AllReduceMax(contrib[base+ctx.ID()])
 		got[ctx.ID()] = s
 		gotMax[ctx.ID()] = m
 	})
