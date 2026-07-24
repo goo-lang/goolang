@@ -1,0 +1,40 @@
+// far_shim_probe (M2-B1 T3): the far shim surface end-to-end in ONE
+// process — listen+dial to self over ipc, send/recv floats both ways,
+// and both error-union branches (bogus listen URL; catch prints).
+package main
+
+import "far"
+import "fmt"
+
+func main() {
+	url := "ipc:///tmp/goo-far-shim-probe.sock"
+	a := far.Listen(url) catch e {
+		panic(e.Error())
+	}
+	b := far.Dial(url) catch e {
+		panic(e.Error())
+	}
+	far.SendF64(a, 1.5)
+	far.SendF64(a, 2.5)
+	v1 := far.RecvF64(b) catch e {
+		panic(e.Error())
+	}
+	v2 := far.RecvF64(b) catch e {
+		panic(e.Error())
+	}
+	fmt.Println(v1 == 1.5)
+	fmt.Println(v2 == 2.5)
+	far.SendF64(b, 9.0)
+	v3 := far.RecvF64(a) catch e {
+		panic(e.Error())
+	}
+	fmt.Println(v3 == 9.0)
+	far.Close(a)
+	far.Close(b)
+	bad := far.Listen("bogus://x") catch e {
+		fmt.Println(e.Error())
+		fmt.Println(true)
+		return
+	}
+	fmt.Println(bad)
+}

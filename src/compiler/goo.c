@@ -602,7 +602,7 @@ static bool is_stdlib_shim_import(const char* path) {
     // P4.6: "time" joins sync as a method-aware bespoke shim (Duration/Time
     // synthesized below, no GOOROOT source dir) — same reasoning as sync's
     // own entry.
-    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time"};
+    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time", "far"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
     }

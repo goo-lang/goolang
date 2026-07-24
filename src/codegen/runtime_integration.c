@@ -365,6 +365,30 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_os_read_line", i32_type, params, 1);
     }
 
+    // M2-B1 far transport (far_transport.h): ok-flag + out-param shims.
+    // int goo_far_listen(const char* url, int64_t* out, goo_string_t* err)
+    // int goo_far_dial(const char* url, int64_t* out, goo_string_t* err)
+    // void goo_far_send_f64(int64_t, double)
+    // int goo_far_recv_f64(int64_t, double* out, goo_string_t* err)
+    // void goo_far_close(int64_t)
+    {
+        LLVMTypeRef dbl = LLVMDoubleTypeInContext(codegen->context);
+        LLVMTypeRef listen_dial_params[] = { ptr_type, LLVMPointerType(i64_type, 0),
+                                              LLVMPointerType(string_type, 0) };
+        add_runtime_function(codegen, "goo_far_listen", i32_type, listen_dial_params, 3);
+        add_runtime_function(codegen, "goo_far_dial", i32_type, listen_dial_params, 3);
+
+        LLVMTypeRef send_f64_params[] = { i64_type, dbl };
+        add_runtime_function(codegen, "goo_far_send_f64", void_type, send_f64_params, 2);
+
+        LLVMTypeRef recv_f64_params[] = { i64_type, LLVMPointerType(dbl, 0),
+                                           LLVMPointerType(string_type, 0) };
+        add_runtime_function(codegen, "goo_far_recv_f64", i32_type, recv_f64_params, 3);
+
+        LLVMTypeRef close_params[] = { i64_type };
+        add_runtime_function(codegen, "goo_far_close", void_type, close_params, 1);
+    }
+
     // void goo_os_args_init(int argc, char** argv) — called once from the
     // generated executable's entry (is_entry_main prologue, function_codegen.c).
     {

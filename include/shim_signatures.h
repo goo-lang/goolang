@@ -41,16 +41,17 @@ typedef enum {
 } ShimParamKind;
 
 // A call's return type. Most shims return a plain builtin/slice; a few
-// need a builder beyond a bare TypeKind (error, []string, and two flavors
-// of !T error-union) — SHIM_RET_ATOI_RESULT and SHIM_RET_STRING_RESULT are
-// dedicated tags for those, rather than a general "builder function
-// pointer": strconv.Atoi is the only !int64/string entry (untouched by
-// P4.8 — same tag, same shim_ret_type() case, byte-identical), and
-// os.ReadFile/os.ReadLine (P4.8) are the only two !string/string entries.
-// The latter two share ONE tag (not READFILE_RESULT/READLINE_RESULT) since
-// both build the exact same Type via the exact same one-line construction —
-// two enum cases for one construction would be pointless duplication; see
-// shim_ret_type()'s SHIM_RET_STRING_RESULT case.
+// need a builder beyond a bare TypeKind (error, []string, and three flavors
+// of !T error-union) — SHIM_RET_ATOI_RESULT, SHIM_RET_STRING_RESULT, and
+// SHIM_RET_F64_RESULT are dedicated tags for those, rather than a general
+// "builder function pointer": strconv.Atoi and far.Listen/Dial (M2-B1) are
+// the !int64/string entries (far's rows added without a new tag — same
+// shim_ret_type() case, byte-identical construction), os.ReadFile/
+// os.ReadLine (P4.8) are the !string/string entries, and far.RecvF64
+// (M2-B1) is the one !float64/string entry. Entries that share a
+// construction share ONE tag (not a tag per call) since building the exact
+// same Type via the exact same one-line construction twice would be
+// pointless duplication; see shim_ret_type()'s cases for each.
 typedef enum {
     SHIM_RET_VOID,
     SHIM_RET_STRING,
@@ -59,8 +60,9 @@ typedef enum {
     SHIM_RET_BOOL,
     SHIM_RET_STRING_SLICE,
     SHIM_RET_ERROR,
-    SHIM_RET_ATOI_RESULT,    // strconv.Atoi only: !int (int64 success / string error)
+    SHIM_RET_ATOI_RESULT,    // strconv.Atoi + far.Listen/Dial (all !int: int64 success / string error)
     SHIM_RET_STRING_RESULT,  // os.ReadFile / os.ReadLine: !string (string success / string error)
+    SHIM_RET_F64_RESULT,     // far.RecvF64: !float64 (float64 success / string error)
 } ShimRetKind;
 
 // Returns a fresh type_function() Type* for (package, name)'s call-site

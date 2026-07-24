@@ -3241,7 +3241,10 @@ VERIFY_ALL_DEPS := \
     goostd-resolver-probe \
     reldir-import-probe \
     readline-probe \
-    stdlib-smoke-coverage
+    stdlib-smoke-coverage \
+    far-transport-test \
+    far-transport-asan \
+    far-shim-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -4451,6 +4454,22 @@ far-transport-asan: $(NNG_LIB)
 	  $(NNG_LIB) -o $(BINDIR)/far_transport_asan -lm -lpthread
 	@ASAN_OPTIONS=detect_leaks=0 $(BINDIR)/far_transport_asan && echo "far-transport-asan: PASS"
 .PHONY: far-transport-test far-transport-asan
+
+# M2-B1 T3: far shim package end-to-end — listen+dial to self over ipc,
+# send/recv floats both ways, both error-union branches. See
+# examples/far_shim_probe.goo for the scenario.
+far-shim-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_shim_probe examples/far_shim_probe.goo
+	@rm -f /tmp/goo-far-shim-probe.sock
+	@./build/far_shim_probe > build/far_shim_probe.actual.txt
+	@if diff -u examples/far_shim_probe.expected.txt build/far_shim_probe.actual.txt; then \
+	  echo "far-shim-probe: PASS"; \
+	else \
+	  echo "far-shim-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+.PHONY: far-shim-probe
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
