@@ -261,3 +261,85 @@ trivially stable.
   milestone records.
 - Halo message batching (per-cell messages preserved for protocol
   identity; batching is a perf follow-up with no determinism impact).
+
+## Amendments (2026-07-24, execution round)
+
+Append-only: the sections above are the original design record, approved
+on this date. The final whole-branch review (`.superpowers/sdd/final-review.md`,
+Important 1) found the shipped implementation diverged from two of them in
+ways not otherwise recorded in this file — both divergences are correct
+engineering (one driven by a concrete bug the original premise missed, one
+a deliberate hygiene-tooling substitution) but the normative spec must say
+so. Nothing above this section is rewritten.
+
+### (a) Teardown protocol as shipped
+
+The **Teardown** section above (the 3-step quit → close → drain protocol,
+resting on "by the end of the last round every sent message has been
+consumed — no in-flight residue by construction") is **superseded**. Task
+6's review (I1) disproved that premise at the NNG layer: the existing
+local `done`/pump-done drain only proves *this rank's own enqueue step*
+didn't race `Close` — it says nothing about whether the *remote* peer
+actually received what was sent, and NNG's own `nng_close(3)` documentation
+is explicit that there is no automatic linger or flush, so a message can
+still be sitting in the local send buffer (`FAR_BUF_DEPTH`) when
+`far.Close` frees it. Two concrete instances existed: a rank's final halo
+`Publish()` and rank 0's final collective broadcast.
+
+The shipped protocol adds a **symmetric marker-exchange phase on every far
+socket a rank holds** (both halo sockets and every collective socket)
+before any `far.Close`: each side pushes a marker value (`0.0` — its FIFO
+position is the signal, not the number) as that socket's truly-final send,
+then blocks receiving its peer's marker back, before either side proceeds
+to quit its pumps and close. Every rank's pushes (both halo edges, then
+every coll socket) are issued before any of that rank's receives — an
+overlapped, not per-socket-sequential, ordering, chosen purely for latency
+over the still-deadlock-free sequential alternative (sequential pushes
+would chain a rank's wait proportional to its distance from the nearest
+world boundary; overlapped pushes resolve every socket's round trip in one
+hop regardless of chain length).
+
+**Corrected premise, stated honestly:** completing the marker exchange on
+a socket proves — via NNG's per-direction FIFO delivery — that *this* rank
+has now received every message its peer ever sent on that socket,
+including the peer's own marker, so any real payload sent upstream of a
+received marker is proven delivered. It does **not** give either side a
+mathematical guarantee that *its own* last send (the marker itself) was
+received before it proceeds to close: with no linger primitive on either
+end of a symmetric, unconditional-push handshake, that residual is
+Two-Generals-shaped, and no finite protocol eliminates it outright. The
+accepted residual is therefore honestly scoped to the marker token only —
+never the payload — and is **always loud** on failure: a panic (an
+unexpected `far.SendF64`/`far.RecvF64` failure) or a
+`scripts/far-probe.sh` timeout, never a silently-wrong bit. Full account —
+including the "a full round trip has now provably elapsed before close"
+mitigation this buys, the same "wait a while first" `nng_close(3)` itself
+recommends, now triggered by a real cross-rank event instead of a blind
+sleep — lives in `docs/lanes.md`, "Teardown order and failure model".
+
+### (b) Hygiene gate: ASan substitutes for valgrind
+
+The **Gates** table's hygiene row above still commits to "valgrind scoped
+to far_transport.c's own allocations + NNG shutdown". As shipped, that row
+is **AddressSanitizer, pinned to clang** (`far-transport-asan`, run against
+the C unit test; leak detection off — the v1 no-GC memory model makes
+leak-checking meaningless, so memory-corruption checks (overflow/UAF/
+double-free) stay fully active), not valgrind. Rationale (plan
+self-review, `docs/superpowers/plans/2026-07-24-p6-lanes-m2-b1-nng-far-transport.md`):
+ASan catches the same class of bug for the C unit's scope; a valgrind
+far-run can still ride the existing `arena-valgrind-probe` pattern
+post-merge if wanted. This is a substitution, not a drop — the row stays
+gated in `make verify-core`.
+
+### (c) Send-pump drain-on-quit
+
+The **Pump goroutines** section above does not mention a quit-time drain.
+As shipped (T4 review), a send-pump's quit arm performs a **one-shot
+non-blocking drain** of its channel (`select` with a `default` arm) before
+acking done, forwarding any single value the last `Publish` left queued.
+This is safe because by quit time every lane goroutine has already joined
+(no further producer can enqueue), so the drain is
+producer-quiescence-plus-bounded-channel, not a "keep draining until
+empty" loop — and it is correct independent of whichever policy the outer
+`select`'s arm-scan uses, by construction rather than by incidental
+scheduling order.

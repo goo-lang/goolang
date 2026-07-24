@@ -338,6 +338,19 @@ func (l *Lane) Step() bool {
 	return l.step < l.steps
 }
 
+// farRecvMust wraps far.RecvF64 with an unconditional panic on any
+// transport error — a torn transport is unrecoverable both mid-collective
+// (allReduce's far branch, below) and mid-teardown (RunFar's marker
+// receives), so both call sites share this one panic path. See allReduce's
+// doc comment below for the collective's combine-order contract this
+// helper participates in.
+func farRecvMust(sock int) float64 {
+	v := far.RecvF64(sock) catch e {
+		panic("lanes: far recv failed: " + e.Error())
+	}
+	return v
+}
+
 // allReduce is the shared collective core: every lane contributes `local`;
 // the combined value is returned identically to every lane. Combination
 // happens in FIXED lane-ID order (lane 0's partial, then 1's, ...): lane 0
@@ -370,13 +383,6 @@ func (l *Lane) Step() bool {
 // total lane count, which is the bit-identity contract this collective
 // promises (float addition is not associative, so the order is
 // load-bearing, not style).
-func farRecvMust(sock int) float64 {
-	v := far.RecvF64(sock) catch e {
-		panic("lanes.allReduce: far recv failed: " + e.Error())
-	}
-	return v
-}
-
 func (l *Lane) allReduce(local float64, useMax bool) float64 {
 	// Arc 16 fixed the compiler codegen gap this used to work around:
 	// codegen_generate_index_expr now loads an lvalue index (e.g. the
@@ -715,10 +721,15 @@ func farItoa(n int) string {
 // applied on top of the existing local sendDoneL/R drain. This closes
 // the window from "always exposed, sub-microsecond, on every far run" to
 // "requires the local write aio to be starved for longer than a full
-// round trip plus the rest of this rank's teardown" — see
-// docs/superpowers/specs task-6-report.md's fix section for the full
-// chain-deadlock re-derivation and the honest accounting of what remains
-// unproven.
+// round trip plus the rest of this rank's teardown". Chain-deadlock
+// argument, summarized: every marker push this rank issues (both halo
+// edges, then every coll socket) is unconditional and buffered, and ALL
+// of a rank's pushes are issued before ANY of its receives — so no rank's
+// marker receive is ever gated behind another rank's still-pending
+// receive; the wait graph has no cycle, for any world size. Full
+// derivation and the honest accounting of what remains unproven:
+// docs/superpowers/specs/2026-07-24-p6-lanes-m2-b1-design.md,
+// "Amendments (2026-07-24, execution round)".
 //
 // After the marker exchange: quit send-pumps and WAIT for each to
 // confirm it has forwarded anything left in its channel and will touch
@@ -926,7 +937,8 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 	// Push phase: every socket this rank holds gets its marker pushed
 	// FIRST (both halo edges, then every coll socket) — not push-then-
 	// immediately-wait one socket at a time. Deadlock/latency
-	// re-derivation (task-6-report.md's fix section has the full
+	// re-derivation (see RunFar's doc comment above, and the spec's
+	// "Amendments (2026-07-24, execution round)" section, for the full
 	// per-rank-chain trace): a per-edge push is always unconditional here
 	// (never gated on having received anything first), so pushing both
 	// edges up front means EVERY rank's halo pushes fire independently of
