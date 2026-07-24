@@ -548,6 +548,177 @@ surfaces. M2 adds:
   tile width`) rather than silently reading out of bounds or wrapping;
   see The three new API surfaces above.
 
+## M2-B1: far transport
+
+M2-B1 adds a second way to run the exact same lane bodies: `RunFar`,
+`Run`'s process-boundary sibling. Nothing in M1 or M2-B2 above changed —
+`Partition`, `Run`, `StencilStep`, `AllReduceSum`/`AllReduceMax`, and every
+compile-time guarantee still apply unmodified inside a `RunFar` body; the
+milestone's whole job was making the *edges* of a lane's world reach across
+a process boundary without the body noticing. The normative design record
+is `docs/superpowers/specs/2026-07-24-p6-lanes-m2-b1-design.md`.
+
+### The RunFar contract
+
+```go
+func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body func(ctx *Lane)) []float64
+```
+
+`world` cooperating OS processes (ranks `0..world-1`), each partitioning
+its own **rank-local span** and calling `RunFar` with the identical
+`steps`, `world`, and `urlBase`, and the identical **per-rank lane count**
+(`p.count`, via each rank's own `Partition` call) — equal-count-per-rank is
+a documented contract, enforced empirically by the bit-identity probes
+rather than by a runtime check. Global Dirichlet boundary reads (the fixed
+`0.0` a `HaloLeft`/`HaloRight`/`StencilStep` sub-exchange returns for a
+missing neighbor) now occur only at the two true world edges — rank 0's
+left and rank `world-1`'s right — not at every rank's local edges, since a
+rank's local edges that face another rank are bridged across the wire
+instead.
+
+### Socket topology and pump architecture
+
+Every rank **listens** on its right halo boundary and **dials** its left,
+so each boundary URL (`urlBase + ".halo." + rank`) has exactly one owner
+and process start order can't deadlock setup (`far.Dial` is
+async-retry — `NNG_FLAG_NONBLOCK` — so a dialer just keeps trying until its
+listener appears). Collectives get their own socket set: rank 0 listens
+one socket per remote rank (`urlBase + ".coll." + r`), every other rank
+dials its single socket to rank 0.
+
+Two goroutines per far edge — a send-pump and a recv-pump — bridge a
+rank's outermost lane's ordinary cap-1 boundary channel to that far
+socket. A send-pump drains the channel into `far.SendF64`; a recv-pump
+feeds `far.RecvF64` into the channel. This is the whole trick: from a lane
+body's point of view, `Publish`/`HaloLeft`/`HaloRight`/`StencilStep`
+still just push and pull on a cap-1 Go channel exactly as they do under
+`Run` — the pumps are invisible to the body, and interior lanes (the ones
+with neighbors on the same rank) are wired exactly as `Run` wires them,
+untouched. Two consequences follow directly from that invisibility:
+delivery is FIFO end-to-end (a cap-1 channel is FIFO by construction, NNG
+pair sockets are FIFO per direction, and a pump does no reordering, so the
+composition is FIFO), and the M1 cap-1 deadlock-freedom argument carries
+over unmodified — a send-pump's only job is draining its slot into
+`far.SendF64`, which buffers locally and does not wait on the remote, so a
+blocked send still can never wait on a consumer that is itself waiting on
+that same send.
+
+The send-pump's quit path is drain-on-quit, not drop-on-quit: by the time
+`RunFar` signals quit, `runCore` has already returned, so every lane
+goroutine (the only possible producer into `sendL`/`sendR`) has already
+joined — whatever the kernel's last `Publish()` enqueued (at most one
+value, cap-1) is already sitting in the channel by the time the quit arm
+runs, with nothing left that could arrive later and be missed. So the quit
+arm does one non-blocking drain (an inner `select` with a `default`) before
+signaling done: if a value is there, forward it; if not, the pump was
+already caught up. Phrasing it as producer-quiescence-plus-bounded-channel
+rather than "drain first in source order" is deliberate — it makes
+drop-freedom independent of whichever policy the outer `select`'s arm scan
+happens to use, order-independent by construction rather than by
+incidental scheduling.
+
+### The collective bit-identity protocol
+
+Cross-rank `AllReduceSum`/`AllReduceMax` extend the same fixed-ID-order
+combine M2-B2 established, just across the wire instead of across
+goroutines: every non-zero rank forwards its **raw, uncombined partial**
+to rank 0 (no per-rank pre-combining — a rank owning multiple lanes still
+sends one raw value per lane, in lane-ID order), rank 0 folds every
+partial — its own lanes' plus every remote rank's — in strict **global
+ID-order** (`global lane id = rank * lanesPerRank + local id`, ascending),
+then broadcasts the single combined result back down every coll socket.
+Folding on any other axis — arrival order, or a rank pre-combining its own
+lanes before forwarding — would, for non-associative float addition, land
+on a different rounding sequence and therefore different bits; the
+`far_collective_probe` fixture's dataset is deliberately non-associative
+(`1e16` absorbs `1.0`) specifically so an arrival-order or
+per-rank-pre-combine bug cannot pass by accident.
+
+### Teardown order and failure model
+
+Setup errors and mid-run transport errors **panic** with an explicit
+message — a torn transport is unrecoverable for lockstep BSP, the same
+process-fatal story as a panicking lane body. A rank whose peer legitimately
+finished and closed sees `"far: closed"` from its own still-blocked
+`far.RecvF64` — string-matched by the recv-pump as the ordinary, expected
+end-of-run signal (not an error path) and forwarded as a clean pump exit.
+
+Teardown itself runs a **marker-exchange protocol on every far socket a
+rank holds** (halo and collective alike) before any `far.Close`: each side
+pushes a marker value (`0.0` — its FIFO position is the signal, not the
+number) as that socket's truly-final send, then blocks receiving its
+peer's marker back, before either side proceeds to quit its pumps and
+close. This exists because the local send-pump drain above only proves a
+send has left *this rank's* enqueue step — it says nothing about whether
+the *remote* rank has actually received it. NNG's own documentation for
+`nng_close` is explicit that closing a socket with data still in transit
+"will likely lead to loss of that data" and that there is **no automatic
+linger or flush**: a message can sit in the local send buffer
+(`NNG_OPT_SENDBUF`, `FAR_BUF_DEPTH` below) well after `far.SendF64`
+returns, and NNG's close path unconditionally frees whatever is still
+queued there. A rank's final halo `Publish()` or rank 0's final collective
+broadcast are exactly the sends this could silently drop.
+
+State the envelope honestly: completing the marker exchange on a socket
+proves — via NNG's per-direction FIFO delivery — that this rank has now
+received every message its peer ever sent on that socket, *including* the
+peer's own marker, so any real payload sent upstream of a received marker
+is proven delivered. Bit-identity on actual data is therefore airtight;
+the residual is Two-Generals-shaped and scoped **only to the marker token
+itself** — with no linger primitive on either end of a symmetric,
+unconditional-push handshake, neither side gets a mathematical guarantee
+that its *own* last send (the marker) was received before it proceeds to
+close. What the exchange narrows that gap to: a full network round trip
+(send marker, peer receives it and independently sends its own, this rank
+receives that) has provably elapsed before either side reaches its close,
+the same "wait a while first" mitigation NNG's own docs recommend, now
+triggered by a real cross-rank event instead of a blind sleep. Should that
+residual ever fire, it is never silent corruption — the failure mode is
+always **loud**: a panic (an unexpected `far.SendF64`/`far.RecvF64`
+failure) or a probe timeout (`scripts/far-probe.sh`'s 30s-per-rank wrapper
+below), never a quietly-wrong bit. NNG has no flush-on-close primitive at
+all (their docs, not an omission on this side), which is exactly why
+closing this residual for good is a transport-level job — the vtable's
+future AIO-based transport (`src/runtime/far_transport.h`'s ops interface)
+is the structural fix, not a Goo-level protocol layered on top of a
+transport that fundamentally can't confirm delivery of its last message.
+
+### The envelope
+
+Single-machine, multi-process is proven: every far probe runs `world`
+real OS processes on one machine over `ipc://` sockets
+(`scripts/far-probe.sh`), each under a 30-second timeout (a teardown hang
+is a probe FAIL, not a wedged gate). Multi-machine (`tcp://` in place of
+`ipc://`) is a documented future runbook, not exercised by any gate today.
+Wire format is one message per value: 8-byte little-endian IEEE-754
+`float64`, native on every target this compiles for today and documented
+now for a future cross-machine transport where native byte order can't be
+assumed.
+
+Two hard numbers bound a process's far footprint
+(`src/runtime/far_transport.c`): `FAR_MAX_SOCKETS` is **64** sockets per
+process — a rank needs at most 2 halo sockets plus `world-1` (rank 0) or 1
+(every other rank) collective sockets, so 64 covers any plausible
+single-machine world with margin. `FAR_BUF_DEPTH` is **128** messages of
+send/recv buffer per socket, configured explicitly (not inherited as an
+NNG default) so "a send never blocks on remote progress" is a property
+this transport sets on purpose; per the same comment, it bounds **per-rank
+lane count for far runs to <= 128** — a run with more lanes per rank than
+that on a single far socket exceeds the envelope this milestone measured
+and gated.
+
+### The gates table
+
+| Gate | What it pins |
+|---|---|
+| `far-transport-test` | C unit test: shim ABI, FIFO ordering, the buffering envelope, the `"far: closed"` split |
+| `far-transport-asan` | Same C unit test under AddressSanitizer (leak detection off — v1's documented no-GC memory model; corruption checks stay fully active) |
+| `far-shim-probe` | End-to-end `far` shim: listen+dial to self over `ipc://`, send/recv both directions, both error-union branches |
+| `far-halo-probe` | 2-rank radius-1 halo exchange, bit-identical to the serial reference (near mode pins `Run` against the same reference first) |
+| `far-stencil-r2-probe` | Radius-2 sub-exchange ordering survives the wire, bit-identical |
+| `far-collective-probe` | Cross-rank `AllReduceSum`/`AllReduceMax` global ID-order combine, bit-identical on non-associative data |
+| `far-jacobi-probe` | The capstone: distributed Jacobi convergence — final field AND iteration count bit-identical to the serial tiled reference, run twice |
+
 ## The race story
 
 There is **no automated data-race gate** wired into `verify-core` for

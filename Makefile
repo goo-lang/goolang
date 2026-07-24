@@ -3247,7 +3247,8 @@ VERIFY_ALL_DEPS := \
     far-shim-probe \
     far-halo-probe \
     far-stencil-r2-probe \
-    far-collective-probe
+    far-collective-probe \
+    far-jacobi-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -4527,6 +4528,17 @@ far-collective-probe: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/far-probe.sh build/far_collective 2
 	@echo "far-collective-probe: PASS (global ID-order combine, bit-identical)"
 .PHONY: far-collective-probe
+
+# M2-B1 capstone: distributed Jacobi convergence — final field AND
+# iteration count bit-identical to the serial tiled reference, run TWICE
+# (schedule-independence repeat).
+far-jacobi-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_jacobi examples/far_jacobi_probe.goo
+	@bash scripts/far-probe.sh build/far_jacobi 2
+	@bash scripts/far-probe.sh build/far_jacobi 2
+	@echo "far-jacobi-probe: PASS (distributed convergence, twice, bit-identical)"
+.PHONY: far-jacobi-probe
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
