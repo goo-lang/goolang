@@ -377,6 +377,13 @@ typedef struct goo_type_info {
 void goo_bounds_fail(size_t index, size_t length, const char* file, int line) __attribute__((noreturn));
 void goo_slice_bounds_fail(int64_t low, int64_t high, int64_t max, const char* file, int line) __attribute__((noreturn));
 
+// ADR 0001: cold noreturn target of the inline nil checks
+// (codegen_emit_nil_check) at pointer-deref/field/interface-dispatch
+// sites — same shape as goo_bounds_fail above. The message text is Go's
+// canonical nil-panic wording and is pinned by scripts/nil_deref_probe.sh;
+// changing it is a contract change, not a wording tweak.
+void goo_nil_deref_fail(const char* file, int line) __attribute__((noreturn));
+
 void goo_bounds_check(size_t index, size_t length, const char* file, int line);
 
 // Bounds check for slice/substring EXPRESSIONS `base[low:high]` — the
@@ -389,16 +396,11 @@ void goo_slice_bounds_check(int64_t low, int64_t high, int64_t max, const char* 
 // width (1..4). Used by rune-aware for-range-over-string. See runtime.c.
 int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_out);
 
-// Null checking (for nullable types)
-void goo_null_check(void* ptr, const char* file, int line);
-
 // Debug macros
 #ifdef GOO_DEBUG
 #define GOO_BOUNDS_CHECK(index, length) goo_bounds_check(index, length, __FILE__, __LINE__)
-#define GOO_NULL_CHECK(ptr) goo_null_check(ptr, __FILE__, __LINE__)
 #else
 #define GOO_BOUNDS_CHECK(index, length) ((void)0)
-#define GOO_NULL_CHECK(ptr) ((void)0)
 #endif
 
 // Concurrency support
