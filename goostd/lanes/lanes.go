@@ -29,6 +29,8 @@
 //     outer loop variable would never advance.
 package lanes
 
+import "far"
+
 // Partitioned describes an equal-width tiling of `backing` into `count`
 // disjoint lanes of `width` elements each.
 type Partitioned struct {
@@ -536,4 +538,213 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 	for i := 0; i < w; i++ {
 		own[i] = ctx.scratch[i]
 	}
+}
+
+// farItoa: minimal non-negative int -> decimal string, local so lanes.go
+// assumes nothing about vendored-to-vendored imports (only the far/fmt
+// SHIM import path is proven). rank/world are small; negatives cannot
+// reach it (RunFar validates first).
+func farItoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	digits := "0123456789"
+	s := ""
+	for n > 0 {
+		d := n % 10
+		s = digits[d:d+1] + s
+		n = n / 10
+	}
+	return s
+}
+
+// RunFar is Run across process boundaries: `world` cooperating OS
+// processes (ranks 0..world-1), each partitioning its own rank-local span,
+// exchange halos over the far transport at rank boundaries. Interior lanes
+// are wired exactly as Run wires them; only a rank's outermost lanes
+// differ — their outward channels are bridged to NNG pair sockets by two
+// pump goroutines per far edge (send-pump drains the cap-1 channel into
+// far.SendF64; recv-pump feeds far.RecvF64 into the cap-1 channel), so
+// Publish/HaloLeft/HaloRight/StencilStep bodies run unchanged and the M1
+// cap-1 deadlock-freedom argument carries over (a send-pump's only job is
+// draining the slot; far.SendF64 buffers without waiting on the remote).
+// Global Dirichlet edges exist only at rank 0's left and rank world-1's
+// right. Every rank must call RunFar with the SAME steps, world, urlBase,
+// and per-rank lane count (equal-count is a documented contract; the
+// bit-identity probes enforce it empirically).
+//
+// Teardown order (review-round-corrected): quit send-pumps and WAIT for
+// each to confirm it has forwarded any already-buffered final Publish()
+// and will touch its socket no more (see sendDoneL/R's doc comment below —
+// the recv-pump's own blocking receive IS genuinely idle at this point, per
+// the BSP protocol's receive-every-round contract, but a send-pump is NOT
+// symmetrically idle: Publish() is fire-and-forget and does not wait for
+// its pump to have drained the channel, so closing right after the quit
+// signal — without that wait — could race an in-flight far.SendF64 with
+// far.Close on the same socket). Only THEN far.Close the sockets (which
+// unblocks each recv-pump with the "far: closed" error they string-match),
+// then join the recv-pumps.
+//
+// Failure model: setup errors and mid-run transport errors panic with
+// explicit messages (a torn transport is unrecoverable for lockstep BSP;
+// same process-fatal story as a panicking lane body).
+func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body func(ctx *Lane)) []float64 {
+	if world < 1 {
+		panic("lanes.RunFar: world must be >= 1")
+	}
+	if rank < 0 {
+		panic("lanes.RunFar: rank out of range")
+	}
+	if rank >= world {
+		panic("lanes.RunFar: rank out of range")
+	}
+	if len(urlBase) == 0 {
+		panic("lanes.RunFar: urlBase must be non-empty")
+	}
+	hasL := rank > 0
+	hasR := rank < world-1
+
+	// Every rank LISTENS on its right boundary and DIALS its left, so
+	// each boundary URL has exactly one owner. far.Dial is async-retry
+	// (NNG_FLAG_NONBLOCK), so process start order cannot deadlock setup.
+	sockL := 0
+	sockR := 0
+	if hasR {
+		ur := urlBase + ".halo." + farItoa(rank)
+		sr := far.Listen(ur) catch e {
+			panic("lanes.RunFar: listen " + ur + ": " + e.Error())
+		}
+		sockR = sr
+	}
+	if hasL {
+		ul := urlBase + ".halo." + farItoa(rank-1)
+		sl := far.Dial(ul) catch e {
+			panic("lanes.RunFar: dial " + ul + ": " + e.Error())
+		}
+		sockL = sl
+	}
+
+	fc := farCfg{}
+	fc.hasL = hasL
+	fc.hasR = hasR
+	quitL := make(chan int, 1)
+	quitR := make(chan int, 1)
+	// sendDoneL/sendDoneR are a SEPARATE completion signal from pumpDone,
+	// one per send-pump, and RunFar blocks on them before calling
+	// far.Close (see the teardown block below). Review-round fix: the
+	// kernel's LAST Publish() enqueues its final boundary value into
+	// sendL/sendR WITHOUT waiting for the send-pump to have forwarded it
+	// (Publish is fire-and-forget by design — "sends never block on
+	// remote progress"), so runCore can return, and this function can
+	// reach quitL<-1/far.Close(sockL), WHILE the send-pump's select is
+	// still choosing between draining that buffered value (case
+	// v:=<-sendL) and noticing the quit (case <-quitL) — select does not
+	// prefer either deterministically. If Close ran unconditionally right
+	// after the quit send (the original design), it could race a send-pump
+	// that just started far.SendF64 for that final value, handing NNG_ECLOSED
+	// to a call site (nng_far_send_f64) that treats ANY nonzero return as a
+	// hard panic — observed empirically as an intermittent
+	// "far: send failed: Object closed" panic on the sender and a permanent
+	// hang on the peer waiting for a message that never arrived. Blocking on
+	// sendDoneL/R makes Close strictly ordered after the send-pump's last
+	// possible far.SendF64 call: the pump's own for-select loop keeps
+	// draining sendL/sendR (each iteration is fully sequential — a goroutine
+	// can't be "mid-send" and "evaluating quit" at once) until nothing is
+	// left ready but quit, at which point it signals sendDoneL/R and never
+	// touches the socket again.
+	sendDoneL := make(chan int, 1)
+	sendDoneR := make(chan int, 1)
+	pumpDone := make(chan int, 2)
+	recvPumps := 0
+	if hasL {
+		sendL := make(chan float64, 1)
+		recvL := make(chan float64, 1)
+		fc.sendL = sendL
+		fc.recvL = recvL
+		go func() {
+			for {
+				select {
+				case v := <-sendL:
+					far.SendF64(sockL, v)
+				case <-quitL:
+					sendDoneL <- 1
+					return
+				}
+			}
+		}()
+		go func() {
+			for {
+				v := far.RecvF64(sockL) catch e {
+					if e.Error() == "far: closed" {
+						pumpDone <- 1
+						return
+					}
+					panic("lanes.RunFar: far recv failed: " + e.Error())
+				}
+				recvL <- v
+			}
+		}()
+		recvPumps = recvPumps + 1
+	}
+	if hasR {
+		sendR := make(chan float64, 1)
+		recvR := make(chan float64, 1)
+		fc.sendR = sendR
+		fc.recvR = recvR
+		go func() {
+			for {
+				select {
+				case v := <-sendR:
+					far.SendF64(sockR, v)
+				case <-quitR:
+					sendDoneR <- 1
+					return
+				}
+			}
+		}()
+		go func() {
+			for {
+				v := far.RecvF64(sockR) catch e {
+					if e.Error() == "far: closed" {
+						pumpDone <- 1
+						return
+					}
+					panic("lanes.RunFar: far recv failed: " + e.Error())
+				}
+				recvR <- v
+			}
+		}()
+		recvPumps = recvPumps + 1
+	}
+
+	out := runCore(p, steps, body, fc)
+
+	// Teardown order (review-round fix): quit send-pumps THEN WAIT for each
+	// one's completion ack BEFORE closing its socket — see sendDoneL/R's
+	// doc comment above for why the wait is load-bearing, not defensive
+	// padding. Only once both send-pumps are provably done touching their
+	// sockets is it safe to Close, which then unblocks each recv-pump
+	// (still legitimately blocked in far.RecvF64, per the BSP protocol's
+	// receive-every-round contract) with the "far: closed" error they
+	// string-match.
+	if hasL {
+		quitL <- 1
+		<-sendDoneL
+	}
+	if hasR {
+		quitR <- 1
+		<-sendDoneR
+	}
+	if hasL {
+		far.Close(sockL)
+	}
+	if hasR {
+		far.Close(sockR)
+	}
+	k := 0
+	for k < recvPumps {
+		<-pumpDone
+		k = k + 1
+	}
+	return out
 }

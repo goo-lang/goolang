@@ -3244,7 +3244,8 @@ VERIFY_ALL_DEPS := \
     stdlib-smoke-coverage \
     far-transport-test \
     far-transport-asan \
-    far-shim-probe
+    far-shim-probe \
+    far-halo-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -4487,6 +4488,18 @@ far-shim-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 .PHONY: far-shim-probe
+
+# M2-B1: 2-rank NNG halo exchange, bit-identical to the in-fixture serial
+# reference (near mode pins Run against the same reference first).
+far-halo-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_halo_probe examples/far_halo_probe.goo
+	@./build/far_halo_probe near > build/far_halo_near.txt
+	@if ! grep -qx "true" build/far_halo_near.txt; then \
+	  echo "far-halo-probe: FAIL (near mode diverged from serial reference)"; exit 1; fi
+	@bash scripts/far-probe.sh build/far_halo_probe 2
+	@echo "far-halo-probe: PASS (2-rank NNG halo exchange bit-identical)"
+.PHONY: far-halo-probe
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)

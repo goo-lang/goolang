@@ -825,6 +825,55 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     return checker->error_count == 0;
 }
 
+// P6 M2-B1 (Task 4): plain stdlib-shim import paths a VENDORED SOURCE
+// package's own body may `import` directly (goostd/lanes needs `import
+// "far"`). Deliberately excludes sync/time: their marker seeding builds
+// bespoke struct/method exports (seed_sync_package_exports/
+// seed_time_package_exports, src/compiler/goo.c) that only main's
+// import-driven seeding path constructs today — a vendored package
+// importing sync/time is out of this task's scope and would need that same
+// bespoke construction wired here first. Keep in sync with
+// is_stdlib_shim_import (src/compiler/goo.c) for the entries this list DOES
+// cover.
+static bool type_checker_is_plain_shim_import(const char* path) {
+    static const char* const shim[] = {"fmt", "os", "math", "errors", "far"};
+    for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
+        if (strcmp(path, shim[i]) == 0) return true;
+    }
+    return false;
+}
+
+// P6 M2-B1 (Task 4): seed a TYPE_PACKAGE marker for each plain stdlib-shim
+// package THIS package's own import list names, into the scope
+// type_check_package just pushed for it. Without this, a vendored source
+// package's `import "far"` (or fmt/os/math/errors) never registers `far` as
+// an identifier in ITS OWN scope — goo.c's seed_imported_stdlib_markers only
+// ever seeds markers from the ENTRY (main) file's imports, so a shim used
+// exclusively by a vendored package (never referenced by main directly)
+// previously type-errored as "Undefined variable" regardless of its own
+// `import` line. Scoped to just-this-package's pushed scope (not the shared
+// global scope goo.c seeds main's markers into), so importing "far" in one
+// vendored package does NOT leak visibility of `far` into main or any
+// sibling package that never imported it itself — the same per-file import
+// hygiene Go requires.
+static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports) {
+    for (ASTNode* imp = imports; imp; imp = imp->next) {
+        if (imp->type != AST_IMPORT_SPEC) continue;
+        ImportSpecNode* spec = (ImportSpecNode*)imp;
+        if (!spec->path || !type_checker_is_plain_shim_import(spec->path)) continue;
+        const char* short_name = spec->alias ? spec->alias : spec->path;
+        Package* p = type_checker_add_package(checker, spec->path, short_name);
+        if (!p) return false;
+        // Mirrors goo.c's seed_imported_stdlib_markers: a NULL return here
+        // means only "duplicate import of this name" (harmless — the first
+        // marker already covers it) or OOM (already unrecoverable via other
+        // allocations in this same loop), never a reason to abort the
+        // package on its own.
+        type_checker_seed_package_marker(checker, short_name, p);
+    }
+    return true;
+}
+
 // stdlib Phase 0 (Task 4): type-check one imported package in its own scope,
 // then publish its exported (A-Z) top-level symbols into pkg->exports.
 //
@@ -850,6 +899,14 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
     }
 
     ProgramNode* prog = (ProgramNode*)program;
+
+    // P6 M2-B1 Task 4: this package's own plain-shim imports (see
+    // seed_package_own_shim_imports doc comment above) — must run before
+    // any decl below is checked, since a package-level var/const init or a
+    // function body may reference the shim on line 1.
+    if (!seed_package_own_shim_imports(checker, prog->imports)) {
+        return 0;  // scope/current_package left set; caller aborts the build
+    }
 
     // Mirror type_check_program's comptime pre-pass so an intra-package
     // `is_comptime` const RHS can resolve forward-declared calls.
