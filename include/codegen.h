@@ -593,6 +593,16 @@ LLVMValueRef codegen_widen_index(CodeGenerator* codegen, ValueInfo* idx);
 // path and expression_codegen.c's slice-write lvalue path).
 void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
                                LLVMValueRef length, ASTNode* expr);
+// ADR 0001: emit an INLINE `ptr == null` compare + conditional branch to a
+// cold fail block calling the noreturn goo_nil_deref_fail(file, line) — the
+// exact bounds-check shape above, applied to nil. The cond variant exists
+// because some sites start from an extracted value or an existing i1 rather
+// than a raw pointer. Both split the current block; the builder is left in
+// the continue block.
+void codegen_emit_nil_check_cond(CodeGenerator* codegen, LLVMValueRef is_nil,
+                                 ASTNode* expr);
+void codegen_emit_nil_check(CodeGenerator* codegen, LLVMValueRef ptr,
+                            ASTNode* expr);
 // Coerce a VALUE to the target LLVM type using the source type's
 // signedness — the single home for the width-coercion rule that was
 // previously inlined (and repeatedly re-broken) at the var-decl,

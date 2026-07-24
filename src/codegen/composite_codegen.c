@@ -62,6 +62,49 @@ void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
     LLVMPositionBuilderAtEnd(codegen->builder, cont_bb);
 }
 
+// ADR 0001: emit an INLINE `ptr == null` compare + conditional branch to a
+// cold fail block calling the noreturn goo_nil_deref_fail(file, line) —
+// the exact bounds-check shape above, applied to nil. Sites: unary *p
+// read/write, struct-field access through a pointer (read + lvalue paths —
+// which also covers a nil RECEIVER whose method touches fields, since that
+// panic happens at the field selector inside the method body, Go-parity),
+// interface dispatch (vtable null), and error(nil).Error(). The cond
+// variant exists because two sites (interface vtable, error handle) start
+// from an extracted value or an existing i1 rather than a raw pointer.
+//
+// Splits the current block; the builder is left in the continue block.
+void codegen_emit_nil_check_cond(CodeGenerator* codegen, LLVMValueRef is_nil,
+                                 ASTNode* expr) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_nil_deref_fail");
+    // Same known footgun as bounds: no symbol -> unguarded (best-effort).
+    // codegen_declare_runtime_functions always declares it.
+    if (!fn) return;
+
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+    LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "nil_fail");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "nil_ok");
+    LLVMBuildCondBr(codegen->builder, is_nil, fail_bb, cont_bb);
+
+    LLVMPositionBuilderAtEnd(codegen->builder, fail_bb);
+    LLVMValueRef file = LLVMBuildGlobalStringPtr(codegen->builder,
+        expr->pos.filename ? expr->pos.filename : "<input>", "nil_file");
+    LLVMValueRef line = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                                     (unsigned long long)expr->pos.line, 0);
+    LLVMValueRef args[2] = { file, line };
+    LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "");
+    LLVMBuildUnreachable(codegen->builder);
+
+    LLVMPositionBuilderAtEnd(codegen->builder, cont_bb);
+}
+
+void codegen_emit_nil_check(CodeGenerator* codegen, LLVMValueRef ptr,
+                            ASTNode* expr) {
+    if (!ptr) return;
+    LLVMValueRef is_nil = LLVMBuildICmp(codegen->builder, LLVMIntEQ, ptr,
+                                        LLVMConstNull(LLVMTypeOf(ptr)), "nil_cond");
+    codegen_emit_nil_check_cond(codegen, is_nil, expr);
+}
+
 // Widen an integer index to a 64-bit offset with the correct signedness. Go
 // array/string/slice indices are non-negative offsets, so an UNSIGNED narrow
 // index (e.g. a uint8 of 255, as in the math/bits table lookup len8tab[x]) must
@@ -850,6 +893,14 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
                                                   LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
                                                   base_val->llvm_value, "struct_ptr");
         }
+        // ADR 0001: nil-check the struct pointer before it is used as a GEP
+        // base. This is also the check for a nil RECEIVER whose method
+        // touches a field — the method body's own field selector reaches
+        // here, so the panic fires at the field access, matching Go (a
+        // nil-receiver method that never touches a field never reaches this
+        // arm at all, since it never selects a field — nil_receiver_method_
+        // no_field probe case).
+        codegen_emit_nil_check(codegen, base_val->llvm_value, expr);
         base_type = base_type->data.pointer.pointee_type;
         base_val->is_lvalue = 1;
     }
