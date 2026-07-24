@@ -1,0 +1,44 @@
+// Empty case bodies (Go parity): select `default:`/`case:`, expression
+// switch, and type switch all accept an empty statement list. Grammar-level
+// fix — all three families share the scoped case_body nonterminal.
+package main
+
+import "fmt"
+
+func classify(n int) string {
+	switch n {
+	case 0:
+	case 1:
+		return "one"
+	default:
+	}
+	return "other"
+}
+
+func main() {
+	fmt.Println(classify(0))
+	fmt.Println(classify(1))
+	fmt.Println(classify(2))
+
+	var v interface{} = 3
+	switch v.(type) {
+	case int:
+	default:
+		fmt.Println("not int")
+	}
+	fmt.Println("typeswitch ok")
+
+	ch := make(chan int, 1)
+	select {
+	case <-ch:
+		fmt.Println("recv wrong")
+	default:
+	}
+	ch <- 7
+	select {
+	case <-ch:
+	default:
+		fmt.Println("default wrong")
+	}
+	fmt.Println("select ok")
+}

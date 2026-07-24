@@ -1,0 +1,28 @@
+// Spec: Statements / Switch — empty case and default bodies
+package main
+
+import "fmt"
+
+func classify(n int) string {
+	switch n {
+	case 0:
+	case 1:
+		return "one"
+	default:
+	}
+	return "other"
+}
+
+func main() {
+	fmt.Println(classify(0))
+	fmt.Println(classify(1))
+	fmt.Println(classify(2))
+
+	var v interface{} = 3
+	switch v.(type) {
+	case int:
+	default:
+		fmt.Println("not int")
+	}
+	fmt.Println("typeswitch ok")
+}

@@ -184,7 +184,7 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 %type <node> statement_list stmt_seq statement final_stmt block simple_stmt
 %type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt goto_stmt fallthrough_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
-%type <node> switch_stmt case_clause_list case_clause
+%type <node> switch_stmt case_clause_list case_clause case_body
 %type <node> type_case_list type_case_clause type_list
 %type <guard> type_switch_guard
 %type <node> unsafe_stmt asm_stmt parallel_for_stmt arena_stmt
@@ -1062,6 +1062,15 @@ statement_list:
     }
     ;
 
+/* Case bodies (select/switch/type-switch) may be empty (Go parity).
+   Scoped epsilon: statement_list itself stays epsilon-free — it is shared
+   by if/for/block and an epsilon there would have grammar-wide blast
+   radius. NULL body = empty, every consumer treats it as a no-op. */
+case_body:
+    statement_list { $$ = $1; }
+    | /* empty */   { $$ = NULL; }
+    ;
+
 stmt_seq:
     statement {
         $$ = $1;
@@ -1538,7 +1547,7 @@ select_case_list:
     ;
 
 select_case:
-    CASE expression COLON statement_list {
+    CASE expression COLON case_body {
         SelectCaseNode* case_node = ast_select_case_new($2, $4, get_current_position());
         $$ = (ASTNode*)case_node;
     }
@@ -1552,7 +1561,7 @@ select_case:
     // its name is copied out — `ast_select_case_new` already defaults
     // bind_name/is_declare to NULL/0, so every OTHER call site (plain comm,
     // default, and the comma-ok arm below) is unaffected by this new field.
-    | CASE identifier SHORT_ASSIGN expression COLON statement_list {
+    | CASE identifier SHORT_ASSIGN expression COLON case_body {
         IdentifierNode* bid = (IdentifierNode*)$2;
         SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
         case_node->bind_name = strdup(bid->name);
@@ -1563,7 +1572,7 @@ select_case:
     // `case v = <-ch:` — bind into an EXISTING, already-declared variable
     // (checked in the type checker: must exist in an enclosing scope and be
     // assignment-compatible with the channel's element type).
-    | CASE identifier ASSIGN expression COLON statement_list {
+    | CASE identifier ASSIGN expression COLON case_body {
         IdentifierNode* bid = (IdentifierNode*)$2;
         SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
         case_node->bind_name = strdup(bid->name);
@@ -1579,14 +1588,14 @@ select_case:
     // sentinel documented on SelectCaseNode in ast.h. Neither identifier's
     // name is kept (both freed here): the case is rejected either way, so
     // nothing downstream needs them.
-    | CASE identifier COMMA identifier SHORT_ASSIGN expression COLON statement_list {
+    | CASE identifier COMMA identifier SHORT_ASSIGN expression COLON case_body {
         SelectCaseNode* case_node = ast_select_case_new($6, $8, get_current_position());
         case_node->is_declare = -1;
         ast_node_free($2);
         ast_node_free($4);
         $$ = (ASTNode*)case_node;
     }
-    | DEFAULT COLON statement_list {
+    | DEFAULT COLON case_body {
         SelectCaseNode* case_node = ast_select_case_new(NULL, $3, get_current_position());
         $$ = (ASTNode*)case_node;
     }
@@ -1750,10 +1759,10 @@ type_case_list:
     ;
 
 type_case_clause:
-    CASE type_list COLON statement_list {
+    CASE type_list COLON case_body {
         $$ = (ASTNode*)ast_type_case_new($2, $4, get_current_position());
     }
-    | DEFAULT COLON statement_list {
+    | DEFAULT COLON case_body {
         $$ = (ASTNode*)ast_type_case_new(NULL, $3, get_current_position());
     }
     ;
@@ -1808,10 +1817,10 @@ case_clause_list:
     ;
 
 case_clause:
-    CASE expression COLON statement_list {
+    CASE expression COLON case_body {
         $$ = (ASTNode*)ast_case_clause_new($2, $4, get_current_position());
     }
-    | DEFAULT COLON statement_list {
+    | DEFAULT COLON case_body {
         $$ = (ASTNode*)ast_case_clause_new(NULL, $3, get_current_position());
     }
     ;
