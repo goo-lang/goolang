@@ -116,4 +116,27 @@ func main() {
 ' '8
 6'
 
+check_nilpanic nil_interface_dispatch 'package main
+import "fmt"
+type Speaker interface{ Speak() int }
+func main() {
+	var s Speaker
+	fmt.Println(s.Speak())
+}
+'
+
+# LEGAL Go: an interface HOLDING a typed-nil *T dispatches fine; only a
+# field access inside the method panics (covered by Task 2 site C).
+check_ok typed_nil_in_interface 'package main
+import "fmt"
+type Speaker interface{ Speak() int }
+type T struct{ x int }
+func (t *T) Speak() int { return 9 }
+func main() {
+	var p *T
+	var s Speaker = p
+	fmt.Println(s.Speak())
+}
+' '9'
+
 echo "nil-deref-probe: PASS (all cases)"
