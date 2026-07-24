@@ -1,0 +1,23 @@
+// A slice-index expression passed DIRECTLY as a method-call argument used
+// to fail LLVM module verification ("Call parameter type does not match
+// function signature!") — the method-arg loop never loaded the element
+// GEP. Plain calls with the same argument shape were unaffected.
+package main
+
+import "fmt"
+
+type Acc struct{ total int }
+
+func (a *Acc) AddP(n int) { a.total = a.total + n }
+func (a Acc) SumV(n int) int { return a.total + n }
+
+func plain(n int) int { return n + 1 }
+
+func main() {
+	xs := []int{10, 20, 30}
+	a := Acc{}
+	a.AddP(xs[1])
+	fmt.Println(a.total)
+	fmt.Println(a.SumV(xs[2]))
+	fmt.Println(plain(xs[0]))
+}

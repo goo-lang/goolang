@@ -2038,6 +2038,21 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             for (ASTNode* a = call->args; a; a = a->next, i++) {
                 ValueInfo* av = codegen_generate_expression(codegen, checker, a);
                 if (!av) { ok = 0; break; }
+                // Load a scalar lvalue argument (e.g. a slice-index GEP)
+                // before coercion — mirrors the plain-call path's
+                // load-before-use step (2c30703) and arc-16's
+                // index-lvalue-widen shape (composite_codegen.c). Without
+                // this, an lvalue argument's raw element ADDRESS was passed
+                // straight through, failing LLVM module verification
+                // ("Call parameter type does not match function signature!").
+                if (av->is_lvalue && av->goo_type) {
+                    LLVMTypeRef at = codegen_type_to_llvm(codegen, av->goo_type);
+                    if (at) {
+                        av->llvm_value = LLVMBuildLoad2(codegen->builder, at,
+                                                        av->llvm_value, "argld");
+                        av->is_lvalue = 0;
+                    }
+                }
                 LLVMValueRef v = av->llvm_value;
                 if (mparam_tys && i < mfn_params) {
                     int src_signed = av->goo_type
