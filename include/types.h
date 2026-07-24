@@ -1061,6 +1061,13 @@ int type_check_program(TypeChecker* checker, ASTNode* program);
 // calls scope_pop() and clears current_package. Popping here would hide the
 // package's functions from codegen and drop their parameters.
 int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program);
+// P4.6/P4.7, moved to type_checker.c under P6 M2-B1 Task 10: populate the
+// sync/time shim packages' bespoke struct+method exports on `pkg`. Called
+// from BOTH goo.c's seed_imported_stdlib_markers (main's own import) and
+// type_checker.c's seed_package_own_shim_imports (a vendored/local
+// package's own import) — see either call site's doc comment.
+void seed_sync_package_exports(TypeChecker* checker, Package* pkg);
+void seed_time_package_exports(TypeChecker* checker, Package* pkg);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);

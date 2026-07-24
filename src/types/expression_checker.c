@@ -2521,7 +2521,18 @@ Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNod
 // still converts).
 static int name_is_user_shadowed(TypeChecker* checker, const char* name) {
     if (!checker || !name) return 0;
-    if (scope_lookup_variable(checker->current_scope, name)) return 1;
+    // fix/builtin-shadow-seeding: exclude is_builtin matches. Type-conversion
+    // names (int/string/...) are never registered in scope at all, so any
+    // scope_lookup_variable hit for those was already guaranteed to be a real
+    // user variable/function. But the nine call-builtins (len/cap/append/...)
+    // this arc newly gates through this same helper ARE unconditionally
+    // pre-seeded into the global scope as is_builtin Variables
+    // (type_checker_add_builtin_functions) — without this check, an
+    // UNSHADOWED len/cap/append/... would "find itself" via scope_lookup_
+    // variable and be misreported as user-shadowed, skipping the builtin
+    // arm's real type checking for every ordinary (non-shadowing) call.
+    Variable* existing = scope_lookup_variable(checker->current_scope, name);
+    if (existing && !existing->is_builtin) return 1;
     if (checker->comptime_type_ctx && checker->comptime_type_ctx->comptime_ctx) {
         ASTNode* fn = comptime_context_lookup_func(
             checker->comptime_type_ctx->comptime_ctx, name);
@@ -3749,7 +3760,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // append(slice, elem) -> slice. The result type is the first arg's
         // slice type (dynamic), so it can't ride the generic builtin path;
         // codegen lowers it to goo_slice_append (in-place amortized grow).
-        if (strcmp(func_ident->name, "append") == 0) {
+        if (strcmp(func_ident->name, "append") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || !call->args->next || call->args->next->next) {
                 type_error(checker, expr->pos, "append expects exactly two arguments (slice, element)");
                 return NULL;
@@ -3818,7 +3830,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // as append(dst, s...) above. Result type is always int, unlike
         // append, so this rides a fixed node_type rather than the first
         // arg's dynamic type.
-        if (strcmp(func_ident->name, "copy") == 0) {
+        if (strcmp(func_ident->name, "copy") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || !call->args->next || call->args->next->next) {
                 type_error(checker, expr->pos, "copy expects exactly two arguments (dst, src)");
                 return NULL;
@@ -3847,7 +3860,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // unsupported argument (e.g. an array) is a clean error instead of
         // reaching codegen's ExtractValue path, which assumes an aggregate
         // and segfaults on anything else.
-        if (strcmp(func_ident->name, "len") == 0) {
+        if (strcmp(func_ident->name, "len") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || call->args->next) {
                 type_error(checker, expr->pos, "len expects exactly one argument");
                 return NULL;
@@ -3867,7 +3881,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // falls into the `!= TYPE_SLICE` branch below, which already rejects
         // it cleanly — maps lower to an opaque i8* with no capacity field,
         // so codegen's ExtractValue would segfault if this let one through.
-        if (strcmp(func_ident->name, "cap") == 0) {
+        if (strcmp(func_ident->name, "cap") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || call->args->next) {
                 type_error(checker, expr->pos, "cap expects exactly one argument");
                 return NULL;
@@ -3891,7 +3906,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // Exactly one argument, which must be a channel — anything else
         // would hand codegen a non-pointer value to pass to goo_chan_close,
         // which unconditionally dereferences it.
-        if (strcmp(func_ident->name, "close") == 0) {
+        if (strcmp(func_ident->name, "close") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || call->args->next) {
                 type_error(checker, expr->pos, "close expects exactly one argument (channel)");
                 return NULL;
@@ -3925,7 +3941,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // to its key type (any admitted key kind — see the AST_MAP_TYPE
         // comparability gate). Codegen lowers to goo_map_delete_sv, passing
         // the key packed into its i64 slot like every other map-op site.
-        if (strcmp(func_ident->name, "delete") == 0) {
+        if (strcmp(func_ident->name, "delete") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || !call->args->next || call->args->next->next) {
                 type_error(checker, expr->pos, "delete expects exactly two arguments (map, key)");
                 return NULL;
@@ -3981,7 +3998,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // argument, which must be a map or slice — anything else would
         // hand codegen a value with neither a GooMapSV* nor a {ptr,len,cap}
         // header to clear.
-        if (strcmp(func_ident->name, "clear") == 0) {
+        if (strcmp(func_ident->name, "clear") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || call->args->next) {
                 type_error(checker, expr->pos, "clear expects exactly one argument (map or slice)");
                 return NULL;
@@ -4003,10 +4021,12 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // constant adaptation) lives in the shared type_check_minmax_call
         // helper above (name-parameterized — the two builtins differ only
         // in which comparison codegen emits, never in their TYPE rule).
-        if (strcmp(func_ident->name, "min") == 0) {
+        if (strcmp(func_ident->name, "min") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             return type_check_minmax_call(checker, expr, call, "min");
         }
-        if (strcmp(func_ident->name, "max") == 0) {
+        if (strcmp(func_ident->name, "max") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
             return type_check_minmax_call(checker, expr, call, "max");
         }
         // error(msg) -> !T. Constructs the error case of the enclosing function's
