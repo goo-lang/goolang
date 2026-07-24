@@ -1,6 +1,6 @@
 // Empty case bodies (Go parity): select `default:`/`case:`, expression
 // switch, and type switch all accept an empty statement list. Grammar-level
-// fix — all three families route through the same statement_list nonterminal.
+// fix — all three families share the scoped case_body nonterminal.
 package main
 
 import "fmt"
