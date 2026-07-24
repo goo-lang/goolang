@@ -227,7 +227,7 @@ and is re-verified by the same probe run or an existing locked fixture.
 | 9 | nil-map range (`for k, v := range m`) | zero iterations | works |
 | 10 | nil-slice `len(s)` | `0` | works |
 | 11 | nil-slice `append(s, ...)` | allocates, returns a non-nil result | works |
-| 12 | nil-channel send/recv (`ch <- v`, `<-ch`) | blocks forever — never a silent zero-value success; a nil-channel `select` case is never ready | works |
+| 12 | nil-channel send/recv (`ch <- v`, `<-ch`) | blocks forever — never a silent zero-value success; a nil-channel `select` case is never ready. In a main-only program the deadlock detector reports it near-instantly (Go parity: "all goroutines are asleep"-class abort; `src/runtime/channels.c` nil-block path) | works |
 | 13 | `close(nil)` (nil channel) | panics `close of nil channel` | works |
 | 14 | pointer deref read (`*p`) | panics (canonical message below) | **fixed this arc** (Task 2) |
 | 15 | pointer deref write (`*p = v`) | panics (canonical message below) | **fixed this arc** (Task 2) |
