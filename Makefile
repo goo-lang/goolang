@@ -3245,7 +3245,8 @@ VERIFY_ALL_DEPS := \
     far-transport-test \
     far-transport-asan \
     far-shim-probe \
-    far-halo-probe
+    far-halo-probe \
+    far-stencil-r2-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -4500,6 +4501,18 @@ far-halo-probe: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/far-probe.sh build/far_halo_probe 2
 	@echo "far-halo-probe: PASS (2-rank NNG halo exchange bit-identical)"
 .PHONY: far-halo-probe
+
+# M2-B1: radius-2 sub-exchange protocol over the wire (2 floats per edge
+# per round, order-gated) — bit-identical to the serial reference.
+far-stencil-r2-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_stencil_r2 examples/far_stencil_r2_probe.goo
+	@./build/far_stencil_r2 near > build/far_stencil_r2_near.txt
+	@if ! grep -qx "true" build/far_stencil_r2_near.txt; then \
+	  echo "far-stencil-r2-probe: FAIL (near mode diverged)"; exit 1; fi
+	@bash scripts/far-probe.sh build/far_stencil_r2 2
+	@echo "far-stencil-r2-probe: PASS (radius-2 sub-exchange survives the wire)"
+.PHONY: far-stencil-r2-probe
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
