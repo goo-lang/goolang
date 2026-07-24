@@ -667,17 +667,65 @@ func farItoa(n int) string {
 // and per-rank lane count (equal-count is a documented contract; the
 // bit-identity probes enforce it empirically).
 //
-// Teardown order (review-round-corrected): quit send-pumps and WAIT for
-// each to confirm it has forwarded any already-buffered final Publish()
-// and will touch its socket no more (see sendDoneL/R's doc comment below —
-// the recv-pump's own blocking receive IS genuinely idle at this point, per
-// the BSP protocol's receive-every-round contract, but a send-pump is NOT
-// symmetrically idle: Publish() is fire-and-forget and does not wait for
-// its pump to have drained the channel, so closing right after the quit
-// signal — without that wait — could race an in-flight far.SendF64 with
-// far.Close on the same socket). Only THEN far.Close the sockets (which
-// unblocks each recv-pump with the "far: closed" error they string-match),
-// then join the recv-pumps.
+// Teardown order (T6 review I1: marker exchange added on EVERY far
+// socket, halo and coll, before any close). The sendDoneL/R drain
+// (below) only protects against a send racing Close ON THIS RANK'S OWN
+// enqueue step — it says nothing about whether the REMOTE rank has
+// actually received what we sent. That gap is real and source-confirmed:
+// far.SendF64/far.Close wrap NNG's nng_send/nng_close, and NNG's own
+// nng_close(3) documents "closing the socket while data is in
+// transmission will likely lead to loss of that data... there is no
+// automatic linger or flush" — a message can sit in the local send
+// buffer (NNG_OPT_SENDBUF, FAR_BUF_DEPTH=128) well after far.SendF64
+// returns, and nni_msgq_close (traced in vendored NNG 1.11.0,
+// src/core/msgqueue.c) unconditionally frees whatever is still queued
+// there. Two concrete instances: rank 0's final collective broadcast
+// (allReduce's `far.SendF64(l.collSocks[r], acc)`) and a rank's final
+// halo Publish() are both susceptible — a peer still blocked reading
+// either would get "far: closed" instead of the value.
+//
+// The fix: before touching any close, every far socket this rank holds
+// exchanges a MARKER (0.0 — its FIFO position is the signal, not the
+// value) with its peer: push the marker as this socket's truly-final
+// send (halo: through sendL/sendR, so the still-running send-pump
+// forwards it after any already-buffered final Publish; coll: direct
+// far.SendF64, mirroring allReduce's own usage), then block receiving
+// the peer's marker back (halo: one read of recvL/recvR — the BSP
+// receive-every-round contract already guarantees nothing real is left
+// unread there, so the next delivered value IS the peer's marker; coll:
+// farRecvMust). Pushes for every socket happen first (both halo edges,
+// then every coll socket) before any receive — see the exchange's own
+// inline comment for why serializing edge-by-edge would still be
+// deadlock-free but needlessly chains latency across a multi-rank halo
+// run.
+//
+// What this proves, precisely: completing the exchange on a socket
+// proves (via NNG's per-direction FIFO delivery) that THIS rank has now
+// received every message its peer ever sent on that socket, including
+// the peer's own marker. It does NOT, by itself, give either side a
+// mathematical guarantee that ITS OWN last send (the marker) was
+// received before it proceeds to close — with no linger primitive on
+// either end of a symmetric, unconditional-push handshake, that residual
+// question is a Two-Generals-shaped one no finite protocol eliminates
+// outright. What the exchange DOES give: a full network round trip (send
+// marker, peer receives it and independently sends its own, we receive
+// that) has provably elapsed before either side reaches its close — the
+// SAME "wait a while first" mitigation nng_close(3) itself recommends,
+// now triggered by a real cross-rank event instead of a blind sleep, and
+// applied on top of the existing local sendDoneL/R drain. This closes
+// the window from "always exposed, sub-microsecond, on every far run" to
+// "requires the local write aio to be starved for longer than a full
+// round trip plus the rest of this rank's teardown" — see
+// docs/superpowers/specs task-6-report.md's fix section for the full
+// chain-deadlock re-derivation and the honest accounting of what remains
+// unproven.
+//
+// After the marker exchange: quit send-pumps and WAIT for each to
+// confirm it has forwarded anything left in its channel and will touch
+// its socket no more (see sendDoneL/R's doc comment below). Only THEN
+// far.Close the halo sockets (which unblocks each recv-pump with the
+// "far: closed" error they string-match), join the recv-pumps, then
+// far.Close the coll sockets.
 //
 // Failure model: setup errors and mid-run transport errors panic with
 // explicit messages (a torn transport is unrecoverable for lockstep BSP;
@@ -873,6 +921,63 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 
 	out := runCore(p, steps, body, fc)
 
+	// M2-B1 (T6 review I1 fix): teardown marker exchange, BEFORE any quit
+	// or close — see RunFar's doc comment above for the full argument.
+	// Push phase: every socket this rank holds gets its marker pushed
+	// FIRST (both halo edges, then every coll socket) — not push-then-
+	// immediately-wait one socket at a time. Deadlock/latency
+	// re-derivation (task-6-report.md's fix section has the full
+	// per-rank-chain trace): a per-edge push is always unconditional here
+	// (never gated on having received anything first), so pushing both
+	// edges up front means EVERY rank's halo pushes fire independently of
+	// every other rank's progress — the round trip each recv below waits
+	// on resolves in one hop for every rank simultaneously. Serializing
+	// instead (push L, recv L, push R, recv R) would still terminate
+	// (rank 0's boundary push is unconditional with no left neighbor to
+	// wait on, so the R-marker wave ripples rightward and always
+	// completes — no cycle), just with latency proportional to a rank's
+	// distance from the nearest boundary instead of O(1); overlapping the
+	// pushes avoids that chain entirely, so it's what's implemented.
+	if hasL {
+		fc.sendL <- 0.0
+	}
+	if hasR {
+		fc.sendR <- 0.0
+	}
+	if world > 1 {
+		if rank == 0 {
+			for r := 1; r < world; r++ {
+				far.SendF64(fc.collSocks[r], 0.0)
+			}
+		}
+		if rank > 0 {
+			far.SendF64(fc.collSock, 0.0)
+		}
+	}
+	// Receive phase: the peer's marker on every socket this rank holds.
+	// Halo: a single read of recvL/recvR — the BSP receive-every-round
+	// contract already guarantees nothing real is left unread there (see
+	// runCore's per-lane HaloLeft/HaloRight contract), so the next
+	// delivered value IS the peer's marker. Coll: farRecvMust, matching
+	// allReduce's own error-handling discipline (a torn transport
+	// mid-teardown is exactly as unrecoverable as one mid-collective).
+	if hasL {
+		<-fc.recvL
+	}
+	if hasR {
+		<-fc.recvR
+	}
+	if world > 1 {
+		if rank == 0 {
+			for r := 1; r < world; r++ {
+				farRecvMust(fc.collSocks[r])
+			}
+		}
+		if rank > 0 {
+			farRecvMust(fc.collSock)
+		}
+	}
+
 	// Teardown order (review-round fix): quit send-pumps THEN WAIT for each
 	// one's completion ack BEFORE closing its socket — see sendDoneL/R's
 	// doc comment above for why the wait is load-bearing, not defensive
@@ -880,7 +985,10 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 	// sockets is it safe to Close, which then unblocks each recv-pump
 	// (still legitimately blocked in far.RecvF64, per the BSP protocol's
 	// receive-every-round contract) with the "far: closed" error they
-	// string-match.
+	// string-match. The marker exchange above has already run by this
+	// point, so this Close is no longer the FIRST event that could race
+	// an undelivered send (see RunFar's doc comment for what that does
+	// and doesn't prove).
 	if hasL {
 		quitL <- 1
 		<-sendDoneL
@@ -901,12 +1009,11 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 		k = k + 1
 	}
 
-	// M2-B1 (Task 6): close collective sockets AFTER the halo pumps have
-	// joined. Collectives make direct blocking calls from lane goroutines
-	// (no pump goroutines involved), so there is nothing to quit here —
-	// by this point runCore has already returned, meaning every lane
-	// (including lane 0's allReduce combine/distribute loops) has already
-	// completed and no collective call is in flight.
+	// M2-B1 (Task 6, T6 review I1 fix): close collective sockets AFTER the
+	// halo pumps have joined AND after the marker exchange above has
+	// already confirmed this rank received every marker its coll peers
+	// sent. Collectives make direct blocking calls from lane goroutines
+	// (no pump goroutines involved), so there is nothing to quit here.
 	if world > 1 {
 		if rank == 0 {
 			for r := 1; r < world; r++ {
