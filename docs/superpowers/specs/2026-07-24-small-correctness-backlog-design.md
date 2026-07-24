@@ -142,6 +142,32 @@ dereferenced. The nil-semantics arc's inline checks over-fire here
   `docs/GO_SPEC_CONFORMANCE.md` rows where relevant (select empty body;
   builtin shadowability).
 
+## Execution amendments (plan-time discoveries, 2026-07-24)
+
+Three facts found while grounding the plan revise the design above; the
+plan (`docs/superpowers/plans/2026-07-24-small-correctness-backlog.md`)
+incorporates them:
+
+1. **PR 1 scope widens to switch and type-switch.** `switch { case x: }`
+   with an empty body also fails to parse — `select_case`, `case_clause`,
+   and `type_case_clause` all route their bodies through the same
+   epsilon-free `statement_list` (verified empirically with `bin/goo`).
+   Same root cause, same fix: a scoped `case_body` nonterminal
+   (`statement_list | %empty`), keeping `statement_list` itself
+   epsilon-free (it is shared by if/for/block — grammar-wide blast
+   radius). Conformance rows cover both families.
+2. **The shadowing gate must land in codegen too.** `call_codegen.c`
+   re-dispatches builtins on raw identifier text independently of the
+   checker (8 strcmp arms at lines 814–1138); a checker-only gate would
+   leave codegen lowering a shadowed `len` as the builtin. The fix
+   mirrors the existing two-layer pattern `string()`/conversions already
+   use (checker `name_is_user_shadowed` + codegen
+   `type_checker_lookup_variable` guards).
+3. **Only `far_collective_probe.goo` carries bind-to-local workarounds**
+   (two sites). `lanes_allreduce_probe.goo` and `far_jacobi_probe.goo`
+   pass plain scalar accumulators by natural shape and need no change —
+   the design's "three files" was over-counted.
+
 ## Non-goals
 
 - Diagnostics-quality family (positions one statement late,
