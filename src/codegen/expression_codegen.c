@@ -2751,7 +2751,37 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
     if (unary->operator == TOKEN_ARROW) {
         return codegen_generate_channel_recv(codegen, checker, expr);
     }
-    
+
+    // &*e folds to e (Go parity, ADR 0001 carried Minor): no nil check at
+    // the &* site and e is evaluated exactly once. The nil check is not
+    // lost — it fires at whatever later dereferences the result. Must run
+    // BEFORE the eager operand evaluation below, which would otherwise
+    // recurse into the TOKEN_MULTIPLY case and fire the star-read nil
+    // check, then re-evaluate the operand a second time via
+    // codegen_emit_lvalue_address in the TOKEN_BIT_AND arm.
+    if (unary->operator == TOKEN_BIT_AND && unary->operand &&
+        unary->operand->type == AST_UNARY_EXPR &&
+        ((UnaryExprNode*)unary->operand)->operator == TOKEN_MULTIPLY) {
+        ASTNode* inner = ((UnaryExprNode*)unary->operand)->operand;
+        ValueInfo* pv = codegen_generate_expression(codegen, checker, inner);
+        if (!pv) return NULL;
+        if (!pv->goo_type || pv->goo_type->kind != TYPE_POINTER) {
+            codegen_error(codegen, expr->pos,
+                          "Cannot take address of non-lvalue");
+            value_info_free(pv);
+            return NULL;
+        }
+        if (pv->is_lvalue) {
+            LLVMTypeRef pt = codegen_type_to_llvm(codegen, pv->goo_type);
+            if (pt) {
+                pv->llvm_value = LLVMBuildLoad2(codegen->builder, pt,
+                                                pv->llvm_value, "ptrld");
+                pv->is_lvalue = 0;
+            }
+        }
+        return pv;
+    }
+
     // Generate operand
     ValueInfo* operand = codegen_generate_expression(codegen, checker, unary->operand);
     if (!operand) return NULL;

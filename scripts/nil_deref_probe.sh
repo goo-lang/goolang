@@ -186,4 +186,27 @@ func main() {
 }
 '
 
+# LEGAL Go: &*p folds to p — no nil check fires at the &* site even when
+# p is nil, and p is evaluated exactly once. The panic belongs to the
+# LATER real deref (next case).
+check_ok addr_of_deref_fold 'package main
+import "fmt"
+func main() {
+	var p *int
+	q := &*p
+	if q == nil {
+		fmt.Println("folded")
+	}
+}
+' 'folded'
+
+check_nilpanic addr_of_deref_then_deref 'package main
+import "fmt"
+func main() {
+	var p *int
+	q := &*p
+	fmt.Println(*q)
+}
+'
+
 echo "nil-deref-probe: PASS (all cases)"
