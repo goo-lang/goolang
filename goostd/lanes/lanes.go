@@ -83,6 +83,18 @@ type Lane struct {
 	scratch  []float64
 	haloBufL []float64
 	haloBufR []float64
+
+	// M2-B1: cross-rank collective wiring (zero-valued for in-process
+	// Run). rank>0's lane 0 forwards RAW per-lane partials in local-ID
+	// order over collSock; rank 0's lane 0 flat-combines in GLOBAL lane-ID
+	// order over collSocks (never pre-combined per rank — float addition
+	// is not associative, and bit-identity with the in-process scan
+	// requires the identical accumulation sequence).
+	isFar     bool
+	rank      int
+	world     int
+	collSock  int
+	collSocks []int
 }
 
 // Partition splits arr into `count` equal-width tiles. count is a comptime
@@ -155,6 +167,15 @@ type farCfg struct {
 	recvL chan float64
 	sendR chan float64
 	recvR chan float64
+
+	// M2-B1 (Task 6): cross-rank collective wiring — see the matching Lane
+	// field block's doc comment for the semantics; runCore copies these
+	// onto every Lane unchanged.
+	isFar     bool
+	rank      int
+	world     int
+	collSock  int
+	collSocks []int
 }
 
 // runCore is Run's body, parameterized by farCfg so RunFar (Task 4) can
@@ -204,6 +225,11 @@ func runCore(p Partitioned, steps int, body func(ctx *Lane), fc farCfg) []float6
 				partials: partials,
 				results:  results,
 				scratch:  make([]float64, p.width),
+				isFar:     fc.isFar,
+				rank:      fc.rank,
+				world:     fc.world,
+				collSock:  fc.collSock,
+				collSocks: fc.collSocks,
 			}
 			if i > 0 {
 				l.recvL = rightward[i-1]
@@ -333,6 +359,24 @@ func (l *Lane) Step() bool {
 // events. Every lane must call the same collective the same number of
 // times, in the same program position — all lanes or none, like the
 // Publish -> HaloLeft/HaloRight -> compute order.
+//
+// M2-B1 (Task 6): under RunFar (l.isFar), the collective becomes
+// world-global with NO signature change. Rank 0's lane 0 still does the
+// local ID-order combine first, then extends it with each remote rank's
+// RAW per-lane partials — forwarded, never pre-combined, by that rank's
+// own lane 0 — in ascending rank order, each rank's partials in ascending
+// local-ID order. That is instruction-for-instruction the same
+// accumulation sequence the in-process scan would produce for the same
+// total lane count, which is the bit-identity contract this collective
+// promises (float addition is not associative, so the order is
+// load-bearing, not style).
+func farRecvMust(sock int) float64 {
+	v := far.RecvF64(sock) catch e {
+		panic("lanes.allReduce: far recv failed: " + e.Error())
+	}
+	return v
+}
+
 func (l *Lane) allReduce(local float64, useMax bool) float64 {
 	// Arc 16 fixed the compiler codegen gap this used to work around:
 	// codegen_generate_index_expr now loads an lvalue index (e.g. the
@@ -340,17 +384,67 @@ func (l *Lane) allReduce(local float64, useMax bool) float64 {
 	// directly as an index again.
 	l.partials[l.id] <- local
 	if l.id == 0 {
-		acc := <-l.partials[0]
-		for i := 1; i < l.count; i++ {
-			v := <-l.partials[i]
-			if useMax {
-				if v > acc {
-					acc = v
+		if !l.isFar {
+			acc := <-l.partials[0]
+			for i := 1; i < l.count; i++ {
+				v := <-l.partials[i]
+				if useMax {
+					if v > acc {
+						acc = v
+					}
+				} else {
+					acc = acc + v
 				}
-			} else {
-				acc = acc + v
 			}
+			for i := 1; i < l.count; i++ {
+				l.results[i] <- acc
+			}
+			return acc
 		}
+		if l.rank == 0 {
+			// GLOBAL flat combine, lane-ID order: rank 0's own lanes
+			// first, then rank 1's raw partials, then rank 2's, ... —
+			// instruction-for-instruction the in-process scan's sequence
+			// for the same total lane count (bit-identity contract).
+			acc := <-l.partials[0]
+			for i := 1; i < l.count; i++ {
+				v := <-l.partials[i]
+				if useMax {
+					if v > acc {
+						acc = v
+					}
+				} else {
+					acc = acc + v
+				}
+			}
+			for r := 1; r < l.world; r++ {
+				for i := 0; i < l.count; i++ {
+					v := farRecvMust(l.collSocks[r])
+					if useMax {
+						if v > acc {
+							acc = v
+						}
+					} else {
+						acc = acc + v
+					}
+				}
+			}
+			for r := 1; r < l.world; r++ {
+				far.SendF64(l.collSocks[r], acc)
+			}
+			for i := 1; i < l.count; i++ {
+				l.results[i] <- acc
+			}
+			return acc
+		}
+		// rank > 0's lane 0: forward RAW partials in local-ID order
+		// (never pre-combined — see the Lane field block's comment),
+		// then wait for the global result and distribute it locally.
+		for i := 0; i < l.count; i++ {
+			v := <-l.partials[i]
+			far.SendF64(l.collSock, v)
+		}
+		acc := farRecvMust(l.collSock)
 		for i := 1; i < l.count; i++ {
 			l.results[i] <- acc
 		}
@@ -627,6 +721,35 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 	fc := farCfg{}
 	fc.hasL = hasL
 	fc.hasR = hasR
+
+	// M2-B1 (Task 6): collective socket wiring. Rank 0 LISTENS one socket
+	// per remote rank (collSocks[r]); rank r>0 DIALS its single socket to
+	// rank 0 (collSock). Set up before the pump block so it's in place
+	// before any lane goroutine can call AllReduceSum/AllReduceMax.
+	fc.isFar = world > 1
+	fc.rank = rank
+	fc.world = world
+	if world > 1 {
+		if rank == 0 {
+			collSocks := make([]int, world)
+			for r := 1; r < world; r++ {
+				uc := urlBase + ".coll." + farItoa(r)
+				sc := far.Listen(uc) catch e {
+					panic("lanes.RunFar: listen " + uc + ": " + e.Error())
+				}
+				collSocks[r] = sc
+			}
+			fc.collSocks = collSocks
+		}
+		if rank > 0 {
+			uc := urlBase + ".coll." + farItoa(rank)
+			sc := far.Dial(uc) catch e {
+				panic("lanes.RunFar: dial " + uc + ": " + e.Error())
+			}
+			fc.collSock = sc
+		}
+	}
+
 	quitL := make(chan int, 1)
 	quitR := make(chan int, 1)
 	// sendDoneL/sendDoneR are a SEPARATE completion signal from pumpDone,
@@ -776,6 +899,23 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 	for k < recvPumps {
 		<-pumpDone
 		k = k + 1
+	}
+
+	// M2-B1 (Task 6): close collective sockets AFTER the halo pumps have
+	// joined. Collectives make direct blocking calls from lane goroutines
+	// (no pump goroutines involved), so there is nothing to quit here —
+	// by this point runCore has already returned, meaning every lane
+	// (including lane 0's allReduce combine/distribute loops) has already
+	// completed and no collective call is in flight.
+	if world > 1 {
+		if rank == 0 {
+			for r := 1; r < world; r++ {
+				far.Close(fc.collSocks[r])
+			}
+		}
+		if rank > 0 {
+			far.Close(fc.collSock)
+		}
 	}
 	return out
 }
