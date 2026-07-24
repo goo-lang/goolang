@@ -139,6 +139,30 @@ func Partition(arr []float64, comptime count int) Partitioned {
 // goo_panic, src/runtime/runtime.c:143-149), not just the offending lane —
 // there is no per-goroutine recover boundary here.
 func Run(p Partitioned, steps int, body func(ctx *Lane)) []float64 {
+	return runCore(p, steps, body, farCfg{})
+}
+
+// farCfg carries RunFar's process-boundary wiring into runCore. The zero
+// value (all false/nil) is exactly Run's M1/M2-B2 behavior: process edges
+// are global Dirichlet edges. M2-B1 design record:
+// docs/superpowers/specs/2026-07-24-p6-lanes-m2-b1-design.md.
+type farCfg struct {
+	hasL  bool
+	hasR  bool
+	sendL chan float64
+	recvL chan float64
+	sendR chan float64
+	recvR chan float64
+}
+
+// runCore is Run's body, parameterized by farCfg so RunFar (Task 4) can
+// bridge a rank's outermost lanes to process-boundary channels while every
+// interior lane is wired identically to Run. Equivalence argument: with the
+// zero farCfg (fc.hasL == fc.hasR == false), edgeL == (i==0) and
+// edgeR == (i==count-1) exactly as before, so `i > 0 ⇔ !edgeL` and
+// `i < count-1 ⇔ !edgeR` — the exact conditions the pre-Task-4 wiring used —
+// making Run(p, steps, body) == runCore(p, steps, body, farCfg{}) bit-for-bit.
+func runCore(p Partitioned, steps int, body func(ctx *Lane), fc farCfg) []float64 {
 	done := make(chan int, p.count)
 
 	// Per-adjacent-pair boundary channels, built before any goroutine spawns
@@ -172,24 +196,28 @@ func Run(p Partitioned, steps int, body func(ctx *Lane)) []float64 {
 				id:       i,
 				steps:    steps,
 				own:      p.backing[i*p.width : (i+1)*p.width],
-				edgeL:    i == 0,
-				edgeR:    i == p.count-1,
+				edgeL:    i == 0 && !fc.hasL,
+				edgeR:    i == p.count-1 && !fc.hasR,
 				count:    p.count,
 				partials: partials,
 				results:  results,
 				scratch:  make([]float64, p.width),
 			}
-			if !l.edgeR {
-				l.sendR = rightward[i]
-			}
-			if !l.edgeL {
+			if i > 0 {
 				l.recvL = rightward[i-1]
-			}
-			if !l.edgeL {
 				l.sendL = leftward[i-1]
 			}
-			if !l.edgeR {
+			if i == 0 && fc.hasL {
+				l.sendL = fc.sendL
+				l.recvL = fc.recvL
+			}
+			if i < p.count-1 {
+				l.sendR = rightward[i]
 				l.recvR = leftward[i]
+			}
+			if i == p.count-1 && fc.hasR {
+				l.sendR = fc.sendR
+				l.recvR = fc.recvR
 			}
 			body(&l)
 			done <- i
