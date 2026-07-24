@@ -861,11 +861,6 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 					case v := <-sendL:
 						far.SendF64(sockL, v)
 					default:
-						// Goo's select-case grammar requires a non-empty
-						// statement list (no epsilon body, unlike Go) —
-						// this discard is a true no-op, not a workaround
-						// of runtime behavior.
-						_ = 0
 					}
 					sendDoneL <- 1
 					return
@@ -906,9 +901,6 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 					case v := <-sendR:
 						far.SendF64(sockR, v)
 					default:
-						// See sendL's quit arm above: Goo's select-case
-						// grammar requires a non-empty statement list.
-						_ = 0
 					}
 					sendDoneR <- 1
 					return
