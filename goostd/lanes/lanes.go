@@ -630,28 +630,29 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 	quitL := make(chan int, 1)
 	quitR := make(chan int, 1)
 	// sendDoneL/sendDoneR are a SEPARATE completion signal from pumpDone,
-	// one per send-pump, and RunFar blocks on them before calling
-	// far.Close (see the teardown block below). Review-round fix: the
-	// kernel's LAST Publish() enqueues its final boundary value into
-	// sendL/sendR WITHOUT waiting for the send-pump to have forwarded it
-	// (Publish is fire-and-forget by design — "sends never block on
-	// remote progress"), so runCore can return, and this function can
-	// reach quitL<-1/far.Close(sockL), WHILE the send-pump's select is
-	// still choosing between draining that buffered value (case
-	// v:=<-sendL) and noticing the quit (case <-quitL) — select does not
-	// prefer either deterministically. If Close ran unconditionally right
-	// after the quit send (the original design), it could race a send-pump
-	// that just started far.SendF64 for that final value, handing NNG_ECLOSED
-	// to a call site (nng_far_send_f64) that treats ANY nonzero return as a
-	// hard panic — observed empirically as an intermittent
-	// "far: send failed: Object closed" panic on the sender and a permanent
-	// hang on the peer waiting for a message that never arrived. Blocking on
-	// sendDoneL/R makes Close strictly ordered after the send-pump's last
-	// possible far.SendF64 call: the pump's own for-select loop keeps
-	// draining sendL/sendR (each iteration is fully sequential — a goroutine
-	// can't be "mid-send" and "evaluating quit" at once) until nothing is
-	// left ready but quit, at which point it signals sendDoneL/R and never
-	// touches the socket again.
+	// one per send-pump, and RunFar blocks on them before calling far.Close
+	// (see the teardown block below).
+	//
+	// Drop-freedom invariant (T4 review round — does NOT assume anything
+	// about select's arm-evaluation policy): by the time RunFar sends
+	// quitL/quitR, runCore has already returned, which means every lane
+	// goroutine has already joined — so the PRODUCER of sendL/sendR values
+	// (the kernel's Publish() calls) no longer exists. Whatever the kernel's
+	// last Publish() enqueued (at most ONE value, since sendL/sendR are
+	// cap-1 and FIFO) is therefore already sitting in the channel, in full,
+	// by the time the send-pump's quit arm runs — nothing can ARRIVE after
+	// that point to be missed. So each send-pump's quit arm does one
+	// non-blocking drain of its channel (a `select`+`default`, below) before
+	// signaling sendDoneL/R: if a value is there, forward it; if not, the
+	// pump was already caught up. This makes drop-freedom a property of
+	// producer-quiescence + a bounded, FIFO, single-producer channel —
+	// independent of whether the outer select happens to scan arms in
+	// source order, uniformly at random, or by any other policy a future
+	// select rework might choose. RunFar blocking on sendDoneL/R before
+	// far.Close then orders Close strictly after this drain, so the
+	// underlying transport (whose send path panics on any nonzero nng_send
+	// return, including the ECLOSED a same-process Close would raise) never
+	// races an in-flight far.SendF64.
 	sendDoneL := make(chan int, 1)
 	sendDoneR := make(chan int, 1)
 	pumpDone := make(chan int, 2)
@@ -667,6 +668,23 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 				case v := <-sendL:
 					far.SendF64(sockL, v)
 				case <-quitL:
+					// Drain: at most one value can be queued (cap-1), and
+					// no producer exists anymore — RunFar sends quit only
+					// AFTER every lane joined, so anything ever queued is
+					// already in the channel when we drain (see the
+					// invariant comment above). One non-blocking attempt
+					// is sufficient, and order-independent of the outer
+					// select's own arm-scan policy.
+					select {
+					case v := <-sendL:
+						far.SendF64(sockL, v)
+					default:
+						// Goo's select-case grammar requires a non-empty
+						// statement list (no epsilon body, unlike Go) —
+						// this discard is a true no-op, not a workaround
+						// of runtime behavior.
+						_ = 0
+					}
 					sendDoneL <- 1
 					return
 				}
@@ -697,6 +715,19 @@ func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body 
 				case v := <-sendR:
 					far.SendF64(sockR, v)
 				case <-quitR:
+					// Drain: mirrors sendL's quit arm above — at most one
+					// value can be queued (cap-1) and no producer exists
+					// anymore, so one non-blocking attempt is sufficient
+					// and order-independent of the outer select's own
+					// arm-scan policy.
+					select {
+					case v := <-sendR:
+						far.SendF64(sockR, v)
+					default:
+						// See sendL's quit arm above: Goo's select-case
+						// grammar requires a non-empty statement list.
+						_ = 0
+					}
 					sendDoneR <- 1
 					return
 				}
