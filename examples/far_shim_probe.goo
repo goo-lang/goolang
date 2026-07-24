@@ -1,0 +1,59 @@
+// far_shim_probe (M2-B1 T3): the far shim surface end-to-end in ONE
+// process — listen+dial to self over ipc, send/recv floats both ways,
+// and both error-union branches (bogus listen URL; catch prints).
+//
+// Socket path (T3 review): this fixture is auto-enrolled in the golden
+// suites (sibling .expected.txt, scripts/run_golden.sh) AND has its own
+// dedicated `far-shim-probe` Makefile target — both bind/listen the SAME
+// hardcoded ipc:// path by default, which NNG_EADDRINUSEs if two instances
+// ever bind it concurrently. Dual-harness design (osargs_probe.goo
+// precedent): the golden harness always runs the compiled binary with NO
+// extra args, so it keeps the default path below; `far-shim-probe` passes
+// a unique build/-scoped path as argv[1], fully isolating it from any
+// golden run. Residual risk: the golden harness itself runs -O0
+// (`test-golden`) and -O2 (`test-golden-o2`) as two SEPARATE suites, both
+// using this same default path — under `make -jN` those two suites
+// running concurrently with each other would still race the same socket.
+// Not fixed here (would need per-optimization-level default paths, which
+// the golden runner has no hook for); documented as a known residual gap.
+package main
+
+import "far"
+import "fmt"
+import "os"
+
+func main() {
+	url := "ipc:///tmp/goo-far-shim-probe.sock"
+	if len(os.Args) > 1 {
+		url = os.Args[1]
+	}
+	a := far.Listen(url) catch e {
+		panic(e.Error())
+	}
+	b := far.Dial(url) catch e {
+		panic(e.Error())
+	}
+	far.SendF64(a, 1.5)
+	far.SendF64(a, 2.5)
+	v1 := far.RecvF64(b) catch e {
+		panic(e.Error())
+	}
+	v2 := far.RecvF64(b) catch e {
+		panic(e.Error())
+	}
+	fmt.Println(v1 == 1.5)
+	fmt.Println(v2 == 2.5)
+	far.SendF64(b, 9.0)
+	v3 := far.RecvF64(a) catch e {
+		panic(e.Error())
+	}
+	fmt.Println(v3 == 9.0)
+	far.Close(a)
+	far.Close(b)
+	bad := far.Listen("bogus://x") catch e {
+		fmt.Println(e.Error())
+		fmt.Println(true)
+		return
+	}
+	fmt.Println(bad)
+}

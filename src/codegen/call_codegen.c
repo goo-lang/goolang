@@ -21,6 +21,16 @@ static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker
 static ValueInfo* codegen_generate_string_result_call(CodeGenerator* codegen, TypeChecker* checker,
                                                        ASTNode* expr, const char* runtime_symbol,
                                                        ASTNode* path_arg);
+// far.Listen/Dial (!int) and far.RecvF64 (!float64), M2-B1 — see the
+// definition (below codegen_generate_string_result_call) for the full
+// contract. Forward-declared here (like the helpers above) because the
+// package dispatch if-chain that calls it runs well before its definition
+// in this file.
+typedef enum { FAR_RESULT_I64, FAR_RESULT_F64 } FarResultKind;
+static ValueInfo* codegen_generate_far_result_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                    ASTNode* expr, const char* runtime_symbol,
+                                                    FarResultKind kind, ASTNode* arg,
+                                                    int arg_is_string);
 
 #if LLVM_AVAILABLE
 // Given a loaded `error` value {i1 is_null, i8* handle}, produce the goo_string
@@ -1340,6 +1350,35 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "ReadLine") == 0) {
                 return codegen_generate_string_result_call(codegen, checker, expr,
                                                             "goo_os_read_line", NULL);
+            }
+            // M2-B1: far transport shims. Listen/Dial/RecvF64 are !T results
+            // (codegen_generate_far_result_call, ReadFile-arm style single-
+            // arg check); SendF64/Close are plain void calls, so they reuse
+            // codegen_generate_stdlib_call exactly like os.Exit above.
+            if (strcmp(dispatch_pkg, "far") == 0) {
+                if (strcmp(sel->selector, "Listen") == 0 || strcmp(sel->selector, "Dial") == 0) {
+                    if (!call->args) {
+                        codegen_error(codegen, expr->pos, "far.%s: expected one string argument", sel->selector);
+                        return NULL;
+                    }
+                    const char* sym = (strcmp(sel->selector, "Listen") == 0) ? "goo_far_listen" : "goo_far_dial";
+                    return codegen_generate_far_result_call(codegen, checker, expr, sym,
+                                                            FAR_RESULT_I64, call->args, 1);
+                }
+                if (strcmp(sel->selector, "RecvF64") == 0) {
+                    if (!call->args) {
+                        codegen_error(codegen, expr->pos, "far.RecvF64: expected one int argument");
+                        return NULL;
+                    }
+                    return codegen_generate_far_result_call(codegen, checker, expr, "goo_far_recv_f64",
+                                                            FAR_RESULT_F64, call->args, 0);
+                }
+                if (strcmp(sel->selector, "SendF64") == 0) {
+                    return codegen_generate_stdlib_call(codegen, checker, expr, "goo_far_send_f64", TYPE_VOID, 0);
+                }
+                if (strcmp(sel->selector, "Close") == 0) {
+                    return codegen_generate_stdlib_call(codegen, checker, expr, "goo_far_close", TYPE_VOID, 0);
+                }
             }
             if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
@@ -2765,6 +2804,95 @@ static ValueInfo* codegen_generate_string_result_call(CodeGenerator* codegen, Ty
     // Merge block: PHI the two !string union values.
     codegen_set_insert_point(codegen, merge_block);
     LLVMValueRef phi = LLVMBuildPhi(codegen->builder, union_llvm, "str_result");
+    LLVMAddIncoming(phi, &succ, &success_exit, 1);
+    LLVMAddIncoming(phi, &errv, &error_exit, 1);
+
+    return value_info_new(NULL, phi, result_type);
+#endif
+}
+
+// far.Listen/Dial (!int) and far.RecvF64 (!float64), M2-B1. Same ok-flag
+// shape as codegen_generate_string_result_call above, but with TWO
+// out-params (typed value slot + goo_string_t error slot) because the
+// success type is not a string: ok=1 -> load *out_val, wrap success;
+// ok=0 -> load *out_err, wrap error. `arg` is the single ASTNode* argument
+// (the caller passes call->args directly, ReadFile-arm style); arg_is_string
+// selects codegen_arg_as_cstr (Listen/Dial's url) vs a plain
+// codegen_generate_expression + lvalue-load (RecvF64's int handle).
+// FarResultKind and this signature are forward-declared near the top of the
+// file (see comment there for why).
+static ValueInfo* codegen_generate_far_result_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                    ASTNode* expr, const char* runtime_symbol,
+                                                    FarResultKind kind, ASTNode* arg,
+                                                    int arg_is_string) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available for %s", runtime_symbol);
+    return NULL;
+#else
+    if (!codegen || !checker || !expr) return NULL;
+
+    Type* result_type = expr->node_type; // !int64 or !float64 via shim table
+    if (!result_type || !type_is_error_union(result_type)) {
+        codegen_error(codegen, expr->pos, "%s: no error-union type context", runtime_symbol);
+        return NULL;
+    }
+    LLVMTypeRef union_llvm = codegen_type_to_llvm(codegen, result_type);
+    if (!union_llvm) return NULL;
+
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, runtime_symbol);
+    if (!fn) {
+        codegen_error(codegen, expr->pos, "%s not found in module", runtime_symbol);
+        return NULL;
+    }
+
+    LLVMTypeRef val_llvm = (kind == FAR_RESULT_I64)
+        ? LLVMInt64TypeInContext(codegen->context)
+        : LLVMDoubleTypeInContext(codegen->context);
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+    LLVMValueRef out_val_ptr = codegen_create_entry_alloca(codegen, val_llvm, "far_result_val_out");
+    LLVMValueRef out_err_ptr = codegen_create_entry_alloca(codegen, string_llvm, "far_result_err_out");
+
+    LLVMValueRef first;
+    if (arg_is_string) {
+        first = codegen_arg_as_cstr(codegen, checker, arg);
+        if (!first) return NULL;
+    } else {
+        ValueInfo* vi = codegen_generate_expression(codegen, checker, arg);
+        if (!vi) return NULL;
+        first = vi->llvm_value;
+        if (vi->is_lvalue && vi->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, vi->goo_type);
+            if (at) first = LLVMBuildLoad2(codegen->builder, at, first, "far_arg_val");
+        }
+        value_info_free(vi);
+    }
+    LLVMValueRef call_args[] = { first, out_val_ptr, out_err_ptr };
+    LLVMValueRef ok = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn,
+                                     call_args, 3, "far_result_ok");
+
+    LLVMValueRef zero_i32 = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    LLVMValueRef cond = LLVMBuildICmp(codegen->builder, LLVMIntNE, ok, zero_i32, "far_result_cond");
+
+    LLVMBasicBlockRef success_block = codegen_create_block(codegen, "far_result.success");
+    LLVMBasicBlockRef error_block   = codegen_create_block(codegen, "far_result.error");
+    LLVMBasicBlockRef merge_block   = codegen_create_block(codegen, "far_result.merge");
+    LLVMBuildCondBr(codegen->builder, cond, success_block, error_block);
+
+    codegen_set_insert_point(codegen, success_block);
+    LLVMValueRef success_val = LLVMBuildLoad2(codegen->builder, val_llvm, out_val_ptr, "far_result_v");
+    Type* value_type = result_type->data.error_union.value_type;
+    LLVMValueRef succ = codegen_create_error_union_success(codegen, union_llvm, success_val, value_type);
+    LLVMBuildBr(codegen->builder, merge_block);
+    LLVMBasicBlockRef success_exit = LLVMGetInsertBlock(codegen->builder);
+
+    codegen_set_insert_point(codegen, error_block);
+    LLVMValueRef error_str = LLVMBuildLoad2(codegen->builder, string_llvm, out_err_ptr, "far_result_e");
+    LLVMValueRef errv = codegen_create_error_union_error(codegen, union_llvm, error_str);
+    LLVMBuildBr(codegen->builder, merge_block);
+    LLVMBasicBlockRef error_exit = LLVMGetInsertBlock(codegen->builder);
+
+    codegen_set_insert_point(codegen, merge_block);
+    LLVMValueRef phi = LLVMBuildPhi(codegen->builder, union_llvm, "far_result");
     LLVMAddIncoming(phi, &succ, &success_exit, 1);
     LLVMAddIncoming(phi, &errv, &error_exit, 1);
 

@@ -29,6 +29,8 @@
 //     outer loop variable would never advance.
 package lanes
 
+import "far"
+
 // Partitioned describes an equal-width tiling of `backing` into `count`
 // disjoint lanes of `width` elements each.
 type Partitioned struct {
@@ -81,6 +83,18 @@ type Lane struct {
 	scratch  []float64
 	haloBufL []float64
 	haloBufR []float64
+
+	// M2-B1: cross-rank collective wiring (zero-valued for in-process
+	// Run). rank>0's lane 0 forwards RAW per-lane partials in local-ID
+	// order over collSock; rank 0's lane 0 flat-combines in GLOBAL lane-ID
+	// order over collSocks (never pre-combined per rank — float addition
+	// is not associative, and bit-identity with the in-process scan
+	// requires the identical accumulation sequence).
+	isFar     bool
+	rank      int
+	world     int
+	collSock  int
+	collSocks []int
 }
 
 // Partition splits arr into `count` equal-width tiles. count is a comptime
@@ -139,6 +153,39 @@ func Partition(arr []float64, comptime count int) Partitioned {
 // goo_panic, src/runtime/runtime.c:143-149), not just the offending lane —
 // there is no per-goroutine recover boundary here.
 func Run(p Partitioned, steps int, body func(ctx *Lane)) []float64 {
+	return runCore(p, steps, body, farCfg{})
+}
+
+// farCfg carries RunFar's process-boundary wiring into runCore. The zero
+// value (all false/nil) is exactly Run's M1/M2-B2 behavior: process edges
+// are global Dirichlet edges. M2-B1 design record:
+// docs/superpowers/specs/2026-07-24-p6-lanes-m2-b1-design.md.
+type farCfg struct {
+	hasL  bool
+	hasR  bool
+	sendL chan float64
+	recvL chan float64
+	sendR chan float64
+	recvR chan float64
+
+	// M2-B1 (Task 6): cross-rank collective wiring — see the matching Lane
+	// field block's doc comment for the semantics; runCore copies these
+	// onto every Lane unchanged.
+	isFar     bool
+	rank      int
+	world     int
+	collSock  int
+	collSocks []int
+}
+
+// runCore is Run's body, parameterized by farCfg so RunFar (Task 4) can
+// bridge a rank's outermost lanes to process-boundary channels while every
+// interior lane is wired identically to Run. Equivalence argument: with the
+// zero farCfg (fc.hasL == fc.hasR == false), edgeL == (i==0) and
+// edgeR == (i==count-1) exactly as before, so `i > 0 ⇔ !edgeL` and
+// `i < count-1 ⇔ !edgeR` — the exact conditions the pre-Task-4 wiring used —
+// making Run(p, steps, body) == runCore(p, steps, body, farCfg{}) bit-for-bit.
+func runCore(p Partitioned, steps int, body func(ctx *Lane), fc farCfg) []float64 {
 	done := make(chan int, p.count)
 
 	// Per-adjacent-pair boundary channels, built before any goroutine spawns
@@ -172,24 +219,33 @@ func Run(p Partitioned, steps int, body func(ctx *Lane)) []float64 {
 				id:       i,
 				steps:    steps,
 				own:      p.backing[i*p.width : (i+1)*p.width],
-				edgeL:    i == 0,
-				edgeR:    i == p.count-1,
+				edgeL:    i == 0 && !fc.hasL,
+				edgeR:    i == p.count-1 && !fc.hasR,
 				count:    p.count,
 				partials: partials,
 				results:  results,
 				scratch:  make([]float64, p.width),
+				isFar:     fc.isFar,
+				rank:      fc.rank,
+				world:     fc.world,
+				collSock:  fc.collSock,
+				collSocks: fc.collSocks,
 			}
-			if !l.edgeR {
-				l.sendR = rightward[i]
-			}
-			if !l.edgeL {
+			if i > 0 {
 				l.recvL = rightward[i-1]
-			}
-			if !l.edgeL {
 				l.sendL = leftward[i-1]
 			}
-			if !l.edgeR {
+			if i == 0 && fc.hasL {
+				l.sendL = fc.sendL
+				l.recvL = fc.recvL
+			}
+			if i < p.count-1 {
+				l.sendR = rightward[i]
 				l.recvR = leftward[i]
+			}
+			if i == p.count-1 && fc.hasR {
+				l.sendR = fc.sendR
+				l.recvR = fc.recvR
 			}
 			body(&l)
 			done <- i
@@ -282,6 +338,19 @@ func (l *Lane) Step() bool {
 	return l.step < l.steps
 }
 
+// farRecvMust wraps far.RecvF64 with an unconditional panic on any
+// transport error — a torn transport is unrecoverable both mid-collective
+// (allReduce's far branch, below) and mid-teardown (RunFar's marker
+// receives), so both call sites share this one panic path. See allReduce's
+// doc comment below for the collective's combine-order contract this
+// helper participates in.
+func farRecvMust(sock int) float64 {
+	v := far.RecvF64(sock) catch e {
+		panic("lanes: far recv failed: " + e.Error())
+	}
+	return v
+}
+
 // allReduce is the shared collective core: every lane contributes `local`;
 // the combined value is returned identically to every lane. Combination
 // happens in FIXED lane-ID order (lane 0's partial, then 1's, ...): lane 0
@@ -303,6 +372,17 @@ func (l *Lane) Step() bool {
 // events. Every lane must call the same collective the same number of
 // times, in the same program position — all lanes or none, like the
 // Publish -> HaloLeft/HaloRight -> compute order.
+//
+// M2-B1 (Task 6): under RunFar (l.isFar), the collective becomes
+// world-global with NO signature change. Rank 0's lane 0 still does the
+// local ID-order combine first, then extends it with each remote rank's
+// RAW per-lane partials — forwarded, never pre-combined, by that rank's
+// own lane 0 — in ascending rank order, each rank's partials in ascending
+// local-ID order. That is instruction-for-instruction the same
+// accumulation sequence the in-process scan would produce for the same
+// total lane count, which is the bit-identity contract this collective
+// promises (float addition is not associative, so the order is
+// load-bearing, not style).
 func (l *Lane) allReduce(local float64, useMax bool) float64 {
 	// Arc 16 fixed the compiler codegen gap this used to work around:
 	// codegen_generate_index_expr now loads an lvalue index (e.g. the
@@ -310,17 +390,67 @@ func (l *Lane) allReduce(local float64, useMax bool) float64 {
 	// directly as an index again.
 	l.partials[l.id] <- local
 	if l.id == 0 {
-		acc := <-l.partials[0]
-		for i := 1; i < l.count; i++ {
-			v := <-l.partials[i]
-			if useMax {
-				if v > acc {
-					acc = v
+		if !l.isFar {
+			acc := <-l.partials[0]
+			for i := 1; i < l.count; i++ {
+				v := <-l.partials[i]
+				if useMax {
+					if v > acc {
+						acc = v
+					}
+				} else {
+					acc = acc + v
 				}
-			} else {
-				acc = acc + v
 			}
+			for i := 1; i < l.count; i++ {
+				l.results[i] <- acc
+			}
+			return acc
 		}
+		if l.rank == 0 {
+			// GLOBAL flat combine, lane-ID order: rank 0's own lanes
+			// first, then rank 1's raw partials, then rank 2's, ... —
+			// instruction-for-instruction the in-process scan's sequence
+			// for the same total lane count (bit-identity contract).
+			acc := <-l.partials[0]
+			for i := 1; i < l.count; i++ {
+				v := <-l.partials[i]
+				if useMax {
+					if v > acc {
+						acc = v
+					}
+				} else {
+					acc = acc + v
+				}
+			}
+			for r := 1; r < l.world; r++ {
+				for i := 0; i < l.count; i++ {
+					v := farRecvMust(l.collSocks[r])
+					if useMax {
+						if v > acc {
+							acc = v
+						}
+					} else {
+						acc = acc + v
+					}
+				}
+			}
+			for r := 1; r < l.world; r++ {
+				far.SendF64(l.collSocks[r], acc)
+			}
+			for i := 1; i < l.count; i++ {
+				l.results[i] <- acc
+			}
+			return acc
+		}
+		// rank > 0's lane 0: forward RAW partials in local-ID order
+		// (never pre-combined — see the Lane field block's comment),
+		// then wait for the global result and distribute it locally.
+		for i := 0; i < l.count; i++ {
+			v := <-l.partials[i]
+			far.SendF64(l.collSock, v)
+		}
+		acc := farRecvMust(l.collSock)
 		for i := 1; i < l.count; i++ {
 			l.results[i] <- acc
 		}
@@ -508,4 +638,403 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 	for i := 0; i < w; i++ {
 		own[i] = ctx.scratch[i]
 	}
+}
+
+// farItoa: minimal non-negative int -> decimal string, local so lanes.go
+// assumes nothing about vendored-to-vendored imports (only the far/fmt
+// SHIM import path is proven). rank/world are small; negatives cannot
+// reach it (RunFar validates first).
+func farItoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	digits := "0123456789"
+	s := ""
+	for n > 0 {
+		d := n % 10
+		s = digits[d:d+1] + s
+		n = n / 10
+	}
+	return s
+}
+
+// RunFar is Run across process boundaries: `world` cooperating OS
+// processes (ranks 0..world-1), each partitioning its own rank-local span,
+// exchange halos over the far transport at rank boundaries. Interior lanes
+// are wired exactly as Run wires them; only a rank's outermost lanes
+// differ — their outward channels are bridged to NNG pair sockets by two
+// pump goroutines per far edge (send-pump drains the cap-1 channel into
+// far.SendF64; recv-pump feeds far.RecvF64 into the cap-1 channel), so
+// Publish/HaloLeft/HaloRight/StencilStep bodies run unchanged and the M1
+// cap-1 deadlock-freedom argument carries over (a send-pump's only job is
+// draining the slot; far.SendF64 buffers without waiting on the remote).
+// Global Dirichlet edges exist only at rank 0's left and rank world-1's
+// right. Every rank must call RunFar with the SAME steps, world, urlBase,
+// and per-rank lane count (equal-count is a documented contract; the
+// bit-identity probes enforce it empirically).
+//
+// Teardown order (T6 review I1: marker exchange added on EVERY far
+// socket, halo and coll, before any close). The sendDoneL/R drain
+// (below) only protects against a send racing Close ON THIS RANK'S OWN
+// enqueue step — it says nothing about whether the REMOTE rank has
+// actually received what we sent. That gap is real and source-confirmed:
+// far.SendF64/far.Close wrap NNG's nng_send/nng_close, and NNG's own
+// nng_close(3) documents "closing the socket while data is in
+// transmission will likely lead to loss of that data... there is no
+// automatic linger or flush" — a message can sit in the local send
+// buffer (NNG_OPT_SENDBUF, FAR_BUF_DEPTH=128) well after far.SendF64
+// returns, and nni_msgq_close (traced in vendored NNG 1.11.0,
+// src/core/msgqueue.c) unconditionally frees whatever is still queued
+// there. Two concrete instances: rank 0's final collective broadcast
+// (allReduce's `far.SendF64(l.collSocks[r], acc)`) and a rank's final
+// halo Publish() are both susceptible — a peer still blocked reading
+// either would get "far: closed" instead of the value.
+//
+// The fix: before touching any close, every far socket this rank holds
+// exchanges a MARKER (0.0 — its FIFO position is the signal, not the
+// value) with its peer: push the marker as this socket's truly-final
+// send (halo: through sendL/sendR, so the still-running send-pump
+// forwards it after any already-buffered final Publish; coll: direct
+// far.SendF64, mirroring allReduce's own usage), then block receiving
+// the peer's marker back (halo: one read of recvL/recvR — the BSP
+// receive-every-round contract already guarantees nothing real is left
+// unread there, so the next delivered value IS the peer's marker; coll:
+// farRecvMust). Pushes for every socket happen first (both halo edges,
+// then every coll socket) before any receive — see the exchange's own
+// inline comment for why serializing edge-by-edge would still be
+// deadlock-free but needlessly chains latency across a multi-rank halo
+// run.
+//
+// What this proves, precisely: completing the exchange on a socket
+// proves (via NNG's per-direction FIFO delivery) that THIS rank has now
+// received every message its peer ever sent on that socket, including
+// the peer's own marker. It does NOT, by itself, give either side a
+// mathematical guarantee that ITS OWN last send (the marker) was
+// received before it proceeds to close — with no linger primitive on
+// either end of a symmetric, unconditional-push handshake, that residual
+// question is a Two-Generals-shaped one no finite protocol eliminates
+// outright. What the exchange DOES give: a full network round trip (send
+// marker, peer receives it and independently sends its own, we receive
+// that) has provably elapsed before either side reaches its close — the
+// SAME "wait a while first" mitigation nng_close(3) itself recommends,
+// now triggered by a real cross-rank event instead of a blind sleep, and
+// applied on top of the existing local sendDoneL/R drain. This closes
+// the window from "always exposed, sub-microsecond, on every far run" to
+// "requires the local write aio to be starved for longer than a full
+// round trip plus the rest of this rank's teardown". Chain-deadlock
+// argument, summarized: every marker push this rank issues (both halo
+// edges, then every coll socket) is unconditional and buffered, and ALL
+// of a rank's pushes are issued before ANY of its receives — so no rank's
+// marker receive is ever gated behind another rank's still-pending
+// receive; the wait graph has no cycle, for any world size. Full
+// derivation and the honest accounting of what remains unproven:
+// docs/superpowers/specs/2026-07-24-p6-lanes-m2-b1-design.md,
+// "Amendments (2026-07-24, execution round)".
+//
+// After the marker exchange: quit send-pumps and WAIT for each to
+// confirm it has forwarded anything left in its channel and will touch
+// its socket no more (see sendDoneL/R's doc comment below). Only THEN
+// far.Close the halo sockets (which unblocks each recv-pump with the
+// "far: closed" error they string-match), join the recv-pumps, then
+// far.Close the coll sockets.
+//
+// Failure model: setup errors and mid-run transport errors panic with
+// explicit messages (a torn transport is unrecoverable for lockstep BSP;
+// same process-fatal story as a panicking lane body).
+func RunFar(p Partitioned, steps int, rank int, world int, urlBase string, body func(ctx *Lane)) []float64 {
+	if world < 1 {
+		panic("lanes.RunFar: world must be >= 1")
+	}
+	if rank < 0 {
+		panic("lanes.RunFar: rank out of range")
+	}
+	if rank >= world {
+		panic("lanes.RunFar: rank out of range")
+	}
+	if len(urlBase) == 0 {
+		panic("lanes.RunFar: urlBase must be non-empty")
+	}
+	hasL := rank > 0
+	hasR := rank < world-1
+
+	// Every rank LISTENS on its right boundary and DIALS its left, so
+	// each boundary URL has exactly one owner. far.Dial is async-retry
+	// (NNG_FLAG_NONBLOCK), so process start order cannot deadlock setup.
+	sockL := 0
+	sockR := 0
+	if hasR {
+		ur := urlBase + ".halo." + farItoa(rank)
+		sr := far.Listen(ur) catch e {
+			panic("lanes.RunFar: listen " + ur + ": " + e.Error())
+		}
+		sockR = sr
+	}
+	if hasL {
+		ul := urlBase + ".halo." + farItoa(rank-1)
+		sl := far.Dial(ul) catch e {
+			panic("lanes.RunFar: dial " + ul + ": " + e.Error())
+		}
+		sockL = sl
+	}
+
+	fc := farCfg{}
+	fc.hasL = hasL
+	fc.hasR = hasR
+
+	// M2-B1 (Task 6): collective socket wiring. Rank 0 LISTENS one socket
+	// per remote rank (collSocks[r]); rank r>0 DIALS its single socket to
+	// rank 0 (collSock). Set up before the pump block so it's in place
+	// before any lane goroutine can call AllReduceSum/AllReduceMax.
+	fc.isFar = world > 1
+	fc.rank = rank
+	fc.world = world
+	if world > 1 {
+		if rank == 0 {
+			collSocks := make([]int, world)
+			for r := 1; r < world; r++ {
+				uc := urlBase + ".coll." + farItoa(r)
+				sc := far.Listen(uc) catch e {
+					panic("lanes.RunFar: listen " + uc + ": " + e.Error())
+				}
+				collSocks[r] = sc
+			}
+			fc.collSocks = collSocks
+		}
+		if rank > 0 {
+			uc := urlBase + ".coll." + farItoa(rank)
+			sc := far.Dial(uc) catch e {
+				panic("lanes.RunFar: dial " + uc + ": " + e.Error())
+			}
+			fc.collSock = sc
+		}
+	}
+
+	quitL := make(chan int, 1)
+	quitR := make(chan int, 1)
+	// sendDoneL/sendDoneR are a SEPARATE completion signal from pumpDone,
+	// one per send-pump, and RunFar blocks on them before calling far.Close
+	// (see the teardown block below).
+	//
+	// Drop-freedom invariant (T4 review round — does NOT assume anything
+	// about select's arm-evaluation policy): by the time RunFar sends
+	// quitL/quitR, runCore has already returned, which means every lane
+	// goroutine has already joined — so the PRODUCER of sendL/sendR values
+	// (the kernel's Publish() calls) no longer exists. Whatever the kernel's
+	// last Publish() enqueued (at most ONE value, since sendL/sendR are
+	// cap-1 and FIFO) is therefore already sitting in the channel, in full,
+	// by the time the send-pump's quit arm runs — nothing can ARRIVE after
+	// that point to be missed. So each send-pump's quit arm does one
+	// non-blocking drain of its channel (a `select`+`default`, below) before
+	// signaling sendDoneL/R: if a value is there, forward it; if not, the
+	// pump was already caught up. This makes drop-freedom a property of
+	// producer-quiescence + a bounded, FIFO, single-producer channel —
+	// independent of whether the outer select happens to scan arms in
+	// source order, uniformly at random, or by any other policy a future
+	// select rework might choose. RunFar blocking on sendDoneL/R before
+	// far.Close then orders Close strictly after this drain, so the
+	// underlying transport (whose send path panics on any nonzero nng_send
+	// return, including the ECLOSED a same-process Close would raise) never
+	// races an in-flight far.SendF64.
+	sendDoneL := make(chan int, 1)
+	sendDoneR := make(chan int, 1)
+	pumpDone := make(chan int, 2)
+	recvPumps := 0
+	if hasL {
+		sendL := make(chan float64, 1)
+		recvL := make(chan float64, 1)
+		fc.sendL = sendL
+		fc.recvL = recvL
+		go func() {
+			for {
+				select {
+				case v := <-sendL:
+					far.SendF64(sockL, v)
+				case <-quitL:
+					// Drain: at most one value can be queued (cap-1), and
+					// no producer exists anymore — RunFar sends quit only
+					// AFTER every lane joined, so anything ever queued is
+					// already in the channel when we drain (see the
+					// invariant comment above). One non-blocking attempt
+					// is sufficient, and order-independent of the outer
+					// select's own arm-scan policy.
+					select {
+					case v := <-sendL:
+						far.SendF64(sockL, v)
+					default:
+						// Goo's select-case grammar requires a non-empty
+						// statement list (no epsilon body, unlike Go) —
+						// this discard is a true no-op, not a workaround
+						// of runtime behavior.
+						_ = 0
+					}
+					sendDoneL <- 1
+					return
+				}
+			}
+		}()
+		go func() {
+			for {
+				v := far.RecvF64(sockL) catch e {
+					if e.Error() == "far: closed" {
+						pumpDone <- 1
+						return
+					}
+					panic("lanes.RunFar: far recv failed: " + e.Error())
+				}
+				recvL <- v
+			}
+		}()
+		recvPumps = recvPumps + 1
+	}
+	if hasR {
+		sendR := make(chan float64, 1)
+		recvR := make(chan float64, 1)
+		fc.sendR = sendR
+		fc.recvR = recvR
+		go func() {
+			for {
+				select {
+				case v := <-sendR:
+					far.SendF64(sockR, v)
+				case <-quitR:
+					// Drain: mirrors sendL's quit arm above — at most one
+					// value can be queued (cap-1) and no producer exists
+					// anymore, so one non-blocking attempt is sufficient
+					// and order-independent of the outer select's own
+					// arm-scan policy.
+					select {
+					case v := <-sendR:
+						far.SendF64(sockR, v)
+					default:
+						// See sendL's quit arm above: Goo's select-case
+						// grammar requires a non-empty statement list.
+						_ = 0
+					}
+					sendDoneR <- 1
+					return
+				}
+			}
+		}()
+		go func() {
+			for {
+				v := far.RecvF64(sockR) catch e {
+					if e.Error() == "far: closed" {
+						pumpDone <- 1
+						return
+					}
+					panic("lanes.RunFar: far recv failed: " + e.Error())
+				}
+				recvR <- v
+			}
+		}()
+		recvPumps = recvPumps + 1
+	}
+
+	out := runCore(p, steps, body, fc)
+
+	// M2-B1 (T6 review I1 fix): teardown marker exchange, BEFORE any quit
+	// or close — see RunFar's doc comment above for the full argument.
+	// Push phase: every socket this rank holds gets its marker pushed
+	// FIRST (both halo edges, then every coll socket) — not push-then-
+	// immediately-wait one socket at a time. Deadlock/latency
+	// re-derivation (see RunFar's doc comment above, and the spec's
+	// "Amendments (2026-07-24, execution round)" section, for the full
+	// per-rank-chain trace): a per-edge push is always unconditional here
+	// (never gated on having received anything first), so pushing both
+	// edges up front means EVERY rank's halo pushes fire independently of
+	// every other rank's progress — the round trip each recv below waits
+	// on resolves in one hop for every rank simultaneously. Serializing
+	// instead (push L, recv L, push R, recv R) would still terminate
+	// (rank 0's boundary push is unconditional with no left neighbor to
+	// wait on, so the R-marker wave ripples rightward and always
+	// completes — no cycle), just with latency proportional to a rank's
+	// distance from the nearest boundary instead of O(1); overlapping the
+	// pushes avoids that chain entirely, so it's what's implemented.
+	if hasL {
+		fc.sendL <- 0.0
+	}
+	if hasR {
+		fc.sendR <- 0.0
+	}
+	if world > 1 {
+		if rank == 0 {
+			for r := 1; r < world; r++ {
+				far.SendF64(fc.collSocks[r], 0.0)
+			}
+		}
+		if rank > 0 {
+			far.SendF64(fc.collSock, 0.0)
+		}
+	}
+	// Receive phase: the peer's marker on every socket this rank holds.
+	// Halo: a single read of recvL/recvR — the BSP receive-every-round
+	// contract already guarantees nothing real is left unread there (see
+	// runCore's per-lane HaloLeft/HaloRight contract), so the next
+	// delivered value IS the peer's marker. Coll: farRecvMust, matching
+	// allReduce's own error-handling discipline (a torn transport
+	// mid-teardown is exactly as unrecoverable as one mid-collective).
+	if hasL {
+		<-fc.recvL
+	}
+	if hasR {
+		<-fc.recvR
+	}
+	if world > 1 {
+		if rank == 0 {
+			for r := 1; r < world; r++ {
+				farRecvMust(fc.collSocks[r])
+			}
+		}
+		if rank > 0 {
+			farRecvMust(fc.collSock)
+		}
+	}
+
+	// Teardown order (review-round fix): quit send-pumps THEN WAIT for each
+	// one's completion ack BEFORE closing its socket — see sendDoneL/R's
+	// doc comment above for why the wait is load-bearing, not defensive
+	// padding. Only once both send-pumps are provably done touching their
+	// sockets is it safe to Close, which then unblocks each recv-pump
+	// (still legitimately blocked in far.RecvF64, per the BSP protocol's
+	// receive-every-round contract) with the "far: closed" error they
+	// string-match. The marker exchange above has already run by this
+	// point, so this Close is no longer the FIRST event that could race
+	// an undelivered send (see RunFar's doc comment for what that does
+	// and doesn't prove).
+	if hasL {
+		quitL <- 1
+		<-sendDoneL
+	}
+	if hasR {
+		quitR <- 1
+		<-sendDoneR
+	}
+	if hasL {
+		far.Close(sockL)
+	}
+	if hasR {
+		far.Close(sockR)
+	}
+	k := 0
+	for k < recvPumps {
+		<-pumpDone
+		k = k + 1
+	}
+
+	// M2-B1 (Task 6, T6 review I1 fix): close collective sockets AFTER the
+	// halo pumps have joined AND after the marker exchange above has
+	// already confirmed this rank received every marker its coll peers
+	// sent. Collectives make direct blocking calls from lane goroutines
+	// (no pump goroutines involved), so there is nothing to quit here.
+	if world > 1 {
+		if rank == 0 {
+			for r := 1; r < world; r++ {
+				far.Close(fc.collSocks[r])
+			}
+		}
+		if rank > 0 {
+			far.Close(fc.collSock)
+		}
+	}
+	return out
 }

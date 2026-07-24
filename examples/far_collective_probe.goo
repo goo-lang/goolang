@@ -1,0 +1,97 @@
+// far_collective_probe (M2-B1 T6): distributed AllReduceSum/Max vs the
+// in-fixture ID-order serial scan, on NON-ASSOCIATIVE data (1e16 absorbs
+// 1.0): any combine-order deviation — arrival-order, per-rank
+// pre-combining — lands on different bits and prints false. 2 ranks x 2
+// lanes; global lane g = rank*2 + local id contributes contrib[g].
+package main
+
+import "fmt"
+import "lanes"
+import "os"
+import "strconv"
+
+func main() {
+	args := os.Args
+	mode := args[1]
+	contrib := []float64{1e16, 1.0, -1e16, 1.0}
+	sumRef := contrib[0]
+	sumRef = sumRef + contrib[1]
+	sumRef = sumRef + contrib[2]
+	sumRef = sumRef + contrib[3]
+	maxRef := contrib[0]
+	for i := 1; i < 4; i++ {
+		if contrib[i] > maxRef {
+			maxRef = contrib[i]
+		}
+	}
+
+	if mode == "near" {
+		arr := []float64{0.0, 0.0, 0.0, 0.0}
+		got := []float64{0.0, 0.0, 0.0, 0.0}
+		gotMax := []float64{0.0, 0.0, 0.0, 0.0}
+		p := lanes.Partition(arr, 4)
+		lanes.Run(p, 1, func(ctx *lanes.Lane) {
+			// Bound to a local before the call: a slice-index expression
+			// passed directly as a method-call argument (`ctx.AllReduceSum
+			// (contrib[ctx.ID()])`) trips a pre-existing codegen bug —
+			// LLVM verification fails with "Call parameter type does not
+			// match function signature!" because the GEP pointer isn't
+			// loaded before the call. Reproducible with any method call
+			// (value or pointer receiver) and a slice-index argument; out
+			// of scope for this task, so worked around here the same way
+			// lanes_allreduce_probe.goo already binds to a local first.
+			c := contrib[ctx.ID()]
+			s := ctx.AllReduceSum(c)
+			m := ctx.AllReduceMax(c)
+			got[ctx.ID()] = s
+			gotMax[ctx.ID()] = m
+		})
+		ok := true
+		for i := 0; i < 4; i++ {
+			if got[i] != sumRef {
+				ok = false
+			}
+			if gotMax[i] != maxRef {
+				ok = false
+			}
+		}
+		fmt.Println(ok)
+		return
+	}
+
+	rank := strconv.Atoi(args[2]) catch e {
+		panic(e.Error())
+	}
+	urlBase := args[3]
+	// Named `span`, not `arr`: the M1 lane-ownership move-checker's
+	// moved-name table is whole-function and NOT scope-aware (see
+	// far_halo_probe.goo), so reusing `arr` here reads as "moved" from the
+	// near-mode branch's `arr := lanes.Partition(arr, ...)` above even
+	// though the two are unrelated variables in disjoint branches (one of
+	// which already returned).
+	span := []float64{0.0, 0.0}
+	got := []float64{0.0, 0.0}
+	gotMax := []float64{0.0, 0.0}
+	base := rank * 2
+	p := lanes.Partition(span, 2)
+	lanes.RunFar(p, 1, rank, 2, urlBase, func(ctx *lanes.Lane) {
+		// See the near-mode branch's comment above: bound to a local
+		// before the call to avoid the slice-index-as-call-argument
+		// codegen bug.
+		c := contrib[base+ctx.ID()]
+		s := ctx.AllReduceSum(c)
+		m := ctx.AllReduceMax(c)
+		got[ctx.ID()] = s
+		gotMax[ctx.ID()] = m
+	})
+	ok := true
+	for i := 0; i < 2; i++ {
+		if got[i] != sumRef {
+			ok = false
+		}
+		if gotMax[i] != maxRef {
+			ok = false
+		}
+	}
+	fmt.Println(ok)
+}

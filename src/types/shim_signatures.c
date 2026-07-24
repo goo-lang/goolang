@@ -24,6 +24,7 @@ static const ShimParamKind PARAMS_INT64[]                = { SHIM_PARAM_INT64 };
 static const ShimParamKind PARAMS_FLOAT64[]              = { SHIM_PARAM_FLOAT64 };
 static const ShimParamKind PARAMS_FLOAT64_FLOAT64[]      = { SHIM_PARAM_FLOAT64, SHIM_PARAM_FLOAT64 };
 static const ShimParamKind PARAMS_ERROR[]                = { SHIM_PARAM_ERROR };
+static const ShimParamKind PARAMS_INT64_FLOAT64[]        = { SHIM_PARAM_INT64, SHIM_PARAM_FLOAT64 };
 
 #define NPARAMS(arr) (sizeof(arr) / sizeof((arr)[0]))
 
@@ -80,6 +81,16 @@ static const ShimSignature SHIM_TABLE[] = {
 
     { "errors", "New",    SHIM_RET_ERROR, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0 },
     { "errors", "Unwrap", SHIM_RET_ERROR, PARAMS_ERROR,  NPARAMS(PARAMS_ERROR), 0 },
+
+    // far (M2-B1): far-transport shims, runtime side src/runtime/far_transport.c.
+    // Listen/Dial reuse the !int construction ATOI_RESULT already builds;
+    // RecvF64 needs the new !float64 tag. Error spellings are API (see
+    // far_transport.h).
+    { "far", "Listen",  SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0 },
+    { "far", "Dial",    SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0 },
+    { "far", "SendF64", SHIM_RET_VOID,        PARAMS_INT64_FLOAT64, NPARAMS(PARAMS_INT64_FLOAT64), 0 },
+    { "far", "RecvF64", SHIM_RET_F64_RESULT,  PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0 },
+    { "far", "Close",   SHIM_RET_VOID,        PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0 },
 };
 #define SHIM_TABLE_COUNT (sizeof(SHIM_TABLE) / sizeof(SHIM_TABLE[0]))
 
@@ -151,6 +162,14 @@ static Type* shim_ret_type(TypeChecker* checker, ShimRetKind kind) {
             Type* str_t = type_checker_get_builtin(checker, TYPE_STRING);
             Type* err_t = type_checker_get_builtin(checker, TYPE_STRING);
             return type_error_union(str_t, err_t);
+        }
+        case SHIM_RET_F64_RESULT: {
+            // far.RecvF64 (M2-B1) -> !float64: success=float64, error=string
+            // — same shape as SHIM_RET_ATOI_RESULT above, float64 in place
+            // of int64.
+            Type* f64_t = type_checker_get_builtin(checker, TYPE_FLOAT64);
+            Type* err_t = type_checker_get_builtin(checker, TYPE_STRING);
+            return type_error_union(f64_t, err_t);
         }
     }
     return NULL;

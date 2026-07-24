@@ -72,16 +72,31 @@ if [ "${golden_count:-0}" -lt "$GOLDEN_MIN" ]; then
     exit 1
 fi
 
-# KNOWN, DOCUMENTED carve-out: os.ReadLine reads real stdin, and
-# run_golden.sh has no mechanism to pipe stdin into a fixture (see its own
-# header comment and examples/os_readline_probe.goo's doc comment) — a
-# golden fixture calling it would either hang waiting on a real terminal's
-# stdin or behave nondeterministically depending on the invoker's stdin.
-# It gets REAL functional coverage instead via the dedicated `readline-probe`
-# Makefile target (stdin fed by file redirection, in VERIFY_ALL_DEPS
-# already). Listed explicitly (not silently dropped) so this exception is
-# visible to any reader/reviewer of this script.
-NON_GOLDEN_COVERABLE="os.ReadLine"
+# KNOWN, DOCUMENTED carve-outs: one "symbol:probe-name" pair per line.
+# Each of these symbols is exercised by a REAL functional probe (its own
+# Makefile target, in VERIFY_ALL_DEPS already) that a golden fixture
+# structurally cannot replace — see each entry's own comment for why.
+#
+#   os.ReadLine reads real stdin, and run_golden.sh has no mechanism to pipe
+#   stdin into a fixture (see its own header comment and
+#   examples/os_readline_probe.goo's doc comment) — a golden fixture calling
+#   it would either hang waiting on a real terminal's stdin or behave
+#   nondeterministically depending on the invoker's stdin. Covered by
+#   `readline-probe` (stdin fed by file redirection).
+#
+#   lanes.RunFar (M2-B1 T4) spawns cooperating OS PROCESSES over a real NNG
+#   transport (scripts/far-probe.sh) — run_golden.sh compiles and runs ONE
+#   binary with no argv, so it cannot multi-process a fixture. RunFar's own
+#   fixture (examples/far_halo_probe.goo) deliberately has NO sibling
+#   .expected.txt for exactly this reason (see its doc comment) and so is
+#   invisible to $GOLDEN_LIST by construction, not oversight. Covered by
+#   `far-halo-probe` (near-mode single-process reference check plus the
+#   real 2-rank far-mode run via scripts/far-probe.sh).
+#
+# Listed explicitly (not silently dropped) so each exception is visible to
+# any reader/reviewer of this script.
+NON_GOLDEN_COVERABLE="os.ReadLine:readline-probe
+lanes.RunFar:far-halo-probe"
 
 covered() {
     # $1 = extended-regex pattern. Go/Goo identifiers are [A-Za-z0-9_] only,
@@ -98,8 +113,10 @@ record() {
     # check against NON_GOLDEN_COVERABLE (defaults to $1).
     local label="$1" pattern="$2" key="${3:-$1}"
     total=$((total + 1))
-    if printf '%s\n' "$NON_GOLDEN_COVERABLE" | grep -qxF "$key"; then
-        skipped+=("$label (documented non-golden carve-out; see readline-probe)")
+    local probe
+    probe="$(printf '%s\n' "$NON_GOLDEN_COVERABLE" | awk -F: -v k="$key" '$1==k{print $2; exit}')"
+    if [ -n "$probe" ]; then
+        skipped+=("$label (documented non-golden carve-out; see ${probe})")
         return
     fi
     if ! covered "$pattern"; then

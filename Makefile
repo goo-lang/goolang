@@ -119,7 +119,30 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # the runtime entrypoints. runtime.o's goo_init/goo_exit call into
 # deadlock.o, and concurrency.o calls channels/sync/platform — leaving
 # any of these out fails the link of even a hello-world executable.
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o
+
+# M2-B1: vendored NNG (far transport). Pinned tarball, static lib, merged
+# into libgoo_runtime.a below so bin/goo-linked executables need no new
+# link flags. cmake is a build dependency of this rule only.
+NNG_VERSION := 1.12.0
+NNG_TARBALL := third_party/nng-$(NNG_VERSION).tar.gz
+NNG_SHA256  := 50b7264bd8f0901f7ebdf3ec7c48f4e23dd689bbe7b2917d9d8fad58ffd09e5c
+NNG_BUILD   := build/nng
+NNG_LIB     := $(NNG_BUILD)/lib/libnng.a
+
+$(NNG_LIB): $(NNG_TARBALL)
+	@echo "$(NNG_SHA256)  $(NNG_TARBALL)" | sha256sum -c - >/dev/null || { echo "NNG tarball sha256 MISMATCH — expected $(NNG_SHA256)"; sha256sum $(NNG_TARBALL); exit 1; }
+	rm -rf build/nng-src $(NNG_BUILD)
+	mkdir -p build/nng-src
+	tar -xzf $(NNG_TARBALL) -C build/nng-src --strip-components=1
+	cmake -S build/nng-src -B $(NNG_BUILD)/cm -DCMAKE_BUILD_TYPE=Release \
+	  -DBUILD_SHARED_LIBS=OFF -DNNG_TESTS=OFF -DNNG_TOOLS=OFF -DNNG_ENABLE_NNGCAT=OFF \
+	  -DCMAKE_INSTALL_PREFIX=$(abspath $(NNG_BUILD)) -DCMAKE_INSTALL_LIBDIR=lib >/dev/null
+	cmake --build $(NNG_BUILD)/cm -j$(shell nproc) >/dev/null
+	cmake --install $(NNG_BUILD)/cm >/dev/null
+
+$(BUILDDIR)/runtime/far_transport.o: CFLAGS += -I$(NNG_BUILD)/include
+$(BUILDDIR)/runtime/far_transport.o: $(NNG_LIB)
 
 # Main targets
 COMPILER = $(BINDIR)/goo
@@ -211,8 +234,13 @@ $(COMPILER): $(GOO_OBJS) $(COMPILER_SRCS) | $(BINDIR)
 # Runtime library
 runtime-lib: $(RUNTIME_LIB)
 
-$(RUNTIME_LIB): $(RUNTIME_OBJS) | $(LIBDIR)
-	ar rcs $@ $^
+$(RUNTIME_LIB): $(RUNTIME_OBJS) $(NNG_LIB) | $(LIBDIR)
+	rm -f $@
+	{ echo "create $@"; \
+	  for o in $(RUNTIME_OBJS); do echo "addmod $$o"; done; \
+	  echo "addlib $(NNG_LIB)"; \
+	  echo "save"; echo "end"; } | ar -M
+	ranlib $@
 
 # (P5.7: test-pipeline retired — tests/test_runner.c's assertions were
 # near-vacuous (`tokens_found || exit==0` style escape hatches). The golden
@@ -3213,7 +3241,14 @@ VERIFY_ALL_DEPS := \
     goostd-resolver-probe \
     reldir-import-probe \
     readline-probe \
-    stdlib-smoke-coverage
+    stdlib-smoke-coverage \
+    far-transport-test \
+    far-transport-asan \
+    far-shim-probe \
+    far-halo-probe \
+    far-stencil-r2-probe \
+    far-collective-probe \
+    far-jacobi-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -4390,6 +4425,120 @@ test: $(TEST_RUNNER) test-cli
 .PHONY: test-cli
 test-cli: $(COMPILER) $(RUNTIME_LIB)
 	@bash tests/cli/cli_test.sh "$(COMPILER)"
+
+# M2-B1: far transport C unit test — shim ABI, FIFO, buffering envelope,
+# "far: closed" split. The ASan variant compiles the runtime objects it
+# needs directly (an archive built without ASan can't be reused). Beyond
+# runtime.c/platform.c, goo_init/goo_exit pull in deadlock.c, which pulls
+# in concurrency.c's g_scheduler, which pulls in sync.c's goo_mutex_* —
+# same transitive chain RUNTIME_OBJS's header comment describes.
+far-transport-test: $(RUNTIME_LIB)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -Iinclude -I$(NNG_BUILD)/include tests/runtime/far_transport_test.c $(RUNTIME_LIB) -o $(BINDIR)/far_transport_test -lm -lpthread
+	@$(BINDIR)/far_transport_test && echo "far-transport-test: PASS"
+
+# Pinned to clang, not $(CC): clang is already a hard project dependency
+# (the LLVM toolchain builds the compiler itself), and its ASan runtime
+# ships bundled with it. gcc's ASan needs the separate libasan runtime
+# package, which is optional and often absent (it is on this machine) —
+# pinning to clang keeps this target's default invocation portable across
+# any machine that can already build goo, instead of depending on a gcc
+# extra that may or may not be installed.
+#
+# detect_leaks=0: the test's goo_string_t out-params (recv error strings)
+# are never freed, matching the documented v1 memory model (malloc, no
+# systematic reclamation — see CLAUDE.md). LeakSanitizer would flag that
+# expected-unfreed heap growth on every run; ASan's memory-corruption
+# checks (overflow/UAF/double-free), which this target exists to run,
+# stay fully active.
+far-transport-asan: $(NNG_LIB)
+	@mkdir -p $(BINDIR)
+	clang $(CFLAGS) -g -fsanitize=address -Iinclude -I$(NNG_BUILD)/include \
+	  tests/runtime/far_transport_test.c src/runtime/far_transport.c src/runtime/runtime.c src/runtime/platform.c src/runtime/deadlock.c src/runtime/concurrency.c src/runtime/sync.c \
+	  $(NNG_LIB) -o $(BINDIR)/far_transport_asan -lm -lpthread
+	@ASAN_OPTIONS=detect_leaks=0 $(BINDIR)/far_transport_asan && echo "far-transport-asan: PASS"
+.PHONY: far-transport-test far-transport-asan
+
+# M2-B1 T3: far shim package end-to-end — listen+dial to self over ipc,
+# send/recv floats both ways, both error-union branches. See
+# examples/far_shim_probe.goo for the scenario.
+#
+# T3 review: the fixture is ALSO auto-enrolled in the golden suites
+# (sibling .expected.txt) via scripts/run_golden.sh, and the golden harness
+# always invokes with no argv (so it binds the fixture's hardcoded default
+# path). Passing a PID-suffixed path under build/ here fully isolates this
+# target's own bind from any golden run — both could otherwise
+# NNG_EADDRINUSE on the shared default path under `make -jN`. $$$$ (not
+# $$) is required: Make collapses `$$` to a literal `$` before the shell
+# ever sees it, so only `$$$$` survives as the shell's own `$$` (PID) —
+# verified empirically, not assumed.
+far-shim-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_shim_probe examples/far_shim_probe.goo
+	@sock="ipc://$(abspath build)/far_shim_probe_$$$$.sock"; \
+	rm -f "$${sock#ipc://}"; \
+	./build/far_shim_probe "$$sock" > build/far_shim_probe.actual.txt; \
+	rc=$$?; \
+	rm -f "$${sock#ipc://}"; \
+	if [ "$$rc" -ne 0 ]; then \
+	  echo "far-shim-probe: FAIL (binary exited $$rc)"; \
+	  exit 1; \
+	fi; \
+	if diff -u examples/far_shim_probe.expected.txt build/far_shim_probe.actual.txt; then \
+	  echo "far-shim-probe: PASS"; \
+	else \
+	  echo "far-shim-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+.PHONY: far-shim-probe
+
+# M2-B1: 2-rank NNG halo exchange, bit-identical to the in-fixture serial
+# reference (near mode pins Run against the same reference first).
+far-halo-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_halo_probe examples/far_halo_probe.goo
+	@./build/far_halo_probe near > build/far_halo_near.txt
+	@if ! grep -qx "true" build/far_halo_near.txt; then \
+	  echo "far-halo-probe: FAIL (near mode diverged from serial reference)"; exit 1; fi
+	@bash scripts/far-probe.sh build/far_halo_probe 2
+	@echo "far-halo-probe: PASS (2-rank NNG halo exchange bit-identical)"
+.PHONY: far-halo-probe
+
+# M2-B1: radius-2 sub-exchange protocol over the wire (2 floats per edge
+# per round, order-gated) — bit-identical to the serial reference.
+far-stencil-r2-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_stencil_r2 examples/far_stencil_r2_probe.goo
+	@./build/far_stencil_r2 near > build/far_stencil_r2_near.txt
+	@if ! grep -qx "true" build/far_stencil_r2_near.txt; then \
+	  echo "far-stencil-r2-probe: FAIL (near mode diverged)"; exit 1; fi
+	@bash scripts/far-probe.sh build/far_stencil_r2 2
+	@echo "far-stencil-r2-probe: PASS (radius-2 sub-exchange survives the wire)"
+.PHONY: far-stencil-r2-probe
+
+# M2-B1: cross-rank AllReduce bit-identity on non-associative data —
+# any combine-order deviation (arrival order, per-rank pre-combine)
+# flips the booleans.
+far-collective-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_collective examples/far_collective_probe.goo
+	@./build/far_collective near > build/far_collective_near.txt
+	@if ! grep -qx "true" build/far_collective_near.txt; then \
+	  echo "far-collective-probe: FAIL (near mode diverged)"; exit 1; fi
+	@bash scripts/far-probe.sh build/far_collective 2
+	@echo "far-collective-probe: PASS (global ID-order combine, bit-identical)"
+.PHONY: far-collective-probe
+
+# M2-B1 capstone: distributed Jacobi convergence — final field AND
+# iteration count bit-identical to the serial tiled reference, run TWICE
+# (schedule-independence repeat).
+far-jacobi-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_jacobi examples/far_jacobi_probe.goo
+	@bash scripts/far-probe.sh build/far_jacobi 2
+	@bash scripts/far-probe.sh build/far_jacobi 2
+	@echo "far-jacobi-probe: PASS (distributed convergence, twice, bit-identical)"
+.PHONY: far-jacobi-probe
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)

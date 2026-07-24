@@ -1,0 +1,122 @@
+// far_halo_probe (M2-B1 T4): 2 ranks x 2 lanes, radius-1 3-point kernel,
+// 3 BSP rounds over NNG — every rank computes the FULL serial reference
+// locally and compares its own span bit-for-bit, printing only booleans
+// (no float printing in the contract). near mode is the same global
+// problem on single-process Run with the same tiling (4 lanes of width
+// 4), so near-vs-ref and far-vs-ref together pin far == near.
+package main
+
+import "fmt"
+import "lanes"
+import "os"
+import "strconv"
+
+func serialRef(n int, steps int) []float64 {
+	cur := make([]float64, n)
+	next := make([]float64, n)
+	for i := 0; i < n; i++ {
+		cur[i] = float64(i) * 0.5
+	}
+	for s := 0; s < steps; s++ {
+		for i := 0; i < n; i++ {
+			left := 0.0
+			if i > 0 {
+				left = cur[i-1]
+			}
+			right := 0.0
+			if i < n-1 {
+				right = cur[i+1]
+			}
+			acc := 0.25 * left
+			acc = acc + 0.5*cur[i]
+			acc = acc + 0.25*right
+			next[i] = acc
+		}
+		for i := 0; i < n; i++ {
+			cur[i] = next[i]
+		}
+	}
+	return cur
+}
+
+func kernel(ctx *lanes.Lane) {
+	own := ctx.Own()
+	buf := make([]float64, len(own))
+	for {
+		ctx.Publish()
+		hl := ctx.HaloLeft()
+		hr := ctx.HaloRight()
+		for i := 0; i < len(own); i++ {
+			left := hl
+			if i > 0 {
+				left = own[i-1]
+			}
+			right := hr
+			if i < len(own)-1 {
+				right = own[i+1]
+			}
+			acc := 0.25 * left
+			acc = acc + 0.5*own[i]
+			acc = acc + 0.25*right
+			buf[i] = acc
+		}
+		for i := 0; i < len(own); i++ {
+			own[i] = buf[i]
+		}
+		if !ctx.Step() {
+			break
+		}
+	}
+}
+
+func main() {
+	args := os.Args
+	mode := args[1]
+	world := 2
+	spanN := 8
+	steps := 3
+	n := world * spanN
+	ref := serialRef(n, steps)
+
+	if mode == "near" {
+		arr := make([]float64, n)
+		for i := 0; i < n; i++ {
+			arr[i] = float64(i) * 0.5
+		}
+		p := lanes.Partition(arr, 4)
+		out := lanes.Run(p, steps, kernel)
+		ok := true
+		for i := 0; i < n; i++ {
+			if out[i] != ref[i] {
+				ok = false
+			}
+		}
+		fmt.Println(ok)
+		return
+	}
+
+	rank := strconv.Atoi(args[2]) catch e {
+		panic(e.Error())
+	}
+	urlBase := args[3]
+	// Named `span`, not `arr`: the M1 lane-ownership move-checker's
+	// moved-name table is deliberately whole-function and NOT scope-aware
+	// (lane_ownership.c's documented Option A), so reusing `arr` here would
+	// still read as "moved" from the near-mode branch's `arr :=
+	// lanes.Partition(arr, ...)` above even though the two are unrelated
+	// variables in disjoint branches (one of which already returned).
+	span := make([]float64, spanN)
+	base := rank * spanN
+	for i := 0; i < spanN; i++ {
+		span[i] = float64(base+i) * 0.5
+	}
+	p := lanes.Partition(span, 2)
+	out := lanes.RunFar(p, steps, rank, world, urlBase, kernel)
+	ok := true
+	for i := 0; i < spanN; i++ {
+		if out[i] != ref[base+i] {
+			ok = false
+		}
+	}
+	fmt.Println(ok)
+}
