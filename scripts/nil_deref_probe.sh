@@ -46,6 +46,26 @@ check_ok() {
     echo "  ok: $name (legal, exit 0)"
 }
 
+# Like check_nilpanic, but also asserts stdout == $3 instead of discarding
+# it (T3 review Important finding #2). Pins Go's evaluation order: a call's
+# ARGUMENTS (including their side effects) are evaluated before a
+# nil-interface dispatch panics — so a printing arg expression must still
+# be visible on stdout even though the call itself panics.
+check_nilpanic_stdout() {
+    local name="$1" expected_out="$3"
+    local src="$WORKDIR/$name.goo" exe="$WORKDIR/$name.out" err="$WORKDIR/$name.err"
+    printf "%s" "$2" > "$src"
+    if ! "$COMPILER" "$src" -o "$exe" > "$WORKDIR/$name.log" 2>&1; then
+        sed 's/^/    /' "$WORKDIR/$name.log"; fail "$name: compilation failed"
+    fi
+    local out; out="$("$exe" 2>"$err")"; local got=$?
+    [ "$got" = "2" ] || { sed 's/^/    stderr: /' "$err"; fail "$name: exit $got, expected 2 (139 = still SIGSEGV)"; }
+    [ "$out" = "$expected_out" ] || fail "$name: stdout '$out', expected '$expected_out' (argument side effect discarded — wrong evaluation order?)"
+    grep -q "nil dereference at " "$err" || { sed 's/^/    stderr: /' "$err"; fail "$name: missing file:line diagnostic"; }
+    grep -qF "$MSG" "$err" || { sed 's/^/    stderr: /' "$err"; fail "$name: missing canonical panic message"; }
+    echo "  ok: $name (panic, exit 2, stdout preserved)"
+}
+
 check_nilpanic star_read 'package main
 import "fmt"
 func main() {
@@ -138,5 +158,24 @@ func main() {
 	fmt.Println(s.Speak())
 }
 ' '9'
+
+# T3 review Important finding #2: the call's argument (sideEffect(), which
+# prints "arg") must run BEFORE the nil-interface dispatch panics — Go
+# evaluates call arguments before the call, and the interface-nil panic
+# happens as part of the call itself. fmt.Println's own argument
+# (s.Speak(...)) never gets far enough to run Println, so stdout must be
+# exactly "arg" from sideEffect(), nothing more.
+check_nilpanic_stdout nil_interface_dispatch_arg_order 'package main
+import "fmt"
+type Speaker interface{ Speak(x int) int }
+func sideEffect() int {
+	fmt.Println("arg")
+	return 1
+}
+func main() {
+	var s Speaker
+	fmt.Println(s.Speak(sideEffect()))
+}
+' 'arg'
 
 echo "nil-deref-probe: PASS (all cases)"

@@ -700,10 +700,18 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
                                    Type* iface, Type* concrete, LLVMValueRef value,
                                    Position pos);
+// ADR 0001 (T3 review, Important finding #1): this function OWNS the
+// nil-vtable check — it extracts `iface_val`'s vtable (field 0) and
+// nil-checks it internally, via `expr`, before ever loading through it.
+// Callers must NOT nil-check the vtable themselves first; do not add a
+// second dispatch call site without confirming this still holds. A null
+// vtable otherwise causes a null-function-pointer call (SIGSEGV, the exact
+// pre-Task-3 bug this ADR exists to close).
 ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* checker,
                                       LLVMValueRef iface_val, Type* iface_type,
                                       const char* method_name,
-                                      LLVMValueRef* args, size_t argc);
+                                      LLVMValueRef* args, size_t argc,
+                                      ASTNode* expr);
 // Task 2 (type assertions): shared vtable-pointer-compare + unbox lowering
 // for `x.(T)` (comma-ok and single-return) and Task 3's type switch. See
 // interface_codegen.c's doc comments on each for the exact contract.

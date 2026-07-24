@@ -1671,19 +1671,6 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             value_info_free(iv);
 
-            // ADR 0001: a NIL INTERFACE (no boxed type -> null vtable) has
-            // nothing to dispatch to — Go panics with the canonical
-            // nil-deref message. Checked on the VTABLE only, deliberately
-            // NOT the data pointer: an interface holding a typed-nil *T
-            // has a real vtable and MUST dispatch (Go parity — the panic,
-            // if any, happens at the field access inside the method).
-            // codegen_interface_dispatch (interface_codegen.c) extracts vt
-            // again internally for the actual GEP/load; this is a second,
-            // narrower ExtractValue of the same {vtable, data} aggregate
-            // purely to gate the check before any dispatch machinery runs.
-            LLVMValueRef vtable_val = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "ifc.vt_nilcheck");
-            codegen_emit_nil_check(codegen, vtable_val, expr);
-
             size_t argc = 0;
             for (ASTNode* a = call->args; a; a = a->next) argc++;
             LLVMValueRef* dargs = argc ? malloc(argc * sizeof(LLVMValueRef)) : NULL;
@@ -1694,8 +1681,14 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 dargs[i] = av->llvm_value;
                 value_info_free(av);
             }
+            // ADR 0001 (T3 review): the nil-vtable check lives INSIDE
+            // codegen_interface_dispatch, at its own vtable extraction —
+            // not here — so it runs after the argument evaluation above,
+            // matching Go's evaluate-args-then-panic order (see that
+            // function's doc comment, interface_codegen.c).
             ValueInfo* r = codegen_interface_dispatch(codegen, checker, iface_val,
-                                                      recv_type, msel->selector, dargs, argc);
+                                                      recv_type, msel->selector, dargs, argc,
+                                                      expr);
             free(dargs);
             return r;
         }
