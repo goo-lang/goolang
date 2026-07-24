@@ -42,6 +42,8 @@ stmt_fallthrough	run	works	Statements	fallthrough in expression switch
 stmt_labels_goto	run	works	Statements	labels, goto, labeled break/continue
 stmt_defer_loop	run	works	Statements	defer in loop, LIFO order
 stmt_go_select	run	works	Statements	goroutine + select recv
+stmt_switch_empty_case	run	works	Statements	empty case/default bodies in expression + type switch
+stmt_select_empty_case	run	works	Statements	empty case/default bodies in select
 builtin_core	run	works	Builtins	len/cap/make/new/append/delete
 builtin_copy	run	works	Builtins	copy(dst, src) returns count
 builtin_panic_exit	run	works	Builtins	nil-map write panics, exit 2 (Go parity)

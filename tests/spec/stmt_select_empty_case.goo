@@ -1,0 +1,20 @@
+// Spec: Statements / Select — empty case and default bodies
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 1)
+	select {
+	case <-ch:
+		fmt.Println("recv wrong")
+	default:
+	}
+	ch <- 7
+	select {
+	case <-ch:
+	default:
+		fmt.Println("default wrong")
+	}
+	fmt.Println("select ok")
+}
