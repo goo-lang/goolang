@@ -1031,6 +1031,24 @@ static void mark_type_params_used(const Type* t, int* seen, size_t n) {
     }
 }
 
+// Go parity (fix/builtin-shadow-seeding): the nine call-builtins task 7/8
+// make shadowable at the CALL site (expression_checker.c's
+// name_is_user_shadowed gate) must also be shadowable at DECLARATION —
+// otherwise a top-level `func len(...)` never gets far enough to exercise
+// that gate at all. Must name exactly the strcmp set gated there
+// (append/copy/len/cap/close/delete/clear/min/max); new/make/make_chan/
+// recover/error/panic/print/println are deliberately absent (this arc's
+// scope guard — those keep colliding with "already declared", unchanged).
+static int name_is_shadowable_call_builtin(const char* name) {
+    static const char* const kNames[] = {
+        "append", "copy", "len", "cap", "close", "delete", "clear", "min", "max"
+    };
+    for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++) {
+        if (strcmp(name, kNames[i]) == 0) return 1;
+    }
+    return 0;
+}
+
 static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) {
     // v1: package-level `func init()` is a HARD REJECT with a clear message.
     // Before this guard the declaration compiled but the initializer was
@@ -1263,6 +1281,27 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         if (tn) {
             mangled = type_method_mangled_name(tn, func->name);
             if (mangled) reg_name = mangled;
+        }
+    }
+    // type_checker_add_builtin_functions seeds len/cap/append/... into
+    // checker->current_scope unconditionally, BEFORE this per-declaration
+    // walk runs (type_checker_init_builtins precedes type_check_program's
+    // declaration loop) — so a top-level `func len(...)` collides with that
+    // builtin Variable in the SAME scope and scope_add_variable below fails
+    // before name_is_user_shadowed's call-site gate is ever reached. Evict
+    // the seeded builtin here so the user's declaration can take its place.
+    // Methods are excluded (mangled names never collide with a bare builtin
+    // identifier; name_is_user_shadowed excludes them for the same reason).
+    if (!func->receiver && func->name && name_is_shadowable_call_builtin(func->name)) {
+        Variable* prev = NULL;
+        for (Variable* v = checker->current_scope->variables; v; v = v->next) {
+            if (v->is_builtin && strcmp(v->name, func->name) == 0) {
+                if (prev) prev->next = v->next;
+                else checker->current_scope->variables = v->next;
+                variable_free(v);
+                break;
+            }
+            prev = v;
         }
     }
     Variable* func_var = variable_new(reg_name, func_type, func->base.pos);

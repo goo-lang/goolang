@@ -190,6 +190,37 @@ static int is_builtin_conv_name(const char* name) {
     return 0;
 }
 
+// fix/builtin-shadow-seeding (task 8 contingency): mirror of
+// expression_checker.c's name_is_user_shadowed, scoped to what codegen
+// actually needs. type_checker_lookup_variable is a bare
+// scope_lookup_variable wrapper — it does NOT exclude is_builtin entries.
+// len/cap/append/copy/close/delete/clear/min/max are seeded ONCE into the
+// persisted global scope as is_builtin Variables (type_checker_add_
+// builtin_functions) and stay there for every name this arc does NOT make
+// user-declarable at that identifier — so a bare type_checker_lookup_variable
+// hit is not proof of shadowing, only of "a Variable with this name exists in
+// scope," which is true for the builtin's OWN registration too. Without this
+// exclusion an ordinary (unshadowed) `append(...)` call's guard would read
+// "shadowed" from finding append's own builtin entry, skip the builtin arm,
+// and fail codegen with "Undefined identifier 'append'" — this is the
+// literal failure this contingency was written to catch.
+//
+// No comptime-registry fallback is needed here (unlike name_is_user_shadowed
+// at check time): codegen runs only after type-checking's two-pass
+// declaration walk has FULLY completed for the whole program, so every
+// top-level function's Variable — builtin-evicted-and-replaced or not — is
+// already resolvable via the persisted scope alone, regardless of source
+// order (see the "string" conversion arm's identical assumption below).
+//
+// Change-together: used by every codegen call-dispatch arm that must agree
+// with the checker's shadowing decision (the eight builtins gated in task 8,
+// PLUS the pre-existing string/numeric-conversion arms below) so the two
+// families of guards can't drift apart.
+static int call_codegen_name_is_user_shadowed(TypeChecker* checker, const char* name) {
+    Variable* v = type_checker_lookup_variable(checker, name);
+    return v && !v->is_builtin;
+}
+
 // Emit a numeric value conversion `T(x)` (F2). Picks the LLVM cast from the
 // source/target LLVM kinds and the SOURCE signedness (so int(byte(200)) is
 // 200, not -56): widen with SExt for signed sources, ZExt for unsigned;
@@ -516,7 +547,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         // comment below for the rationale): a user `func string(...)` makes
         // `string(x)` an ordinary call, not a conversion.
         if (strcmp(func_name->name, "string") == 0 && call->args && !call->args->next
-            && !type_checker_lookup_variable(checker, func_name->name)) {
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             ValueInfo* src = codegen_generate_expression(codegen, checker, call->args);
             if (!src) return NULL;
             LLVMValueRef sval = src->llvm_value;
@@ -603,14 +634,16 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         // Mirror the checker's shadowing gate: Go permits a user symbol to
         // shadow a predeclared type name, so `func int(n int) int` makes
         // `int(5)` a CALL, not a conversion. The name alone is not enough to
-        // decide — consult the symbol table. At codegen time every top-level
-        // function lives in the (persisted) global scope regardless of source
-        // order, so a non-NULL lookup means the name is shadowed: fall through
-        // to the ordinary call path instead of silently converting. Without
-        // this, `int(5)` printed 5 (conversion) rather than 105 (the user's
-        // function) — a silent miscompile of code that is legal in Go.
+        // decide — consult the symbol table (call_codegen_name_is_user_
+        // shadowed above: a non-builtin hit means the name is shadowed). At
+        // codegen time every top-level function lives in the (persisted)
+        // global scope regardless of source order, so this needs no
+        // forward-reference fallback: fall through to the ordinary call path
+        // instead of silently converting. Without this, `int(5)` printed 5
+        // (conversion) rather than 105 (the user's function) — a silent
+        // miscompile of code that is legal in Go.
         if (is_builtin_conv_name(func_name->name) && call->args && !call->args->next
-            && !type_checker_lookup_variable(checker, func_name->name)) {
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             Type* target = expr->node_type;
             if (!target) {
                 codegen_error(codegen, expr->pos, "conversion: missing resolved target type");
@@ -811,7 +844,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // never executed, same as any void builtin call.
             return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
         }
-        if (strcmp(func_name->name, "len") == 0 && call->args) {
+        if (strcmp(func_name->name, "len") == 0 && call->args
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             // len(arg) — extract field 1 (the length) from a slice or
             // string struct. Both share the `{ ptr, i64 }` layout, so
             // a single InsertValue path covers them. Array len could
@@ -856,7 +890,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(arg);
             return value_info_new(NULL, len64, type_checker_get_builtin(checker, TYPE_INT64));
         }
-        if (strcmp(func_name->name, "close") == 0 && call->args) {
+        if (strcmp(func_name->name, "close") == 0 && call->args
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             // close(ch) -> goo_chan_close(ptr) (P3.1). An IDENTIFIER channel
             // operand's own expression codegen already yields the runtime
             // pointer value (codegen_generate_identifier auto-loads an
@@ -890,7 +925,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(chan_arg);
             return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
         }
-        if (strcmp(func_name->name, "delete") == 0 && call->args && call->args->next) {
+        if (strcmp(func_name->name, "delete") == 0 && call->args && call->args->next
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             // delete(m, k) — unlink the entry for k from m via
             // goo_map_delete_sv. Map handling mirrors the len() arm above
             // (load the map pointer if it's an lvalue); the key is packed
@@ -928,7 +964,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(key_arg);
             return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
         }
-        if (strcmp(func_name->name, "clear") == 0 && call->args) {
+        if (strcmp(func_name->name, "clear") == 0 && call->args
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             // clear(m) / clear(s) -> void (Go 1.21). Map: one
             // goo_map_clear_sv pass (its own dedicated runtime routine,
             // sibling to goo_map_delete_sv). Slice: memset the backing
@@ -965,7 +1002,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(arg);
             return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
         }
-        if (strcmp(func_name->name, "cap") == 0 && call->args) {
+        if (strcmp(func_name->name, "cap") == 0 && call->args
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             // cap(slice) — extract field 2 (capacity) from the 3-field slice
             // header. Mirrors len() but reads field 2 instead of field 1.
             ValueInfo* arg = codegen_generate_expression(codegen, checker, call->args);
@@ -989,7 +1027,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(arg);
             return value_info_new(NULL, cap64, type_checker_get_builtin(checker, TYPE_INT64));
         }
-        if (strcmp(func_name->name, "append") == 0 && call->args && call->args->next) {
+        if (strcmp(func_name->name, "append") == 0 && call->args && call->args->next
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             // append(dst, elem) -> slice, OR append(dst, s...) -> slice (Task
             // 4's bulk arm, selected by `has_spread`). Both share the same
             // dst-in-slot / possibly-regrown-header shape: dst is spilled to
@@ -1081,7 +1120,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             LLVMValueRef result = LLVMBuildLoad2(codegen->builder, slice_llvm, slice_slot, "append_result");
             return value_info_new(NULL, result, slice_t);
         }
-        if (strcmp(func_name->name, "copy") == 0 && call->args && call->args->next) {
+        if (strcmp(func_name->name, "copy") == 0 && call->args && call->args->next
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             // copy(dst, src) -> int (Go-exact: min(len(dst), len(src))
             // elements moved via memmove — overlap-safe). dst is always a
             // slice (typecheck-enforced); src is a slice OR, when dst's
@@ -1135,7 +1175,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                                             copy_fn, args, 5, "copy_n");
             return value_info_new(NULL, n, type_checker_get_builtin(checker, TYPE_INT64));
         }
-        if ((strcmp(func_name->name, "min") == 0 || strcmp(func_name->name, "max") == 0) && call->args) {
+        if ((strcmp(func_name->name, "min") == 0 || strcmp(func_name->name, "max") == 0) && call->args
+            && !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
             // min(a, b, ...) / max(a, b, ...) -> a chain of compare+select
             // folded left-to-right over the arguments, at the common type
             // the checker already resolved (type_check_minmax_call in
