@@ -178,4 +178,12 @@ func main() {
 }
 ' 'arg'
 
+check_nilpanic error_nil_error 'package main
+import "fmt"
+func main() {
+	var e error
+	fmt.Println(e.Error())
+}
+'
+
 echo "nil-deref-probe: PASS (all cases)"

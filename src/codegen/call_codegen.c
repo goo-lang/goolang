@@ -1631,6 +1631,12 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // recv_val is the loaded nullable {i1 is_null, i8* handle}.
             LLVMValueRef is_null = LLVMBuildExtractValue(codegen->builder, recv_val, 0, "err.is_null");
             LLVMValueRef handle  = LLVMBuildExtractValue(codegen->builder, recv_val, 1, "err.handle");
+            // ADR 0001: error(nil).Error() PANICS (Go parity: method call
+            // on a nil interface value). Replaces the former select()'d
+            // empty-string guard — the probe matrix's one silent-wrong-value
+            // cell. goo_error_message is now only ever called on the
+            // non-null arm.
+            codegen_emit_nil_check_cond(codegen, is_null, expr);
             LLVMValueRef msgfn = LLVMGetNamedFunction(codegen->module, "goo_error_message");
             if (!msgfn) {
                 codegen_error(codegen, expr->pos, "goo_error_message not found in module");
@@ -1639,17 +1645,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             LLVMTypeRef msgfn_ty = LLVMGlobalGetValueType(msgfn);
             LLVMValueRef cargs[] = { handle };
             LLVMValueRef msg = LLVMBuildCall2(codegen->builder, msgfn_ty, msgfn, cargs, 1, "err.msg");
-            // nil-guard: empty goo_string {null,0} when is_null. goo_error_message
-            // itself null-checks its arg too, so calling it on the null arm is
-            // harmless — only the select()'d result matters.
-            LLVMTypeRef str_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
-            LLVMValueRef empty = LLVMGetUndef(str_llvm);
-            empty = LLVMBuildInsertValue(codegen->builder, empty,
-                LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0)), 0, "empty.data");
-            empty = LLVMBuildInsertValue(codegen->builder, empty,
-                LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 0, 0), 1, "empty.len");
-            LLVMValueRef result = LLVMBuildSelect(codegen->builder, is_null, empty, msg, "err.error_result");
-            return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
+            return value_info_new(NULL, msg, type_checker_get_builtin(checker, TYPE_STRING));
         }
 
         // Interface dispatch (P4-5): when the receiver is an interface value,
