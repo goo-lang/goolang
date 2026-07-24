@@ -1815,6 +1815,14 @@ string-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -qi "bounds check failed" build/sbp_oob.err; then echo "string-bounds-probe: FAIL (no bounds message)"; cat build/sbp_oob.err; exit 1; fi
 	@echo "string-bounds-probe: PASS"
 
+# ADR 0001: nil-deref checks — every unguarded nil SIGSEGV is now a
+# diagnosable Go-parity panic (exit 2, canonical message); legal typed-nil
+# dispatch stays legal.
+nil-deref-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/nil_deref_probe.sh
+	@echo "nil-deref-probe: PASS"
+.PHONY: nil-deref-probe
+
 # fix/const-array-length: a genuinely non-constant array length (a plain
 # runtime variable, not a const) must be a clean type error — NOT a silent
 # fallback to the placeholder length, and not a crash. See
@@ -3248,7 +3256,8 @@ VERIFY_ALL_DEPS := \
     far-halo-probe \
     far-stencil-r2-probe \
     far-collective-probe \
-    far-jacobi-probe
+    far-jacobi-probe \
+    nil-deref-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam

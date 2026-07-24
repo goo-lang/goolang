@@ -930,6 +930,11 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
                     map_val_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
                     ValueInfo* ptr_val = codegen_generate_expression(codegen, checker, sel->expr);
                     if (!ptr_val) return NULL;
+                    // ADR 0001: the map-get fast path above returns the
+                    // pointer directly as an RVALUE (is_lvalue==0,
+                    // llvm_value already the pointer's value) — no load-
+                    // first discipline needed here, unlike Site B/D.
+                    codegen_emit_nil_check(codegen, ptr_val->llvm_value, expr);
                     return codegen_emit_struct_field_lvalue(
                         codegen, map_val_type->data.pointer.pointee_type,
                         ptr_val->llvm_value, sel->selector);
@@ -955,6 +960,7 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
             struct_addr = LLVMBuildLoad2(codegen->builder,
                                          LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
                                          base->llvm_value, "struct_ptr");
+            codegen_emit_nil_check(codegen, struct_addr, expr);
             st = st->data.pointer.pointee_type;
         }
         if (!st || st->kind != TYPE_STRUCT) return NULL;
@@ -1102,7 +1108,29 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
         if (un->operator == TOKEN_MULTIPLY) {
             ValueInfo* ptr = codegen_generate_expression(codegen, checker, un->operand);
             if (!ptr || !ptr->goo_type || ptr->goo_type->kind != TYPE_POINTER) return NULL;
-            ValueInfo* out = value_info_new(NULL, ptr->llvm_value,
+            // ADR 0001 + load-semantics reconciliation: an identifier operand
+            // (codegen_generate_identifier) already auto-loads, so ptr->llvm_value
+            // is the pointer VALUE (is_lvalue==0) and the old code below was
+            // correct as-is. But a non-identifier operand (e.g. a struct-field
+            // selector `b.p`) comes back is_lvalue==1 with llvm_value the
+            // ADDRESS of the pointer-typed slot, not the pointer's value —
+            // passing that address straight through (the pre-existing code)
+            // made both the nil check and the eventual store target the WRONG
+            // address: `*b.p = 99` silently stored into the field's own slot
+            // (verified via a throwaway-copy IR trace) instead of through the
+            // pointer, so the write was lost. Load the VALUE first in that
+            // case and use the loaded value for both the check and the
+            // returned store address — this also fixes that pre-existing
+            // silent-no-op bug as a side effect, with no change for the
+            // identifier case (probed by star_write / non_nil_paths).
+            LLVMValueRef pval = ptr->llvm_value;
+            if (ptr->is_lvalue) {
+                pval = LLVMBuildLoad2(codegen->builder,
+                    LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                    ptr->llvm_value, "deref_ptr_load");
+            }
+            codegen_emit_nil_check(codegen, pval, expr);
+            ValueInfo* out = value_info_new(NULL, pval,
                                             ptr->goo_type->data.pointer.pointee_type);
             out->is_lvalue = 1;
             return out;
@@ -2775,6 +2803,7 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
             // pointee LLVM type comes from the goo type (LLVMGetElementType is
             // unusable under opaque pointers).
             if (operand->goo_type->kind == TYPE_POINTER) {
+                codegen_emit_nil_check(codegen, operand_llvm, expr);
                 LLVMTypeRef pointee = codegen_type_to_llvm(codegen, operand->goo_type->data.pointer.pointee_type);
                 result = LLVMBuildLoad2(codegen->builder, pointee, operand_llvm, "deref");
             } else {

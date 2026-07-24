@@ -670,11 +670,27 @@ LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
 
 // Dispatch `method_name(args)` through a loaded interface value. `iface_val` is
 // the { vtable, data } struct value; `args`/`argc` are the already-generated
-// argument values (NOT including the receiver). Returns the call result, or NULL.
+// argument values (NOT including the receiver), so this function is called
+// AFTER the caller has already evaluated the call's arguments — the nil
+// check below therefore runs after argument-evaluation side effects,
+// matching Go's evaluation order (call arguments are evaluated before a
+// nil-interface dispatch panics; T3 review Important finding #2). `expr` is
+// the call AST node, used only for the nil check's file:line diagnostic.
+// Returns the call result, or NULL.
+//
+// ADR 0001 (T3 review, Important finding #1): this function OWNS the
+// nil-vtable check (below, right after the vtable extraction, before any
+// load through it) — callers must NOT nil-check the vtable themselves
+// first. There is exactly one call site today (call_codegen.c); a future
+// second caller must NOT re-add its own duplicate check upstream of this
+// one, and must not skip calling into a codepath that reaches this
+// function's check. Without it, a null vtable causes a null-function-
+// pointer call (SIGSEGV) at the GEP/load two lines below.
 ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* checker,
                                       LLVMValueRef iface_val, Type* iface_type,
                                       const char* method_name,
-                                      LLVMValueRef* args, size_t argc) {
+                                      LLVMValueRef* args, size_t argc,
+                                      ASTNode* expr) {
     (void)checker;
     if (!iface_type || iface_type->kind != TYPE_INTERFACE) return NULL;
 
@@ -691,6 +707,18 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
     }
 
     LLVMValueRef vt = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "vt");
+
+    // ADR 0001: a NIL INTERFACE (no boxed type -> null vtable) has nothing
+    // to dispatch to — Go panics with the canonical nil-deref message.
+    // Checked on the VTABLE only, deliberately NOT the data pointer: an
+    // interface holding a typed-nil *T has a real vtable and MUST dispatch
+    // (Go parity — the panic, if any, happens at the field access inside
+    // the method). Placed here, after the caller's argument evaluation and
+    // right at the vtable extraction, so it runs after any argument side
+    // effects (Go order) and before the GEP/load that would otherwise
+    // dereference a null vtable.
+    codegen_emit_nil_check(codegen, vt, expr);
+
     LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, iface_val, 1, "data");
 
     // Load the thunk pointer from vtable slot `idx + 1` (array of ptr): slot

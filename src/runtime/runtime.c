@@ -1043,6 +1043,16 @@ void goo_bounds_fail(size_t index, size_t length, const char* file, int line) {
     goo_panic("bounds check failed");
 }
 
+// ADR 0001: cold noreturn target of the inline nil checks
+// (codegen_emit_nil_check) at pointer-deref/field/interface-dispatch
+// sites — same shape as goo_bounds_fail above. The message text is Go's
+// canonical nil-panic wording and is pinned by scripts/nil_deref_probe.sh;
+// changing it is a contract change, not a wording tweak.
+void goo_nil_deref_fail(const char* file, int line) {
+    fprintf(stderr, "nil dereference at %s:%d\n", file, line);
+    goo_panic("runtime error: invalid memory address or nil pointer dereference");
+}
+
 // F5 follow-up: bounds check for slice/substring EXPRESSIONS `base[low:high]`,
 // the sibling of goo_bounds_fail (which guards single-element index reads/
 // writes). Go's rule: 0 <= low <= high <= max, where max is cap(base) for a
@@ -1070,12 +1080,5 @@ void goo_bounds_check(size_t index, size_t length, const char* file, int line) {
 void goo_slice_bounds_check(int64_t low, int64_t high, int64_t max, const char* file, int line) {
     if (low < 0 || high < low || high > max) {
         goo_slice_bounds_fail(low, high, max, file, line);
-    }
-}
-
-void goo_null_check(void* ptr, const char* file, int line) {
-    if (!ptr) {
-        fprintf(stderr, "null check failed at %s:%d\n", file, line);
-        goo_panic("null pointer dereference");
     }
 }
