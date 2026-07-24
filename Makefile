@@ -4458,12 +4458,29 @@ far-transport-asan: $(NNG_LIB)
 # M2-B1 T3: far shim package end-to-end — listen+dial to self over ipc,
 # send/recv floats both ways, both error-union branches. See
 # examples/far_shim_probe.goo for the scenario.
+#
+# T3 review: the fixture is ALSO auto-enrolled in the golden suites
+# (sibling .expected.txt) via scripts/run_golden.sh, and the golden harness
+# always invokes with no argv (so it binds the fixture's hardcoded default
+# path). Passing a PID-suffixed path under build/ here fully isolates this
+# target's own bind from any golden run — both could otherwise
+# NNG_EADDRINUSE on the shared default path under `make -jN`. $$$$ (not
+# $$) is required: Make collapses `$$` to a literal `$` before the shell
+# ever sees it, so only `$$$$` survives as the shell's own `$$` (PID) —
+# verified empirically, not assumed.
 far-shim-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	$(COMPILER) -o build/far_shim_probe examples/far_shim_probe.goo
-	@rm -f /tmp/goo-far-shim-probe.sock
-	@./build/far_shim_probe > build/far_shim_probe.actual.txt
-	@if diff -u examples/far_shim_probe.expected.txt build/far_shim_probe.actual.txt; then \
+	@sock="ipc://$(abspath build)/far_shim_probe_$$$$.sock"; \
+	rm -f "$${sock#ipc://}"; \
+	./build/far_shim_probe "$$sock" > build/far_shim_probe.actual.txt; \
+	rc=$$?; \
+	rm -f "$${sock#ipc://}"; \
+	if [ "$$rc" -ne 0 ]; then \
+	  echo "far-shim-probe: FAIL (binary exited $$rc)"; \
+	  exit 1; \
+	fi; \
+	if diff -u examples/far_shim_probe.expected.txt build/far_shim_probe.actual.txt; then \
 	  echo "far-shim-probe: PASS"; \
 	else \
 	  echo "far-shim-probe: FAIL (see diff above)"; \
