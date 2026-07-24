@@ -297,6 +297,10 @@ arc's scope):
   field/interface sites above — Go treats a nil func call as an ordinary
   nil dereference). Exit code 2 and panic-on-call behavior match; only the
   text (and the absence of a `nil dereference at file:line` line) differs.
+- **`&*p` on a nil pointer**: Go folds `&*p` to `p` (no dereference, no
+  panic); Goo evaluates the inner `*p` and panics. Pre-existing evaluation
+  shape (previously a SIGSEGV, now the canonical panic — strictly better,
+  still a divergence). Backlog: fold `&*p` in the checker/codegen.
 
 ## Variables and Constants
 
