@@ -108,6 +108,26 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
     struct { struct ASTNode* bind_name; struct ASTNode* expr; } guard;
 }
 
+// Location tracking. Without this, every AST node built through
+// get_current_position() (parser_actions.c) recorded current_lexer->pos —
+// the LIVE lexer cursor, which by the time a reduction action runs holds the
+// position of the LOOKAHEAD token bison has already read. Every diagnostic
+// therefore pointed at the NEXT token: an error on `var s string = 5` was
+// reported on the following line, and a blank line in between was skipped
+// because it is a token position, not a line-arithmetic offset.
+//
+// %locations makes bison maintain a YYLTYPE per grammar symbol and compute
+// @$ as the span of the whole rule, so @$ / @1 give the construct's OWN
+// start. yylex (lexer_bridge.c) is what fills each token's yylloc; see
+// pos_from_loc() in parser_actions.c for the YYLTYPE -> Position bridge.
+//
+// This is orthogonal to the grammar itself — no production, precedence or
+// token changes — so the LALR tables and the conflict baseline are
+// unaffected (tripwire stays 31 S/R / 0 R/R exact). yyerror keeps its
+// single-argument signature: bison only widens it for a %pure parser, and
+// this one is not pure.
+%locations
+
 // Token declarations with types
 %token <string> IDENTIFIER
 %token <strlit> STRING_LITERAL
@@ -377,10 +397,10 @@ top_level_decl:
 
 
 declaration:
-    var_decl { $$ = $1; }
-    | const_decl { $$ = $1; }
-    | type_decl { $$ = $1; }
-    | extern_decl { $$ = $1; }
+    var_decl { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | const_decl { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | type_decl { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | extern_decl { $$ = $1; if ($$) $$->pos = POS(@1); }
     ;
 
 // Function declaration
@@ -710,6 +730,7 @@ var_decl:
     }
     | VAR identifier type ASSIGN expression {
         $$ = var_decl_new_1($2, $3, $5);
+        if ($$) $$->pos = POS(@$);
     }
     // Goo extension: ownership qualifiers
     | ownership_qualifier VAR identifier type {
@@ -1084,31 +1105,31 @@ stmt_seq:
 // Terminated statements — legal anywhere in a list. Every arm consumes its
 // SEMICOLON (explicit in source, or lexer-ASI-inserted at the newline).
 statement:
-    simple_stmt SEMICOLON { $$ = $1; }
-    | if_stmt SEMICOLON { $$ = $1; }
-    | if_let_stmt SEMICOLON { $$ = $1; }
-    | for_stmt SEMICOLON { $$ = $1; }
-    | return_stmt SEMICOLON { $$ = $1; }
-    | break_stmt SEMICOLON { $$ = $1; }
-    | continue_stmt SEMICOLON { $$ = $1; }
-    | goto_stmt SEMICOLON { $$ = $1; }
-    | fallthrough_stmt SEMICOLON { $$ = $1; }
-    | go_stmt SEMICOLON { $$ = $1; }
-    | defer_stmt SEMICOLON { $$ = $1; }
-    | select_stmt SEMICOLON { $$ = $1; }
-    | switch_stmt SEMICOLON { $$ = $1; }
-    | block SEMICOLON { $$ = $1; }
-    | comptime_block SEMICOLON { $$ = $1; }  // Goo extension
-    | unsafe_stmt SEMICOLON { $$ = $1; }     // Goo extension
-    | arena_stmt SEMICOLON { $$ = $1; }      // Goo extension
-    | asm_stmt SEMICOLON { $$ = $1; }        // Goo extension
-    | parallel_for_stmt SEMICOLON { $$ = $1; } // Goo extension
+    simple_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | if_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | if_let_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | for_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | return_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | break_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | continue_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | goto_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | fallthrough_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | go_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | defer_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | select_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | switch_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | block SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | comptime_block SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }  // Goo extension
+    | unsafe_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }     // Goo extension
+    | arena_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }      // Goo extension
+    | asm_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); }        // Goo extension
+    | parallel_for_stmt SEMICOLON { $$ = $1; if ($$) $$->pos = POS(@1); } // Goo extension
     // `L: stmt` — labeled TERMINATED statement (the inner statement carries
     // the terminator). Labels are function-scoped in Go (not block-scoped),
     // so duplicate detection lives in the type checker, not here.
     | identifier COLON statement {
         IdentifierNode* lid = (IdentifierNode*)$1;
-        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, get_current_position());
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, POS(@1));
         ast_node_free($1);
         $$ = (ASTNode*)label_node;
     }
@@ -1116,7 +1137,7 @@ statement:
     // consumed here or it dangles (there is no bare-SEMICOLON statement).
     | identifier COLON SEMICOLON {
         IdentifierNode* lid = (IdentifierNode*)$1;
-        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, POS(@1));
         ast_node_free($1);
         $$ = (ASTNode*)label_node;
     }
@@ -1127,29 +1148,29 @@ statement:
 // single-line blocks (`if x { y() }`) and last-statement-before-`}` shapes
 // (the lexer never inserts before '}' ) parsing exactly as before P5.10.
 final_stmt:
-    simple_stmt { $$ = $1; }
-    | if_stmt { $$ = $1; }
-    | if_let_stmt { $$ = $1; }
-    | for_stmt { $$ = $1; }
-    | return_stmt { $$ = $1; }
-    | break_stmt { $$ = $1; }
-    | continue_stmt { $$ = $1; }
-    | goto_stmt { $$ = $1; }
-    | fallthrough_stmt { $$ = $1; }
-    | go_stmt { $$ = $1; }
-    | defer_stmt { $$ = $1; }
-    | select_stmt { $$ = $1; }
-    | switch_stmt { $$ = $1; }
-    | block { $$ = $1; }
-    | comptime_block { $$ = $1; }  // Goo extension
-    | unsafe_stmt { $$ = $1; }     // Goo extension
-    | arena_stmt { $$ = $1; }      // Goo extension
-    | asm_stmt { $$ = $1; }        // Goo extension
-    | parallel_for_stmt { $$ = $1; } // Goo extension
+    simple_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | if_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | if_let_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | for_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | return_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | break_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | continue_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | goto_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | fallthrough_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | go_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | defer_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | select_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | switch_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | block { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | comptime_block { $$ = $1; if ($$) $$->pos = POS(@1); }  // Goo extension
+    | unsafe_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }     // Goo extension
+    | arena_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }      // Goo extension
+    | asm_stmt { $$ = $1; if ($$) $$->pos = POS(@1); }        // Goo extension
+    | parallel_for_stmt { $$ = $1; if ($$) $$->pos = POS(@1); } // Goo extension
     // `L: stmt` where stmt is itself final: `for { ... L: y() }`.
     | identifier COLON final_stmt {
         IdentifierNode* lid = (IdentifierNode*)$1;
-        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, get_current_position());
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, POS(@1));
         ast_node_free($1);
         $$ = (ASTNode*)label_node;
     }
@@ -1159,7 +1180,7 @@ final_stmt:
     // stmt is NULL and every consumer treats that as a no-op fall-through.
     | identifier COLON {
         IdentifierNode* lid = (IdentifierNode*)$1;
-        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, POS(@1));
         ast_node_free($1);
         $$ = (ASTNode*)label_node;
     }
@@ -3014,7 +3035,14 @@ thread_local_decl:
 // Basic elements
 identifier:
     IDENTIFIER {
-        IdentifierNode* ident = ast_identifier_new($1, get_current_position());
+        // POS(@1), not get_current_position(): this one rule has outsized
+        // fan-out, because func_decl / package_decl / import_spec / labels
+        // all stamp themselves from `ident->base.pos` rather than fetching
+        // their own position. That looked like a correct-by-construction
+        // second strategy, but it was only propagating the identifier's own
+        // (lookahead-offset) position, so every one of those declarations
+        // pointed at the token AFTER the name.
+        IdentifierNode* ident = ast_identifier_new($1, POS(@1));
         free($1);
         $$ = (ASTNode*)ident;
     }

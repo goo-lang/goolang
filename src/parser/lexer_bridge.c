@@ -123,8 +123,13 @@ static void m10_pop_frame(void) {
 static int     s_have_pending = 0;   // a peeked token is buffered
 static int     s_pending_tok = 0;    // its bison token id
 static YYSTYPE s_pending_val;        // its semantic value
+static YYLTYPE s_pending_loc;        // its location (see yylex's yylloc note)
 static int     s_last_emitted = 0;   // last token yylex returned (for `[]`)
 static int     s_last_token_line = 0;// source line of the token bridge_next_mapped last returned
+// Location of the token bridge_next_mapped last returned. Kept alongside
+// s_last_token_line because %locations needs the full start position (line
+// AND column), not just the line the `[]` lookahead compares.
+static Position s_last_token_pos = {1, 1, 0, NULL};
 
 // FIRST(type): if one of these follows an empty `[]`, the `[]` is a
 // slice-type prefix, not a bare empty-slice literal. Kept in sync with the
@@ -374,6 +379,7 @@ static int bridge_next_mapped(void) {
     // is overwritten by the recursive call, so it always reflects the token
     // actually returned.
     s_last_token_line = token->pos.line;
+    s_last_token_pos = token->pos;
 
     // Depth BEFORE map_token_to_bison mutates it (LBRACKET/LPAREN increment):
     // the clear check below must see the depth the token arrived AT, so tokens
@@ -450,15 +456,42 @@ static int bridge_next_mapped(void) {
 // Bison's lexer interface. Adds one-token lookahead over bridge_next_mapped to
 // emit RBRACKET_SLICE for an empty `[]` that prefixes a slice type (see the
 // disambiguation note above).
+// Publish `pos` as the location of the token yylex is about to return.
+// YYLTYPE is bison's default {first,last} line/column pair, which carries no
+// offset or filename; Goo's Position needs both. filename is constant for a
+// whole parse, so pos_from_loc (parser_actions.c) recovers it from the
+// lexer rather than threading it through every token. `offset` is not
+// reconstructible from a YYLTYPE and is left 0 by that bridge — no consumer
+// reads Position.offset today (diagnostics print line:column), and giving
+// expressions a real byte SPAN is the separate follow-up batch that the
+// source-text-in-messages work needs.
+static YYLTYPE bridge_loc_of(const Position* pos) {
+    YYLTYPE loc;
+    loc.first_line   = pos->line;
+    loc.first_column = pos->column;
+    loc.last_line    = pos->line;
+    loc.last_column  = pos->column;
+    return loc;
+}
+
 int yylex(void) {
     if (s_have_pending) {
         s_have_pending = 0;
         yylval = s_pending_val;
+        // Restore the PEEKED token's own location, not the lexer's current
+        // cursor: bridge_next_mapped ran twice to buffer this token, so
+        // s_last_token_pos has already moved past it. Without this, every
+        // token following an empty `[]` (the slice-type lookahead) would
+        // carry the position of the token after IT.
+        yylloc = s_pending_loc;
         s_last_emitted = s_pending_tok;
         return s_pending_tok;
     }
 
     int tok = bridge_next_mapped();
+    // Snapshot BEFORE the `[]` peek below runs bridge_next_mapped a second
+    // time and moves s_last_token_pos off this token.
+    Position tok_pos = s_last_token_pos;
 
     // Empty `[]`: the just-fetched RBRACKET closes an immediately-preceding
     // LBRACKET. Peek the next token; if it starts a type, this `[]` is a
@@ -472,7 +505,11 @@ int yylex(void) {
         int nxt_line = s_last_token_line;
         s_pending_tok = nxt;
         s_pending_val = yylval;
+        s_pending_loc = bridge_loc_of(&s_last_token_pos);  // the PEEKED token
         s_have_pending = 1;
+        // This call still returns the `]` itself, so it carries the `]`'s
+        // own location, not the peeked token's.
+        yylloc = bridge_loc_of(&tok_pos);
         // Only treat the empty `[]` as a slice-TYPE prefix when the following
         // type-starting token sits on the SAME source line. A newline between
         // `]` and the next token is a statement boundary — the lexer elides
@@ -491,6 +528,7 @@ int yylex(void) {
         return RBRACKET;
     }
 
+    yylloc = bridge_loc_of(&tok_pos);
     s_last_emitted = tok;
     return tok;
 }

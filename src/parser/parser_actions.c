@@ -714,12 +714,42 @@ CatchExprNode* catch_expr_arrow_new(ASTNode* operand, ASTNode* fallback) {
     return ast_catch_expr_new(operand, NULL, (ASTNode*)block, get_current_position());
 }
 
-// Helper function to get current position
+// Helper function to get current position.
+//
+// DEPRECATED for new call sites — prefer pos_from_loc(@$) / pos_from_loc(@1).
+// This returns current_lexer->pos, the LIVE lexer cursor, which by the time a
+// bison reduction action runs holds the position of the LOOKAHEAD token bison
+// has already read. Every node built through it therefore points at the NEXT
+// token rather than at its own construct. Statement and declaration
+// constructors have been migrated to bison's @$ locations; the remaining
+// expression/literal sites are a follow-up batch.
 Position get_current_position(void) {
     Position pos = {1, 1, 0, "<unknown>"};
     if (current_lexer) {
         pos = current_lexer->pos;
     }
+    return pos;
+}
+
+// Bridge a bison location to a Goo Position.
+//
+// YYLTYPE (bison's default) carries only {first,last} line/column, so the two
+// fields Position additionally needs are recovered here rather than threaded
+// through every token: `filename` is constant for a whole parse and comes off
+// the lexer, and `offset` is left 0 because no consumer reads it today
+// (diagnostics print line:column). Giving expressions a real byte SPAN — what
+// source-text-in-messages needs, so `100 + 100` can be quoted instead of only
+// its folded value 200 — is the follow-up batch that will fill it in.
+//
+// Takes first_line/first_column, i.e. the START of the rule's span: for @$
+// that is the first symbol of the whole production, which is the construct's
+// own beginning.
+Position pos_from_loc(int first_line, int first_column) {
+    Position pos;
+    pos.line = first_line;
+    pos.column = first_column;
+    pos.offset = 0;
+    pos.filename = current_lexer ? current_lexer->filename : "<unknown>";
     return pos;
 }
 
