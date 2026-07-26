@@ -578,6 +578,51 @@ static int codegen_coerce_arg_to_param(CodeGenerator* codegen, TypeChecker* chec
     return 1;
 }
 
+// Build the single packed-slice argument a variadic callee expects, from the
+// trailing actuals starting at `first_trailing` (which may be NULL when none
+// were given). Returns the slice value, or NULL on failure with a diagnostic
+// already emitted.
+//
+// Two shapes, matching Go's slice-sugar model (this is NOT C varargs):
+//   - `f(a, b, c)` packs the trailing actuals into a fresh slice, via the
+//     SAME construction helper the `[]T{...}` literal path uses, so each
+//     element gets the identical nullable-wrap / interface-box /
+//     constant-width-normalize / slice_coerce_elem treatment a literal's
+//     elements get. Zero trailing actuals is exactly the `first_elem == NULL`
+//     empty-literal case that helper already handles.
+//   - `f(s...)` passes `s` straight through with NO copy, preserving Go's
+//     aliasing semantics (a golden pins `mut(s...)` mutating s[0]). The
+//     checker has already guaranteed `s` is the sole trailing node and is
+//     []E with E the variadic element type. The lvalue load mirrors the
+//     fixed-arg path's; the resulting {ptr,len,cap} aggregate is the exact
+//     by-value shape codegen_build_slice_from_elems itself returns, so both
+//     shapes hand the caller an identical representation.
+//
+// Shared by the plain-call and method-call argument loops. The method loop
+// had NO variadic handling at all — it was purely 1:1 positional, so every
+// `a.m(1, 2, 3)` against a `...T` parameter failed LLVM module verification
+// ("Incorrect number of arguments passed to called function!"). That is the
+// same two-loops-drift failure that motivated codegen_coerce_arg_to_param
+// above, which is precisely why this is extracted rather than copied.
+static ValueInfo* codegen_emit_variadic_pack(CodeGenerator* codegen, TypeChecker* checker,
+                                             ASTNode* first_trailing, int has_spread,
+                                             Type* slice_type, Position pos) {
+    if (has_spread) {
+        ValueInfo* spread_val = codegen_generate_expression(codegen, checker, first_trailing);
+        if (!spread_val) return NULL;
+        if (spread_val->is_lvalue && spread_val->goo_type) {
+            LLVMTypeRef st = codegen_type_to_llvm(codegen, spread_val->goo_type);
+            if (st) {
+                spread_val->llvm_value = LLVMBuildLoad2(codegen->builder,
+                    st, spread_val->llvm_value, "spreadld");
+                spread_val->is_lvalue = 0;
+            }
+        }
+        return spread_val;
+    }
+    return codegen_build_slice_from_elems(codegen, checker, first_trailing, slice_type, pos);
+}
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -2079,8 +2124,37 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 recv_arg = rv;
                 value_info_free(recv);
             }
-            size_t margc = 1;
-            for (ASTNode* a = call->args; a; a = a->next) margc++;
+            // Variadic methods (`func (a *Acc) AddAll(ns ...int)`) take one
+            // arg per FIXED param plus exactly ONE packed slice, never a 1:1
+            // mapping with the actual argument count. Driving margc off the
+            // SIGNATURE rather than off the AST arg count is the whole fix:
+            // counting actuals passed `a.AddAll(1, 2, 3)` as three separate
+            // i64 arguments and failed module verification.
+            //
+            // Indices line up with no offset arithmetic because the receiver
+            // occupies slot 0 on both sides — it is param_types[0] and
+            // margs[0] — so the packed slice lands at param_count - 1 in both.
+            // msig is also what the nullable/interface coercion arms below
+            // read (PR #220): the LLVM parameter types alone cannot
+            // reconstruct a `?T` or interface shape from a lowered
+            // `{i1, T}`/`{ptr, ptr}`.
+            Type* msig = (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION)
+                         ? mvar->type : NULL;
+            size_t msig_params = msig ? msig->data.function.param_count : 0;
+            int method_is_variadic = msig
+                                     && msig->data.function.is_variadic
+                                     && msig->data.function.param_types
+                                     && msig_params > 1;
+            // Fixed args occupy margs[1 .. fixed_end-1]; the packed slice
+            // lands at margs[msig_params - 1].
+            size_t mfixed_end = method_is_variadic ? msig_params - 1 : (size_t)-1;
+            size_t margc;
+            if (method_is_variadic) {
+                margc = msig_params;
+            } else {
+                margc = 1;
+                for (ASTNode* a = call->args; a; a = a->next) margc++;
+            }
             LLVMValueRef* margs = malloc(sizeof(LLVMValueRef) * margc);
             if (!margs) { free(mangled); return NULL; }
             margs[0] = recv_arg;
@@ -2098,18 +2172,17 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 mparam_tys = malloc(sizeof(LLVMTypeRef) * mfn_params);
                 if (mparam_tys) LLVMGetParamTypes(mfn_ty, mparam_tys);
             }
-            // The method's own GOO signature. Its param_types carry the
-            // receiver at [0] exactly as margs does, so this loop's `i`
-            // indexes both with no offset — the same alignment mparam_tys
-            // already relies on. Needed IN ADDITION to the LLVM parameter
-            // types because the nullable/interface arms cannot reconstruct
-            // a `?T` or interface shape from a lowered `{i1, T}`/`{ptr, ptr}`.
-            Type* msig = (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION)
-                         ? mvar->type : NULL;
-            size_t msig_params = msig ? msig->data.function.param_count : 0;
+            // msig / msig_params are computed above, alongside margc.
             int ok = 1;
             size_t i = 1;
-            for (ASTNode* a = call->args; a; a = a->next, i++) {
+            ASTNode* a = call->args;
+            for (; a; a = a->next, i++) {
+                // Stop at the first trailing actual once the fixed params are
+                // filled — everything from here is packed into one slice
+                // below, not passed positionally. `a` is left pointing at
+                // that first trailing node (or NULL if none were given),
+                // exactly as the plain-call loop leaves its own `arg`.
+                if (method_is_variadic && i >= mfixed_end) break;
                 Type* param_type = (msig && i < msig_params)
                                    ? msig->data.function.param_types[i] : NULL;
 
@@ -2170,6 +2243,20 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 value_info_free(av);
             }
             free(mparam_tys);
+            if (ok && method_is_variadic) {
+                // `a` points at the first trailing actual, or NULL if none
+                // were given (`a.AddAll()` — the empty-slice case the pack
+                // helper already handles). Shared with the plain-call loop.
+                ValueInfo* packed = codegen_emit_variadic_pack(
+                    codegen, checker, a, call->has_spread,
+                    msig->data.function.param_types[msig_params - 1], expr->pos);
+                if (!packed) {
+                    ok = 0;
+                } else {
+                    margs[msig_params - 1] = packed->llvm_value;
+                    value_info_free(packed);
+                }
+            }
             if (!ok) { free(margs); free(mangled); return NULL; }
             LLVMValueRef result = LLVMBuildCall2(codegen->builder,
                 LLVMGlobalGetValueType(fn), fn, margs, (unsigned)margc, "");
@@ -2489,40 +2576,13 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         // slice_coerce_elem rules a `[]int{...}` literal's elements get.
         // Zero trailing args (`sum()`) is exactly the `first_elem == NULL`
         // case that path already handles for an empty literal.
-        if (callee_is_variadic && call->has_spread) {
-            // Task 3: `f(s...)` bypasses the per-element pack builder
-            // entirely — the typechecker (expression_checker.c's has_spread
-            // block) already guarantees `arg` is the sole trailing node and
-            // its type is []E with E identical to the variadic element type.
-            // Pass its slice value straight through as the pack arg (Go
-            // aliasing semantics — the golden's `mut(s...)` mutating s[0]
-            // pins this): generate the operand, load if it arrived as an
-            // lvalue (mirrors the generic fixed-arg lvalue-load above), and
-            // use the resulting {ptr,len,cap} aggregate value AS-IS, with no
-            // copy. This is the exact by-value shape
-            // codegen_build_slice_from_elems itself returns (its final
-            // insertvalue chain builds the same aggregate), so both paths
-            // hand args[fixed_count] the identical representation.
-            ValueInfo* spread_val = codegen_generate_expression(codegen, checker, arg);
-            if (!spread_val) {
-                free(args);
-                value_info_free(func_val);
-                return NULL;
-            }
-            if (spread_val->is_lvalue && spread_val->goo_type) {
-                LLVMTypeRef st = codegen_type_to_llvm(codegen, spread_val->goo_type);
-                if (st) {
-                    spread_val->llvm_value = LLVMBuildLoad2(codegen->builder,
-                        st, spread_val->llvm_value, "spreadld");
-                    spread_val->is_lvalue = 0;
-                }
-            }
-            args[fixed_count] = spread_val->llvm_value;
-            value_info_free(spread_val);
-        } else if (callee_is_variadic) {
-            Type* slice_type = func_goo_type->data.function.param_types[fixed_count];
-            ValueInfo* packed = codegen_build_slice_from_elems(
-                codegen, checker, arg, slice_type, expr->pos);
+        if (callee_is_variadic) {
+            // `arg` now points at the first trailing actual, or NULL if none
+            // were given. See codegen_emit_variadic_pack (shared with the
+            // method-call loop) for the pack-vs-spread split.
+            ValueInfo* packed = codegen_emit_variadic_pack(
+                codegen, checker, arg, call->has_spread,
+                func_goo_type->data.function.param_types[fixed_count], expr->pos);
             if (!packed) {
                 free(args);
                 value_info_free(func_val);
