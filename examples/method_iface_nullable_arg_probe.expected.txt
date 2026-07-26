@@ -1,0 +1,9 @@
+plain iface: 16
+plain opt: 9
+ptr recv iface: 16
+val recv iface: 32
+ptr recv opt bare: 21
+ptr recv opt prewrapped: 24
+ptr recv opt nil: 24
+val recv opt: 30
+val recv opt nil: 24
