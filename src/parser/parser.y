@@ -1569,7 +1569,7 @@ select_case_list:
 
 select_case:
     CASE expression COLON case_body {
-        SelectCaseNode* case_node = ast_select_case_new($2, $4, get_current_position());
+        SelectCaseNode* case_node = ast_select_case_new($2, $4, POS(@$));
         $$ = (ASTNode*)case_node;
     }
     // gofmt-syntax-b Task 4 (P1.10): `case v := <-ch:` — value-binding
@@ -1584,7 +1584,7 @@ select_case:
     // default, and the comma-ok arm below) is unaffected by this new field.
     | CASE identifier SHORT_ASSIGN expression COLON case_body {
         IdentifierNode* bid = (IdentifierNode*)$2;
-        SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
+        SelectCaseNode* case_node = ast_select_case_new($4, $6, POS(@$));
         case_node->bind_name = strdup(bid->name);
         case_node->is_declare = 1;
         ast_node_free($2);
@@ -1595,7 +1595,7 @@ select_case:
     // assignment-compatible with the channel's element type).
     | CASE identifier ASSIGN expression COLON case_body {
         IdentifierNode* bid = (IdentifierNode*)$2;
-        SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
+        SelectCaseNode* case_node = ast_select_case_new($4, $6, POS(@$));
         case_node->bind_name = strdup(bid->name);
         case_node->is_declare = 0;
         ast_node_free($2);
@@ -1610,14 +1610,14 @@ select_case:
     // name is kept (both freed here): the case is rejected either way, so
     // nothing downstream needs them.
     | CASE identifier COMMA identifier SHORT_ASSIGN expression COLON case_body {
-        SelectCaseNode* case_node = ast_select_case_new($6, $8, get_current_position());
+        SelectCaseNode* case_node = ast_select_case_new($6, $8, POS(@$));
         case_node->is_declare = -1;
         ast_node_free($2);
         ast_node_free($4);
         $$ = (ASTNode*)case_node;
     }
     | DEFAULT COLON case_body {
-        SelectCaseNode* case_node = ast_select_case_new(NULL, $3, get_current_position());
+        SelectCaseNode* case_node = ast_select_case_new(NULL, $3, POS(@$));
         $$ = (ASTNode*)case_node;
     }
     ;
@@ -1781,10 +1781,10 @@ type_case_list:
 
 type_case_clause:
     CASE type_list COLON case_body {
-        $$ = (ASTNode*)ast_type_case_new($2, $4, get_current_position());
+        $$ = (ASTNode*)ast_type_case_new($2, $4, POS(@$));
     }
     | DEFAULT COLON case_body {
-        $$ = (ASTNode*)ast_type_case_new(NULL, $3, get_current_position());
+        $$ = (ASTNode*)ast_type_case_new(NULL, $3, POS(@$));
     }
     ;
 
@@ -1801,7 +1801,7 @@ type_list:
         $$ = $1;
     }
     | NIL {
-        LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", get_current_position());
+        LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", POS(@$));
         $$ = (ASTNode*)lit;
     }
     | type_list COMMA type {
@@ -1813,7 +1813,7 @@ type_list:
         $$ = $1;
     }
     | type_list COMMA NIL {
-        LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", get_current_position());
+        LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", POS(@$));
         ASTNode* current = $1;
         while (current->next) {
             current = current->next;
@@ -1839,25 +1839,25 @@ case_clause_list:
 
 case_clause:
     CASE expression COLON case_body {
-        $$ = (ASTNode*)ast_case_clause_new($2, $4, get_current_position());
+        $$ = (ASTNode*)ast_case_clause_new($2, $4, POS(@$));
     }
     | DEFAULT COLON case_body {
-        $$ = (ASTNode*)ast_case_clause_new(NULL, $3, get_current_position());
+        $$ = (ASTNode*)ast_case_clause_new(NULL, $3, POS(@$));
     }
     ;
 
 // Expressions
 expression:
-    unary_expr { $$ = $1; }
-    | postfix_expr { $$ = $1; }
-    | binary_expr { $$ = $1; }
-    | try_expr { $$ = $1; }      // Goo extension
-    | catch_expr { $$ = $1; }    // Goo extension
-    | match_expr { $$ = $1; }    // Goo extension
+    unary_expr { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | postfix_expr { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | binary_expr { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | try_expr { $$ = $1; if ($$) $$->pos = POS(@1); }      // Goo extension
+    | catch_expr { $$ = $1; if ($$) $$->pos = POS(@1); }    // Goo extension
+    | match_expr { $$ = $1; if ($$) $$->pos = POS(@1); }    // Goo extension
     ;
 
 unary_expr:
-    primary_expr { $$ = $1; }
+    primary_expr { $$ = $1; if ($$) $$->pos = POS(@1); }
     | BANG unary_expr {
         // Boolean NOT `!x`. The lexer emits BANG for a lone `!` (TOKEN_NOT
         // was never emitted — the old NOT production was dead grammar).
@@ -1875,11 +1875,11 @@ unary_expr:
         // start the `!T` error-union return type. The reduce alternative
         // is unreachable in real programs (function bodies start with
         // LBRACE, and func literals don't parse in expression position).
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(NOT), $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(NOT), $2, POS(@$));
         $$ = (ASTNode*)unary;
     }
     | BIT_NOT unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_NOT), $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_NOT), $2, POS(@$));
         $$ = (ASTNode*)unary;
     }
     | BIT_XOR unary_expr %prec BIT_NOT {
@@ -1887,101 +1887,101 @@ unary_expr:
         // %prec BIT_NOT gives the PREFIX form the high unary precedence (not
         // BIT_XOR's low binary precedence), which is what keeps this from
         // introducing the reduce/reduce conflicts a bare rule would.
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_XOR), $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_XOR), $2, POS(@$));
         $$ = (ASTNode*)unary;
     }
     | MINUS unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MINUS), $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MINUS), $2, POS(@$));
         $$ = (ASTNode*)unary;
     }
     | PLUS unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(PLUS), $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(PLUS), $2, POS(@$));
         $$ = (ASTNode*)unary;
     }
     | ARROW unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(ARROW), $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(ARROW), $2, POS(@$));
         $$ = (ASTNode*)unary;
     }
     | BIT_AND unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_AND), $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_AND), $2, POS(@$));
         $$ = (ASTNode*)unary;
     }
     | MULTIPLY unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MULTIPLY), $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MULTIPLY), $2, POS(@$));
         $$ = (ASTNode*)unary;
     }
     ;
 
 postfix_expr:
     primary_expr NOT {
-        PostfixExprNode* postfix = ast_postfix_expr_new($1, NOT, get_current_position());
+        PostfixExprNode* postfix = ast_postfix_expr_new($1, NOT, POS(@$));
         $$ = (ASTNode*)postfix;
     }
     | primary_expr INCREMENT {
-        PostfixExprNode* postfix = ast_postfix_expr_new($1, bison_token_to_token_type(INCREMENT), get_current_position());
+        PostfixExprNode* postfix = ast_postfix_expr_new($1, bison_token_to_token_type(INCREMENT), POS(@$));
         $$ = (ASTNode*)postfix;
     }
     | primary_expr DECREMENT {
-        PostfixExprNode* postfix = ast_postfix_expr_new($1, bison_token_to_token_type(DECREMENT), get_current_position());
+        PostfixExprNode* postfix = ast_postfix_expr_new($1, bison_token_to_token_type(DECREMENT), POS(@$));
         $$ = (ASTNode*)postfix;
     }
     ;
 
 binary_expr:
     expression PLUS expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(PLUS), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(PLUS), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression MINUS expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MINUS), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MINUS), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression MULTIPLY expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MULTIPLY), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MULTIPLY), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression DIVIDE expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(DIVIDE), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(DIVIDE), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression MODULO expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MODULO), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MODULO), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression EQ expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(EQ), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(EQ), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression NE expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(NE), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(NE), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression LT expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LT), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LT), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression LE expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LE), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LE), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression GT expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(GT), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(GT), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression GE expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(GE), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(GE), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression AND expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(AND), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(AND), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression OR expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(OR), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(OR), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression ARROW expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ARROW), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ARROW), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     // Binary bitwise operators. Tokens, precedence (see the %left block),
@@ -1990,40 +1990,40 @@ binary_expr:
     // address-of operator (`&x`), exactly like MULTIPLY's unary-deref dual
     // role above — the unary_expr level and operator precedence disambiguate.
     | expression LSHIFT expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LSHIFT), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LSHIFT), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression RSHIFT expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(RSHIFT), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(RSHIFT), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression BIT_AND expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_AND), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_AND), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression AND_NOT expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(AND_NOT), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(AND_NOT), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression BIT_OR expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_OR), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_OR), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     | expression BIT_XOR expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_XOR), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_XOR), $3, POS(@$));
         $$ = (ASTNode*)binary;
     }
     ;
 
 primary_expr:
-    identifier { $$ = $1; }
-    | literal { $$ = $1; }
-    | call_expr { $$ = $1; }
-    | index_expr { $$ = $1; }
-    | selector_expr { $$ = $1; }
-    | slice_lit { $$ = $1; }
-    | map_lit { $$ = $1; }
-    | struct_lit { $$ = $1; }
+    identifier { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | literal { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | call_expr { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | index_expr { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | selector_expr { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | slice_lit { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | map_lit { $$ = $1; if ($$) $$->pos = POS(@1); }
+    | struct_lit { $$ = $1; if ($$) $$->pos = POS(@1); }
     /* Task 2 (stdlib unblocker): `[]byte(s)` / `[]T(expr)` conversion form.
        slice_type is NOT itself a primary_expr (it's a TYPE), so this can't
        reuse call_expr's `primary_expr LPAREN ... RPAREN` shape — it needs
@@ -2033,7 +2033,7 @@ primary_expr:
     | slice_type LPAREN expression RPAREN {
         SliceConvNode* conv = (SliceConvNode*)malloc(sizeof(SliceConvNode));
         conv->base.type = AST_SLICE_CONVERSION;
-        conv->base.pos = get_current_position();
+        conv->base.pos = POS(@$);
         conv->base.node_type = NULL;
         conv->base.next = NULL;
         conv->slice_type = $1;
@@ -2064,7 +2064,7 @@ primary_expr:
        shift/reduce + 256 reduce/reduce; a delta requires a written
        conflict-family analysis and full-suite differential verification. */
     | FUNC LPAREN RPAREN block {
-        FuncLitNode* lit = ast_func_lit_new(get_current_position());
+        FuncLitNode* lit = ast_func_lit_new(POS(@$));
         lit->params = NULL;
         lit->return_type = NULL;
         lit->body = $4;
@@ -2072,14 +2072,14 @@ primary_expr:
     }
     | FUNC LPAREN func_params RPAREN block {
         reinterpret_grouped_names($3); // Go grouped params `(x, y int)`
-        FuncLitNode* lit = ast_func_lit_new(get_current_position());
+        FuncLitNode* lit = ast_func_lit_new(POS(@$));
         lit->params = $3;
         lit->return_type = NULL;
         lit->body = $5;
         $$ = (ASTNode*)lit;
     }
     | FUNC LPAREN RPAREN func_result block {
-        FuncLitNode* lit = ast_func_lit_new(get_current_position());
+        FuncLitNode* lit = ast_func_lit_new(POS(@$));
         lit->params = NULL;
         lit->return_type = $4;
         lit->body = $5;
@@ -2087,7 +2087,7 @@ primary_expr:
     }
     | FUNC LPAREN func_params RPAREN func_result block {
         reinterpret_grouped_names($3); // Go grouped params `(x, y int)`
-        FuncLitNode* lit = ast_func_lit_new(get_current_position());
+        FuncLitNode* lit = ast_func_lit_new(POS(@$));
         lit->params = $3;
         lit->return_type = $5;
         lit->body = $6;
@@ -2267,7 +2267,7 @@ struct_type:
     STRUCT LBRACE struct_field_list RBRACE {
         StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
         st->base.type = AST_STRUCT_TYPE;
-        st->base.pos = get_current_position();
+        st->base.pos = POS(@$);
         st->base.node_type = NULL;
         st->base.next = NULL;
         st->fields = $3;
@@ -2277,7 +2277,7 @@ struct_type:
     | STRUCT LBRACE RBRACE {
         StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
         st->base.type = AST_STRUCT_TYPE;
-        st->base.pos = get_current_position();
+        st->base.pos = POS(@$);
         st->base.node_type = NULL;
         st->base.next = NULL;
         st->fields = NULL;
@@ -2288,10 +2288,10 @@ struct_type:
 
 enum_type:
     ENUM LBRACE enum_variant_list RBRACE {
-        $$ = (ASTNode*)ast_enum_type_new($3, get_current_position());
+        $$ = (ASTNode*)ast_enum_type_new($3, POS(@$));
     }
     | ENUM LBRACE RBRACE {
-        $$ = (ASTNode*)ast_enum_type_new(NULL, get_current_position());
+        $$ = (ASTNode*)ast_enum_type_new(NULL, POS(@$));
     }
     ;
 
@@ -2333,10 +2333,10 @@ enum_variant:
 // TYPE_INTERFACE method set.
 interface_type:
     INTERFACE LBRACE interface_method_list RBRACE {
-        $$ = (ASTNode*)ast_interface_type_new($3, get_current_position());
+        $$ = (ASTNode*)ast_interface_type_new($3, POS(@$));
     }
     | INTERFACE LBRACE RBRACE {
-        $$ = (ASTNode*)ast_interface_type_new(NULL, get_current_position());
+        $$ = (ASTNode*)ast_interface_type_new(NULL, POS(@$));
     }
     ;
 
@@ -2668,7 +2668,7 @@ type_name:
     identifier {
         BasicTypeNode* basic = (BasicTypeNode*)malloc(sizeof(BasicTypeNode));
         basic->base.type = AST_BASIC_TYPE;
-        basic->base.pos = get_current_position();
+        basic->base.pos = POS(@$);
         basic->base.node_type = NULL;
         basic->base.next = NULL;
 
@@ -2686,7 +2686,7 @@ type_name:
     | identifier DOT identifier {
         BasicTypeNode* basic = (BasicTypeNode*)malloc(sizeof(BasicTypeNode));
         basic->base.type = AST_BASIC_TYPE;
-        basic->base.pos = get_current_position();
+        basic->base.pos = POS(@$);
         basic->base.node_type = NULL;
         basic->base.next = NULL;
 
@@ -2704,7 +2704,7 @@ array_type:
     LBRACKET expression RBRACKET type {
         ArrayTypeNode* array = (ArrayTypeNode*)malloc(sizeof(ArrayTypeNode));
         array->base.type = AST_ARRAY_TYPE;
-        array->base.pos = get_current_position();
+        array->base.pos = POS(@$);
         array->base.node_type = NULL;
         array->base.next = NULL;
         array->length = $2;
@@ -2721,7 +2721,7 @@ slice_type:
         // state as the bare `[]` empty-slice literal, so no conflict is added.
         SliceTypeNode* slice = (SliceTypeNode*)malloc(sizeof(SliceTypeNode));
         slice->base.type = AST_SLICE_TYPE;
-        slice->base.pos = get_current_position();
+        slice->base.pos = POS(@$);
         slice->base.node_type = NULL;
         slice->base.next = NULL;
         slice->element_type = $3;
@@ -2733,7 +2733,7 @@ map_type:
     MAP LBRACKET type RBRACKET type {
         MapTypeNode* map = (MapTypeNode*)malloc(sizeof(MapTypeNode));
         map->base.type = AST_MAP_TYPE;
-        map->base.pos = get_current_position();
+        map->base.pos = POS(@$);
         map->base.node_type = NULL;
         map->base.next = NULL;
         map->key_type = $3;
@@ -2744,11 +2744,11 @@ map_type:
 
 chan_type:
     CHAN type {
-        ChanTypeNode* chan = ast_chan_type_new($2, CHAN_PATTERN_BASIC, get_current_position());
+        ChanTypeNode* chan = ast_chan_type_new($2, CHAN_PATTERN_BASIC, POS(@$));
         $$ = (ASTNode*)chan;
     }
     | chan_pattern CHAN type {
-        ChanTypeNode* chan = ast_chan_type_new($3, (ChannelPattern)$1, get_current_position());
+        ChanTypeNode* chan = ast_chan_type_new($3, (ChannelPattern)$1, POS(@$));
         $$ = (ASTNode*)chan;
     }
     ;
@@ -2771,7 +2771,7 @@ func_type:
         // independently and correctly for all four shapes.
         FuncTypeNode* func_type_node = (FuncTypeNode*)malloc(sizeof(FuncTypeNode));
         func_type_node->base.type = AST_FUNC_TYPE;
-        func_type_node->base.pos = get_current_position();
+        func_type_node->base.pos = POS(@$);
         func_type_node->base.node_type = NULL;
         func_type_node->base.next = NULL;
         func_type_node->params = g_func_signature_params;
@@ -2786,7 +2786,7 @@ pointer_type:
     MULTIPLY type {
         PointerTypeNode* ptr = (PointerTypeNode*)malloc(sizeof(PointerTypeNode));
         ptr->base.type = AST_POINTER_TYPE;
-        ptr->base.pos = get_current_position();
+        ptr->base.pos = POS(@$);
         ptr->base.node_type = NULL;
         ptr->base.next = NULL;
         ptr->element_type = $2;
@@ -2796,7 +2796,7 @@ pointer_type:
 
 reference_type:
     BIT_AND type {
-        ReferenceTypeNode* ref = ast_reference_type_new($2, 0, get_current_position());
+        ReferenceTypeNode* ref = ast_reference_type_new($2, 0, POS(@$));
         $$ = (ASTNode*)ref;
     }
     ;
@@ -2806,7 +2806,7 @@ unsafe_ptr_type:
         // This matches "unsafe.Pointer" syntax (no multiply for now to avoid conflicts)
         IdentifierNode* ident = (IdentifierNode*)$3;
         if (strcmp(ident->name, "Pointer") == 0) {
-            UnsafePtrTypeNode* unsafe_ptr = ast_unsafe_ptr_type_new(NULL, get_current_position());
+            UnsafePtrTypeNode* unsafe_ptr = ast_unsafe_ptr_type_new(NULL, POS(@$));
             ast_node_free($3);
             $$ = (ASTNode*)unsafe_ptr;
         } else {
@@ -2821,14 +2821,14 @@ unsafe_ptr_type:
 
 error_union_type:
     BANG type {
-        ErrorUnionTypeNode* error_union = ast_error_union_type_new($2, get_current_position());
+        ErrorUnionTypeNode* error_union = ast_error_union_type_new($2, POS(@$));
         $$ = (ASTNode*)error_union;
     }
     ;
 
 nullable_type:
     QUESTION type {
-        NullableTypeNode* nullable = ast_nullable_type_new($2, get_current_position());
+        NullableTypeNode* nullable = ast_nullable_type_new($2, POS(@$));
         $$ = (ASTNode*)nullable;
     }
     ;
@@ -3052,7 +3052,7 @@ literal:
     INT_LITERAL {
         char int_str[32];
         snprintf(int_str, sizeof(int_str), "%lld", $1);
-        LiteralNode* lit = ast_literal_new(TOKEN_INT, int_str, get_current_position());
+        LiteralNode* lit = ast_literal_new(TOKEN_INT, int_str, POS(@1));
         $$ = (ASTNode*)lit;
     }
     | FLOAT_LITERAL {
@@ -3071,24 +3071,24 @@ literal:
             snprintf(float_str, sizeof(float_str), "%.*g", prec, $1);
             if (strtod(float_str, NULL) == $1) break;
         }
-        LiteralNode* lit = ast_literal_new(TOKEN_FLOAT, float_str, get_current_position());
+        LiteralNode* lit = ast_literal_new(TOKEN_FLOAT, float_str, POS(@1));
         $$ = (ASTNode*)lit;
     }
     | STRING_LITERAL {
-        LiteralNode* lit = ast_string_literal_new($1.data, $1.len, get_current_position());
+        LiteralNode* lit = ast_string_literal_new($1.data, $1.len, POS(@1));
         free($1.data);
         $$ = (ASTNode*)lit;
     }
     | TRUE {
-        LiteralNode* lit = ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        LiteralNode* lit = ast_literal_new(TOKEN_TRUE, "true", POS(@1));
         $$ = (ASTNode*)lit;
     }
     | FALSE {
-        LiteralNode* lit = ast_literal_new(TOKEN_FALSE, "false", get_current_position());
+        LiteralNode* lit = ast_literal_new(TOKEN_FALSE, "false", POS(@1));
         $$ = (ASTNode*)lit;
     }
     | NIL {
-        LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", get_current_position());
+        LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", POS(@1));
         $$ = (ASTNode*)lit;
     }
     ;
@@ -3120,17 +3120,17 @@ match_case_list:
 
 match_case:
     CASE pattern COLON statement_list {
-        MatchCaseNode* case_node = ast_match_case_new($2, NULL, $4, get_current_position());
+        MatchCaseNode* case_node = ast_match_case_new($2, NULL, $4, POS(@$));
         $$ = (ASTNode*)case_node;
     }
     | CASE pattern guard_condition COLON statement_list {
-        MatchCaseNode* case_node = ast_match_case_new($2, $3, $5, get_current_position());
+        MatchCaseNode* case_node = ast_match_case_new($2, $3, $5, POS(@$));
         $$ = (ASTNode*)case_node;
     }
     | DEFAULT COLON statement_list {
         // Default case is represented as a wildcard pattern
-        PatternNode* wildcard = ast_pattern_new(PATTERN_WILDCARD, get_current_position());
-        MatchCaseNode* case_node = ast_match_case_new((ASTNode*)wildcard, NULL, $3, get_current_position());
+        PatternNode* wildcard = ast_pattern_new(PATTERN_WILDCARD, POS(@$));
+        MatchCaseNode* case_node = ast_match_case_new((ASTNode*)wildcard, NULL, $3, POS(@$));
         $$ = (ASTNode*)case_node;
     }
     ;

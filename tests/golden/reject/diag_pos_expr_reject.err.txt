@@ -1,0 +1,1 @@
+tests/golden/reject/diag_pos_expr_reject.goo:20:

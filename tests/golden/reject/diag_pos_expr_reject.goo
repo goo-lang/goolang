@@ -1,0 +1,22 @@
+// diag_pos_expr_reject: a diagnostic anchored on an EXPRESSION node must
+// land on the line of that expression, not on the line of the next token.
+//
+// Batch 1 (PR #221) moved statement and declaration nodes onto bison's @$
+// locations, but left the expression and literal constructors on
+// get_current_position() — which returns the LIVE lexer cursor, i.e. the
+// LOOKAHEAD token bison has already read. "constant N overflows T" is
+// positioned by check_literal_range (expression_checker.c) from the LITERAL
+// node, so it kept pointing one token past the literal: this fixture's error
+// was reported on line 21 (`_ = x`) instead of line 20.
+//
+// The sidecar pins the LINE only, deliberately. The COLUMN is still one too
+// large across the whole compiler — lexer_new sets pos.column = 1 and then
+// immediately calls lexer_read_char, which increments it — and that
+// off-by-one is ledgered as its own arc in .handoff.md (a naive fix yields
+// column 0 on the ASI path). Go reports column 15 here, pointing at `200`.
+package main
+
+func main() {
+	var x int8 = 200
+	_ = x
+}
