@@ -513,6 +513,71 @@ static IdentifierNode* codegen_call_ident_callee(ASTNode* func_node) {
     return NULL;
 }
 
+// Coerce an ALREADY-EVALUATED argument to its declared parameter type:
+// nullable auto-wrap (`?T`) followed by interface boxing. Both arms need the
+// parameter's GOO `Type*`, not just its LLVM lowering — `{i1, T}` and
+// `{ptr, ptr}` cannot be reconstructed from the lowered parameter type alone
+// — and both load an lvalue argument internally before wrapping. The general
+// lvalue-load fallthrough at each call site covers the case where NEITHER arm
+// fires (see its comment in the plain-call loop for why that is not a
+// duplicate of the loads here).
+//
+// Shared by the plain-call and method-call argument loops. The method loop
+// originally mirrored only that general-load arm (ef51fda), so a method with
+// an interface- or nullable-typed parameter failed LLVM module verification
+// for EVERY argument shape — the raw concrete value was handed to a
+// signature declaring `{ptr, ptr}` or `{i1, T}`. Extracted rather than
+// copied a third time: three near-identical arms across two loops is what
+// let them drift apart in the first place.
+//
+// Mutates arg_val->llvm_value / ->goo_type in place. Returns 1 on success, 0
+// on failure (codegen_interface_box has already emitted the diagnostic); the
+// caller owns arg_val either way.
+static int codegen_coerce_arg_to_param(CodeGenerator* codegen, TypeChecker* checker,
+                                       Type* param_type, ValueInfo* arg_val,
+                                       Position pos) {
+    if (!param_type || !arg_val) return 1;
+
+    // Auto-wrap a bare value into the param's nullable type. If the
+    // argument is already nullable (e.g. passing a `?int` variable),
+    // no wrapping is needed.
+    if (param_type->kind == TYPE_NULLABLE &&
+        arg_val->goo_type && arg_val->goo_type->kind != TYPE_NULLABLE) {
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) {
+                arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "argld");
+                arg_val->is_lvalue = 0;
+            }
+        }
+        LLVMTypeRef nullable_llvm = codegen_type_to_llvm(codegen, param_type);
+        if (nullable_llvm) {
+            arg_val->llvm_value = codegen_create_nullable_with_value(
+                codegen, nullable_llvm, arg_val->llvm_value, arg_val->goo_type);
+            arg_val->goo_type = param_type;
+        }
+    }
+
+    // Box a concrete argument into an interface parameter (P4-5).
+    if (param_type->kind == TYPE_INTERFACE &&
+        arg_val->goo_type && arg_val->goo_type->kind != TYPE_INTERFACE) {
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) {
+                arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "ifargld");
+                arg_val->is_lvalue = 0;
+            }
+        }
+        LLVMValueRef boxed = codegen_interface_box(codegen, checker, param_type,
+                                                   arg_val->goo_type, arg_val->llvm_value, pos);
+        if (!boxed) return 0;
+        arg_val->llvm_value = boxed;
+        arg_val->goo_type = param_type;
+    }
+
+    return 1;
+}
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -2033,11 +2098,49 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 mparam_tys = malloc(sizeof(LLVMTypeRef) * mfn_params);
                 if (mparam_tys) LLVMGetParamTypes(mfn_ty, mparam_tys);
             }
+            // The method's own GOO signature. Its param_types carry the
+            // receiver at [0] exactly as margs does, so this loop's `i`
+            // indexes both with no offset — the same alignment mparam_tys
+            // already relies on. Needed IN ADDITION to the LLVM parameter
+            // types because the nullable/interface arms cannot reconstruct
+            // a `?T` or interface shape from a lowered `{i1, T}`/`{ptr, ptr}`.
+            Type* msig = (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION)
+                         ? mvar->type : NULL;
+            size_t msig_params = msig ? msig->data.function.param_count : 0;
             int ok = 1;
             size_t i = 1;
             for (ASTNode* a = call->args; a; a = a->next, i++) {
+                Type* param_type = (msig && i < msig_params)
+                                   ? msig->data.function.param_types[i] : NULL;
+
+                // nil literal → build the param's null-nullable (?T) or bare
+                // zero value (pointer/slice/map/chan/func) directly from the
+                // DECLARED param type, without evaluating the literal — a
+                // bare `nil` carries no type context of its own. Mirrors the
+                // plain-call loop's identical pre-evaluation arm.
+                if (param_type &&
+                    (param_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(param_type)) &&
+                    a->type == AST_LITERAL &&
+                    ((LiteralNode*)a)->literal_type == TOKEN_NIL) {
+                    ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, param_type);
+                    if (!nil_val) { ok = 0; break; }
+                    margs[i] = nil_val->llvm_value;
+                    value_info_free(nil_val);
+                    continue;
+                }
+
                 ValueInfo* av = codegen_generate_expression(codegen, checker, a);
                 if (!av) { ok = 0; break; }
+
+                // Nullable auto-wrap then interface box (shared with the
+                // plain-call loop — see codegen_coerce_arg_to_param).
+                if (!codegen_coerce_arg_to_param(codegen, checker, param_type,
+                                                 av, a->pos)) {
+                    value_info_free(av);
+                    ok = 0;
+                    break;
+                }
+
                 // Load a scalar lvalue argument (e.g. a slice-index GEP)
                 // before coercion — mirrors the plain-call path's
                 // load-before-use step (2c30703) and arc-16's
@@ -2045,6 +2148,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 // this, an lvalue argument's raw element ADDRESS was passed
                 // straight through, failing LLVM module verification
                 // ("Call parameter type does not match function signature!").
+                // Ordered AFTER the arms above, which load internally when
+                // they fire: this is the neither-arm-fired fallthrough, the
+                // same relationship the plain-call loop documents.
                 if (av->is_lvalue && av->goo_type) {
                     LLVMTypeRef at = codegen_type_to_llvm(codegen, av->goo_type);
                     if (at) {
@@ -2323,41 +2429,11 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return NULL;
             }
 
-            // Auto-wrap a bare value into the param's nullable type. If the
-            // argument is already nullable (e.g. passing a `?int` variable),
-            // no wrapping is needed.
-            if (param_type && param_type->kind == TYPE_NULLABLE &&
-                arg_val->goo_type && arg_val->goo_type->kind != TYPE_NULLABLE) {
-                if (arg_val->is_lvalue && arg_val->goo_type) {
-                    LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
-                    if (at) {
-                        arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "argld");
-                        arg_val->is_lvalue = 0;
-                    }
-                }
-                LLVMTypeRef nullable_llvm = codegen_type_to_llvm(codegen, param_type);
-                if (nullable_llvm) {
-                    arg_val->llvm_value = codegen_create_nullable_with_value(
-                        codegen, nullable_llvm, arg_val->llvm_value, arg_val->goo_type);
-                    arg_val->goo_type = param_type;
-                }
-            }
-
-            // Box a concrete argument into an interface parameter (P4-5).
-            if (param_type && param_type->kind == TYPE_INTERFACE &&
-                arg_val->goo_type && arg_val->goo_type->kind != TYPE_INTERFACE) {
-                if (arg_val->is_lvalue && arg_val->goo_type) {
-                    LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
-                    if (at) {
-                        arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "ifargld");
-                        arg_val->is_lvalue = 0;
-                    }
-                }
-                LLVMValueRef boxed = codegen_interface_box(codegen, checker, param_type,
-                                                           arg_val->goo_type, arg_val->llvm_value, arg->pos);
-                if (!boxed) { value_info_free(arg_val); free(args); value_info_free(func_val); return NULL; }
-                arg_val->llvm_value = boxed;
-                arg_val->goo_type = param_type;
+            // Nullable auto-wrap then interface box (shared with the
+            // method-call argument loop — see codegen_coerce_arg_to_param).
+            if (!codegen_coerce_arg_to_param(codegen, checker, param_type,
+                                             arg_val, arg->pos)) {
+                value_info_free(arg_val); free(args); value_info_free(func_val); return NULL;
             }
 
             // Load a scalar lvalue argument before use. The nullable/interface

@@ -187,11 +187,40 @@ const char* type_checker_pkg_dispatch_name(TypeChecker* checker, const char* ide
     return ident_name;
 }
 
-// Create a package namespace and push it onto the registry. Strings are copied
-// (str_dup); the exports scope starts empty and is filled by the caller via
-// package_export_filter once the package body has been checked.
+// Create a package namespace and push it onto the registry, or return the
+// EXISTING namespace when this import path is already registered. Strings are
+// copied (str_dup); the exports scope starts empty and is filled by the caller
+// via package_export_filter once the package body has been checked.
+//
+// Interning by import path is Go semantics — one package instance per path —
+// and it is load-bearing for the shim packages that export TYPES. Minting a
+// second Package for "sync"/"time" (which happened whenever both main and a
+// vendored/local package imported one: seed_imported_stdlib_markers in goo.c
+// and seed_package_own_shim_imports below each called this) ran the bespoke
+// seeders twice, minting a SECOND Type* for Mutex/Time. codegen's struct
+// cache is keyed on Type* POINTER identity (codegen_get_struct_type,
+// type_mapping.c), so the second Type* missed the cache and called
+// LLVMStructCreateNamed("Time") again — LLVM renamed it %Time.0, and any
+// BY-VALUE crossing of that boundary then failed module verification with a
+// raw verifier dump and no binary:
+//
+//   %t1 = load %Time.0, ptr %t, align 4
+//   %Time = type { i64 }  %2 = call i64 @goo_pkg__timeshare__Stamp(%Time.0 %t1)
+//
+// Returning the existing instance is what lets the seeders' own idempotence
+// guards (`if (scope_lookup_variable(pkg->exports, "Mutex")) return;`) fire,
+// so the second seeding call is a clean no-op with no second Type*.
+//
+// The returned Package keeps its FIRST-registered `name`; that is correct for
+// aliases, because per-scope binding is done separately by each caller via
+// type_checker_seed_package_marker(checker, short_name, p). A package has one
+// canonical name; `import t "time"` is a per-file binding of `t` to this same
+// instance, exactly as in Go.
 Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name) {
     if (!checker || !import_path || !name) return NULL;
+
+    Package* existing = type_checker_find_package(checker, import_path);
+    if (existing) return existing;
 
     Package* pkg = xmalloc(sizeof(Package));
     if (!pkg) return NULL;

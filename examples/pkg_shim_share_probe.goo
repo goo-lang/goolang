@@ -1,0 +1,52 @@
+// pkg_shim_share_probe: when BOTH main and a local/vendored source package
+// import the same bespoke shim ("sync"/"time"), each import used to mint its
+// OWN Package* — type_checker_add_package created one unconditionally per
+// call, and both seed_imported_stdlib_markers (main's imports, goo.c) and
+// seed_package_own_shim_imports (the package's own imports, type_checker.c)
+// call it. Two Package* meant the bespoke seeders ran twice, minting a
+// SECOND Type* for time.Time; codegen's struct cache is keyed on Type*
+// POINTER identity, so the second one missed the cache and LLVM renamed its
+// named struct %Time.0. Any BY-VALUE crossing of that boundary then died in
+// module verification with no binary and no source position:
+//
+//   %t1 = load %Time.0, ptr %t, align 4
+//   %Time = type { i64 }  %2 = call i64 @goo_pkg__shimshare__Stamp(%Time.0 %t1)
+//
+// Fixed by interning Package* on import path (Go semantics: one package
+// instance per path), which lets the seeders' existing idempotence guards
+// short-circuit the second seeding.
+//
+// This is the deliberate complement to sync_own_import_probe, which pins the
+// opposite arrangement (main does NOT import sync/time, so the package's own
+// imports cannot be masked by main's). Both are needed: that one proves the
+// seeding happens at all, this one proves it happens exactly once.
+//
+// time.Now() is wall-clock, so the assertions are shape-based (> 0) rather
+// than value-based — what is being pinned is that the by-value crossing
+// LOWERS and RUNS, in both directions, not any particular timestamp.
+package main
+
+import "fmt"
+import "sync"
+import "time"
+import "./shimshare"
+
+var mainMu sync.Mutex
+
+func main() {
+	t := time.Now()
+
+	// By-value time.Time crossing INTO the vendored package.
+	fmt.Println("into pkg:", shimshare.Stamp(t) > 0)
+
+	// By-value time.Time crossing OUT of it, consumed by a main-side method
+	// call — main must agree with the package on the SAME %Time struct.
+	o := shimshare.Origin()
+	fmt.Println("out of pkg:", o.UnixNano() > 0)
+
+	// main's own sync.Mutex alongside the package's, both resolved through
+	// the one interned "sync" Package.
+	mainMu.Lock()
+	mainMu.Unlock()
+	fmt.Println("calls:", shimshare.Calls())
+}

@@ -1,0 +1,108 @@
+// method_iface_nullable_arg_probe: a METHOD whose parameter is
+// interface-typed or nullable-typed (`?T`) failed LLVM module verification
+// for EVERY argument shape. The method-call argument loop in
+// call_codegen.c mirrored only the plain-call loop's general-lvalue-load
+// arm (ef51fda); the plain path's nil-literal, nullable-auto-wrap and
+// interface-box arms had no method-side counterpart, so a concrete value
+// was passed raw where the signature wanted a boxed `{ptr, ptr}` interface
+// or a `{i1, T}` nullable:
+//
+//   Call parameter type does not match function signature!
+//     %b2 = load %Box, ptr %b, align 4
+//    { ptr, ptr }  call void @Acc__AddIface(ptr %a, %Box %b2)
+//
+// Plain (non-method) calls with the identical argument shape were fine,
+// which is what the two control lines below pin.
+//
+// The interface half is expressible in Go; `go run` on the equivalent
+// program produces the matching lines:
+//
+//   type Shape interface{ Area() int }
+//   type Sq struct{ side int }
+//   func (s Sq) Area() int  { return s.side * s.side }
+//   func (a *Acc) AddShape(s Shape) { a.total = a.total + s.Area() }
+//   func (a Acc) WithShape(s Shape) int { return a.total + s.Area() }
+//
+// `?T` has no Go equivalent, so those lines are pinned against Goo's own
+// documented nullable semantics: a bare value auto-wraps, an already-`?T`
+// argument passes through WITHOUT double-wrapping, and the `nil` literal
+// builds the parameter's null-nullable from the declared param type.
+package main
+
+import "fmt"
+
+type Shape interface {
+	Area() int
+}
+
+type Sq struct {
+	side int
+}
+
+func (s Sq) Area() int { return s.side * s.side }
+
+type Acc struct {
+	total int
+}
+
+// Interface-typed parameter on both receiver kinds.
+func (a *Acc) AddShape(s Shape) { a.total = a.total + s.Area() }
+
+func (a Acc) WithShape(s Shape) int { return a.total + s.Area() }
+
+// Nullable-typed parameter on both receiver kinds.
+func (a *Acc) AddOpt(p ?int) {
+	if let v = p {
+		a.total = a.total + v
+	}
+}
+
+func (a Acc) WithOpt(p ?int) int {
+	if let v = p {
+		return a.total + v
+	}
+	return a.total
+}
+
+// Controls: the plain-call path already handled both shapes.
+func plainShape(s Shape) int { return s.Area() }
+
+func plainOpt(p ?int) int {
+	if let v = p {
+		return v
+	}
+	return -1
+}
+
+func main() {
+	sq := Sq{side: 4}
+	a := Acc{}
+
+	// Controls — the plain-call loop's arms, unchanged by this fix.
+	fmt.Println("plain iface:", plainShape(sq))
+	fmt.Println("plain opt:", plainOpt(9))
+
+	// Interface param: concrete value boxed into the interface parameter.
+	a.AddShape(sq)
+	fmt.Println("ptr recv iface:", a.total)
+	fmt.Println("val recv iface:", a.WithShape(sq))
+
+	// Nullable param: bare value auto-wrapped into ?int.
+	a.AddOpt(5)
+	fmt.Println("ptr recv opt bare:", a.total)
+
+	// Nullable param: an ALREADY-?int argument must pass through as-is —
+	// a second wrap would build ?(?int) and mismatch the signature.
+	var opt ?int = 3
+	a.AddOpt(opt)
+	fmt.Println("ptr recv opt prewrapped:", a.total)
+
+	// Nullable param: the `nil` literal resolves against the declared
+	// param type (no value is added).
+	a.AddOpt(nil)
+	fmt.Println("ptr recv opt nil:", a.total)
+
+	// Same three shapes through a VALUE-receiver method.
+	fmt.Println("val recv opt:", a.WithOpt(6))
+	fmt.Println("val recv opt nil:", a.WithOpt(nil))
+}
