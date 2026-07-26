@@ -1,0 +1,12 @@
+plain many: 6
+plain zero: 0
+ptr recv zero: 0
+ptr recv one: 5
+ptr recv many: 11
+val recv zero: 11
+val recv many: 41
+fixed+variadic: 9
+fixed, zero variadic: 9
+field args: 14
+spread: 6
+spread empty: 0
