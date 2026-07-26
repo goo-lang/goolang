@@ -1,0 +1,20 @@
+// diag_pos_stmt_reject: a statement-level diagnostic must land on the line
+// of the OFFENDING statement, not the line of the next token.
+//
+// The parser had no location tracking: get_current_position()
+// (parser_actions.c) returned current_lexer->pos, the LIVE lexer cursor,
+// which by the time a bison reduction action runs holds the position of the
+// LOOKAHEAD token bison has already read. So this fixture's error was
+// reported at line 19 (`_ = s`) instead of line 18 (`var s string = 5`).
+//
+// The sidecar pins the LINE only. Column precision for the offending
+// sub-expression (Go points at the `5`, column 17) depends on migrating the
+// literal/expression constructors, a later batch — this batch moves
+// statement and declaration nodes onto bison's @$ locations, whose column is
+// the construct's own start (`var`).
+package main
+
+func main() {
+	var s string = 5
+	_ = s
+}

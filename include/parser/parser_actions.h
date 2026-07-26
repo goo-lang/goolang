@@ -42,8 +42,27 @@ extern ASTNode* g_func_signature_result;
 
 // Position / token helpers ---------------------------------------------
 
-// Current lexer position, used by grammar actions to stamp new AST nodes.
+// Current lexer position. DEPRECATED for new call sites — it returns the
+// LIVE lexer cursor, which during a reduction action holds the LOOKAHEAD
+// token's position, so nodes stamped with it point at the NEXT token rather
+// than at themselves. Use pos_from_loc(@$) instead. Still used by the
+// expression/literal constructors that have not yet been migrated.
 Position get_current_position(void);
+
+// Bridge a bison location to a Goo Position, taking the START of the rule's
+// span. Defined in parser_actions.c; see that definition for why `offset` is
+// 0 and how `filename` is recovered.
+//
+// Takes the two fields explicitly rather than a YYLTYPE so this header does
+// not depend on parser.tab.h — parser_actions.c includes THIS header first,
+// so a YYLTYPE parameter here would not yet be declared. Grammar actions
+// should use the POS() macro below rather than calling this directly.
+Position pos_from_loc(int first_line, int first_column);
+
+// Stamp a node from a bison location: POS(@$) for the whole rule's span,
+// POS(@1) for its first symbol. Purely textual, so it needs no YYLTYPE
+// declaration here. Available because parser.y declares %locations.
+#define POS(loc) pos_from_loc((loc).first_line, (loc).first_column)
 
 // Convert a bison token macro (PLUS, MINUS, ...) to the TokenType enum used
 // by the AST/type-checker/codegen layers.
