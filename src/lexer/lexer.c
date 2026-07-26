@@ -48,23 +48,38 @@ void lexer_free(Lexer* lexer) {
     }
 }
 
+// Invariant: on return, lexer->pos describes lexer->ch — pos.column is the
+// 1-based column OF the current character, not of the one after it.
+//
+// That requires advancing past the character being LEFT BEHIND, before
+// loading the next one. Advancing based on the character just LOADED (the
+// previous shape here) was wrong twice over: it made every column one too
+// large, and it moved line/column onto the NEXT line the moment ch became
+// '\n' — so any position captured while ch == '\n', which is exactly what
+// the ASI path in lexer_next_token does, described the newline's successor
+// rather than the newline itself. That second effect is why simply seeding
+// column at 0 does not work: it turns the same captured position into
+// column 0, which is not a valid 1-based column.
 void lexer_read_char(Lexer* lexer) {
+    // Step over the character currently in ch. Guarded on ch != 0 so the
+    // priming read from lexer_new (ch == 0, nothing consumed yet) leaves the
+    // first character sitting at 1:1, and so repeated reads at EOF do not
+    // walk the column off the end.
+    if (lexer->ch == '\n') {
+        lexer->pos.line++;
+        lexer->pos.column = 1;
+    } else if (lexer->ch != 0) {
+        lexer->pos.column++;
+    }
+
     if (lexer->read_position >= lexer->input_length) {
         lexer->ch = 0; // EOF
     } else {
         lexer->ch = lexer->input[lexer->read_position];
     }
-    
+
     lexer->position = lexer->read_position;
     lexer->read_position++;
-    
-    // Update position tracking
-    if (lexer->ch == '\n') {
-        lexer->pos.line++;
-        lexer->pos.column = 1;
-    } else {
-        lexer->pos.column++;
-    }
     lexer->pos.offset = lexer->position;
 }
 

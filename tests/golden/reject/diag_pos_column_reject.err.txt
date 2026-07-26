@@ -1,0 +1,1 @@
+tests/golden/reject/diag_pos_column_reject.goo:23:14: constant 200 overflows int8

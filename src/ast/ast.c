@@ -769,9 +769,116 @@ ASTNode* ast_block_trailing_expr(const ASTNode* block) {
     return NULL;
 }
 
+// --- Constant-expression rendering (ast_expr_to_source) -------------------
+//
+// Diagnostics about a CONSTANT EXPRESSION should name the expression, not
+// only the value it folded to: "constant 200 overflows int8" contains no
+// text the reader can find in their source. Go names both, and does it by
+// running its printer over the AST rather than by slicing the source buffer
+// — which is what this mirrors, and why no byte spans are needed.
+
+// Append `s`, growing the buffer. Returns 0 on allocation failure, leaving
+// *buf owned by (and freeable from) the caller.
+static int src_append(char** buf, size_t* len, size_t* cap, const char* s) {
+    size_t n = strlen(s);
+    if (*len + n + 1 > *cap) {
+        size_t nc = *cap ? *cap * 2 : 32;
+        while (nc < *len + n + 1) nc *= 2;
+        char* grown = realloc(*buf, nc);
+        if (!grown) return 0;
+        *buf = grown;
+        *cap = nc;
+    }
+    memcpy(*buf + *len, s, n);
+    *len += n;
+    (*buf)[*len] = '\0';
+    return 1;
+}
+
+// Operator spellings. Deliberately covers exactly the operators
+// goo_fold_const_int (expression_helpers.c) can fold, since constant-fold
+// diagnostics are the only caller — anything else returns NULL and makes the
+// whole render fail, so the caller falls back to a value-only message rather
+// than printing something wrong.
+static const char* expr_op_text(TokenType op) {
+    switch (op) {
+        case TOKEN_PLUS:     return "+";
+        case TOKEN_MINUS:    return "-";
+        case TOKEN_MULTIPLY: return "*";
+        case TOKEN_DIVIDE:   return "/";
+        case TOKEN_MODULO:   return "%";
+        case TOKEN_LSHIFT:   return "<<";
+        case TOKEN_RSHIFT:   return ">>";
+        case TOKEN_BIT_AND:  return "&";
+        case TOKEN_BIT_OR:   return "|";
+        case TOKEN_BIT_XOR:  return "^";
+        case TOKEN_AND_NOT:  return "&^";
+        case TOKEN_BIT_NOT:  return "~";
+        default:             return NULL;
+    }
+}
+
+// `depth` bounds recursion on a pathologically nested expression; the fold
+// itself is already bounded by the same shapes, so this is belt-and-braces.
+static int expr_render(const ASTNode* n, char** buf, size_t* len, size_t* cap,
+                       int depth) {
+    if (!n || depth > 32) return 0;
+    switch (n->type) {
+        case AST_LITERAL: {
+            const LiteralNode* lit = (const LiteralNode*)n;
+            return lit->value && src_append(buf, len, cap, lit->value);
+        }
+        case AST_IDENTIFIER: {
+            const IdentifierNode* id = (const IdentifierNode*)n;
+            return id->name && src_append(buf, len, cap, id->name);
+        }
+        case AST_UNARY_EXPR: {
+            const UnaryExprNode* u = (const UnaryExprNode*)n;
+            const char* op = expr_op_text(u->operator);
+            if (!op) return 0;
+            return src_append(buf, len, cap, op) &&
+                   expr_render(u->operand, buf, len, cap, depth + 1);
+        }
+        case AST_BINARY_EXPR: {
+            const BinaryExprNode* b = (const BinaryExprNode*)n;
+            const char* op = expr_op_text(b->operator);
+            if (!op) return 0;
+            // Parenthesise a nested binary operand instead of modelling
+            // precedence. gofmt would print `2*3 + 4`; this prints
+            // `(2 * 3) + 4`. Slightly more verbose, but unambiguous without
+            // a precedence table, which matters more in an error message
+            // than matching gofmt's spacing exactly.
+            int paren_l = b->left  && b->left->type  == AST_BINARY_EXPR;
+            int paren_r = b->right && b->right->type == AST_BINARY_EXPR;
+            if (paren_l && !src_append(buf, len, cap, "(")) return 0;
+            if (!expr_render(b->left, buf, len, cap, depth + 1)) return 0;
+            if (paren_l && !src_append(buf, len, cap, ")")) return 0;
+            if (!src_append(buf, len, cap, " ") ||
+                !src_append(buf, len, cap, op)  ||
+                !src_append(buf, len, cap, " ")) return 0;
+            if (paren_r && !src_append(buf, len, cap, "(")) return 0;
+            if (!expr_render(b->right, buf, len, cap, depth + 1)) return 0;
+            if (paren_r && !src_append(buf, len, cap, ")")) return 0;
+            return 1;
+        }
+        default:
+            return 0;
+    }
+}
+
+char* ast_expr_to_source(const ASTNode* node) {
+    char* buf = NULL;
+    size_t len = 0, cap = 0;
+    if (!expr_render(node, &buf, &len, &cap, 0)) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
 void ast_print(const ASTNode* node, int indent) {
     if (!node) return;
-    
+
     // Print indentation
     for (int i = 0; i < indent; i++) {
         printf("  ");

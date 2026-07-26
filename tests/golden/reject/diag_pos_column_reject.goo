@@ -1,0 +1,25 @@
+// diag_pos_column_reject: the reported COLUMN must be the column of the
+// construct's first character, 1-based.
+//
+// Every column was one too large. lexer_read_char advanced pos based on the
+// character it was LOADING rather than the one it was leaving, and lexer_new
+// primed it with column = 1 before the first load — so pos.column was always
+// one past lexer->ch. A token at column 1 reported column 2.
+//
+// The naive fix (start column at 0, reset to 0 on newline) was tried in the
+// batch-1 arc and reverted: it yields column 0 on the ASI/synthesized-token
+// path, because when ch == '\n' the position has already moved to the next
+// line, so a position captured at that moment describes the newline's
+// successor rather than the newline. The real invariant is "pos describes
+// ch", which requires advancing past the character being LEFT.
+//
+// `var` below starts at column 1 with no indentation, and the offending
+// literal `200` starts at column 14 — the position Go reports for this
+// program. Both halves are pinned: the sidecar names 23:14, so a regression
+// in either the line (batches 1-2) or the column (this fix) fails it.
+package main
+
+func main() {
+var x int8 = 200
+_ = x
+}
