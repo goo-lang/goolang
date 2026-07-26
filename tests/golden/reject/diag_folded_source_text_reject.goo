@@ -1,0 +1,32 @@
+// diag_folded_source_text_reject: an overflow diagnostic on a CONSTANT
+// EXPRESSION must name the expression, not only the value it folded to.
+//
+// `var x int8 = 100 + 100` reported `constant 200 overflows int8`. The 200
+// appears nowhere in the source, so the message gave no way to find which
+// expression was at fault — the more operands involved, the worse it got.
+// Go names both: `cannot use 100 + 100 (untyped int constant 200) as int8
+// value in variable declaration (overflows)`.
+//
+// The unfolded AST is available at the diagnostic site (`top` in
+// adapt_untyped_int_operand, expression_checker.c) — it is the node the fold
+// ran ON — so the expression is rendered back to text the way Go's own
+// diagnostics do, with a printer over the AST rather than by slicing the
+// source buffer.
+//
+// The substring `overflows int8` is deliberately preserved so the many
+// sibling sidecars that match on `overflows` keep working, and the
+// single-literal path (`var x int8 = 200`, check_literal_range) is
+// deliberately NOT changed: there the rendered text and the folded value
+// are the same string, so naming both would only add noise.
+//
+// The rendering is the expression AS PARSED, not a byte-exact source slice:
+// a nested binary operand is parenthesised (`(10 * 10) + 100`) and integer
+// literals print in decimal, since the parser normalises them and the
+// original spelling is not retained (`0xFF + 1` renders `255 + 1`). Both
+// are documented on ast_expr_to_source.
+package main
+
+func main() {
+	var x int8 = 100 + 100
+	_ = x
+}

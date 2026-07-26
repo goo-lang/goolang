@@ -1691,8 +1691,27 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
         if (goo_fold_const_int(top, &folded) &&
             folded <= (uint64_t)INT64_MAX &&
             !int_const_fits_expected(folded, target, 0, 0)) {
-            type_error(checker, top->pos, "constant %lld overflows %s",
-                       (long long)(int64_t)folded, type_to_string(target));
+            // Name the EXPRESSION as well as the value it folded to: the
+            // folded number appears nowhere in the user's source, so on its
+            // own it gives no way to find the offending operand. `top` is
+            // the very node the fold ran on, so the unfolded shape is still
+            // available here. ast_expr_to_source returns NULL for anything
+            // it cannot render faithfully — fall back to the value-only
+            // wording rather than print something misleading.
+            //
+            // The single-LITERAL path (check_literal_range) is deliberately
+            // left alone: there the rendered text and the folded value are
+            // the same string, so naming both would be pure noise.
+            char* src_text = ast_expr_to_source(top);
+            if (src_text) {
+                type_error(checker, top->pos, "constant %s (%lld) overflows %s",
+                           src_text, (long long)(int64_t)folded,
+                           type_to_string(target));
+                free(src_text);
+            } else {
+                type_error(checker, top->pos, "constant %lld overflows %s",
+                           (long long)(int64_t)folded, type_to_string(target));
+            }
             return 0;
         }
     }

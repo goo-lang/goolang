@@ -1480,6 +1480,29 @@ void ast_add_child(ASTNode* parent, ASTNode* child);
 const char* ast_node_type_string(ASTNodeType type);
 void ast_print(const ASTNode* node, int indent);
 
+// Render a CONSTANT expression back to compact source-like text, for
+// diagnostics that would otherwise name only the value it folded to
+// ("constant 200 overflows int8" — a number appearing nowhere in the user's
+// source). Go does the same thing, via its printer over the AST rather than
+// by slicing the source buffer, which is why this needs no byte spans.
+//
+// Handles exactly the shapes goo_fold_const_int can fold (int literals,
+// identifiers, and the unary/binary arithmetic-bitwise-shift operators),
+// and returns NULL for anything else so callers degrade to the value-only
+// message instead of printing something misleading. Returns a malloc'd
+// string the caller frees.
+//
+// This renders the expression AS PARSED, which is close to but not exactly
+// the user's source text. Two known divergences, both acceptable for a
+// diagnostic and neither worth new AST state on its own:
+//   - a nested binary operand is parenthesised rather than
+//     precedence-modelled: `(2 * 3) + 4`, not gofmt's `2*3 + 4`;
+//   - integer literals print in DECIMAL, because the parser normalises them
+//     (`snprintf("%lld")`) and the original spelling is not retained — so
+//     `0xFF + 1` renders as `255 + 1`. Preserving spellings would mean
+//     carrying the raw lexeme on LiteralNode.
+char* ast_expr_to_source(const ASTNode* node);
+
 // Return the inner expression of a block's final statement when that statement
 // is an expression statement; otherwise NULL. Used to give a block a "result
 // value" (e.g. the catch handler's recovery value). The argument must be an
