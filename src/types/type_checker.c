@@ -781,8 +781,17 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func);
 // declare_function_signature enables forward function references.
 static int declare_type_shells(TypeChecker* checker, ASTNode* decls);
 
+// Single-AST wrapper, kept so the three non-driver callers (src/main.c,
+// src/main_simple.c, src/ide/lsp_enhanced.c) are untouched. The entry package
+// can now be several files, so the compiler driver calls the N-file form below.
 int type_check_program(TypeChecker* checker, ASTNode* program) {
-    if (!checker || !program) return 0;
+    if (!program) return 0;
+    return type_check_program_files(checker, &program, 1);
+}
+
+int type_check_program_files(TypeChecker* checker, ASTNode** programs,
+                             size_t program_count) {
+    if (!checker || !programs || program_count == 0) return 0;
 
     // A lexical error (e.g. a malformed char literal '', '\z', or an
     // unterminated 'a) is mapped to an unknown token and SILENTLY SKIPPED by the
@@ -795,22 +804,18 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
         return 0;
     }
 
-    if (program->type != AST_PROGRAM) {
-        type_error(checker, program->pos, "Expected program node");
-        return 0;
-    }
-    
-    ProgramNode* prog = (ProgramNode*)program;
-    
-    // Type check imports
-    if (prog->imports) {
-        ASTNode* import = prog->imports;
-        while (import) {
-            // TODO: Handle imports
-            import = import->next;
+    for (size_t i = 0; i < program_count; i++) {
+        if (!programs[i] || programs[i]->type != AST_PROGRAM) {
+            type_error(checker, programs[i] ? programs[i]->pos : (Position){0},
+                       "Expected program node");
+            return 0;
         }
     }
-    
+
+    // Same rule as type_check_package: EVERY pass runs over ALL files before the
+    // next pass starts, so a declaration in one file of the entry package is
+    // visible to every other file regardless of filename order.
+
     // Pre-pass: register every top-level function in the comptime engine
     // context so an `is_comptime` const RHS like `fib(10)` can resolve user-
     // defined calls regardless of decl ordering. Mirrors the type checker's
@@ -818,14 +823,16 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     // the function to scope before walking its body). Without this, the
     // engine's lookup_func returns NULL and comptime const evaluation falls
     // through to the codegen's "must be compile-time constant" rejection.
-    if (prog->decls && checker->comptime_type_ctx
-                    && checker->comptime_type_ctx->comptime_ctx) {
+    if (checker->comptime_type_ctx && checker->comptime_type_ctx->comptime_ctx) {
         ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
-        for (ASTNode* d = prog->decls; d; d = d->next) {
-            if (d->type == AST_FUNC_DECL) {
-                FuncDeclNode* func = (FuncDeclNode*)d;
-                if (func->name) {
-                    comptime_context_bind_func(ctx, func->name, d);
+        for (size_t i = 0; i < program_count; i++) {
+            ProgramNode* prog = (ProgramNode*)programs[i];
+            for (ASTNode* d = prog->decls; d; d = d->next) {
+                if (d->type == AST_FUNC_DECL) {
+                    FuncDeclNode* func = (FuncDeclNode*)d;
+                    if (func->name) {
+                        comptime_context_bind_func(ctx, func->name, d);
+                    }
                 }
             }
         }
@@ -838,7 +845,10 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     // Must run before pass 1 (not folded into it) because pass 1 resolves
     // bodies interleaved with registrations in source order — exactly the
     // ordering this pre-pass exists to break.
-    if (!declare_type_shells(checker, prog->decls)) return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        if (!declare_type_shells(checker, prog->decls)) return 0;
+    }
 
     // Two-pass declaration walk (Go package-scope semantics: a function body may
     // reference any function declared anywhere in the file, not just above it).
@@ -848,16 +858,22 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     //   signature still resolves the types declared before it, exactly as Go
     //   requires.
     //   Pass 2: check function BODIES, with every sibling signature now visible.
-    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (decl->type == AST_FUNC_DECL) {
-            if (!declare_function_signature(checker, (FuncDeclNode*)decl)) return 0;
-        } else if (!type_check_declaration(checker, decl)) {
-            return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+            if (decl->type == AST_FUNC_DECL) {
+                if (!declare_function_signature(checker, (FuncDeclNode*)decl)) return 0;
+            } else if (!type_check_declaration(checker, decl)) {
+                return 0;
+            }
         }
     }
-    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (decl->type == AST_FUNC_DECL) {
-            if (!type_check_function_decl(checker, decl)) return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+            if (decl->type == AST_FUNC_DECL) {
+                if (!type_check_function_decl(checker, decl)) return 0;
+            }
         }
     }
 
@@ -867,8 +883,10 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     // 3/4 (extending this same walk) need every FuncLitNode.captured_names
     // fully populated, which only holds once every function body has been
     // type-checked (see docs/superpowers/specs/2026-07-11-p6-lanes-m1-spike-
-    // findings.md Section 2.0).
-    if (!lane_ownership_check_program(checker, program)) return 0;
+    // findings.md Section 2.0). Per file: the walk is over one AST at a time.
+    for (size_t i = 0; i < program_count; i++) {
+        if (!lane_ownership_check_program(checker, programs[i])) return 0;
+    }
 
     return checker->error_count == 0;
 }

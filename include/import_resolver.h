@@ -28,6 +28,16 @@ typedef struct {
 // `out` is left zeroed on failure.
 int resolve_import(const char* import_path, const char* source_dir, PackageSource* out);
 
+// Scan `pkg_dir` directly for a package's buildable source files, skipping
+// import-path resolution entirely. This is what makes a DIRECTORY argument
+// (`goo build .`, `goo build ./cmd/tool`) an entry package: the driver and
+// `import "./p"` then share ONE definition of which files make up a package,
+// so they cannot drift apart on extensions or on the *_test exclusion.
+// `out->name`/`out->import_path` are set from the directory's own base name.
+// Returns 0 on success, non-0 if the directory does not exist or holds no
+// buildable files, leaving `out` zeroed.
+int resolve_package_dir_path(const char* pkg_dir, PackageSource* out);
+
 // P4.4: map a Go-style nested import spelling (e.g. "unicode/utf8") to the
 // flat name goostd actually vendors it under (e.g. "utf8"). Returns
 // `import_path` unchanged for any spelling not in the alias table (including

@@ -1,5 +1,6 @@
 #include "import_resolver.h"
 #include <dirent.h>
+#include <limits.h>   // PATH_MAX, for realpath in resolve_package_dir_path
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -208,6 +209,30 @@ static int resolve_package_dir(const char* pkg_dir, const char* import_path, Pac
         return 1;
     }
     return 0;
+}
+
+int resolve_package_dir_path(const char* pkg_dir, PackageSource* out) {
+    if (!out) return 1;
+    out->files = NULL;
+    out->file_count = 0;
+    out->name = NULL;
+    out->import_path = NULL;
+    if (!pkg_dir) return 1;
+
+    // Go names a directory build after the DIRECTORY, so ".", "./" and a
+    // trailing slash must each resolve to the real directory name instead of
+    // being taken literally — `goo build .` in /path/to/myapp is "myapp", not
+    // ".". realpath collapses all three spellings; if it fails (the stat in the
+    // caller already passed, so this is unlikely) fall back to the spelling as
+    // given rather than refusing to build.
+    char resolved[PATH_MAX];
+    const char* base_src = pkg_dir;
+    if (realpath(pkg_dir, resolved) != NULL) base_src = resolved;
+    const char* slash = strrchr(base_src, '/');
+    const char* short_name = (slash && slash[1]) ? slash + 1 : base_src;
+
+    // Same scan, same predicate, same sort as an imported package.
+    return resolve_package_dir(pkg_dir, short_name, out);
 }
 
 int resolve_import(const char* import_path, const char* source_dir, PackageSource* out) {

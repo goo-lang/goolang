@@ -1070,6 +1070,14 @@ void type_check_record_comptime_instantiation(TypeChecker* checker, Variable* fn
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);
 
+// The entry package, which may be several files (`goo build .`). Same rule as
+// type_check_package: every pass runs over ALL files before the next begins, so
+// a declaration in one file of the entry package is visible to the others no
+// matter which file the resolver sorted first. type_check_program above is the
+// one-file wrapper over this, kept for callers outside the compiler driver.
+int type_check_program_files(TypeChecker* checker, ASTNode** programs,
+                             size_t program_count);
+
 // stdlib Phase 0 (Task 4): type-check one imported package's body. Sets
 // checker->current_package = pkg, pushes a fresh package scope, runs the same
 // declaration loop as type_check_program, then publishes the package's A-Z

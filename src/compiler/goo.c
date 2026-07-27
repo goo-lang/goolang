@@ -9,6 +9,7 @@
 #include <getopt.h>
 #include <libgen.h>
 #include <errno.h>
+#include <limits.h>   // PATH_MAX, for realpath on a directory entry package
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -36,7 +37,17 @@ typedef enum {
 
 // Compiler options
 typedef struct CompilerOptions {
+    // The argument as written: a source file, or a DIRECTORY (`goo build .`,
+    // `goo build ./cmd/tool`). Borrowed from argv.
     char* input_file;
+    // The entry package's source files. For a file argument this is that one
+    // file, so the single-file form runs through exactly the same machinery with
+    // n == 1 rather than down a second code path — 473 goldens and the 13-row
+    // cli_test all depend on the file form, and a parallel path is how the two
+    // would drift. Owned when input_is_dir, else it points at &input_file.
+    char** input_files;
+    size_t input_file_count;
+    bool  input_is_dir;
     char* output_file;
     bool emit_llvm_ir;
     bool emit_ast;
@@ -294,6 +305,35 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
 
     options->input_file = argv[optind];
 
+    // A DIRECTORY argument makes the entry package multi-file (`goo build .`,
+    // `goo build ./cmd/tool`) — Go's unit of compilation. Expanded through the
+    // very same resolve_package_dir that `import "./p"` uses, so the entry
+    // package and an imported package can never disagree about which files
+    // belong to a package (see is_buildable_source, import_resolver.c).
+    {
+        struct stat st;
+        if (stat(options->input_file, &st) == 0 && S_ISDIR(st.st_mode)) {
+            PackageSource ps;
+            if (resolve_package_dir_path(options->input_file, &ps) != 0) {
+                fprintf(stderr, "Error: no buildable source files in directory '%s'\n",
+                        options->input_file);
+                free(options->output_file);
+                free(options);
+                return NULL;
+            }
+            options->input_files = ps.files;      // ownership moves to options
+            options->input_file_count = ps.file_count;
+            options->input_is_dir = true;
+            free(ps.name);
+            free(ps.import_path);
+        } else {
+            // File form: n == 1 through the identical path below.
+            options->input_files = &options->input_file;
+            options->input_file_count = 1;
+            options->input_is_dir = false;
+        }
+    }
+
     // P5.3: mode-specific argument handling.
     switch (mode) {
         case GOO_MODE_RUN:
@@ -330,9 +370,48 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     if (!options->output_file) {
         switch (mode) {
             case GOO_MODE_BUILD: {
-                const char* slash = strrchr(options->input_file, '/');
-                const char* base_input = slash ? slash + 1 : options->input_file;
-                options->output_file = get_output_filename(base_input, NULL, "");
+                // Go's rule for `go build .`: a DIRECTORY build is named after
+                // the directory, not after any file inside it. ".", "./" and a
+                // trailing slash all have to become the real directory name,
+                // which realpath resolves (resolve_package_dir_path,
+                // import_resolver.c) — the resolved package's short name is
+                // exactly that, so reuse it instead of re-deriving it here.
+                const char* stem;
+                char dir_stem[PATH_MAX];
+                if (options->input_is_dir) {
+                    char resolved[PATH_MAX];
+                    const char* src = realpath(options->input_file, resolved)
+                                          ? resolved : options->input_file;
+                    const char* s = strrchr(src, '/');
+                    snprintf(dir_stem, sizeof(dir_stem), "%s",
+                             (s && s[1]) ? s + 1 : src);
+                    stem = dir_stem;
+                } else {
+                    const char* slash = strrchr(options->input_file, '/');
+                    stem = slash ? slash + 1 : options->input_file;
+                }
+                options->output_file = get_output_filename(stem, NULL, "");
+                // `goo build ./myapp` from the parent directory would name the
+                // output "myapp" in the cwd — which is the package directory
+                // itself. Go hits the identical collision and refuses with a
+                // clear message; without this the linker leaks "cannot open
+                // output file myapp: Is a directory" instead. Go's wording:
+                //   go: build output "myapp" already exists and is a directory
+                struct stat ost;
+                if (options->output_file &&
+                    stat(options->output_file, &ost) == 0 && S_ISDIR(ost.st_mode)) {
+                    fprintf(stderr,
+                            "Error: build output \"%s\" already exists and is a directory\n",
+                            options->output_file);
+                    free(options->output_file);
+                    if (options->input_is_dir) {
+                        for (size_t i = 0; i < options->input_file_count; i++)
+                            free(options->input_files[i]);
+                        free(options->input_files);
+                    }
+                    free(options);
+                    return NULL;
+                }
                 break;
             }
             case GOO_MODE_RUN:
@@ -908,75 +987,99 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 
     // P4.5: computed once, used by both the --dump-packages walk and the
     // real package-compilation walk below.
+    // For a DIRECTORY argument the directory itself is the source dir, so a
+    // sibling `import "./p"` inside it resolves relative to the package, not to
+    // the cwd. For a file argument this is the file's directory, unchanged.
     char source_dir[4096];
-    compute_source_dir(filename, source_dir, sizeof(source_dir));
+    if (options->input_is_dir) {
+        snprintf(source_dir, sizeof(source_dir), "%s", options->input_file);
+    } else {
+        compute_source_dir(filename, source_dir, sizeof(source_dir));
+    }
 
-    // Read source file
-    char* source = read_file(filename);
-    if (!source) {
+    // Parse every file of the entry package. One file for `goo build x.goo`,
+    // N for `goo build .` — the SAME path either way, so the long-standing
+    // single-file form cannot drift away from the directory form.
+    size_t nfiles = options->input_file_count;
+    char**    sources = calloc(nfiles, sizeof(char*));
+    Lexer**   lexers  = calloc(nfiles, sizeof(Lexer*));
+    ASTNode** asts    = calloc(nfiles, sizeof(ASTNode*));
+    if (!sources || !lexers || !asts) {
+        free(sources); free(lexers); free(asts);
+        fprintf(stderr, "Error: out of memory reading input files\n");
         return false;
     }
-    
-    // Phase 1: Lexical Analysis
-    if (options->verbose) {
-        printf("Phase 1: Lexical analysis...\n");
-    }
-    
-    Lexer* lexer = lexer_new(source, filename);
-    if (!lexer) {
-        free(source);
-        return false;
-    }
-    
-    // Emit tokens if requested
-    if (options->emit_tokens) {
-        printf("=== TOKENS ===\n");
-        Token* token;
-        while ((token = lexer_next_token(lexer)) && token->type != TOKEN_EOF) {
-            printf("%-15s %s\n", token_type_string(token->type), 
-                   token->literal ? token->literal : "");
-            token_free(token);
+
+// Releases every per-file resource. One definition rather than the
+// thirteen open-coded triples this function used to carry, each of which
+// would otherwise have needed its own loop.
+#define ENTRY_CLEANUP()                                            \
+    do {                                                            \
+        for (size_t _i = 0; _i < nfiles; _i++) {                    \
+            if (asts[_i]) ast_node_free(asts[_i]);                  \
+            if (lexers[_i]) lexer_free(lexers[_i]);                 \
+            free(sources[_i]);                                      \
+        }                                                           \
+        free(asts); free(lexers); free(sources);                    \
+    } while (0)
+
+    for (size_t fi = 0; fi < nfiles; fi++) {
+        const char* fname = options->input_files[fi];
+
+        sources[fi] = read_file(fname);
+        if (!sources[fi]) { ENTRY_CLEANUP(); return false; }
+
+        if (options->verbose) printf("Phase 1: Lexical analysis (%s)...\n", fname);
+
+        lexers[fi] = lexer_new(sources[fi], fname);
+        if (!lexers[fi]) { ENTRY_CLEANUP(); return false; }
+
+        if (options->emit_tokens) {
+            printf("=== TOKENS (%s) ===\n", fname);
+            Token* token;
+            while ((token = lexer_next_token(lexers[fi])) && token->type != TOKEN_EOF) {
+                printf("%-15s %s\n", token_type_string(token->type),
+                       token->literal ? token->literal : "");
+                token_free(token);
+            }
+            if (token) token_free(token);
+            lexer_free(lexers[fi]);
+            lexers[fi] = lexer_new(sources[fi], fname);
+            if (!lexers[fi]) { ENTRY_CLEANUP(); return false; }
         }
-        if (token) token_free(token);
-        
-        // Reset lexer
-        lexer_free(lexer);
-        lexer = lexer_new(source, filename);
+
+        if (options->verbose) printf("Phase 2: Parsing (%s)...\n", fname);
+
+        extern Lexer* current_lexer;
+        current_lexer = lexers[fi];
+
+        // ast_root is a bison global: snapshot into this file's slot and null
+        // it, so the next file's parse cannot clobber a pointer we own.
+        extern ASTNode* ast_root;
+        ast_root = NULL;
+        if (parse_input(sources[fi], fname) != 0) {
+            fprintf(stderr, "Error: Parse failed\n");
+            ENTRY_CLEANUP();
+            return false;
+        }
+        if (!ast_root) {
+            fprintf(stderr, "Error: No AST generated\n");
+            ENTRY_CLEANUP();
+            return false;
+        }
+        asts[fi] = ast_root;
+        ast_root = NULL;
+
+        if (options->emit_ast) {
+            printf("=== AST (%s) ===\n", fname);
+            ast_print(asts[fi], 0);
+            printf("\n");
+        }
     }
-    
-    // Phase 2: Parsing
-    if (options->verbose) {
-        printf("Phase 2: Parsing...\n");
-    }
-    
-    // Set up parser with current lexer
-    extern Lexer* current_lexer;
-    current_lexer = lexer;
-    
-    // Parse the input
-    if (parse_input(source, filename) != 0) {
-        fprintf(stderr, "Error: Parse failed\n");
-        lexer_free(lexer);
-        free(source);
-        return false;
-    }
-    
-    // Get the AST root
-    extern ASTNode* ast_root;
-    ASTNode* ast = ast_root;
-    if (!ast) {
-        fprintf(stderr, "Error: No AST generated\n");
-        lexer_free(lexer);
-        free(source);
-        return false;
-    }
-    
-    // Emit AST if requested
-    if (options->emit_ast) {
-        printf("=== AST ===\n");
-        ast_print(ast, 0);
-        printf("\n");
-    }
+
+    // The entry package's first file stands in wherever a single AST is still
+    // the right thing to pass (the import-graph dump below).
+    ASTNode* ast = asts[0];
 
     // Hidden debug flag: walk the import graph from main and print the
     // resolved packages in topological order (leaves first), then "main".
@@ -985,9 +1088,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // so the walk clobbering global ast_root is harmless.
     if (options->dump_packages) {
         bool ok = dump_package_graph((ProgramNode*)ast, source_dir);
-        ast_node_free(ast);
-        lexer_free(lexer);
-        free(source);
+        ENTRY_CLEANUP();
         return ok;
     }
 
@@ -998,9 +1099,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     
     TypeChecker* type_checker = type_checker_new();
     if (!type_checker) {
-        ast_node_free(ast);
-            lexer_free(lexer);
-        free(source);
+        ENTRY_CLEANUP();
         return false;
     }
     
@@ -1008,11 +1107,14 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // packages main actually imports, BEFORE type-checking main (so its
     // `fmt.Println` etc. resolve). Conditional on real imports — a no-import
     // program seeds nothing and type-checks exactly as before.
-    if (!seed_imported_stdlib_markers(type_checker, ((ProgramNode*)ast)->imports)) {
+    bool markers_ok = true;
+    for (size_t fi = 0; markers_ok && fi < nfiles; fi++) {
+        markers_ok = seed_imported_stdlib_markers(type_checker,
+                                                  ((ProgramNode*)asts[fi])->imports);
+    }
+    if (!markers_ok) {
         type_checker_free(type_checker);
-        ast_node_free(ast);
-        lexer_free(lexer);
-        free(source);
+        ENTRY_CLEANUP();
         return false;
     }
 
@@ -1024,9 +1126,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     CodeGenerator* codegen = codegen_new(basename(options->output_file));
     if (!codegen) {
         type_checker_free(type_checker);
-        ast_node_free(ast);
-            lexer_free(lexer);
-        free(source);
+        ENTRY_CLEANUP();
         return false;
     }
 
@@ -1052,16 +1152,18 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         PkgGraph pkg_graph;
         memset(&pkg_graph, 0, sizeof(pkg_graph));
         pkg_graph.source_dir = source_dir;
-        bool pkgs_ok =
-            (walk_program_imports(&pkg_graph, ((ProgramNode*)ast)->imports) == 0)
+        bool pkgs_ok = true;
+        for (size_t fi = 0; pkgs_ok && fi < nfiles; fi++) {
+            pkgs_ok = (walk_program_imports(&pkg_graph,
+                                            ((ProgramNode*)asts[fi])->imports) == 0);
+        }
+        pkgs_ok = pkgs_ok
             && compile_resolved_packages(&pkg_graph, type_checker, codegen);
         pkg_graph_free(&pkg_graph);
         if (!pkgs_ok) {
             codegen_free(codegen);
             type_checker_free(type_checker);
-            ast_node_free(ast);
-            lexer_free(lexer);
-            free(source);
+            ENTRY_CLEANUP();
             return false;
         }
     }
@@ -1071,14 +1173,12 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // cross-package selector like `mypkg.Double(21)` resolves against the real
     // exported signature published into pkg->exports above. With no non-shim
     // imports the packages block is a no-op and this stays byte-identical.
-    if (!type_check_program(type_checker, ast)) {
+    if (!type_check_program_files(type_checker, asts, nfiles)) {
 #if LLVM_AVAILABLE
         codegen_free(codegen);
 #endif
         type_checker_free(type_checker);
-        ast_node_free(ast);
-        lexer_free(lexer);
-        free(source);
+        ENTRY_CLEANUP();
         return false;
     }
 
@@ -1089,12 +1189,18 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 
 #if LLVM_AVAILABLE
     // Generate code for main
-    if (!codegen_generate_program(codegen, type_checker, ast)) {
+    bool main_cg_ok = true;
+    for (size_t fi = 0; main_cg_ok && fi < nfiles; fi++) {
+        main_cg_ok = codegen_predeclare_functions(codegen, type_checker,
+                                                  ((ProgramNode*)asts[fi])->decls);
+    }
+    for (size_t fi = 0; main_cg_ok && fi < nfiles; fi++) {
+        main_cg_ok = codegen_generate_program(codegen, type_checker, asts[fi]);
+    }
+    if (!main_cg_ok) {
         codegen_free(codegen);
         type_checker_free(type_checker);
-        ast_node_free(ast);
-        lexer_free(lexer);
-        free(source);
+        ENTRY_CLEANUP();
         return false;
     }
 
@@ -1105,9 +1211,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     if (!codegen_optimize(codegen, options->opt_level)) {
         codegen_free(codegen);
         type_checker_free(type_checker);
-        ast_node_free(ast);
-        lexer_free(lexer);
-        free(source);
+        ENTRY_CLEANUP();
         return false;
     }
 
@@ -1118,9 +1222,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         if (!codegen_emit_llvm_ir(codegen, options->output_file)) {
             codegen_free(codegen);
             type_checker_free(type_checker);
-            ast_node_free(ast);
-            lexer_free(lexer);
-            free(source);
+            ENTRY_CLEANUP();
             return false;
         }
         if (options->verbose) {
@@ -1130,9 +1232,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         if (!codegen_emit_executable(codegen, options->output_file)) {
             codegen_free(codegen);
             type_checker_free(type_checker);
-            ast_node_free(ast);
-            lexer_free(lexer);
-            free(source);
+            ENTRY_CLEANUP();
             return false;
         }
 
@@ -1158,9 +1258,8 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     
     // Cleanup
     type_checker_free(type_checker);
-    ast_node_free(ast);
-    lexer_free(lexer);
-    free(source);
+    ENTRY_CLEANUP();
+#undef ENTRY_CLEANUP
 
     return true;
 }
