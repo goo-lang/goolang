@@ -24,6 +24,8 @@ static const ShimParamKind PARAMS_INT64[]                = { SHIM_PARAM_INT64 };
 static const ShimParamKind PARAMS_FLOAT64[]              = { SHIM_PARAM_FLOAT64 };
 static const ShimParamKind PARAMS_FLOAT64_FLOAT64[]      = { SHIM_PARAM_FLOAT64, SHIM_PARAM_FLOAT64 };
 static const ShimParamKind PARAMS_ERROR[]                = { SHIM_PARAM_ERROR };
+// errors.Is(err, target): both operands are errors.
+static const ShimParamKind PARAMS_ERROR_ERROR[]          = { SHIM_PARAM_ERROR, SHIM_PARAM_ERROR };
 static const ShimParamKind PARAMS_INT64_FLOAT64[]        = { SHIM_PARAM_INT64, SHIM_PARAM_FLOAT64 };
 // fmt.Fprintf(w, format, ...): the writer, then the format string. The reverse
 // order of PARAMS_STRING_INT64, which os.ReadByte uses.
@@ -93,6 +95,11 @@ static const ShimSignature SHIM_TABLE[] = {
 
     { "errors", "New",    SHIM_RET_ERROR, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0 },
     { "errors", "Unwrap", SHIM_RET_ERROR, PARAMS_ERROR,  NPARAMS(PARAMS_ERROR), 0 },
+    // errors.Is walks the %w chain comparing identity. errors.As is
+    // deliberately absent and is VACUOUS rather than merely hard: `error` is a
+    // concrete type in v1 (pinned by custom_error_type_reject), so there are
+    // no distinct concrete error types for it to recover.
+    { "errors", "Is",     SHIM_RET_BOOL,  PARAMS_ERROR_ERROR, NPARAMS(PARAMS_ERROR_ERROR), 0 },
 
     // far (M2-B1): far-transport shims, runtime side src/runtime/far_transport.c.
     // Listen/Dial reuse the !int construction ATOI_RESULT already builds;

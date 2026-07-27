@@ -337,6 +337,12 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type };
         add_runtime_function(codegen, "goo_error_unwrap", ptr_type, params, 1);
     }
+    // int goo_error_is(goo_error_t* err, goo_error_t* target)  [handles as i8*]
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_error_is",
+                             LLVMInt32TypeInContext(codegen->context), params, 2);
+    }
 
     // Stdlib package backings
     // int goo_strings_contains(const char* haystack, const char* needle)

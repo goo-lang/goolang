@@ -2001,6 +2001,56 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "en.ptr");
                 return value_info_new(NULL, err_val, err_type);
             }
+            if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "Is") == 0) {
+                // errors.Is(err, target) -> bool. An error value is
+                // {i1 is_null, i8* handle}; the handle IS the identity, and a
+                // nil error carries a null handle, so passing the two handles
+                // to the runtime covers the nil cases without a separate test
+                // here. Mirrors the Unwrap arm below.
+                if (!call->args || !call->args->next) {
+                    codegen_error(codegen, expr->pos,
+                                  "errors.Is: expected (error, error) -> bool");
+                    return NULL;
+                }
+                LLVMTypeRef is_i8p = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+                LLVMValueRef handles[2];
+                ASTNode* ia = call->args;
+                for (int k = 0; k < 2; k++, ia = ia->next) {
+                    // A bare `nil` argument is NOT an error-shaped value —
+                    // evaluating it yields nothing to extract a field from, so
+                    // the extract below would fault on it. Its handle is simply
+                    // null, which is exactly what the runtime's nil cases read.
+                    // The shared codegen_emit_fixed_call_arg carries the same
+                    // nil-literal pre-arm for the same reason.
+                    if (ia->type == AST_LITERAL &&
+                        ((LiteralNode*)ia)->literal_type == TOKEN_NIL) {
+                        handles[k] = LLVMConstNull(is_i8p);
+                        continue;
+                    }
+                    ValueInfo* iv = codegen_generate_expression(codegen, checker, ia);
+                    if (!iv) return NULL;
+                    LLVMValueRef loaded = iv->llvm_value;
+                    if (iv->is_lvalue && iv->goo_type) {
+                        LLVMTypeRef it = codegen_type_to_llvm(codegen, iv->goo_type);
+                        if (it) loaded = LLVMBuildLoad2(codegen->builder, it, loaded, "is_load");
+                    }
+                    value_info_free(iv);
+                    handles[k] = LLVMBuildExtractValue(codegen->builder, loaded, 1, "is.handle");
+                }
+                LLVMValueRef is_fn = LLVMGetNamedFunction(codegen->module, "goo_error_is");
+                if (!is_fn) {
+                    codegen_error(codegen, expr->pos, "goo_error_is not found in module");
+                    return NULL;
+                }
+                LLVMValueRef raw = LLVMBuildCall2(codegen->builder,
+                    LLVMGlobalGetValueType(is_fn), is_fn, handles, 2, "errors.is");
+                // The runtime returns int (0/1) to match the other
+                // SHIM_RET_BOOL entries; Goo's bool is narrower, so truncate.
+                Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
+                LLVMTypeRef bool_llvm = codegen_type_to_llvm(codegen, bool_type);
+                LLVMValueRef res = LLVMBuildTrunc(codegen->builder, raw, bool_llvm, "errors.is.b");
+                return value_info_new(NULL, res, bool_type);
+            }
             if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "Unwrap") == 0) {
                 // errors.Unwrap(error) -> error: read goo_error.cause via the runtime
                 // helper, rebuild the nullable {is_null = cause==null, ptr = cause}.

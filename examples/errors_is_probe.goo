@@ -1,0 +1,45 @@
+// errors_is_probe: errors.Is walks the %w wrap chain comparing identities.
+//
+// The primitives all existed already — an error value is a heap pointer, so ==
+// is IDENTITY (exactly Go's sentinel model), and fmt.Errorf("%w") really does
+// set the cause. errors.Is is the loop over them that was missing.
+//
+// Two cases are the ones worth reading:
+//   - `other` has the SAME TEXT as `base` and must NOT match. Comparing
+//     messages instead of identities would pass every other case here and fail
+//     only this one.
+//   - Is(nil, nil) is TRUE while Is(base, nil) is false. Go special-cases a nil
+//     target to plain equality rather than walking, so a loop that simply
+//     scanned the chain would get both wrong.
+//
+// errors.As is deliberately absent, and it is vacuous rather than merely hard:
+// `error` is a CONCRETE type in v1 (pinned by
+// tests/golden/reject/custom_error_type_reject.goo), so there are no distinct
+// concrete error types for As to recover.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1).
+package main
+
+import "errors"
+import "fmt"
+
+func main() {
+	base := errors.New("not found")
+	other := errors.New("not found")
+
+	fmt.Println(errors.Is(base, base))
+	fmt.Println(errors.Is(base, other))
+
+	wrapped := fmt.Errorf("lookup: %w", base)
+	fmt.Println(errors.Is(wrapped, base))
+	fmt.Println(errors.Is(wrapped, other))
+
+	// Two layers deep: the walk must not stop at the first cause.
+	deep := fmt.Errorf("outer: %w", wrapped)
+	fmt.Println(errors.Is(deep, base))
+
+	fmt.Println(errors.Is(nil, base))
+	fmt.Println(errors.Is(base, nil))
+	fmt.Println(errors.Is(nil, nil))
+}
