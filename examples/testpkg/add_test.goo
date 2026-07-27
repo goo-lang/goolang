@@ -1,0 +1,20 @@
+// A real _test file, discovered and run by `goo test .` — with NO hand-written
+// main anywhere in the package. The compiler synthesizes _testmain.goo, which
+// calls testing.Run once per discovered test and then testing.Summary.
+//
+// Note what is NOT here: a main function, a list of tests, and any registration
+// call. The whole point of discovery plus synthesis is that adding a test
+// function is the only thing an author has to do.
+//
+// Kept passing on purpose: scripts/goo_test_probe.sh (Task 7) diffs this
+// package's full output against `go test`'s and asserts exit 0.
+package testpkg
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+	got := Add(1, 2)
+	if got != 3 {
+		t.Errorf("Add(1, 2) = %d, want 3", got)
+	}
+}

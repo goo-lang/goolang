@@ -136,6 +136,45 @@ int test_discovery_collect(ASTNode** programs, size_t program_count,
     return 1;
 }
 
+char* test_discovery_build_main(const char* package_name, const TestList* tests) {
+    if (!package_name || !tests) return NULL;
+
+    // One testing.Run line per test rather than a slice of them. A slice needs
+    // an InternalTest struct in the shim exports plus a func-typed struct
+    // field; this needs only a func-typed parameter, which the shim already
+    // declares. A simplicity choice, not a capability one.
+    size_t cap = 128 + strlen(package_name);
+    for (size_t i = 0; i < tests->count; i++) {
+        cap += 2 * strlen(tests->names[i]) + 32;
+    }
+
+    char* buf = malloc(cap);
+    if (!buf) return NULL;
+
+    // Every write is bounds-checked against the remaining capacity. snprintf
+    // returns what it WOULD have written, so an unchecked `used += n` past a
+    // truncation would step the next write outside the buffer.
+    size_t used = 0;
+    int n = snprintf(buf, cap, "package %s\n\nimport \"testing\"\n\nfunc main() {\n",
+                     package_name);
+    if (n < 0 || (size_t)n >= cap) { free(buf); return NULL; }
+    used = (size_t)n;
+
+    for (size_t i = 0; i < tests->count; i++) {
+        n = snprintf(buf + used, cap - used, "\ttesting.Run(\"%s\", %s)\n",
+                     tests->names[i], tests->names[i]);
+        if (n < 0 || (size_t)n >= cap - used) { free(buf); return NULL; }
+        used += (size_t)n;
+    }
+
+    // Summary prints the package verdict and exits with the right status, so
+    // it is what makes `goo test` fail a build when a test fails.
+    n = snprintf(buf + used, cap - used, "\ttesting.Summary()\n}\n");
+    if (n < 0 || (size_t)n >= cap - used) { free(buf); return NULL; }
+
+    return buf;
+}
+
 void test_list_free(TestList* l) {
     if (!l) return;
     for (size_t i = 0; i < l->count; i++) free(l->names[i]);

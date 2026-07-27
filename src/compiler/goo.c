@@ -64,6 +64,10 @@ typedef struct CompilerOptions {
     bool verbose;
     bool run_after_compile;
     bool dump_packages;   // hidden debug flag: print import-graph in topo order
+    // Hidden debug flag: print the synthesized _testmain.goo and exit 0. The
+    // generated source is never written to disk, so without this a failure
+    // inside it is a diagnostic pointing at a file nobody can open.
+    bool emit_testmain;
     char** link_libs;
     int link_lib_count;
     char** run_args;      // P5.3: program args after `--` (borrowed from main's argv)
@@ -233,6 +237,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         {"emit-ast", no_argument, 0, 0},
         {"emit-tokens", no_argument, 0, 0},
         {"dump-packages", no_argument, 0, 0},
+        {"emit-testmain", no_argument, 0, 0},
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 0},
         {0, 0, 0, 0}
@@ -253,6 +258,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                     options->emit_tokens = true;
                 } else if (strcmp(long_options[option_index].name, "dump-packages") == 0) {
                     options->dump_packages = true;
+                } else if (strcmp(long_options[option_index].name, "emit-testmain") == 0) {
+                    options->emit_testmain = true;
                 } else if (strcmp(long_options[option_index].name, "version") == 0) {
                     print_version();
                     free(options);
@@ -1197,10 +1204,80 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
             ENTRY_CLEANUP();
             return false;
         }
-        // Task 6 consumes this list to synthesize _testmain.goo. Until then the
-        // names are collected purely to validate them, so free them here rather
-        // than leak on every `goo test` run.
+        // Synthesize _testmain.goo and parse it as ONE MORE FILE of the entry
+        // package — the operation PR #226 made ordinary. It is never written to
+        // disk; --emit-testmain prints it.
+        //
+        // This must happen before type_checker_new() below, because the
+        // marker-seeding loop walks every asts[] entry for its imports and the
+        // generated file is what imports "testing".
+        const char* pkg_name = ((ProgramNode*)asts[0])->package_name;
+        char* testmain_src = test_discovery_build_main(pkg_name ? pkg_name : "main",
+                                                       &tests);
         test_list_free(&tests);
+        if (!testmain_src) {
+            fprintf(stderr, "Error: out of memory generating _testmain.goo\n");
+            ENTRY_CLEANUP();
+            return false;
+        }
+
+        if (options->emit_testmain) {
+            fputs(testmain_src, stdout);
+            free(testmain_src);
+            options->run_after_compile = false;
+            ENTRY_CLEANUP();
+            return true;
+        }
+
+        // Grow the three parallel arrays by one. On a realloc failure the
+        // ORIGINAL pointer is still live, so assign through a temporary —
+        // writing straight into sources/lexers/asts would lose every file
+        // already parsed and leak all of it.
+        char** grown_sources = realloc(sources, (nfiles + 1) * sizeof(char*));
+        if (grown_sources) sources = grown_sources;
+        Lexer** grown_lexers = grown_sources ? realloc(lexers, (nfiles + 1) * sizeof(Lexer*)) : NULL;
+        if (grown_lexers) lexers = grown_lexers;
+        ASTNode** grown_asts = grown_lexers ? realloc(asts, (nfiles + 1) * sizeof(ASTNode*)) : NULL;
+        if (grown_asts) asts = grown_asts;
+        if (!grown_asts) {
+            free(testmain_src);
+            fprintf(stderr, "Error: out of memory generating _testmain.goo\n");
+            ENTRY_CLEANUP();
+            return false;
+        }
+
+        // The source buffer joins `sources` so ENTRY_CLEANUP frees it. No
+        // lexer: parse_input builds its own, which is why the package path
+        // (parse of an imported package's files) sets none either.
+        sources[nfiles] = testmain_src;
+        lexers[nfiles]  = NULL;
+        asts[nfiles]    = NULL;
+
+        // A string literal has static storage duration, so it outlives every
+        // Position that parse_input stamps this pointer into. The real files
+        // must strdup their names because those are built at runtime.
+        static const char kTestMainName[] = "_testmain.goo";
+
+        extern ASTNode* ast_root;
+        ast_root = NULL;
+        if (parse_input(testmain_src, kTestMainName) != 0 || !ast_root) {
+            // Generated source that will not parse is a compiler bug, not a
+            // user error, so point at the flag that shows the text.
+            fprintf(stderr, "Error: failed to parse the synthesized _testmain.goo "
+                            "(re-run with --emit-testmain to see it)\n");
+            nfiles++;   // the slot is owned now; let ENTRY_CLEANUP free it
+            ENTRY_CLEANUP();
+            return false;
+        }
+        asts[nfiles] = ast_root;
+        ast_root = NULL;
+        nfiles++;
+
+        if (options->emit_ast) {
+            printf("=== AST (%s) ===\n", kTestMainName);
+            ast_print(asts[nfiles - 1], 0);
+            printf("\n");
+        }
     }
 
     // Hidden debug flag: walk the import graph from main and print the

@@ -122,9 +122,8 @@ EOF
 # The companion positive case. Without it, a discovery bug that rejects EVERY
 # Test function still satisfies the negative row above.
 #
-# The hand-written main is scaffolding for this task only: Task 6 synthesizes
-# _testmain.goo, and a package carrying both would declare main twice. Delete
-# this main when synthesis lands.
+# No main: the compiler synthesizes _testmain.goo. A hand-written main here
+# would now collide with the generated one.
 mkdir -p "$WORK/goodsig"
 cat > "$WORK/goodsig/y_test.goo" <<'EOF'
 package goodsig
@@ -133,11 +132,30 @@ import "testing"
 
 func TestFine(t *testing.T) {
 }
+EOF
 
-func main() {
-	testing.Run("TestFine", TestFine)
-	testing.Summary()
+# A FAILING test. This is the row that proves a discovered test was actually
+# CALLED: a passing run prints only `ok`, which a synthesized main that called
+# nothing would also print. The --- FAIL header names the test, so it can only
+# appear if testing.Run("TestBoom", TestBoom) was generated and executed.
+mkdir -p "$WORK/failpkg"
+cat > "$WORK/failpkg/boom_test.goo" <<'EOF'
+package failpkg
+
+import "testing"
+
+func TestBoom(t *testing.T) {
+	t.Errorf("boom %d", 42)
 }
+EOF
+
+# A _test file that declares NO test functions is not an error: the synthesized
+# main just summarizes an empty run, the way `go test` does.
+mkdir -p "$WORK/emptytests"
+cat > "$WORK/emptytests/e_test.goo" <<'EOF'
+package emptytests
+
+func helper() int { return 1 }
 EOF
 
 # check <name> <want_exit> <want_stdout> <stderr_mode> <cmd...>
@@ -223,6 +241,11 @@ check test-no-test-files       0     "~[no test files]" empty  sh -c "cd '$WORK/
 # the rejection is targeted rather than blanket.
 check test-bad-signature       1     ""            "must have signature func(t *testing.T)" sh -c "cd '$WORK/badsig' && '$COMPILER' test ."
 check test-good-signature      0     "~ok"         empty                sh -c "cd '$WORK/goodsig' && '$COMPILER' test ."
+# Synthesis: `goo test` on a package with NO hand-written main runs its tests.
+# The failure row is the one that proves a discovered test was really called.
+check test-runs-tests          0     "~ok"         empty                sh -c "cd examples/testpkg && '$COMPILER' test ."
+check test-reports-failure     1     "~--- FAIL: TestBoom" empty        sh -c "cd '$WORK/failpkg' && '$COMPILER' test ."
+check test-empty-test-file     0     "~ok"         empty                sh -c "cd '$WORK/emptytests' && '$COMPILER' test ."
 
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]

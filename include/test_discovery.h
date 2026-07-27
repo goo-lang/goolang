@@ -35,4 +35,27 @@ int test_discovery_collect(ASTNode** programs, size_t program_count,
 
 void test_list_free(TestList* l);
 
+// Build the source of the synthesized _testmain.goo for `package_name`:
+//
+//   package <package_name>
+//
+//   import "testing"
+//
+//   func main() {
+//   	testing.Run("TestAdd", TestAdd)
+//   	testing.Summary()
+//   }
+//
+// The package clause names the package UNDER TEST, not "main" — the entry
+// package's clause need not be "main", and matching it is what lets the
+// generated file see the package's own identifiers.
+//
+// Each test is passed as a VALUE, not by name. That is the load-bearing choice
+// of the whole design: the runtime owns the call frame, so it can setjmp before
+// invoking a test and longjmp out of t.Fatal. A generated main that called each
+// test directly could mark a failure but could not stop one.
+//
+// Returns a malloc'd buffer the caller owns, or NULL on allocation failure.
+char* test_discovery_build_main(const char* package_name, const TestList* tests);
+
 #endif // TEST_DISCOVERY_H
