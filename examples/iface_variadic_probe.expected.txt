@@ -1,0 +1,14 @@
+iface zero: 0
+iface one: 5
+iface many: 11
+fixed+variadic: 9
+fixed, zero variadic: 9
+val recv zero: 100
+val recv many: 130
+narrow fixed: 6
+any zero: 0
+any many: 3
+field args: 14
+spread: 6
+spread empty: 0
+embedded iface: 10

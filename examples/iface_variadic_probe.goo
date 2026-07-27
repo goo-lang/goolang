@@ -1,0 +1,185 @@
+// iface_variadic_probe: a variadic method declared on an INTERFACE was
+// unusable. PR #224 fixed variadic methods on a CONCRETE receiver, but the
+// same call through an interface value was rejected outright:
+//
+//   call to AddAll: wrong number of arguments (have 3, want 1)
+//
+// One root cause, not three: the interface-type builder (the AST_FUNC_DECL arm
+// of type_from_ast's AST_INTERFACE_TYPE case, type_checker.c) was the FOURTH
+// place in the checker that walks an AST param chain to build a function Type*,
+// and the only one that never applied the `...T` -> `[]T` wrap nor set
+// is_variadic. So the interface wanted `int` where every correct impl carries
+// `[]int`. The isolating discriminator: an interface declaring `ns []int` WAS
+// satisfied by an impl declaring `ns ...int`, but `ns ...int` in the interface
+// failed against BOTH impl spellings.
+//
+// Every variadic branch in type_check_call_expr reads is_variadic off that same
+// im->type pointer, so the arity/spread/element-type rules all corrected
+// themselves once the builder did. What did NOT was codegen: the
+// interface-dispatch argument loop (call_codegen.c) was a bare 1:1 positional
+// walk with no signature awareness at all, so once the checker admitted the
+// call it failed module verification instead:
+//
+//   Incorrect number of arguments passed to called function!
+//     call void %thunk(ptr %data, i64 1, i64 2, i64 3)
+//
+// That loop was missing all five steps its two sibling loops perform (nil
+// literal, coerce-to-param, lvalue load, width coercion, variadic pack) — the
+// third copy of the same drift. All three now share
+// codegen_emit_fixed_call_arg.
+//
+// Expected output produced by `go run` on the equivalent Go program (go1.26.1),
+// per the project convention that accept goldens are never hand-written.
+package main
+
+import "fmt"
+
+// --- Purely variadic, pointer-receiver impl -----------------------------------
+
+type Adder interface {
+	AddAll(ns ...int)
+	Total() int
+}
+
+type Acc struct {
+	total int
+	tag   int
+}
+
+func (a *Acc) AddAll(ns ...int) {
+	for _, n := range ns {
+		a.total = a.total + n
+	}
+}
+
+func (a *Acc) Total() int {
+	return a.total
+}
+
+// --- A FIXED parameter ahead of the variadic one ------------------------------
+// Pins the fixed/variadic split: the packed slice must land after the fixed
+// args, never at a slot derived from the actual argument count.
+
+type Scaler interface {
+	AddScaled(k int, ns ...int)
+	Total() int
+}
+
+func (a *Acc) AddScaled(k int, ns ...int) {
+	for _, n := range ns {
+		a.total = a.total + k*n
+	}
+}
+
+// --- Value-receiver impl behind its own interface -----------------------------
+
+type Summer interface {
+	SumWith(ns ...int) int
+}
+
+type Val struct {
+	base int
+}
+
+func (v Val) SumWith(ns ...int) int {
+	s := v.base
+	for _, n := range ns {
+		s = s + n
+	}
+	return s
+}
+
+// --- Narrow fixed param: pins the per-slot width coercion ---------------------
+// The untyped const at the fixed slot must arrive as an i8, not a raw i64.
+
+type Narrow interface {
+	Tally(w int8, ns ...int) int
+}
+
+func (v Val) Tally(w int8, ns ...int) int {
+	s := int(w)
+	for _, n := range ns {
+		s = s + n
+	}
+	return s
+}
+
+// --- ...any element type: pins the interface-box arm inside the pack ----------
+
+type Counter interface {
+	Describe(vals ...any) int
+}
+
+func (v Val) Describe(vals ...any) int {
+	return len(vals)
+}
+
+// --- Embedded interface carrying the variadic method --------------------------
+// An embedded interface's methods are copied by TYPE POINTER into the outer
+// method list, so the wrap must be on the built Type, not on the copy site.
+
+type Extended interface {
+	Adder
+	Bump()
+}
+
+func (a *Acc) Bump() {
+	a.total = a.total + 1
+}
+
+func main() {
+	// Zero, one, many trailing args through an interface value.
+	var ad Adder = &Acc{}
+	ad.AddAll()
+	fmt.Println("iface zero:", ad.Total())
+	ad.AddAll(5)
+	fmt.Println("iface one:", ad.Total())
+	ad.AddAll(1, 2, 3)
+	fmt.Println("iface many:", ad.Total())
+
+	// Fixed parameter ahead of the variadic one.
+	var sc Scaler = &Acc{}
+	sc.AddScaled(3, 1, 2)
+	fmt.Println("fixed+variadic:", sc.Total())
+	sc.AddScaled(10)
+	fmt.Println("fixed, zero variadic:", sc.Total())
+
+	// Value-receiver impl.
+	var sm Summer = Val{base: 100}
+	fmt.Println("val recv zero:", sm.SumWith())
+	fmt.Println("val recv many:", sm.SumWith(10, 20))
+
+	// Narrow fixed param: the untyped const must arrive as an i8.
+	var nw Narrow = Val{base: 0}
+	fmt.Println("narrow fixed:", nw.Tally(3, 1, 2))
+
+	// ...any element type: every trailing actual is boxed into the slice.
+	var ct Counter = Val{base: 0}
+	fmt.Println("any zero:", ct.Describe())
+	fmt.Println("any many:", ct.Describe(1, "two", true))
+
+	// A struct FIELD as a trailing arg, exercising the lvalue load.
+	src := Acc{}
+	src.tag = 7
+	var fd Adder = &Acc{}
+	fd.AddAll(src.tag, src.tag)
+	fmt.Println("field args:", fd.Total())
+
+	// Spread through the interface.
+	s := []int{1, 2, 3}
+	var sp Adder = &Acc{}
+	sp.AddAll(s...)
+	fmt.Println("spread:", sp.Total())
+
+	// Spread of an EMPTY slice.
+	var empty []int
+	var se Adder = &Acc{}
+	se.AddAll(empty...)
+	fmt.Println("spread empty:", se.Total())
+
+	// The variadic method reached through an EMBEDDED interface.
+	var ex Extended = &Acc{}
+	ex.AddAll(4, 5)
+	ex.Bump()
+	fmt.Println("embedded iface:", ex.Total())
+}

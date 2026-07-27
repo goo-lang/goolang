@@ -623,6 +623,104 @@ static ValueInfo* codegen_emit_variadic_pack(CodeGenerator* codegen, TypeChecker
     return codegen_build_slice_from_elems(codegen, checker, first_trailing, slice_type, pos);
 }
 
+// Emit ONE fixed (non-variadic-tail) call argument, fully coerced to its
+// declared parameter, and write the resulting value to *out. Returns 1 on
+// success, 0 on failure with a diagnostic already emitted.
+//
+// The five steps, in the order the call paths established them:
+//   1. nil-literal pre-evaluation — a bare `nil` carries no type context of its
+//      own, so a `?T` or nilable-ref parameter builds its null value from the
+//      DECLARED type instead of evaluating the literal.
+//   2. evaluate the argument expression (exactly once).
+//   3. comptime array-length enforcement, for the length compatibility the
+//      checker DEFERRED on a comptime-length array argument
+//      (type_check_call_expr's comptime_len_deferred): a genuine mismatch at
+//      THIS instance is a clean instance-named failure rather than invalid IR
+//      passing a differently-sized aggregate.
+//   4. nullable auto-wrap then interface box (codegen_coerce_arg_to_param).
+//   5. the general lvalue load — the fallthrough for when NEITHER arm in (4)
+//      fired, since those load internally — then numeric width coercion.
+//
+// THIRD extraction in this family, and the reason for it: every argument loop
+// that grew its own copy of these steps has drifted. The method loop mirrored
+// only step 5's general load, so an interface- or `?T`-typed parameter failed
+// module verification for every argument shape (fixed by extracting step 4 into
+// codegen_coerce_arg_to_param, PR #220); it then had no variadic concept at all
+// (fixed by extracting codegen_emit_variadic_pack, PR #224); and the
+// interface-DISPATCH loop had none of the five, being a bare 1:1 positional walk
+// — raw element addresses for lvalues, unboxed concretes for `...any`, and no
+// pack. Three copies of five steps is what let them drift, so all three loops
+// now call THIS instead of carrying their own.
+//
+// `param_llvm` is supplied by the caller rather than derived here, because the
+// loops legitimately differ on where the target type comes from: the method loop
+// reads the real LLVM function type (LLVMGetParamTypes off the resolved callee),
+// while the plain-call and dispatch loops lower the declared Goo param type.
+// Pass NULL to skip width coercion entirely. Coercion is applied
+// unconditionally when it IS supplied — matching the method loop's long-standing
+// behavior rather than the plain loop's additional type_is_numeric gate, which
+// was redundant: codegen_coerce_to_type only ever acts on int/float LLVM kinds
+// and returns the value untouched for matching types, aggregates and pointers.
+// The gate could only have suppressed a coercion between two DIFFERENT-width
+// LLVM integers, which is precisely the case that would already be invalid IR.
+static int codegen_emit_fixed_call_arg(CodeGenerator* codegen, TypeChecker* checker,
+                                       ASTNode* arg, Type* param_type,
+                                       LLVMTypeRef param_llvm, LLVMValueRef* out) {
+    if (!arg || !out) return 0;
+
+    if (param_type &&
+        (param_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(param_type)) &&
+        arg->type == AST_LITERAL &&
+        ((LiteralNode*)arg)->literal_type == TOKEN_NIL) {
+        ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, param_type);
+        if (!nil_val) return 0;
+        *out = nil_val->llvm_value;
+        value_info_free(nil_val);
+        return 1;
+    }
+
+    ValueInfo* arg_val = codegen_generate_expression(codegen, checker, arg);
+    if (!arg_val) return 0;
+
+    if (param_type && arg_val->goo_type &&
+        param_type->kind == TYPE_ARRAY &&
+        arg_val->goo_type->kind == TYPE_ARRAY &&
+        (param_type->data.array.comptime_length ||
+         arg_val->goo_type->data.array.comptime_length) &&
+        param_type->data.array.length != arg_val->goo_type->data.array.length) {
+        codegen_error(codegen, arg->pos,
+            "cannot pass [%zu]-length array to [%zu]-length array parameter in comptime instance '%s'",
+            arg_val->goo_type->data.array.length,
+            param_type->data.array.length,
+            codegen->symbol_override ? codegen->symbol_override : "?");
+        value_info_free(arg_val);
+        return 0;
+    }
+
+    if (!codegen_coerce_arg_to_param(codegen, checker, param_type, arg_val, arg->pos)) {
+        value_info_free(arg_val);
+        return 0;
+    }
+
+    if (arg_val->is_lvalue && arg_val->goo_type) {
+        LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+        if (at) {
+            arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at,
+                                                 arg_val->llvm_value, "argld");
+            arg_val->is_lvalue = 0;
+        }
+    }
+
+    LLVMValueRef v = arg_val->llvm_value;
+    if (param_llvm) {
+        int src_signed = arg_val->goo_type ? type_is_signed(arg_val->goo_type) : 1;
+        v = codegen_coerce_to_type(codegen, v, src_signed, param_llvm);
+    }
+    *out = v;
+    value_info_free(arg_val);
+    return 1;
+}
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -1818,16 +1916,84 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             value_info_free(iv);
 
-            size_t argc = 0;
-            for (ASTNode* a = call->args; a; a = a->next) argc++;
-            LLVMValueRef* dargs = argc ? malloc(argc * sizeof(LLVMValueRef)) : NULL;
-            size_t i = 0;
-            for (ASTNode* a = call->args; a; a = a->next, i++) {
-                ValueInfo* av = codegen_generate_expression(codegen, checker, a);
-                if (!av) { free(dargs); return NULL; }
-                dargs[i] = av->llvm_value;
-                value_info_free(av);
+            // The interface method's own signature. Resolved here by name —
+            // codegen_interface_dispatch repeats this lookup for the vtable
+            // SLOT INDEX, but the argument shape has to be known before the
+            // arguments are evaluated, and evaluation must stay on this side of
+            // the call (see the ADR 0001 note below). A NULL isig means the
+            // method does not exist on the interface: leave the arguments
+            // uncoerced and let dispatch emit its own diagnostic rather than
+            // duplicating the error here.
+            Type* isig = NULL;
+            for (InterfaceMethod* im = recv_type->data.interface.methods; im; im = im->next) {
+                if (im->name && strcmp(im->name, msel->selector) == 0) {
+                    isig = im->type;
+                    break;
+                }
             }
+            // Interface method types carry NO receiver (the boxed data pointer
+            // is prepended inside codegen_interface_dispatch), so params index
+            // from 0 with no offset — unlike the concrete method loop, whose
+            // receiver occupies param_types[0].
+            size_t isig_params = (isig && isig->kind == TYPE_FUNCTION)
+                                 ? isig->data.function.param_count : 0;
+            int iface_is_variadic = isig && isig->kind == TYPE_FUNCTION
+                                    && isig->data.function.is_variadic
+                                    && isig->data.function.param_types
+                                    && isig_params > 0;
+            // Variadic: one arg per FIXED param plus exactly ONE packed slice,
+            // never a 1:1 mapping with the actual argument count. Driving argc
+            // off the SIGNATURE is what makes `ad.AddAll(1, 2, 3)` pass a single
+            // []int rather than three i64s.
+            size_t argc = 0;
+            if (iface_is_variadic) {
+                argc = isig_params;
+            } else {
+                for (ASTNode* a = call->args; a; a = a->next) argc++;
+            }
+            size_t ifixed_end = iface_is_variadic ? isig_params - 1 : (size_t)-1;
+            LLVMValueRef* dargs = argc ? malloc(argc * sizeof(LLVMValueRef)) : NULL;
+            if (argc && !dargs) return NULL;
+            int iok = 1;
+            size_t i = 0;
+            ASTNode* a = call->args;
+            for (; a; a = a->next, i++) {
+                // Stop at the first trailing actual once the fixed params are
+                // filled — everything from here packs into one slice below.
+                // Leaves `a` pointing at that first trailing node (or NULL if
+                // none were given), exactly as the other two loops do.
+                if (iface_is_variadic && i >= ifixed_end) break;
+                if (i >= argc) break;
+                Type* param_type = (isig && i < isig_params)
+                                   ? isig->data.function.param_types[i] : NULL;
+                // Shared with the plain-call and method-call loops. This loop
+                // previously had NONE of these five steps — it was a bare 1:1
+                // positional walk, so an lvalue argument arrived as a raw
+                // element address, a concrete into an `...any`/interface
+                // parameter arrived unboxed, and a `?T` parameter arrived
+                // unwrapped, each failing module verification.
+                if (!codegen_emit_fixed_call_arg(codegen, checker, a, param_type,
+                        param_type ? codegen_type_to_llvm(codegen, param_type) : NULL,
+                        &dargs[i])) {
+                    iok = 0;
+                    break;
+                }
+            }
+            if (iok && iface_is_variadic) {
+                // `a` points at the first trailing actual, or NULL if none were
+                // given (`ad.AddAll()` — the empty-slice case the pack helper
+                // already handles). Shared with the other two loops.
+                ValueInfo* packed = codegen_emit_variadic_pack(
+                    codegen, checker, a, call->has_spread,
+                    isig->data.function.param_types[isig_params - 1], expr->pos);
+                if (!packed) {
+                    iok = 0;
+                } else {
+                    dargs[isig_params - 1] = packed->llvm_value;
+                    value_info_free(packed);
+                }
+            }
+            if (!iok) { free(dargs); return NULL; }
             // ADR 0001 (T3 review): the nil-vtable check lives INSIDE
             // codegen_interface_dispatch, at its own vtable extraction —
             // not here — so it runs after the argument evaluation above,
@@ -2186,61 +2352,17 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 Type* param_type = (msig && i < msig_params)
                                    ? msig->data.function.param_types[i] : NULL;
 
-                // nil literal → build the param's null-nullable (?T) or bare
-                // zero value (pointer/slice/map/chan/func) directly from the
-                // DECLARED param type, without evaluating the literal — a
-                // bare `nil` carries no type context of its own. Mirrors the
-                // plain-call loop's identical pre-evaluation arm.
-                if (param_type &&
-                    (param_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(param_type)) &&
-                    a->type == AST_LITERAL &&
-                    ((LiteralNode*)a)->literal_type == TOKEN_NIL) {
-                    ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, param_type);
-                    if (!nil_val) { ok = 0; break; }
-                    margs[i] = nil_val->llvm_value;
-                    value_info_free(nil_val);
-                    continue;
-                }
-
-                ValueInfo* av = codegen_generate_expression(codegen, checker, a);
-                if (!av) { ok = 0; break; }
-
-                // Nullable auto-wrap then interface box (shared with the
-                // plain-call loop — see codegen_coerce_arg_to_param).
-                if (!codegen_coerce_arg_to_param(codegen, checker, param_type,
-                                                 av, a->pos)) {
-                    value_info_free(av);
+                // All five per-argument steps live in
+                // codegen_emit_fixed_call_arg, shared with the plain-call and
+                // interface-dispatch loops. This loop's width coercion targets
+                // the REAL LLVM function type (mparam_tys) rather than the
+                // lowered declared param type — see that helper's doc comment.
+                if (!codegen_emit_fixed_call_arg(codegen, checker, a, param_type,
+                        (mparam_tys && i < mfn_params) ? mparam_tys[i] : NULL,
+                        &margs[i])) {
                     ok = 0;
                     break;
                 }
-
-                // Load a scalar lvalue argument (e.g. a slice-index GEP)
-                // before coercion — mirrors the plain-call path's
-                // load-before-use step (2c30703) and arc-16's
-                // index-lvalue-widen shape (composite_codegen.c). Without
-                // this, an lvalue argument's raw element ADDRESS was passed
-                // straight through, failing LLVM module verification
-                // ("Call parameter type does not match function signature!").
-                // Ordered AFTER the arms above, which load internally when
-                // they fire: this is the neither-arm-fired fallthrough, the
-                // same relationship the plain-call loop documents.
-                if (av->is_lvalue && av->goo_type) {
-                    LLVMTypeRef at = codegen_type_to_llvm(codegen, av->goo_type);
-                    if (at) {
-                        av->llvm_value = LLVMBuildLoad2(codegen->builder, at,
-                                                        av->llvm_value, "argld");
-                        av->is_lvalue = 0;
-                    }
-                }
-                LLVMValueRef v = av->llvm_value;
-                if (mparam_tys && i < mfn_params) {
-                    int src_signed = av->goo_type
-                                     ? type_is_signed(av->goo_type) : 1;
-                    v = codegen_coerce_to_type(codegen, v, src_signed,
-                                               mparam_tys[i]);
-                }
-                margs[i] = v;
-                value_info_free(av);
             }
             free(mparam_tys);
             if (ok && method_is_variadic) {
@@ -2464,103 +2586,19 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 param_type = func_goo_type->data.function.param_types[i];
             }
 
-            if (param_type &&
-                (param_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(param_type)) &&
-                arg->type == AST_LITERAL &&
-                ((LiteralNode*)arg)->literal_type == TOKEN_NIL) {
-                // nil literal → build the param's null-nullable (?T) or bare
-                // zero value (P2.2 option A: pointer/slice/map/chan/func)
-                // directly, using the param's declared type as context.
-                ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, param_type);
-                if (!nil_val) {
-                    free(args);
-                    value_info_free(func_val);
-                    return NULL;
-                }
-                args[i] = nil_val->llvm_value;
-                value_info_free(nil_val);
-                arg = arg->next;
-                continue;
-            }
-
-            ValueInfo* arg_val = codegen_generate_expression(codegen, checker, arg);
-            if (!arg_val) {
+            // All five per-argument steps (nil literal, evaluate, comptime
+            // array-length enforcement, nullable-wrap/interface-box, lvalue
+            // load + width coercion) live in codegen_emit_fixed_call_arg,
+            // shared with the method-call and interface-dispatch loops. The
+            // width coercion targets the LOWERED declared param type here; see
+            // that helper's doc comment for why the loops differ on that.
+            if (!codegen_emit_fixed_call_arg(codegen, checker, arg, param_type,
+                                             param_type ? codegen_type_to_llvm(codegen, param_type) : NULL,
+                                             &args[i])) {
                 free(args);
                 value_info_free(func_val);
                 return NULL;
             }
-
-            // Fix round 6 (M-r5a): instance-time enforcement of the
-            // array-length compatibility the checker DEFERRED for a
-            // comptime-length array argument (type_check_call_expr's
-            // comptime_len_deferred). arg_val->goo_type is the instance's
-            // re-derived REAL type, so a genuine mismatch at THIS instance
-            // is a clean, instance-named compile failure instead of an
-            // invalid-IR pass of a differently-sized aggregate. Gated on
-            // the comptime_length flag (either side) — ordinary mismatched
-            // array arguments never reach codegen.
-            if (param_type && arg_val->goo_type &&
-                param_type->kind == TYPE_ARRAY &&
-                arg_val->goo_type->kind == TYPE_ARRAY &&
-                (param_type->data.array.comptime_length ||
-                 arg_val->goo_type->data.array.comptime_length) &&
-                param_type->data.array.length != arg_val->goo_type->data.array.length) {
-                codegen_error(codegen, arg->pos,
-                    "cannot pass [%zu]-length array to [%zu]-length array parameter in comptime instance '%s'",
-                    arg_val->goo_type->data.array.length,
-                    param_type->data.array.length,
-                    codegen->symbol_override ? codegen->symbol_override : "?");
-                value_info_free(arg_val);
-                free(args);
-                value_info_free(func_val);
-                return NULL;
-            }
-
-            // Nullable auto-wrap then interface box (shared with the
-            // method-call argument loop — see codegen_coerce_arg_to_param).
-            if (!codegen_coerce_arg_to_param(codegen, checker, param_type,
-                                             arg_val, arg->pos)) {
-                value_info_free(arg_val); free(args); value_info_free(func_val); return NULL;
-            }
-
-            // Load a scalar lvalue argument before use. The nullable/interface
-            // arms above already load internally when they fire; this is the
-            // general (non-nullable, non-interface) fallthrough, which used to
-            // pass the raw element pointer straight through. A struct-field
-            // arg like `f(p.V)` crashed the LLVM verifier ("Call parameter
-            // type does not match function signature!") instead of passing
-            // the field's loaded value — same family as the nullable/
-            // interface arms' own load-before-use step.
-            if (arg_val->is_lvalue && arg_val->goo_type) {
-                LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
-                if (at) {
-                    arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "argld");
-                    arg_val->is_lvalue = 0;
-                }
-            }
-
-            // Numeric width coercion: the checker's P2-2 guard rejects a
-            // numeric argument whose width/kind differs from the declared
-            // parameter for calls it can verify by signature identity, but
-            // that guard only fires when the callee is resolved that way
-            // (see expression_checker.c's check_signature gate) — calls it
-            // cannot see through that way could still admit a numeric arg
-            // whose LLVM representation differs from the parameter's. Coerce
-            // here (a no-op when the LLVM types already match) using the
-            // shared width-coercion helper, the same idiom already applied at
-            // every other numeric sink (var-decl, append, channel-send).
-            if (param_type && type_is_numeric(param_type) &&
-                arg_val->goo_type && type_is_numeric(arg_val->goo_type)) {
-                LLVMTypeRef param_llvm = codegen_type_to_llvm(codegen, param_type);
-                if (param_llvm) {
-                    int src_signed = type_is_signed(arg_val->goo_type);
-                    arg_val->llvm_value = codegen_coerce_to_type(
-                        codegen, arg_val->llvm_value, src_signed, param_llvm);
-                }
-            }
-
-            args[i] = arg_val->llvm_value;
-            value_info_free(arg_val);
             arg = arg->next;
         }
 
