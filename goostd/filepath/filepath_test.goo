@@ -1,0 +1,129 @@
+// Tests for package filepath.
+//
+// Every expected value was produced by running the same call against Go's real
+// path/filepath on go1.26.1. The cases that matter most are the ones a
+// hand-written implementation gets wrong, and each is marked where it appears:
+// Ext(".hidden"), Clean("/../a"), Base(""), Base("/") and Dir("/a").
+package filepath
+
+import "testing"
+
+func TestBase(t *testing.T) {
+	if Base("a/b/c.txt") != "c.txt" {
+		t.Errorf("Base(a/b/c.txt) = %s, want c.txt", Base("a/b/c.txt"))
+	}
+	if Base("c.txt") != "c.txt" {
+		t.Errorf("Base(c.txt) = %s, want c.txt", Base("c.txt"))
+	}
+	// Trailing separators are stripped before the last element is taken.
+	if Base("a/b/") != "b" {
+		t.Errorf("Base(a/b/) = %s, want b", Base("a/b/"))
+	}
+	// Go: the root is its own base, and the empty path is ".".
+	if Base("/") != "/" {
+		t.Errorf("Base(/) = %s, want /", Base("/"))
+	}
+	if Base("") != "." {
+		t.Errorf("Base() = %s, want .", Base(""))
+	}
+}
+
+func TestDir(t *testing.T) {
+	if Dir("a/b/c.txt") != "a/b" {
+		t.Errorf("Dir(a/b/c.txt) = %s, want a/b", Dir("a/b/c.txt"))
+	}
+	if Dir("c.txt") != "." {
+		t.Errorf("Dir(c.txt) = %s, want .", Dir("c.txt"))
+	}
+	// Go: "/" not ".", which is why Dir keeps the separator before cleaning.
+	if Dir("/a") != "/" {
+		t.Errorf("Dir(/a) = %s, want /", Dir("/a"))
+	}
+	if Dir("") != "." {
+		t.Errorf("Dir() = %s, want .", Dir(""))
+	}
+}
+
+func TestExt(t *testing.T) {
+	if Ext("a/b/c.txt") != ".txt" {
+		t.Errorf("Ext(a/b/c.txt) = %s, want .txt", Ext("a/b/c.txt"))
+	}
+	if Ext("c") != "" {
+		t.Errorf("Ext(c) = %s, want empty", Ext("c"))
+	}
+	// Go finds the LAST dot, so a dotfile's whole name is its extension.
+	if Ext(".hidden") != ".hidden" {
+		t.Errorf("Ext(.hidden) = %s, want .hidden", Ext(".hidden"))
+	}
+	if Ext("a.b.c") != ".c" {
+		t.Errorf("Ext(a.b.c) = %s, want .c", Ext("a.b.c"))
+	}
+	// A dot in a DIRECTORY name is not an extension of the file.
+	if Ext("a.b/c") != "" {
+		t.Errorf("Ext(a.b/c) = %s, want empty", Ext("a.b/c"))
+	}
+}
+
+func TestJoin(t *testing.T) {
+	if Join("a", "b", "c") != "a/b/c" {
+		t.Errorf("Join(a,b,c) = %s, want a/b/c", Join("a", "b", "c"))
+	}
+	// Redundant separators from the elements are cleaned away.
+	if Join("a/", "/b") != "a/b" {
+		t.Errorf("Join(a/,/b) = %s, want a/b", Join("a/", "/b"))
+	}
+	// Empty elements are skipped, not turned into empty segments.
+	if Join("a", "", "b") != "a/b" {
+		t.Errorf("Join(a,,b) = %s, want a/b", Join("a", "", "b"))
+	}
+	if Join() != "" {
+		t.Errorf("Join() = %s, want empty", Join())
+	}
+}
+
+func TestClean(t *testing.T) {
+	if Clean("a/./b") != "a/b" {
+		t.Errorf("Clean(a/./b) = %s, want a/b", Clean("a/./b"))
+	}
+	if Clean("a/b/../c") != "a/c" {
+		t.Errorf("Clean(a/b/../c) = %s, want a/c", Clean("a/b/../c"))
+	}
+	if Clean("//a//b") != "/a/b" {
+		t.Errorf("Clean(//a//b) = %s, want /a/b", Clean("//a//b"))
+	}
+	if Clean("") != "." {
+		t.Errorf("Clean() = %s, want .", Clean(""))
+	}
+	if Clean("/") != "/" {
+		t.Errorf("Clean(/) = %s, want /", Clean("/"))
+	}
+}
+
+func TestCleanDotDot(t *testing.T) {
+	// The two that a naive stack-pop gets wrong, in opposite directions.
+	//
+	// Relative: the parent is unknown without the filesystem, so `..` stays.
+	if Clean("../a") != "../a" {
+		t.Errorf("Clean(../a) = %s, want ../a", Clean("../a"))
+	}
+	// Absolute: the root has no parent, so `..` is discarded.
+	if Clean("/../a") != "/a" {
+		t.Errorf("Clean(/../a) = %s, want /a", Clean("/../a"))
+	}
+	// Several leading `..` all survive on a relative path.
+	if Clean("../../a") != "../../a" {
+		t.Errorf("Clean(../../a) = %s, want ../../a", Clean("../../a"))
+	}
+}
+
+func TestIsAbs(t *testing.T) {
+	if !IsAbs("/a") {
+		t.Errorf("IsAbs(/a) = false, want true")
+	}
+	if IsAbs("a") {
+		t.Errorf("IsAbs(a) = true, want false")
+	}
+	if IsAbs("") {
+		t.Errorf("IsAbs() = true, want false")
+	}
+}

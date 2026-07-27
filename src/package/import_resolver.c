@@ -132,6 +132,11 @@ typedef struct {
 static const ImportPathAlias import_path_aliases[] = {
     {"unicode/utf8", "utf8"},
     {"math/bits", "bits"},
+    // Go spells it `path/filepath`, and a program ported from Go writes that.
+    // Without the alias the flat `filepath` would be the ONLY spelling that
+    // resolves, which is a gratuitous divergence in the one place a reader is
+    // most likely to copy from Go.
+    {"path/filepath", "filepath"},
 };
 
 const char* normalize_import_path(const char* import_path) {

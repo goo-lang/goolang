@@ -13,6 +13,11 @@
 //   - a concrete value passed to an INTERFACE-typed parameter arrived unboxed:
 //     sort.Sort(s) handed a raw { ptr, i64, i64 } slice to a { ptr, ptr }
 //     interface parameter.
+//   - a VARIADIC callee got its actuals positionally instead of packed:
+//     filepath.Join("a", "b") passed two separate strings to one []string
+//     parameter. Found later, when filepath introduced the first variadic
+//     function in a vendored package — the same correction the METHOD loop
+//     needed in PR #224, arriving in the fourth loop.
 //
 // Both shapes are ordinary. `strings.Index(lines[i], pat)` is what any
 // text-processing code writes, and sort.Sort's whole signature is an interface.
@@ -26,6 +31,7 @@
 package main
 
 import "fmt"
+import "path/filepath"
 import "sort"
 import "strings"
 
@@ -48,4 +54,11 @@ func main() {
 	// the value handed to Sort is already boxed here.
 	sort.Sort(sort.Reverse(s))
 	fmt.Println(x[0], x[1], x[2])
+
+	// A VARIADIC vendored callee: the actuals must be packed into one slice,
+	// not passed positionally.
+	fmt.Println(filepath.Join("a", "b", "c"))
+	// ...and the spread form, where exactly one slice is already in hand.
+	parts := []string{"p", "q"}
+	fmt.Println(filepath.Join(parts...))
 }
