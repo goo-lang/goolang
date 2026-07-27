@@ -12,6 +12,12 @@
 static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeChecker* checker,
                                                ASTNode* expr, const char* runtime_symbol,
                                                TypeKind return_kind, int unused_extra);
+// Defined below, next to its doc comment. Forward-declared because the
+// vendored-package call path (codegen_generate_pkg_selector_call) sits above
+// it and is the fourth loop to route through it.
+static int codegen_emit_fixed_call_arg(CodeGenerator* codegen, TypeChecker* checker,
+                                       ASTNode* arg, Type* param_type,
+                                       LLVMTypeRef param_llvm, LLVMValueRef* out);
 static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_fmt_sprint_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
@@ -161,18 +167,51 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
     for (ASTNode* a = call->args; a; a = a->next) argc++;
     LLVMValueRef* args = argc ? malloc(sizeof(LLVMValueRef) * argc) : NULL;
     if (argc && !args) return NULL;
+
+    // The DECLARED Goo signature of the callee. Needed, not optional: interface
+    // boxing and the nullable auto-wrap are driven by the parameter's Goo kind,
+    // which the LLVM type cannot express (an interface parameter is just
+    // { ptr, ptr }). Re-entering the checker here is the same move the result
+    // type below already makes.
+    Type* fnty = type_check_expression(checker, call->function);
+    size_t sig_params = (fnty && fnty->kind == TYPE_FUNCTION)
+                        ? fnty->data.function.param_count : 0;
+
+    // The REAL LLVM parameter types off the resolved callee, for width
+    // coercion — the same source the method loop uses, and more accurate than
+    // lowering the declared type a second time.
+    LLVMTypeRef fn_ty = LLVMGlobalGetValueType(fn);
+    unsigned fn_params = LLVMCountParamTypes(fn_ty);
+    LLVMTypeRef* param_tys = fn_params
+        ? malloc(sizeof(LLVMTypeRef) * fn_params) : NULL;
+    if (param_tys) LLVMGetParamTypes(fn_ty, param_tys);
+
     size_t i = 0;
     for (ASTNode* a = call->args; a; a = a->next, i++) {
-        // codegen_generate_expression loads scalar lvalues to a value, so the
-        // raw llvm_value already matches the callee's parameter type (same
-        // pattern as the struct-method call path below).
-        ValueInfo* av = codegen_generate_expression(codegen, checker, a);
-        if (!av) { free(args); return NULL; }
-        args[i] = av->llvm_value;
-        value_info_free(av);
+        // All five per-argument steps live in codegen_emit_fixed_call_arg,
+        // shared with the plain-call, method-call and interface-dispatch loops.
+        //
+        // This loop used to evaluate the argument and pass the raw llvm_value,
+        // on the stated assumption that "codegen_generate_expression loads
+        // scalar lvalues to a value, so the raw llvm_value already matches the
+        // callee's parameter type". That holds for a scalar and fails for
+        // everything else: a slice-element expression yields the GEP ADDRESS
+        // (element type { ptr, i64 } is not scalar), and a concrete passed to
+        // an interface parameter arrives unboxed. Both failed module
+        // verification — see examples/pkg_arg_shapes_probe.goo.
+        Type* param_type = (i < sig_params && fnty->data.function.param_types)
+                           ? fnty->data.function.param_types[i] : NULL;
+        if (!codegen_emit_fixed_call_arg(codegen, checker, a, param_type,
+                (param_tys && i < fn_params) ? param_tys[i] : NULL,
+                &args[i])) {
+            free(param_tys);
+            free(args);
+            return NULL;
+        }
     }
+    free(param_tys);
     LLVMValueRef result = LLVMBuildCall2(codegen->builder,
-        LLVMGlobalGetValueType(fn), fn, args, (unsigned)argc, "");
+        fn_ty, fn, args, (unsigned)argc, "");
     free(args);
     return value_info_new(NULL, result, type_check_call_expr(checker, expr));
 }

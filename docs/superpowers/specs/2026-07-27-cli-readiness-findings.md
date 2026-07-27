@@ -85,7 +85,10 @@ slice elements.
 `examples/cli/googrep/main_test.goo` is committed and currently cannot run. It
 is deliberate: it becomes the regression pin the moment GAP 3 is closed.
 
-## GAP 4 — slice element passed to a vendored-package function miscompiles
+## GAP 4 — arguments crossing into a vendored-package function miscompile
+
+> **RESOLVED**, same day. The fix is below the original write-up. Fixing it
+> also widened it: the defect was not only slice elements.
 
 ```go
 xs := []string{"ab"}
@@ -132,6 +135,42 @@ applies: route it through the shared helper.
 is the good case — but `strings.Index(lines[i], pat)` is exactly what
 text-processing code writes, and the workaround (bind to a local first) is
 non-obvious from the diagnostic.
+
+### Resolution, and how the gap widened
+
+Routing the loop through `codegen_emit_fixed_call_arg` fixed it. Probing the
+fix first revealed a SECOND missing step that the slice-element case had
+hidden — **interface boxing**:
+
+```go
+var s sort.IntSlice = x
+sort.Sort(s)          // Module verification failed
+```
+```
+{ ptr, ptr }  call void @goo_pkg__sort__Sort({ ptr, i64, i64 } %s4)
+```
+
+A concrete value passed to an interface-typed parameter arrived unboxed: a raw
+slice where the callee wants `{ptr, ptr}`. That means `sort.Sort` — whose whole
+signature is an interface — could not be called from another package at all,
+and the package shipped that way in PR #229. Its own tests never caught it
+because an internal test calls `Sort(s)` as a PLAIN call, not through the
+package path.
+
+So the loop was missing two of the five steps, which is the same shape the
+interface-DISPATCH loop had before PR #225.
+
+**The fix needs the declared Goo signature, not just LLVM types.** Interface
+boxing and the nullable auto-wrap are driven by the parameter's Goo KIND, and
+an interface parameter is only `{ptr, ptr}` in LLVM — indistinguishable from
+other pairs. `type_check_expression(checker, call->function)` supplies it, which
+is the same re-entry the result type at the end of the function already makes.
+LLVM parameter types are still read off the resolved callee for width coercion,
+matching the method loop.
+
+Pinned by `examples/pkg_arg_shapes_probe.goo`, whose expected output came from
+`go run` on the equivalent Go program. Verified RED first, with both failure
+shapes visible in the diagnostic.
 
 ## What worked well, and is worth recording
 
