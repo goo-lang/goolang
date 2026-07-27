@@ -1,0 +1,1 @@
+hygienepkg/bbb.go:9:2: Undefined variable 'fmt'

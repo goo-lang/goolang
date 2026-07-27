@@ -1238,22 +1238,62 @@ int type_check_package(TypeChecker* checker, Package* pkg,
     // resolve_package_dir sorted first. Running the passes per-file instead
     // would make cross-file resolution depend on filename order.
 
-    // P6 M2-B1 Task 4: each file's own plain-shim imports (see
-    // seed_package_own_shim_imports doc comment above) — must run before
-    // any decl below is checked, since a package-level var/const init or a
-    // function body may reference the shim on line 1.
+    // P6 M2-B1 Task 4 + multi-file arc: imports are scoped PER FILE, as Go
+    // requires — file A must not reach a package only file B imported.
     //
-    // Multi-file note: this seeds the UNION of every file's imports into the one
-    // package scope, so file A can currently reach a shim only file B imported.
-    // Go scopes imports per FILE. The per-file import scope chain that fixes
-    // this is the next commit in this arc; the reject fixture for it is written
-    // against this permissive behavior on purpose.
+    // The chain is INVERTED from the obvious nesting. A file scope is made the
+    // PARENT of the package scope, not a child:
+    //
+    //     global -> file-import scope (swapped per file) -> package scope
+    //
+    // A child file scope would have been wrong twice over: every top-level
+    // declaration targets checker->current_scope (34 sites in this file alone),
+    // so declarations would land in whichever file scope happened to be current;
+    // and a marker in the package scope would be found BEFORE the file scope on
+    // every lookup, which defeats the hygiene rule completely. As a parent, the
+    // package scope keeps receiving all declarations, and a lookup falls through
+    // to exactly one file's imports. Switching files is a single pointer write.
+    //
+    // pkg_parent is restored before this function returns. That is load-bearing,
+    // not tidiness: scope_pop sets current_scope = old_scope->parent, so leaving
+    // a file scope attached would strand the CALLER one scope away from global
+    // after its single scope_pop (the LIFETIME CONTRACT in types.h).
+    Scope* pkg_scope = checker->current_scope;
+    Scope* pkg_parent = pkg_scope->parent;
+
+    Scope** file_scopes = calloc(program_count, sizeof(Scope*));
+    if (!file_scopes) return 0;
     for (size_t i = 0; i < program_count; i++) {
+        file_scopes[i] = scope_new(pkg_parent);
+        if (!file_scopes[i]) {
+            for (size_t j = 0; j < i; j++) scope_free(file_scopes[j]);
+            free(file_scopes);
+            return 0;
+        }
+        // seed_package_own_shim_imports seeds into checker->current_scope
+        // (via type_checker_seed_package_marker), so point that at the file
+        // scope for the duration of the seeding and put it straight back.
         ProgramNode* prog = (ProgramNode*)programs[i];
-        if (!seed_package_own_shim_imports(checker, prog->imports)) {
+        checker->current_scope = file_scopes[i];
+        bool seeded = seed_package_own_shim_imports(checker, prog->imports);
+        checker->current_scope = pkg_scope;
+        if (!seeded) {
+            for (size_t j = 0; j <= i; j++) scope_free(file_scopes[j]);
+            free(file_scopes);
             return 0;  // scope/current_package left set; caller aborts the build
         }
     }
+
+// Every pass below runs under the CURRENT file's imports. Restores the
+// package scope's real parent and releases the file scopes on the way out,
+// so no early return can strand either.
+#define PKG_FILE_SCOPE_CLEANUP()                                   \
+    do {                                                            \
+        pkg_scope->parent = pkg_parent;                             \
+        for (size_t fs = 0; fs < program_count; fs++)               \
+            scope_free(file_scopes[fs]);                            \
+        free(file_scopes);                                          \
+    } while (0)
 
     // Mirror type_check_program's comptime pre-pass so an intra-package
     // `is_comptime` const RHS can resolve forward-declared calls.
@@ -1271,6 +1311,8 @@ int type_check_package(TypeChecker* checker, Package* pkg,
             }
         }
     }
+    // Name binding only — no expression is resolved above, so it needs no
+    // file-import context.
 
     // P2.3/T1: mirror type_check_program's shell pre-pass so forward and
     // mutual struct/enum references resolve inside a vendored stdlib package
@@ -1278,7 +1320,9 @@ int type_check_package(TypeChecker* checker, Package* pkg,
     // files first, so a signature in a.go can name a type declared in b.go.
     for (size_t i = 0; i < program_count; i++) {
         ProgramNode* prog = (ProgramNode*)programs[i];
+        pkg_scope->parent = file_scopes[i];
         if (!declare_type_shells(checker, prog->decls)) {
+            PKG_FILE_SCOPE_CLEANUP();
             return 0;  // scope/current_package left set; caller aborts the build
         }
     }
@@ -1292,21 +1336,26 @@ int type_check_package(TypeChecker* checker, Package* pkg,
     // loops completes over every file before the next one starts.
     for (size_t i = 0; i < program_count; i++) {
         ProgramNode* prog = (ProgramNode*)programs[i];
+        pkg_scope->parent = file_scopes[i];
         for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
             if (decl->type == AST_FUNC_DECL) {
                 if (!declare_function_signature(checker, (FuncDeclNode*)decl)) {
+                    PKG_FILE_SCOPE_CLEANUP();
                     return 0;  // scope/current_package left set; caller aborts
                 }
             } else if (!type_check_declaration(checker, decl)) {
+                PKG_FILE_SCOPE_CLEANUP();
                 return 0;  // scope/current_package left set; caller aborts
             }
         }
     }
     for (size_t i = 0; i < program_count; i++) {
         ProgramNode* prog = (ProgramNode*)programs[i];
+        pkg_scope->parent = file_scopes[i];
         for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
             if (decl->type == AST_FUNC_DECL) {
                 if (!type_check_function_decl(checker, decl)) {
+                    PKG_FILE_SCOPE_CLEANUP();
                     return 0;  // scope/current_package left set; caller aborts
                 }
             }
@@ -1317,8 +1366,22 @@ int type_check_package(TypeChecker* checker, Package* pkg,
     // cross-package selector resolution (Task 5) can reach them by name. Run
     // ONCE over the finished package scope, which now holds every file's
     // top-level symbols — exports are a property of the package, not of a file.
+    // Ahead of the cleanup below, while no file scope is attached to confuse it.
+    pkg_scope->parent = pkg_parent;
     package_export_filter(checker->current_scope, pkg->exports, pkg);
 
+    // The file scopes are released here, before codegen runs, and deliberately
+    // NOT re-seeded as a union into the package scope. Codegen does re-enter the
+    // checker for some expressions, so re-seeding looked necessary — it is not.
+    // Measured, not assumed: with the union removed, a package function calling
+    // fmt.Println compiles and runs, examples/pkg_shim_share_probe (a package
+    // importing sync and time) passes, and far-halo-probe (goostd/lanes, which
+    // needs its own `import "far"`) passes. A package-qualified selector
+    // resolves through stdlib_package_lookup by name at codegen time, not
+    // through this scope chain. Re-seeding would have been dead code carrying a
+    // false claim.
+    PKG_FILE_SCOPE_CLEANUP();
+#undef PKG_FILE_SCOPE_CLEANUP
     return checker->error_count == 0;
 }
 
