@@ -83,10 +83,10 @@ func main() {
 	failed := false
 	withName := len(args)-i > 1
 
-	// GAP 1 workaround: `for ; i < len(args); i++ {` does not parse — an
-	// omitted init clause is rejected. Rewritten as a condition-only loop with
-	// a manual increment.
-	for i < len(args) {
+	// `for ; cond; post {` — the loop variable is already bound by the flag
+	// scan above, so the init clause is empty. This needed a workaround until
+	// the omitted-clause for arms landed.
+	for ; i < len(args); i++ {
 		name := args[i]
 		text := os.ReadFile(name) catch => ""
 		if text == "" {
@@ -95,7 +95,6 @@ func main() {
 			// consumer of `googrep ... | sort` must not receive it as input.
 			fmt.Fprintln(os.Stderr, "googrep: "+name+": cannot read file")
 			failed = true
-			i = i + 1
 			continue
 		}
 		lines, count := matchLines(text, pattern, showNum, name, withName)
@@ -106,13 +105,11 @@ func main() {
 				prefix = name + ":"
 			}
 			fmt.Println(prefix + strconv.Itoa(count))
-			i = i + 1
 			continue
 		}
 		for j := 0; j < len(lines); j++ {
 			fmt.Println(lines[j])
 		}
-		i = i + 1
 	}
 
 	if failed {

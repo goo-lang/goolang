@@ -1,0 +1,36 @@
+// Go spec, Statements: "Each of the init and post statements may be empty",
+// and the condition may be omitted too. Any of the three clauses of a
+// ForClause can therefore be absent.
+//
+// stmt_for_forms covers the 3-clause, condition-only and infinite shapes.
+// This row covers the OMITTED-clause combinations, which are distinct token
+// sequences and were a parse error until 2026-07-27.
+package main
+
+import "fmt"
+
+func main() {
+	i := 0
+	for ; i < 3; i++ {
+		fmt.Print(i)
+	}
+	for j := 0; j < 3; {
+		fmt.Print(j)
+		j++
+	}
+	for m := 0; ; m++ {
+		if m >= 3 {
+			break
+		}
+		fmt.Print(m)
+	}
+	n := 0
+	for ; ; {
+		if n >= 3 {
+			break
+		}
+		fmt.Print(n)
+		n++
+	}
+	fmt.Println()
+}

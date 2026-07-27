@@ -22,6 +22,9 @@ Two findings block calling it *ready*: a tool cannot report errors correctly
 
 ## GAP 1 — `for` with an omitted init or post clause does not parse
 
+> **RESOLVED**, same day. All SEVEN omitted-clause combinations, not only the
+> two hit by the tool. See the note at the end of this section.
+
 ```go
 for ; i < len(args); i++ { }   // syntax error
 for i := 0; i < n; { }         // syntax error
@@ -38,6 +41,28 @@ increment) is mechanical, and `googrep` uses it.
 **Note:** the conformance matrix's `stmt_for` row says "for (3 forms)". These
 omitted-clause variants are a fourth and fifth shape that row does not cover,
 so this is a genuine coverage hole, not a known-and-accepted gap.
+
+### Resolution
+
+Seven new grammar arms, one per omitted-clause combination, at **zero conflict
+delta** — the tripwire stayed at 31 S/R and 0 R/R, checked after the two named
+shapes and again after all seven.
+
+All seven, not just the two the tool hit. Each combination is a DISTINCT token
+sequence needing its own arm, so a partial fix leaves exactly the same class of
+bug for the next person. An omitted condition means an infinite loop, which is
+already how `for { … }` is represented (a NULL condition), so codegen needed no
+new case at all.
+
+Explicit arms rather than optional nonterminals: `opt_init`/`opt_post` would
+need epsilon productions, and this grammar keeps `statement_list` epsilon-free
+precisely because those are conflict factories.
+
+Pinned by `examples/for_clause_omit_probe.goo` (output byte-identical to `go
+run` on the equivalent program) and by a new conformance row,
+`stmt_for_omit_clauses`, taking the matrix to 55 rows and Statements to 12
+works. `examples/cli/googrep` now uses the natural
+`for ; i < len(args); i++` and its three manual increments are gone.
 
 ## GAP 2 — no program can write to stderr
 

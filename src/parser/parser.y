@@ -1399,6 +1399,76 @@ for_stmt:
         for_node->body = $7;
         $$ = (ASTNode*)for_node;
     }
+    | FOR SEMICOLON expression SEMICOLON simple_stmt block {
+        // `for ; cond; post { … }` — the INIT clause omitted. Ordinary Go, and
+        // the natural shape when the loop variable is already bound, which is
+        // exactly what argument parsing does after consuming flags.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = POS(@$);
+        for_node->condition = $3;
+        for_node->post = $5;
+        for_node->body = $6;
+        $$ = (ASTNode*)for_node;
+    }
+    | FOR simple_stmt SEMICOLON expression SEMICOLON block {
+        // `for init; cond; { … }` — the POST clause omitted.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = POS(@$);
+        for_node->init = $2;
+        for_node->condition = $4;
+        for_node->body = $6;
+        $$ = (ASTNode*)for_node;
+    }
+    | FOR SEMICOLON expression SEMICOLON block {
+        // `for ; cond; { … }` — init AND post omitted.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = POS(@$);
+        for_node->condition = $3;
+        for_node->body = $5;
+        $$ = (ASTNode*)for_node;
+    }
+    | FOR simple_stmt SEMICOLON SEMICOLON simple_stmt block {
+        // `for init; ; post { … }` — the CONDITION omitted, so the loop is
+        // infinite. A NULL condition is already how `for { … }` is
+        // represented, so codegen needs no new case.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = POS(@$);
+        for_node->init = $2;
+        for_node->post = $5;
+        for_node->body = $6;
+        $$ = (ASTNode*)for_node;
+    }
+    | FOR SEMICOLON SEMICOLON simple_stmt block {
+        // `for ; ; post { … }`
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = POS(@$);
+        for_node->post = $4;
+        for_node->body = $5;
+        $$ = (ASTNode*)for_node;
+    }
+    | FOR simple_stmt SEMICOLON SEMICOLON block {
+        // `for init; ; { … }`
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = POS(@$);
+        for_node->init = $2;
+        for_node->body = $5;
+        $$ = (ASTNode*)for_node;
+    }
+    | FOR SEMICOLON SEMICOLON block {
+        // `for ; ; { … }` — every clause omitted, the same loop as `for { … }`
+        // but a DIFFERENT token sequence, so it needs its own arm.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = POS(@$);
+        for_node->body = $4;
+        $$ = (ASTNode*)for_node;
+    }
     | FOR identifier SHORT_ASSIGN RANGE expression block {
         // `for k := range expr { … }` — key/index-only form.
         ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));

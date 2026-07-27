@@ -37,6 +37,7 @@ expr_shift_ops	run	works	Expressions	shifts, integer div, mod
 expr_variadic_user	run	works	Expressions	user-defined variadic func ...int
 stmt_if_init	run	works	Statements	if with init statement
 stmt_for_forms	run	works	Statements	3-clause, condition-only, infinite+break
+stmt_for_omit_clauses	run	works	Statements	ForClause with init, condition and/or post OMITTED (all seven combinations); each is a distinct token sequence
 stmt_range_forms	run	works	Statements	range slice with index+value
 str_range_runes	run	works	Statements	range string yields RUNES + byte offsets (Go parity; stale bytes note corrected 2026-07-11)
 stmt_switch_init_type	run	works	Statements	switch-init + type switch on any
