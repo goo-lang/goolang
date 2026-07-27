@@ -29,16 +29,13 @@
 #   4. Seeded package funcs             (type_checker.c: shim_export_func calls, package
 #                                        taken from the enclosing seed_<pkg>_package_exports)
 #   5. Seeded methods                   (type_checker.c: sync_export_method + time_export_method)
-#   6. goostd exported funcs            (^func [A-Z] in strings/strconv/utf8/bits/
+#   6a. goostd exported funcs           (^func [A-Z] in strings/strconv/utf8/bits/
 #      lanes — the REAL stdlib source dirs; test-only goostd packages like
 #      kinds/shapes/mypkg/pkgcheck/fwdref/cpkg are compiler-test fixtures, not
-#      stdlib, and are intentionally out of scope here. `^func [A-Z]` only
-#      matches bare package-level funcs, not methods — goostd/lanes' methods
-#      (Own/ID/Publish/HaloLeft/HaloRight/Step, all `func (l *Lane) ...`) are
-#      invisible to this regex and NOT extracted; they are covered by
-#      examples/lanes_stencil_probe.goo's golden, just not mechanically
-#      verified by this script. Extending the extractor to receivers is
-#      YAGNI for this milestone — not worth it for one package.)
+#      stdlib, and are intentionally out of scope here.)
+#   6b. goostd exported METHODS         (^func (r T) Name / ^func (r *T) Name in
+#      the same dirs). 6a's regex cannot see these — the receiver sits between
+#      `func` and the name — so they used to be extracted not at all.
 #
 # Robustness: every extraction step asserts a sane MINIMUM count and dies
 # loudly if it comes up short — a shim_signatures.c/type_checker.c rename or
@@ -56,8 +53,11 @@
 # because the test file is in that package. The `<pkg>.<Name>(` pattern
 # therefore does not match there, so goostd symbols additionally accept the
 # bare `<Name>(` spelling, but ONLY within that package's own test files
-# (see goostd_test_files_for). Accepting a bare name across all sources would
+# (see covered_in_own_tests). Accepting a bare name across all sources would
 # make any fixture with a local helper called `Index()` mask a real gap.
+#
+# A METHOD needs no such exception either way: it is always called through a
+# receiver, so `.<Name>(` is the only spelling in every source.
 #
 # Exit 0 = every extracted symbol covered. Exit 1 = uncovered symbol(s)
 # (all listed, never truncated) or an extraction sanity check failed.
@@ -275,13 +275,20 @@ while IFS= read -r name; do
     record ".${name}(" "\\.${name}\\(" ".${name}("
 done <<< "$method_names"
 
-# --- 6. goostd exported funcs (real stdlib source dirs only) ------------
-# lanes (P6 M1): Partition/Run are plain package funcs and match `^func [A-Z]`
-# below; the Lane methods (Own/ID/Publish/HaloLeft/HaloRight/Step) do NOT —
-# receivers make them `^func (l *Lane) ...`, invisible to this regex. They
-# get real functional coverage from examples/lanes_stencil_probe.goo (the
-# BSP halo-exchange golden), just not mechanical extraction here — extending
-# the extractor to receiver methods is YAGNI for one package this milestone.
+# --- 6. goostd exported funcs AND exported methods (real stdlib dirs only) --
+# Section 6a takes bare package-level funcs (`^func [A-Z]`). 6b takes exported
+# METHODS (`^func (r T) Name` / `^func (r *T) Name`), which 6a's regex cannot
+# see because the receiver sits between `func` and the name.
+#
+# Methods were deliberately skipped while lanes was the only package with any:
+# its eight Lane methods were covered by examples/lanes_stencil_probe.goo but
+# never mechanically verified, and the note here called extending the extractor
+# YAGNI "for one package". strings.Builder makes it two, and a TYPE with methods
+# is exactly the shape the gate was blindest to — every Builder method could
+# have shipped with no coverage at all. All eight lanes methods turned out to be
+# golden-covered already, so 6b converts eight unverified claims into eight
+# checked ones and costs no new fixtures.
+#
 # goostd/cpkg is a deliberate fixture package (comptime-generic compose
 # probes) outside stdlib scope, same as kinds/shapes/mypkg/pkgcheck/fwdref —
 # not added here.
@@ -289,6 +296,7 @@ GOOSTD_PKG_DIRS="strings:goostd/strings strconv:goostd/strconv utf8:goostd/utf8 
 
 GOOSTD_MIN=50
 goostd_total=0
+goostd_method_total=0
 for entry in $GOOSTD_PKG_DIRS; do
     pkg="${entry%%:*}"
     dir="${entry#*:}"
@@ -296,6 +304,7 @@ for entry in $GOOSTD_PKG_DIRS; do
         echo "check-stdlib-coverage: FAIL (goostd package dir moved: $dir not found)"
         exit 1
     fi
+    # 6a. Bare package-level funcs.
     names="$(find "$dir" -maxdepth 1 -name '*.go' -exec grep -h -oE '^func [A-Z][A-Za-z0-9_]*' {} + \
         | sed -E 's/^func //')"
     while IFS= read -r name; do
@@ -304,6 +313,21 @@ for entry in $GOOSTD_PKG_DIRS; do
         record "${pkg}.${name}" "\\b${pkg}\\.${name}\\(" "${pkg}.${name}" \
                "$dir" "\\b${name}\\("
     done <<< "$names"
+
+    # 6b. Exported methods on exported types. Emitted as "Type Name" pairs.
+    # A method is ALWAYS called through a receiver, so `.<Name>(` is the only
+    # spelling — the bare-name asymmetry section 6a needs does not apply, and
+    # this matches how the seeded sync/time methods are already checked.
+    methods="$(find "$dir" -maxdepth 1 -name '*.go' \
+        -exec grep -h -oE '^func \([a-z][A-Za-z0-9_]* \*?[A-Z][A-Za-z0-9_]*\) [A-Z][A-Za-z0-9_]*' {} + \
+        | sed -E 's/^func \([a-z][A-Za-z0-9_]* \*?([A-Z][A-Za-z0-9_]*)\) ([A-Z][A-Za-z0-9_]*)$/\1 \2/')"
+    while IFS= read -r pair; do
+        [ -z "$pair" ] && continue
+        mtype="${pair%% *}"
+        mname="${pair##* }"
+        goostd_method_total=$((goostd_method_total + 1))
+        record "${pkg}.${mtype}.${mname}" "\\.${mname}\\(" "${pkg}.${mtype}.${mname}"
+    done <<< "$methods"
 done
 
 if [ "$goostd_total" -lt "$GOOSTD_MIN" ]; then
@@ -311,8 +335,16 @@ if [ "$goostd_total" -lt "$GOOSTD_MIN" ]; then
     exit 1
 fi
 
+# Same loud-failure reasoning as every other minimum here: if the receiver
+# regex stops matching, the methods must not silently vanish from the surface.
+GOOSTD_METHOD_MIN=8
+if [ "$goostd_method_total" -lt "$GOOSTD_METHOD_MIN" ]; then
+    echo "check-stdlib-coverage: FAIL (extracted only $goostd_method_total exported goostd methods, expected >= $GOOSTD_METHOD_MIN — the receiver regex or the goostd layout may have moved)"
+    exit 1
+fi
+
 # --- Report ---------------------------------------------------------------
-echo "check-stdlib-coverage: extracted $shim_count shim rows, $value_count value members, $time_value_count time constants, $time_func_count time funcs, $method_count seeded methods, $goostd_total goostd funcs ($total symbols total) across $golden_count golden fixtures + $goostd_test_count goostd test files"
+echo "check-stdlib-coverage: extracted $shim_count shim rows, $value_count value members, $time_value_count time constants, $time_func_count time funcs, $method_count seeded methods, $goostd_total goostd funcs, $goostd_method_total goostd methods ($total symbols total) across $golden_count golden fixtures + $goostd_test_count goostd test files"
 
 if [ "${#skipped[@]}" -gt 0 ]; then
     echo "check-stdlib-coverage: ${#skipped[@]} documented carve-out(s) (not golden-coverable, verified elsewhere):"
