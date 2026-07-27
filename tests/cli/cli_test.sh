@@ -149,6 +149,33 @@ func TestBoom(t *testing.T) {
 }
 EOF
 
+# A `package main` PROGRAM with tests. Every CLI tool is package main, so if
+# this cannot be tested, no CLI tool can be. The synthesized _testmain.goo used
+# to collide with the program's own main ("Function 'main' already declared").
+mkdir -p "$WORK/mainpkg"
+cat > "$WORK/mainpkg/tool.goo" <<'EOF'
+package main
+
+import "fmt"
+
+func double(x int) int { return x * 2 }
+
+func main() {
+	fmt.Println(double(21))
+}
+EOF
+cat > "$WORK/mainpkg/tool_test.goo" <<'EOF'
+package main
+
+import "testing"
+
+func TestDouble(t *testing.T) {
+	if double(21) != 42 {
+		t.Errorf("double(21) = %d, want 42", double(21))
+	}
+}
+EOF
+
 # A _test file that declares NO test functions is not an error: the synthesized
 # main just summarizes an empty run, the way `go test` does.
 mkdir -p "$WORK/emptytests"
@@ -246,6 +273,11 @@ check test-good-signature      0     "~ok"         empty                sh -c "c
 check test-runs-tests          0     "~ok"         empty                sh -c "cd examples/testpkg && '$COMPILER' test ."
 check test-reports-failure     1     "~--- FAIL: TestBoom" empty        sh -c "cd '$WORK/failpkg' && '$COMPILER' test ."
 check test-empty-test-file     0     "~ok"         empty                sh -c "cd '$WORK/emptytests' && '$COMPILER' test ."
+# A package main PROGRAM must be testable: the synthesized main replaces the
+# program's own, which is what `go test` does for package main too.
+check test-package-main       0     "~ok"         empty                sh -c "cd '$WORK/mainpkg' && '$COMPILER' test ."
+# ...and the program itself still builds and runs normally.
+check test-package-main-builds 0    "42"          empty                sh -c "cd '$WORK/mainpkg' && '$COMPILER' run ."
 
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]

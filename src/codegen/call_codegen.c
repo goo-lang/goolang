@@ -1727,6 +1727,67 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
                 return codegen_generate_errorf_call(codegen, checker, expr);
             }
+            // The Fprint family. Each one is its unprefixed sibling plus a
+            // destination, so the formatting is REUSED rather than reimplemented
+            // — the same move t.Errorf makes with Sprintf's lowering.
+            if (strcmp(dispatch_pkg, "fmt") == 0 &&
+                (strcmp(sel->selector, "Fprint") == 0 ||
+                 strcmp(sel->selector, "Fprintln") == 0 ||
+                 strcmp(sel->selector, "Fprintf") == 0)) {
+                CallExprNode* fcall = (CallExprNode*)expr;
+                ASTNode* writer = fcall->args;
+                if (!writer) {
+                    codegen_error(codegen, expr->pos,
+                                  "fmt.%s: missing writer argument", sel->selector);
+                    return NULL;
+                }
+
+                // The checker has already restricted this to os.Stdout /
+                // os.Stderr (see the fmt.Fprint guard in
+                // expression_checker.c), so the descriptor is known here at
+                // COMPILE time and needs no evaluation. Reading it off the
+                // selector rather than emitting the value is what keeps
+                // os.Stdout/os.Stderr from needing a runtime representation
+                // at all.
+                long long fd = 1;
+                if (writer->type == AST_SELECTOR_EXPR) {
+                    SelectorExprNode* ws = (SelectorExprNode*)writer;
+                    if (ws->selector && strcmp(ws->selector, "Stderr") == 0) fd = 2;
+                }
+
+                // A shallow copy whose arg list SKIPS the writer, handed to the
+                // existing lowering. Those functions read call->args and
+                // expr->pos and never inspect call->function, which is the same
+                // property that lets t.Errorf reuse Sprintf. Fprintf's format
+                // is args[1] here, so it becomes args[0] of the copy — exactly
+                // what Sprintf's literal-format check expects.
+                CallExprNode tail = *fcall;
+                tail.args = writer->next;
+                ASTNode* tail_expr = (ASTNode*)&tail;
+
+                ValueInfo* msg =
+                    (strcmp(sel->selector, "Fprintf") == 0)
+                        ? codegen_generate_sprintf_call(codegen, checker, tail_expr)
+                    : (strcmp(sel->selector, "Fprintln") == 0)
+                        ? codegen_generate_fmt_sprintln_call(codegen, checker, tail_expr)
+                        : codegen_generate_fmt_sprint_call(codegen, checker, tail_expr);
+                if (!msg) return NULL;
+
+                LLVMContextRef fctx = codegen->context;
+                LLVMTypeRef fvoid = LLVMVoidTypeInContext(fctx);
+                LLVMTypeRef fi64  = LLVMInt64TypeInContext(fctx);
+                LLVMTypeRef fstr  = codegen_get_basic_type(codegen, TYPE_STRING);
+                LLVMTypeRef fparams[] = { fi64, fstr };
+                LLVMTypeRef fty = LLVMFunctionType(fvoid, fparams, 2, 0);
+                LLVMValueRef ffn = LLVMGetNamedFunction(codegen->module, "goo_fwrite_string");
+                if (!ffn) ffn = LLVMAddFunction(codegen->module, "goo_fwrite_string", fty);
+                LLVMValueRef fargs[] = { LLVMConstInt(fi64, (unsigned long long)fd, 0),
+                                         msg->llvm_value };
+                LLVMBuildCall2(codegen->builder, fty, ffn, fargs, 2, "");
+                value_info_free(msg);
+                return value_info_new(NULL, NULL,
+                                      type_checker_get_builtin(checker, TYPE_VOID));
+            }
             if (strcmp(dispatch_pkg, "testing") == 0 && strcmp(sel->selector, "Summary") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_testing_summary", TYPE_VOID, 0);

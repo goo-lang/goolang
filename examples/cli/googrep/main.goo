@@ -10,6 +10,10 @@
 // exit status AND a separate diagnostic stream — a caller distinguishes "no
 // matches" from "could not read the file" by the status, and a human reads why
 // on stderr while the data still flows down the pipe.
+//
+// Diagnostics go to os.Stderr. Until fmt.Fprintln existed they could only go
+// to stdout, which made this tool incorrect in a pipeline (GAP 2 of
+// docs/superpowers/specs/2026-07-27-cli-readiness-findings.md).
 package main
 
 import "fmt"
@@ -68,7 +72,7 @@ func main() {
 	}
 
 	if len(args)-i < 2 {
-		fmt.Println("usage: googrep [-n] [-c] PATTERN FILE...")
+		fmt.Fprintln(os.Stderr, "usage: googrep [-n] [-c] PATTERN FILE...")
 		os.Exit(2)
 	}
 
@@ -79,18 +83,18 @@ func main() {
 	failed := false
 	withName := len(args)-i > 1
 
-	// GAP 1 workaround: `for ; i < len(args); i++ {` does not parse — an
-	// omitted init clause is rejected. Rewritten as a condition-only loop with
-	// a manual increment.
-	for i < len(args) {
+	// `for ; cond; post {` — the loop variable is already bound by the flag
+	// scan above, so the init clause is empty. This needed a workaround until
+	// the omitted-clause for arms landed.
+	for ; i < len(args); i++ {
 		name := args[i]
 		text := os.ReadFile(name) catch => ""
 		if text == "" {
-			// Could not read it, or it was empty. A tool must say which, on
-			// stderr, without polluting its own output.
-			fmt.Println("googrep: " + name + ": cannot read file")
+			// Could not read it, or it was empty. The diagnostic goes to
+			// STDERR so it never enters this tool's own data stream — a
+			// consumer of `googrep ... | sort` must not receive it as input.
+			fmt.Fprintln(os.Stderr, "googrep: "+name+": cannot read file")
 			failed = true
-			i = i + 1
 			continue
 		}
 		lines, count := matchLines(text, pattern, showNum, name, withName)
@@ -101,13 +105,11 @@ func main() {
 				prefix = name + ":"
 			}
 			fmt.Println(prefix + strconv.Itoa(count))
-			i = i + 1
 			continue
 		}
 		for j := 0; j < len(lines); j++ {
 			fmt.Println(lines[j])
 		}
-		i = i + 1
 	}
 
 	if failed {

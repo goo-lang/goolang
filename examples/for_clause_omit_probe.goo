@@ -1,0 +1,83 @@
+// for_clause_omit_probe: every three-clause `for` shape with a clause omitted.
+//
+// Go lets ANY of init, cond and post be empty. Goo parsed only the all-present
+// form, so `for ; i < n; i++ {` — the natural shape when the loop variable is
+// already bound — was a syntax error. Found by writing a real CLI tool, where
+// argument parsing binds the index before the loop (GAP 1,
+// docs/superpowers/specs/2026-07-27-cli-readiness-findings.md).
+//
+// All seven omitted-clause combinations are covered here, not just the two the
+// tool hit: a partial fix leaves exactly the same class of bug, and each one is
+// a DISTINCT token sequence needing its own grammar arm. An omitted condition
+// means an infinite loop, which is already how `for { … }` is represented (a
+// NULL condition), so codegen needed no new case.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), per project convention.
+package main
+
+import "fmt"
+
+func main() {
+	// omitted init
+	i := 0
+	for ; i < 3; i++ {
+		fmt.Print(i, " ")
+	}
+	fmt.Println()
+
+	// omitted post
+	for j := 0; j < 3; {
+		fmt.Print(j, " ")
+		j++
+	}
+	fmt.Println()
+
+	// omitted init AND post
+	k := 0
+	for ; k < 3; {
+		fmt.Print(k, " ")
+		k++
+	}
+	fmt.Println()
+
+	// omitted condition — infinite, with init and post
+	for m := 0; ; m++ {
+		if m >= 3 {
+			break
+		}
+		fmt.Print(m, " ")
+	}
+	fmt.Println()
+
+	// post only
+	n := 0
+	for ; ; n++ {
+		if n >= 3 {
+			break
+		}
+		fmt.Print(n, " ")
+	}
+	fmt.Println()
+
+	// init only
+	for p := 0; ; {
+		if p >= 3 {
+			break
+		}
+		fmt.Print(p, " ")
+		p++
+	}
+	fmt.Println()
+
+	// every clause omitted — the same loop as `for { … }`, a different spelling
+	q := 0
+	for ; ; {
+		if q >= 3 {
+			break
+		}
+		fmt.Print(q, " ")
+		q++
+	}
+	fmt.Println()
+}

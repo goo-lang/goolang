@@ -22,6 +22,9 @@ Two findings block calling it *ready*: a tool cannot report errors correctly
 
 ## GAP 1 — `for` with an omitted init or post clause does not parse
 
+> **RESOLVED**, same day. All SEVEN omitted-clause combinations, not only the
+> two hit by the tool. See the note at the end of this section.
+
 ```go
 for ; i < len(args); i++ { }   // syntax error
 for i := 0; i < n; { }         // syntax error
@@ -39,7 +42,32 @@ increment) is mechanical, and `googrep` uses it.
 omitted-clause variants are a fourth and fifth shape that row does not cover,
 so this is a genuine coverage hole, not a known-and-accepted gap.
 
+### Resolution
+
+Seven new grammar arms, one per omitted-clause combination, at **zero conflict
+delta** — the tripwire stayed at 31 S/R and 0 R/R, checked after the two named
+shapes and again after all seven.
+
+All seven, not just the two the tool hit. Each combination is a DISTINCT token
+sequence needing its own arm, so a partial fix leaves exactly the same class of
+bug for the next person. An omitted condition means an infinite loop, which is
+already how `for { … }` is represented (a NULL condition), so codegen needed no
+new case at all.
+
+Explicit arms rather than optional nonterminals: `opt_init`/`opt_post` would
+need epsilon productions, and this grammar keeps `statement_list` epsilon-free
+precisely because those are conflict factories.
+
+Pinned by `examples/for_clause_omit_probe.goo` (output byte-identical to `go
+run` on the equivalent program) and by a new conformance row,
+`stmt_for_omit_clauses`, taking the matrix to 55 rows and Statements to 12
+works. `examples/cli/googrep` now uses the natural
+`for ; i < len(args); i++` and its three manual increments are gone.
+
 ## GAP 2 — no program can write to stderr
+
+> **RESOLVED**, same day. `fmt.Fprint`/`Fprintln`/`Fprintf` plus `os.Stdout`
+> and `os.Stderr`. See the resolution note at the end of this section.
 
 There is no `os.Stderr`, `fmt.Fprintln` or `fmt.Fprintf`. Every `fmt` row
 prints to stdout. Verified: no user-facing stderr path exists anywhere in
@@ -58,6 +86,9 @@ diagnostic lands in the tool's own data stream. Anything consuming
 right, so a caller can detect failure; a *pipeline* still gets corrupted.
 
 ## GAP 3 — a `package main` tool cannot be tested
+
+> **RESOLVED**, same day, by renaming the program's own `main` in test mode.
+> See the resolution note at the end of this section.
 
 ```
 $ cd examples/cli/googrep && goo test .
@@ -84,6 +115,31 @@ slice elements.
 
 `examples/cli/googrep/main_test.goo` is committed and currently cannot run. It
 is deliberate: it becomes the regression pin the moment GAP 3 is closed.
+
+### Resolution
+
+In test mode only, the program's own `main` is renamed before the synthesized
+file is parsed, so the generated entry point is the only `main` in the package.
+The chosen name is not a legal Goo identifier, so it cannot collide with a user
+declaration.
+
+**This reaches Go's observable behaviour without Go's architecture.** `go test`
+on package main compiles the package as a library and puts its testmain in a
+SEPARATE package, so the program's `main` is compiled but never called. The
+rename produces the same result — verified: `goo test` on a package whose main
+prints `42` outputs only `ok`, with no `42`. The package-architecture change
+remains the more faithful option, and is the right move if `package foo_test`
+isolation is ever wanted; it was not worth days here for the same observable
+result.
+
+Normal builds are untouched: `goo build` and `goo run` on the same package
+still work, because the rename happens only under `goo test`.
+
+Pinned by two CLI rows — `test-package-main` (the tests run) and
+`test-package-main-builds` (the program still builds and runs). Both are needed:
+the first alone would still pass if the rename leaked into ordinary builds.
+`examples/cli/googrep` now tests too, which is what its committed test file was
+waiting for.
 
 ## GAP 4 — arguments crossing into a vendored-package function miscompile
 
@@ -171,6 +227,35 @@ matching the method loop.
 Pinned by `examples/pkg_arg_shapes_probe.goo`, whose expected output came from
 `go run` on the equivalent Go program. Verified RED first, with both failure
 shapes visible in the diagnostic.
+
+## GAP 5 — calling `main()` emits raw LLVM verifier noise
+
+Found while checking GAP 3's resolution, and **pre-existing and independent of
+it**:
+
+```go
+func helper() { main() }
+func main()   { fmt.Println("hi") }
+```
+```
+Module verification failed: Incorrect number of arguments passed to called function!
+  %call = call i32 @main()
+```
+
+That is an ORDINARY `goo build`, with no test mode involved. Codegen gives the
+entry point an `i32` return that no call site expects, and nothing rejects the
+call earlier, so the user sees verifier output.
+
+Two reasons it matters beyond the shape itself:
+
+- The golden-reject harness enforces a project-wide rule that no LLVM verifier
+  noise reaches users. This path violates it, and no fixture covers it.
+- It should be a clean positioned diagnostic. Go permits `main()` to be called
+  like any function, so the honest options are to support it or reject it by
+  name — not to fail in the backend.
+
+**Severity: low** in practice (calling `main()` is rare), but it is a real
+defect and the diagnostic is the worst kind.
 
 ## What worked well, and is worth recording
 

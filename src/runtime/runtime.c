@@ -257,6 +257,25 @@ void goo_println_string(goo_string_t str) {
     fflush(stdout);
 }
 
+// Write an already-formatted string to a chosen stream. The fmt.Fprint family
+// lowers to this: codegen reuses fmt.Sprint/Sprintln/Sprintf to build the
+// string, so there is exactly ONE implementation of %-verb semantics, and this
+// only has to choose the destination.
+//
+// `fd` comes from os.Stdout (1) or os.Stderr (2), and the CHECKER guarantees it
+// is one of those two — fmt.Fprint* rejects any other writer expression. The
+// else-branch is therefore unreachable from Goo source; it defends against a
+// future caller reaching this symbol directly rather than trusting that.
+// Flushed eagerly, matching the other print primitives, so interleaved stdout
+// and stderr keep their relative order under redirection.
+void goo_fwrite_string(int64_t fd, goo_string_t str) {
+    FILE* out = (fd == 2) ? stderr : stdout;
+    if (str.data && str.length > 0) {
+        fprintf(out, "%.*s", (int)str.length, str.data);
+    }
+    fflush(out);
+}
+
 void goo_println_int(int64_t value) {
     printf("%lld\n", (long long)value);
     fflush(stdout);

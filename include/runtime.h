@@ -107,6 +107,11 @@ void goo_print(const char* message);
 void goo_println(const char* message);
 void goo_print_string(goo_string_t str);
 void goo_println_string(goo_string_t str);
+// fmt.Fprint/Fprintln/Fprintf lower to this: the string is already formatted by
+// the reused Sprint lowering, so this only picks the stream. fd is 1 (stdout)
+// or 2 (stderr) — os.Stdout / os.Stderr, which the checker restricts the
+// fmt.Fprint family to.
+void goo_fwrite_string(int64_t fd, goo_string_t str);
 
 // `goo test` runtime (src/runtime/testing.c). testing.Run takes the test
 // FUNCTION as a value so the frame belongs to the runtime — that is what makes
