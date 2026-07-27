@@ -98,6 +98,48 @@ package notests
 func Add(a int, b int) int { return a + b }
 EOF
 
+# A Test-named function of the wrong shape is a COMPILE ERROR under `goo test`,
+# never a silent skip — a skipped test reports success, which is worse than
+# having no test at all. The reject-fixture harness cannot express this case:
+# run_golden_reject.sh compiles in legacy mode, and discovery deliberately does
+# not run for `goo build`, so a fixture there would compile clean and the suite
+# would report a false failure. Hence a CLI row.
+mkdir -p "$WORK/badsig"
+cat > "$WORK/badsig/x_test.goo" <<'EOF'
+package badsig
+
+import "testing"
+
+func TestWrongShape(a int, b int) int {
+	return a + b
+}
+
+func main() {
+	testing.Summary()
+}
+EOF
+
+# The companion positive case. Without it, a discovery bug that rejects EVERY
+# Test function still satisfies the negative row above.
+#
+# The hand-written main is scaffolding for this task only: Task 6 synthesizes
+# _testmain.goo, and a package carrying both would declare main twice. Delete
+# this main when synthesis lands.
+mkdir -p "$WORK/goodsig"
+cat > "$WORK/goodsig/y_test.goo" <<'EOF'
+package goodsig
+
+import "testing"
+
+func TestFine(t *testing.T) {
+}
+
+func main() {
+	testing.Run("TestFine", TestFine)
+	testing.Summary()
+}
+EOF
+
 # check <name> <want_exit> <want_stdout> <stderr_mode> <cmd...>
 #   want_stdout: exact string, or "~substr" for contains
 #   stderr_mode: "empty", "nonempty", or a substring stderr must contain
@@ -176,6 +218,11 @@ check dir-no-sources           1     ""            "no buildable source files" "
 # `goo test` on a package with no _test files: Go prints a no-tests line and
 # exits 0 rather than treating it as an error.
 check test-no-test-files       0     "~[no test files]" empty  sh -c "cd '$WORK/notests' && '$COMPILER' test ."
+# Test discovery: a Test-named function of the wrong shape is rejected by name,
+# with the expected signature spelled out. The positive row is the guard that
+# the rejection is targeted rather than blanket.
+check test-bad-signature       1     ""            "must have signature func(t *testing.T)" sh -c "cd '$WORK/badsig' && '$COMPILER' test ."
+check test-good-signature      0     "~ok"         empty                sh -c "cd '$WORK/goodsig' && '$COMPILER' test ."
 
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]

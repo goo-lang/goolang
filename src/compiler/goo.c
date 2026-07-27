@@ -21,6 +21,7 @@
 // #include "errors/error.h"  // TODO: Update to use new error API
 #include "runtime.h"
 #include "import_resolver.h"
+#include "test_discovery.h"
 
 // Compiler version
 #define GOO_VERSION "0.1.0"
@@ -1020,6 +1021,17 @@ static void compute_source_dir(const char* filename, char* out_buf, size_t out_s
     out_buf[len] = '\0';
 }
 
+// Is this one of a package's test files? The suffix set is Go's, extended with
+// the .goo spelling — the same pair is_buildable_source gates on when
+// `include_tests` is set (src/package/import_resolver.c), so the file set the
+// resolver COLLECTS and the file set discovery SCANS cannot drift apart.
+static bool is_test_source_name(const char* fname) {
+    if (!fname) return false;
+    size_t fl = strlen(fname);
+    return (fl >= 8 && memcmp(fname + fl - 8, "_test.go", 8) == 0) ||
+           (fl >= 9 && memcmp(fname + fl - 9, "_test.goo", 9) == 0);
+}
+
 static bool compile_file(const char* filename, CompilerOptions* options) {
     if (options->verbose) {
         printf("Compiling %s...\n", filename);
@@ -1127,10 +1139,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     if (options->mode == GOO_MODE_TEST) {
         int have_test_file = 0;
         for (size_t fi = 0; fi < nfiles && !have_test_file; fi++) {
-            const char* fn = options->input_files[fi];
-            size_t fl = strlen(fn);
-            have_test_file = (fl >= 8 && memcmp(fn + fl - 8, "_test.go", 8) == 0) ||
-                             (fl >= 9 && memcmp(fn + fl - 9, "_test.goo", 9) == 0);
+            have_test_file = is_test_source_name(options->input_files[fi]);
         }
         if (!have_test_file) {
             // Named after the entry directory, the same string the output stem
@@ -1150,6 +1159,48 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
             ENTRY_CLEANUP();
             return true;
         }
+
+        // Collect the TestXxx functions, and reject a Test-named function of
+        // the wrong shape. Runs BEFORE type_checker_new() because Task 6's
+        // synthesized _testmain.goo has to join `asts` before the marker-
+        // seeding loop below walks it.
+        //
+        // Only the _test files are scanned, which is both Go's rule and a
+        // consistency requirement: scanning an ordinary package file would
+        // reject a `func TestHelper(x int)` that `goo build` accepts, so the
+        // same source would compile or fail depending on the subcommand.
+        ASTNode** test_asts = calloc(nfiles, sizeof(ASTNode*));
+        const char** test_names = calloc(nfiles, sizeof(char*));
+        if (!test_asts || !test_names) {
+            free(test_asts); free(test_names);
+            fprintf(stderr, "Error: out of memory preparing test discovery\n");
+            ENTRY_CLEANUP();
+            return false;
+        }
+        size_t test_file_count = 0;
+        for (size_t fi = 0; fi < nfiles; fi++) {
+            if (!is_test_source_name(options->input_files[fi])) continue;
+            test_asts[test_file_count] = asts[fi];
+            test_names[test_file_count] = options->input_files[fi];
+            test_file_count++;
+        }
+
+        TestList tests = {0};
+        int discovered = test_discovery_collect(test_asts, test_file_count,
+                                                test_names, &tests);
+        free(test_asts);
+        free(test_names);
+        if (!discovered) {
+            // The diagnostic is already on stderr. Leave no binary behind and
+            // exit non-zero, the same discipline every other reject path keeps.
+            options->run_after_compile = false;
+            ENTRY_CLEANUP();
+            return false;
+        }
+        // Task 6 consumes this list to synthesize _testmain.goo. Until then the
+        // names are collected purely to validate them, so free them here rather
+        // than leak on every `goo test` run.
+        test_list_free(&tests);
     }
 
     // Hidden debug flag: walk the import graph from main and print the
