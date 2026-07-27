@@ -1052,6 +1052,10 @@ void seed_testing_package_exports(TypeChecker* checker, Package* pkg) {
     // by the codegen intercept (call_codegen.c), the same way the variadic fmt
     // rows are left unchecked here.
     sync_export_method(pkg, t_ty, "Error", NULL, 0, void_t, 1);
+    // The -f variants: their FORMAT plus arguments are consumed by the codegen
+    // intercept, which hands the whole call to fmt.Sprintf's own lowering.
+    sync_export_method(pkg, t_ty, "Errorf", NULL, 0, void_t, 1);
+    sync_export_method(pkg, t_ty, "Logf",   NULL, 0, void_t, 1);
     sync_export_method(pkg, t_ty, "Log",   NULL, 0, void_t, 1);
     sync_export_method(pkg, t_ty, "Fail",  NULL, 0, void_t, 0);
 }

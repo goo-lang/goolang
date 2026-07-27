@@ -489,10 +489,12 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
                                                        ASTNode* expr, CallExprNode* call,
                                                        SelectorExprNode* msel, Type* recv_type) {
     const char* sel = msel->selector;
-    int is_error = strcmp(sel, "Error") == 0;
-    int is_log   = strcmp(sel, "Log") == 0;
-    int is_fail  = strcmp(sel, "Fail") == 0;
-    if (!is_error && !is_log && !is_fail) {
+    int is_error  = strcmp(sel, "Error") == 0;
+    int is_log    = strcmp(sel, "Log") == 0;
+    int is_fail   = strcmp(sel, "Fail") == 0;
+    int is_errorf = strcmp(sel, "Errorf") == 0;
+    int is_logf   = strcmp(sel, "Logf") == 0;
+    if (!is_error && !is_log && !is_fail && !is_errorf && !is_logf) {
         codegen_error(codegen, expr->pos, "internal: unknown testing.T method '%s'", sel);
         return NULL;
     }
@@ -516,7 +518,7 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
 
     // Error marks the test failed BEFORE logging, so a Fatal-shaped extension
     // (Task 4) can reuse this ordering unchanged.
-    if (is_error || is_fail) {
+    if (is_error || is_errorf || is_fail) {
         LLVMTypeRef fail_ty = LLVMFunctionType(void_type, &ptr_type, 1, 0);
         LLVMValueRef fail_fn = LLVMGetNamedFunction(codegen->module, "goo_testing_fail");
         if (!fail_fn) fail_fn = LLVMAddFunction(codegen->module, "goo_testing_fail", fail_ty);
@@ -524,8 +526,19 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
         LLVMBuildCall2(codegen->builder, fail_ty, fail_fn, fargs, 1, "");
     }
 
-    if (is_error || is_log) {
-        ValueInfo* msg = codegen_generate_fmt_sprintln_call(codegen, checker, expr);
+    if (is_error || is_log || is_errorf || is_logf) {
+        // The -f variants hand the WHOLE call node to fmt.Sprintf's own
+        // lowering. That function reads the format from call->args's first
+        // element and requires it to be a literal — which holds here, because a
+        // test file writes the format inline. Reusing it is the point: one
+        // implementation of %-verb semantics, not two.
+        //
+        // The non-f variants use Sprintln's lowering, matching Go's definition
+        // of t.Error as t.log(fmt.Sprintln(args...)); the runtime trims the
+        // trailing newline that adds.
+        ValueInfo* msg = (is_errorf || is_logf)
+            ? codegen_generate_sprintf_call(codegen, checker, expr)
+            : codegen_generate_fmt_sprintln_call(codegen, checker, expr);
         if (!msg) return NULL;
 
         const char* file = expr->pos.filename ? expr->pos.filename : "?";

@@ -1,0 +1,38 @@
+// testing_errorf_probe: t.Errorf and t.Logf format at the CALL SITE, reusing
+// the same lowering fmt.Sprintf uses.
+//
+// This is why testing is a shim rather than Goo source in goostd/. Two measured
+// facts rule the obvious approach out:
+//   - fmt.Sprintf REJECTS a non-literal format ("format must be a string
+//     literal"), so a Goo-level `func (t *T) Errorf(f string, a ...any)`
+//     forwarding to Sprintf cannot compile;
+//   - fmt.Println(args...) does not spread — it prints the slice.
+// A test file always writes a LITERAL format, so at the call site the existing
+// compile-time formatter can see it, and one formatter serves both. A second
+// implementation of %-verb semantics is the drift class PRs #220, #224 and #225
+// were each spent fixing.
+//
+// FORMAT derived from `go test` on the equivalent Go package (go1.26.1); file
+// name and line numbers are facts about this file. Go's package summary line
+// carries an elapsed time, which is dropped here because this is an exact-match
+// golden — see testing_shim_probe.goo for the same note.
+package main
+
+import "testing"
+
+func TestFormatted(t *testing.T) {
+	got := 3
+	want := 2
+	t.Errorf("got %d, want %d", got, want)
+}
+
+func TestLogfThenFail(t *testing.T) {
+	t.Logf("checked %d cases", 7)
+	t.Errorf("%s did not match", "output")
+}
+
+func main() {
+	testing.Run("TestFormatted", TestFormatted)
+	testing.Run("TestLogfThenFail", TestLogfThenFail)
+	testing.Summary()
+}

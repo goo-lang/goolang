@@ -1,0 +1,6 @@
+--- FAIL: TestFormatted (0.00s)
+    testing_errorf_probe.goo:26: got 3, want 2
+--- FAIL: TestLogfThenFail (0.00s)
+    testing_errorf_probe.goo:30: checked 7 cases
+    testing_errorf_probe.goo:31: output did not match
+FAIL
