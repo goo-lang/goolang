@@ -1,0 +1,65 @@
+// Tests for googrep's pure matching logic.
+//
+// THIS FILE CANNOT RUN TODAY, and that is the point. `goo test .` here fails
+// with:
+//
+//     Type error at _testmain.goo:5:6: Function 'main' already declared
+//
+// The synthesized _testmain.goo joins the package under test and declares
+// `main`, which collides with the tool's own `main`. A CLI tool IS package
+// main, so no CLI tool can currently have tests — GAP 3 in
+// docs/superpowers/specs/2026-07-27-cli-readiness-findings.md.
+//
+// The file is committed deliberately rather than deleted: it is the regression
+// pin the moment that gap closes. Nothing in verify-core runs it (run_golden.sh
+// globs examples/*.goo at the top level only), so it fails no gate meanwhile.
+package main
+
+import "testing"
+
+func TestMatchLinesBasic(t *testing.T) {
+	text := "alpha one\nbeta two\nalpha three\n"
+	lines, count := matchLines(text, "alpha", false, "f", false)
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("len(lines) = %d, want 2", len(lines))
+	}
+	if lines[0] != "alpha one" {
+		t.Errorf("lines[0] = %s, want alpha one", lines[0])
+	}
+}
+
+func TestMatchLinesNoMatch(t *testing.T) {
+	lines, count := matchLines("a\nb\n", "zzz", false, "f", false)
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+	if len(lines) != 0 {
+		t.Errorf("len(lines) = %d, want 0", len(lines))
+	}
+}
+
+func TestMatchLinesLineNumbers(t *testing.T) {
+	text := "no\nyes\n"
+	lines, _ := matchLines(text, "yes", true, "f", false)
+	if lines[0] != "2:yes" {
+		t.Errorf("lines[0] = %s, want 2:yes", lines[0])
+	}
+}
+
+func TestMatchLinesWithName(t *testing.T) {
+	lines, _ := matchLines("yes\n", "yes", false, "a.txt", true)
+	if lines[0] != "a.txt:yes" {
+		t.Errorf("lines[0] = %s, want a.txt:yes", lines[0])
+	}
+}
+
+func TestMatchLinesTrailingNewline(t *testing.T) {
+	// A trailing newline must not produce a phantom final empty line.
+	_, count := matchLines("x\n", "", false, "f", false)
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (empty pattern matches the one real line)", count)
+	}
+}

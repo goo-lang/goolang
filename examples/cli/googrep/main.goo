@@ -1,0 +1,120 @@
+// googrep — a grep-shaped CLI tool, written to find out what actually stops a
+// person writing an ordinary command-line tool in Goo.
+//
+// Usage: googrep [-n] [-c] PATTERN FILE...
+//   -n  prefix each match with its line number
+//   -c  print only a count of matching lines per file
+//
+// Exit status follows grep: 0 when at least one line matched, 1 when none
+// matched, 2 on an error. That convention is the reason a tool needs a real
+// exit status AND a separate diagnostic stream — a caller distinguishes "no
+// matches" from "could not read the file" by the status, and a human reads why
+// on stderr while the data still flows down the pipe.
+package main
+
+import "fmt"
+import "os"
+import "strings"
+import "strconv"
+
+// matchLines returns the matching lines of text, each already formatted for
+// output, plus how many matched.
+func matchLines(text string, pattern string, showNum bool, name string, withName bool) ([]string, int) {
+	out := []string{}
+	count := 0
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		// A trailing newline yields a final empty field; grep does not report
+		// it as a line.
+		if i == len(lines)-1 && line == "" {
+			break
+		}
+		if strings.Index(line, pattern) < 0 {
+			continue
+		}
+		count = count + 1
+		prefix := ""
+		if withName {
+			prefix = name + ":"
+		}
+		if showNum {
+			prefix = prefix + strconv.Itoa(i+1) + ":"
+		}
+		out = append(out, prefix+line)
+	}
+	return out, count
+}
+
+func main() {
+	args := os.Args
+	showNum := false
+	showCount := false
+
+	i := 1
+	for i < len(args) {
+		a := args[i]
+		if a == "-n" {
+			showNum = true
+			i = i + 1
+			continue
+		}
+		if a == "-c" {
+			showCount = true
+			i = i + 1
+			continue
+		}
+		break
+	}
+
+	if len(args)-i < 2 {
+		fmt.Println("usage: googrep [-n] [-c] PATTERN FILE...")
+		os.Exit(2)
+	}
+
+	pattern := args[i]
+	i = i + 1
+
+	matched := 0
+	failed := false
+	withName := len(args)-i > 1
+
+	// GAP 1 workaround: `for ; i < len(args); i++ {` does not parse — an
+	// omitted init clause is rejected. Rewritten as a condition-only loop with
+	// a manual increment.
+	for i < len(args) {
+		name := args[i]
+		text := os.ReadFile(name) catch => ""
+		if text == "" {
+			// Could not read it, or it was empty. A tool must say which, on
+			// stderr, without polluting its own output.
+			fmt.Println("googrep: " + name + ": cannot read file")
+			failed = true
+			i = i + 1
+			continue
+		}
+		lines, count := matchLines(text, pattern, showNum, name, withName)
+		matched = matched + count
+		if showCount {
+			prefix := ""
+			if withName {
+				prefix = name + ":"
+			}
+			fmt.Println(prefix + strconv.Itoa(count))
+			i = i + 1
+			continue
+		}
+		for j := 0; j < len(lines); j++ {
+			fmt.Println(lines[j])
+		}
+		i = i + 1
+	}
+
+	if failed {
+		os.Exit(2)
+	}
+	if matched == 0 {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
