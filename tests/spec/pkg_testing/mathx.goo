@@ -1,0 +1,11 @@
+// Go spec, Packages. An ordinary package file: the code under test, with no
+// test functions and no testing import. `goo build .` compiles this directory
+// exactly as it would without the _test file beside it.
+package pkg_testing
+
+func Abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}

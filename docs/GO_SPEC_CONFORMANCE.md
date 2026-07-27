@@ -1,7 +1,7 @@
 # Go Spec Conformance Matrix
 
-**Snapshot:** 2026-07-24, post-v1.0.0 — **89% conformance**
-(44 works / 49 tested constructs, excluding 3 deliberate rejections).
+**Snapshot:** 2026-07-27, post-v1.0.0 — **90% conformance**
+(46 works / 51 tested constructs, excluding 3 deliberate rejections).
 
 **Method.** One tiny fixture per Go-spec construct under `tests/spec/`,
 statuses determined **empirically** (compiled and run against `bin/goo`,
@@ -42,7 +42,7 @@ percentage moves only with evidence.
 | Statements | 11 | 1 | – | – | if-init, for (3 forms), range (slices, string→**runes**, channels), switch-init + type switch, fallthrough, labels/goto, defer-in-loop, go+select, empty case/default bodies (switch/type-switch/select); **divergent:** named-result defer |
 | Builtins | 5 | – | 1 | – | len/cap/make/new/append/delete, copy, panic (exit 2), min/max (Go 1.21, NaN-propagating), clear (Go 1.21, map+slice); **rejected:** recover (clean v1 diagnostic) |
 | Generics | 2 | – | – | 2 | `[T any]` inference-only funcs; explicit instantiation `f[T](...)` (single type param — Task C); **absent:** union constraints (P2.10), generic types |
-| Packages | 1 | – | 1 | – | shim-package alias imports (`import f "fmt"`, Task B); **rejected:** `init()` — clean diagnostic since the post-v1.0.0 fix (previously compiled but silently never ran) |
+| Packages | 3 | – | 1 | – | shim-package alias imports (`import f "fmt"`, Task B); multi-file packages (a package is the union of its files); `goo test` (discovers `TestXxx` in `_test` files, synthesizes the entry point, runs them); **rejected:** `init()` — clean diagnostic since the post-v1.0.0 fix (previously compiled but silently never ran) |
 | Errors | 1 | – | – | – | (T, error) ↔ !T bridging, e.Error() |
 | System | – | – | 1 | – | **rejected:** unsafe (v1 Non-goal) |
 

@@ -1,0 +1,30 @@
+// Go spec, Packages: a _test file belongs to the package it names, so it sees
+// the package's own identifiers without qualification. `goo test .` discovers
+// every func TestXxx(t *testing.T) here, synthesizes a main that calls each one
+// through testing.Run, and exits on testing.Summary's verdict.
+//
+// Every test PASSES on purpose. Go prints nothing for a passing test without
+// -v, so the whole expected output is one `ok` line and carries no duration.
+// That matters: the conformance runner diffs bytes and cannot normalize the
+// "(0.00s)" a failing test would print. The failing path is pinned instead by
+// scripts/goo_test_probe.sh, which does normalize.
+//
+// The ONE deliberate divergence from Go is that summary line: `go test` prints
+// `ok  \t<pkg>\t0.002s`, and the Goo runtime prints a bare `ok`, because
+// neither the package path nor the elapsed time is reproducible. Recorded in
+// the manifest note so the claim cannot rot silently.
+package pkg_testing
+
+import "testing"
+
+func TestAbsNegative(t *testing.T) {
+	if Abs(-5) != 5 {
+		t.Errorf("Abs(-5) = %d, want 5", Abs(-5))
+	}
+}
+
+func TestAbsPositive(t *testing.T) {
+	if Abs(7) != 7 {
+		t.Errorf("Abs(7) = %d, want 7", Abs(7))
+	}
+}
