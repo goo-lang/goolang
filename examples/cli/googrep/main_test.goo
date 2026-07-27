@@ -1,18 +1,12 @@
 // Tests for googrep's pure matching logic.
 //
-// THIS FILE CANNOT RUN TODAY, and that is the point. `goo test .` here fails
-// with:
+// This file could not run when it was written: the synthesized _testmain.goo
+// declared a `main` that collided with the tool's own, and a CLI tool IS
+// package main, so no CLI tool could have tests at all (GAP 3 in
+// docs/superpowers/specs/2026-07-27-cli-readiness-findings.md).
 //
-//     Type error at _testmain.goo:5:6: Function 'main' already declared
-//
-// The synthesized _testmain.goo joins the package under test and declares
-// `main`, which collides with the tool's own `main`. A CLI tool IS package
-// main, so no CLI tool can currently have tests — GAP 3 in
-// docs/superpowers/specs/2026-07-27-cli-readiness-findings.md.
-//
-// The file is committed deliberately rather than deleted: it is the regression
-// pin the moment that gap closes. Nothing in verify-core runs it (run_golden.sh
-// globs examples/*.goo at the top level only), so it fails no gate meanwhile.
+// It was committed anyway, as the regression pin for the moment that gap
+// closed. It now runs: `goo test .` in this directory passes.
 package main
 
 import "testing"

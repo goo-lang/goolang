@@ -1204,6 +1204,48 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
             ENTRY_CLEANUP();
             return false;
         }
+        // A `package main` PROGRAM under test already declares `main`, and the
+        // synthesized file is about to declare another one in the same package
+        // — "Function 'main' already declared". Every CLI tool is package main,
+        // so without this no CLI tool could have tests at all.
+        //
+        // Rename the program's own main so the synthesized entry point is the
+        // only one. This matches what `go test` DOES for package main: the test
+        // binary's entry is the generated main, and the program's main is
+        // compiled but never called. Go achieves that by compiling the package
+        // as a library and putting its testmain in a separate package; renaming
+        // reaches the same observable behaviour without the package-architecture
+        // change, which is the trade recorded here deliberately.
+        //
+        // The chosen name is not a legal Goo identifier, so it can never
+        // collide with a user declaration.
+        //
+        // A test calling `main()` by name resolves to the SYNTHESIZED entry
+        // rather than the program's own, which Go would not do. That costs
+        // nothing observable, because calling `main()` is already broken in
+        // Goo everywhere: it fails module verification with "Incorrect number
+        // of arguments passed to called function" in an ORDINARY build too,
+        // since codegen gives the entry an i32 return that no call site
+        // expects. Verified against a plain `goo build` with no test mode
+        // involved — a pre-existing defect this rename neither causes nor
+        // worsens. Ledgered separately.
+        for (size_t fi = 0; fi < nfiles; fi++) {
+            if (!asts[fi] || asts[fi]->type != AST_PROGRAM) continue;
+            for (ASTNode* d = ((ProgramNode*)asts[fi])->decls; d; d = d->next) {
+                if (d->type != AST_FUNC_DECL) continue;
+                FuncDeclNode* f = (FuncDeclNode*)d;
+                if (!f->name || f->receiver || strcmp(f->name, "main") != 0) continue;
+                char* renamed = str_dup("main.program");
+                if (!renamed) {
+                    fprintf(stderr, "Error: out of memory preparing the test entry point\n");
+                    ENTRY_CLEANUP();
+                    return false;
+                }
+                free(f->name);
+                f->name = renamed;
+            }
+        }
+
         // Synthesize _testmain.goo and parse it as ONE MORE FILE of the entry
         // package — the operation PR #226 made ordinary. It is never written to
         // disk; --emit-testmain prints it.
