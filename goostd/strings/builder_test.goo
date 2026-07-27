@@ -1,0 +1,74 @@
+// Tests for strings.Builder.
+//
+// Every expected value was produced by running the same assertions against Go's
+// real strings.Builder on go1.26.1, never hand-reasoned.
+//
+// These are the first stdlib symbols whose ONLY coverage is a test file. They
+// are what structurally pins both coverage-gate changes: if the gate ever stops
+// reading test files, or stops extracting receiver methods, these four methods
+// go uncovered and stdlib-smoke-coverage fails.
+package strings
+
+import "testing"
+
+func TestBuilderZeroValue(t *testing.T) {
+	// The zero value is usable with no constructor, as in Go.
+	var b Builder
+	if b.Len() != 0 {
+		t.Errorf("zero Builder Len = %d, want 0", b.Len())
+	}
+	if b.String() != "" {
+		t.Errorf("zero Builder String = %s, want empty", b.String())
+	}
+}
+
+func TestBuilderWriteString(t *testing.T) {
+	var b Builder
+	b.WriteString("hello")
+	b.WriteString(", ")
+	b.WriteString("world")
+	got := b.String()
+	if got != "hello, world" {
+		t.Errorf("String = %s, want hello, world", got)
+	}
+}
+
+func TestBuilderLen(t *testing.T) {
+	var b Builder
+	b.WriteString("hello, world")
+	// Bytes, not runes — the same as Go.
+	if b.Len() != 12 {
+		t.Errorf("Len = %d, want 12", b.Len())
+	}
+}
+
+func TestBuilderReset(t *testing.T) {
+	var b Builder
+	b.WriteString("discard me")
+	b.Reset()
+	if b.Len() != 0 {
+		t.Errorf("Len after Reset = %d, want 0", b.Len())
+	}
+	if b.String() != "" {
+		t.Errorf("String after Reset = %s, want empty", b.String())
+	}
+	// Reset leaves the builder USABLE, it does not retire it.
+	b.WriteString("again")
+	if b.String() != "again" {
+		t.Errorf("String after reuse = %s, want again", b.String())
+	}
+}
+
+func TestBuilderEmptyWrite(t *testing.T) {
+	// Writing an empty string is a no-op, not an error or a stray byte.
+	var b Builder
+	b.WriteString("")
+	if b.Len() != 0 {
+		t.Errorf("Len after empty write = %d, want 0", b.Len())
+	}
+	b.WriteString("x")
+	b.WriteString("")
+	if b.String() != "x" {
+		t.Errorf("String = %s, want x", b.String())
+	}
+}
