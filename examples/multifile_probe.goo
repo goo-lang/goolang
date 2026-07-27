@@ -1,0 +1,39 @@
+// multifile_probe: a local source package split across TWO files.
+//
+// Goo could not compile any package of more than one file — not an imported
+// package, and not `package main` itself. The pieces were half in place:
+// resolve_package_dir (import_resolver.c) already globbed the directory,
+// excluded *_test.go, and qsort'ed the result into a deterministic N-file
+// list. But concat_package_sources (goo.c) then joined those N files into one
+// text buffer, and parser.y's `program` rule accepts exactly ONE
+// package_clause, so the concatenation died on the second file's clause:
+//
+//   Parse error at concat.goo:9:8: syntax error
+//
+// The path had never been exercised because all 11 goostd packages are
+// single-file — strings.go is 555 lines and lanes.go is 1032, both already
+// straining against a limit nobody could hit.
+//
+// Fixed by parsing each file separately and keeping N ASTs per package
+// instead of concatenating. Keeping the real filename per file is
+// load-bearing, not cosmetic: PRs #221-#223 made diagnostics report true
+// line:column, and a concatenated buffer would have silently reported
+// concat-relative lines the moment multi-file shipped.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), per the project convention that accept goldens are never
+// hand-written.
+package main
+
+import "fmt"
+import "./multifile"
+
+func main() {
+	// Shout is declared in a.go and calls Bang(), declared in b.go — the
+	// cross-file reference inside one package.
+	fmt.Println(multifile.Shout("hi"))
+
+	// Twice is declared in b.go, the SECOND file, and is exported across the
+	// package boundary from there.
+	fmt.Println(multifile.Twice(21))
+}

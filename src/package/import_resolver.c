@@ -1,5 +1,6 @@
 #include "import_resolver.h"
 #include <dirent.h>
+#include <limits.h>   // PATH_MAX, for realpath in resolve_package_dir_path
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,6 +84,27 @@ static void free_str_array(char** arr, size_t count) {
     free(arr);
 }
 
+// Is `fname` a buildable source file of a package? Both extensions count: a
+// package may be written in .go (Go-compatible source, what goostd vendors)
+// or .goo, and a directory may mix them. Test files are excluded under BOTH
+// spellings — Go's own rule, and the reason the exclusion cannot simply test
+// for "_test" anywhere in the name.
+//
+// SINGLE predicate on purpose. resolve_package_dir is the one directory scan
+// in the compiler, shared by imported packages and (since the directory-entry
+// work) by the entry package itself, so the set of files that make up a
+// package is defined here and nowhere else. A second copy would let `goo build
+// .` and `import "./p"` disagree about what a package contains.
+//
+// ".goo" is not a suffix of ".go": for "x.goo" the last three bytes are "goo",
+// so the .go test correctly rejects it and the .goo test accepts it. The two
+// arms are disjoint, not ordered.
+static int is_buildable_source(const char* fname, size_t len) {
+    if (has_suffix(fname, len, "_test.go", 8)) return 0;
+    if (has_suffix(fname, len, "_test.goo", 9)) return 0;
+    return has_suffix(fname, len, ".go", 3) || has_suffix(fname, len, ".goo", 4);
+}
+
 // P4.4 (import path aliases): a small table mapping a Go-style nested import
 // spelling (as Go's real stdlib names it, e.g. "unicode/utf8") to the flat
 // directory name goostd actually vendors it under (e.g. "utf8" —
@@ -118,19 +140,23 @@ const char* normalize_import_path(const char* import_path) {
     return import_path; // flat/unaliased spellings pass through unchanged
 }
 
-// Scan an already-resolved directory `pkg_dir` for non-_test.go *.go files
-// and populate `out` on success. `import_path` is kept purely to derive
-// out->name (last path segment) and out->import_path (recorded verbatim) —
-// it plays no part in the filesystem lookup itself, which is entirely
-// driven by `pkg_dir`. Returns 0 on success, 1 if the directory doesn't
-// exist or holds no buildable *.go files (leaving `out` untouched, since
-// every failure return below is before `out` is written — callers rely on
-// this to retry a second tier with the same `out`).
+// Scan an already-resolved directory `pkg_dir` for buildable source files
+// (see is_buildable_source) and populate `out` on success. `import_path` is
+// kept purely to derive out->name (last path segment) and out->import_path
+// (recorded verbatim) — it plays no part in the filesystem lookup itself,
+// which is entirely driven by `pkg_dir`. Returns 0 on success, 1 if the
+// directory doesn't exist or holds no buildable files (leaving `out`
+// untouched, since every failure return below is before `out` is written —
+// callers rely on this to retry a second tier with the same `out`).
+//
+// ALL matching files are collected, sorted, and returned — this function has
+// always been N-file correct. The single-file limit lived downstream, in the
+// driver's text concatenation of the list it returns.
 static int resolve_package_dir(const char* pkg_dir, const char* import_path, PackageSource* out) {
     DIR* dir = opendir(pkg_dir);
     if (!dir) return 1; // package directory doesn't exist
 
-    // Pass 1: collect candidate *.go filenames (excluding *_test.go).
+    // Pass 1: collect candidate source filenames (see is_buildable_source).
     char** names = NULL;
     size_t count = 0;
     size_t cap = 0;
@@ -138,8 +164,7 @@ static int resolve_package_dir(const char* pkg_dir, const char* import_path, Pac
     while ((entry = readdir(dir)) != NULL) {
         const char* fname = entry->d_name;
         size_t len = strlen(fname);
-        if (!has_suffix(fname, len, ".go", 3)) continue;
-        if (has_suffix(fname, len, "_test.go", 8)) continue;
+        if (!is_buildable_source(fname, len)) continue;
 
         if (count == cap) {
             size_t new_cap = cap ? cap * 2 : 4;
@@ -184,6 +209,30 @@ static int resolve_package_dir(const char* pkg_dir, const char* import_path, Pac
         return 1;
     }
     return 0;
+}
+
+int resolve_package_dir_path(const char* pkg_dir, PackageSource* out) {
+    if (!out) return 1;
+    out->files = NULL;
+    out->file_count = 0;
+    out->name = NULL;
+    out->import_path = NULL;
+    if (!pkg_dir) return 1;
+
+    // Go names a directory build after the DIRECTORY, so ".", "./" and a
+    // trailing slash must each resolve to the real directory name instead of
+    // being taken literally — `goo build .` in /path/to/myapp is "myapp", not
+    // ".". realpath collapses all three spellings; if it fails (the stat in the
+    // caller already passed, so this is unlikely) fall back to the spelling as
+    // given rather than refusing to build.
+    char resolved[PATH_MAX];
+    const char* base_src = pkg_dir;
+    if (realpath(pkg_dir, resolved) != NULL) base_src = resolved;
+    const char* slash = strrchr(base_src, '/');
+    const char* short_name = (slash && slash[1]) ? slash + 1 : base_src;
+
+    // Same scan, same predicate, same sort as an imported package.
+    return resolve_package_dir(pkg_dir, short_name, out);
 }
 
 int resolve_import(const char* import_path, const char* source_dir, PackageSource* out) {

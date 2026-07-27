@@ -61,6 +61,35 @@ func main() {
 }
 EOF
 
+# A DIRECTORY entry package: `goo build .` compiles every source file in the
+# directory as one package (Go's unit of compilation). Two files, with main.go
+# calling a function declared in the sibling file, so the case fails if the
+# files are compiled separately rather than as one package.
+mkdir -p "$WORK/dirpkg"
+cat > "$WORK/dirpkg/main.go" <<'EOF'
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println(greeting(), answer())
+}
+EOF
+cat > "$WORK/dirpkg/helper.go" <<'EOF'
+package main
+
+func greeting() string {
+	return "hello"
+}
+
+func answer() int {
+	return 42
+}
+EOF
+
+# A directory with no buildable source files must be refused cleanly.
+mkdir -p "$WORK/emptydir"
+
 # check <name> <want_exit> <want_stdout> <stderr_mode> <cmd...>
 #   want_stdout: exact string, or "~substr" for contains
 #   stderr_mode: "empty", "nonempty", or a substring stderr must contain
@@ -128,6 +157,14 @@ check link-failure            1     ""            "-lgootest_bogus_xyz" "$COMPIL
 check build-extra-arg         1     ""            "unexpected argument" "$COMPILER" build "$WORK/ok.goo" stray_arg
 check run-emit-llvm-conflict  1     ""            "cannot be combined" "$COMPILER" run --emit-llvm "$WORK/ok.goo"
 check help-on-stdout          0     "~Usage:"     empty                "$COMPILER" help
+# Directory entry package (`goo build .`). The output is named after the
+# DIRECTORY, which is Go's rule for `go build .`, so the binary is dirpkg.
+check dir-build                0     ""            empty                sh -c "cd '$WORK/dirpkg' && '$COMPILER' build ."
+check dir-binary-runs          0     "hello 42"    empty                "$WORK/dirpkg/dirpkg"
+# Building ./dirpkg from the PARENT would name the output after the directory
+# that already exists there. Real go1.26.1 refuses with this same wording.
+check dir-output-collision     1     ""            "already exists and is a directory" sh -c "cd '$WORK' && '$COMPILER' build ./dirpkg"
+check dir-no-sources           1     ""            "no buildable source files" "$COMPILER" build "$WORK/emptydir"
 
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]

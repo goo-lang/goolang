@@ -1,0 +1,18 @@
+// Imports are scoped PER FILE, not per package (Go spec: the import declaration
+// states that the file depends on the imported package).
+//
+// When multi-file packages first compiled, every file's imports were seeded
+// into the one package scope, so the union was visible to all of them and this
+// program compiled. That is wrong: a file that uses a package it never imported
+// must be rejected, exactly as Go rejects it.
+//
+// The fix inverts the scope chain — a per-file import scope becomes the PARENT
+// of the package scope, so declarations still land in the package scope while a
+// lookup falls through to exactly one file's imports.
+package main
+
+import "./hygienepkg"
+
+func main() {
+	hygienepkg.A()
+}

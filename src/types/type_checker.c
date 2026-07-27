@@ -117,12 +117,26 @@ void type_checker_free(TypeChecker* checker) {
         free(pkg->import_path);
         free(pkg->name);
         scope_free(pkg->exports);
-        // P6 M1: the package AST whose ownership compile_resolved_packages
-        // transferred here (NULL if the graph still owns it). Freed last, after
-        // the exports scope whose Variables' func_decl_node pointed into it —
-        // scope_free frees only the Variable copies, never the AST nodes they
-        // reference, so the order is not load-bearing, only tidy.
-        ast_node_free(pkg->owned_ast);
+        // P6 M1: the package's per-file ASTs, whose ownership
+        // compile_resolved_packages transferred here (empty if the graph still
+        // owns them). Freed last, after the exports scope whose Variables'
+        // func_decl_node pointed into them — scope_free frees only the Variable
+        // copies, never the AST nodes they reference, so the order is not
+        // load-bearing, only tidy.
+        //
+        // Element-by-element because each file's PROGRAM node is an independent
+        // root: ast_node_free recurses into ->next, so these must never be
+        // chained (see Package.owned_asts in types.h).
+        for (size_t ai = 0; ai < pkg->owned_ast_count; ai++) {
+            ast_node_free(pkg->owned_asts[ai]);
+        }
+        free(pkg->owned_asts);
+        // Freed only now, with the ASTs: every Position in them points at one of
+        // these strings (see Package.owned_file_names).
+        for (size_t fi = 0; fi < pkg->owned_file_name_count; fi++) {
+            free(pkg->owned_file_names[fi]);
+        }
+        free(pkg->owned_file_names);
         free(pkg);
         pkg = next;
     }
@@ -229,7 +243,12 @@ Package* type_checker_add_package(TypeChecker* checker, const char* import_path,
     pkg->name = str_dup(name);
     pkg->exports = scope_new(NULL);
     pkg->state = 0;  // unvisited
-    pkg->owned_ast = NULL;  // P6 M1: set by compile_resolved_packages on success
+    // P6 M1: all set by compile_resolved_packages on success (one AST and one
+    // source path per file).
+    pkg->owned_asts = NULL;
+    pkg->owned_ast_count = 0;
+    pkg->owned_file_names = NULL;
+    pkg->owned_file_name_count = 0;
     pkg->next = checker->packages;
     checker->packages = pkg;
 
@@ -762,8 +781,17 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func);
 // declare_function_signature enables forward function references.
 static int declare_type_shells(TypeChecker* checker, ASTNode* decls);
 
+// Single-AST wrapper, kept so the three non-driver callers (src/main.c,
+// src/main_simple.c, src/ide/lsp_enhanced.c) are untouched. The entry package
+// can now be several files, so the compiler driver calls the N-file form below.
 int type_check_program(TypeChecker* checker, ASTNode* program) {
-    if (!checker || !program) return 0;
+    if (!program) return 0;
+    return type_check_program_files(checker, &program, 1);
+}
+
+int type_check_program_files(TypeChecker* checker, ASTNode** programs,
+                             size_t program_count) {
+    if (!checker || !programs || program_count == 0) return 0;
 
     // A lexical error (e.g. a malformed char literal '', '\z', or an
     // unterminated 'a) is mapped to an unknown token and SILENTLY SKIPPED by the
@@ -776,22 +804,18 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
         return 0;
     }
 
-    if (program->type != AST_PROGRAM) {
-        type_error(checker, program->pos, "Expected program node");
-        return 0;
-    }
-    
-    ProgramNode* prog = (ProgramNode*)program;
-    
-    // Type check imports
-    if (prog->imports) {
-        ASTNode* import = prog->imports;
-        while (import) {
-            // TODO: Handle imports
-            import = import->next;
+    for (size_t i = 0; i < program_count; i++) {
+        if (!programs[i] || programs[i]->type != AST_PROGRAM) {
+            type_error(checker, programs[i] ? programs[i]->pos : (Position){0},
+                       "Expected program node");
+            return 0;
         }
     }
-    
+
+    // Same rule as type_check_package: EVERY pass runs over ALL files before the
+    // next pass starts, so a declaration in one file of the entry package is
+    // visible to every other file regardless of filename order.
+
     // Pre-pass: register every top-level function in the comptime engine
     // context so an `is_comptime` const RHS like `fib(10)` can resolve user-
     // defined calls regardless of decl ordering. Mirrors the type checker's
@@ -799,14 +823,16 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     // the function to scope before walking its body). Without this, the
     // engine's lookup_func returns NULL and comptime const evaluation falls
     // through to the codegen's "must be compile-time constant" rejection.
-    if (prog->decls && checker->comptime_type_ctx
-                    && checker->comptime_type_ctx->comptime_ctx) {
+    if (checker->comptime_type_ctx && checker->comptime_type_ctx->comptime_ctx) {
         ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
-        for (ASTNode* d = prog->decls; d; d = d->next) {
-            if (d->type == AST_FUNC_DECL) {
-                FuncDeclNode* func = (FuncDeclNode*)d;
-                if (func->name) {
-                    comptime_context_bind_func(ctx, func->name, d);
+        for (size_t i = 0; i < program_count; i++) {
+            ProgramNode* prog = (ProgramNode*)programs[i];
+            for (ASTNode* d = prog->decls; d; d = d->next) {
+                if (d->type == AST_FUNC_DECL) {
+                    FuncDeclNode* func = (FuncDeclNode*)d;
+                    if (func->name) {
+                        comptime_context_bind_func(ctx, func->name, d);
+                    }
                 }
             }
         }
@@ -819,7 +845,10 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     // Must run before pass 1 (not folded into it) because pass 1 resolves
     // bodies interleaved with registrations in source order — exactly the
     // ordering this pre-pass exists to break.
-    if (!declare_type_shells(checker, prog->decls)) return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        if (!declare_type_shells(checker, prog->decls)) return 0;
+    }
 
     // Two-pass declaration walk (Go package-scope semantics: a function body may
     // reference any function declared anywhere in the file, not just above it).
@@ -829,16 +858,22 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     //   signature still resolves the types declared before it, exactly as Go
     //   requires.
     //   Pass 2: check function BODIES, with every sibling signature now visible.
-    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (decl->type == AST_FUNC_DECL) {
-            if (!declare_function_signature(checker, (FuncDeclNode*)decl)) return 0;
-        } else if (!type_check_declaration(checker, decl)) {
-            return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+            if (decl->type == AST_FUNC_DECL) {
+                if (!declare_function_signature(checker, (FuncDeclNode*)decl)) return 0;
+            } else if (!type_check_declaration(checker, decl)) {
+                return 0;
+            }
         }
     }
-    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (decl->type == AST_FUNC_DECL) {
-            if (!type_check_function_decl(checker, decl)) return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+            if (decl->type == AST_FUNC_DECL) {
+                if (!type_check_function_decl(checker, decl)) return 0;
+            }
         }
     }
 
@@ -848,8 +883,10 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     // 3/4 (extending this same walk) need every FuncLitNode.captured_names
     // fully populated, which only holds once every function body has been
     // type-checked (see docs/superpowers/specs/2026-07-11-p6-lanes-m1-spike-
-    // findings.md Section 2.0).
-    if (!lane_ownership_check_program(checker, program)) return 0;
+    // findings.md Section 2.0). Per file: the walk is over one AST at a time.
+    for (size_t i = 0; i < program_count; i++) {
+        if (!lane_ownership_check_program(checker, programs[i])) return 0;
+    }
 
     return checker->error_count == 0;
 }
@@ -1193,8 +1230,9 @@ static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports
 // scope down. This deliberately mirrors type_check_program's decl loop rather
 // than calling it, because we must NOT re-run the lexer-error guard (already
 // checked for the whole build) and must run inside the pushed package scope.
-int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
-    if (!checker || !pkg || !program) return 0;
+int type_check_package(TypeChecker* checker, Package* pkg,
+                       ASTNode** programs, size_t program_count) {
+    if (!checker || !pkg || !programs || program_count == 0) return 0;
 
     // Push the package scope and set current_package FIRST, before any failable
     // work, so that EVERY return past this point leaves exactly one scope pushed
@@ -1203,69 +1241,165 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
     checker->current_package = pkg;
     scope_push(checker);
 
-    if (program->type != AST_PROGRAM) {
-        type_error(checker, program->pos, "Expected program node");
-        return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        if (!programs[i] || programs[i]->type != AST_PROGRAM) {
+            type_error(checker, programs[i] ? programs[i]->pos : (Position){0},
+                       "Expected program node");
+            return 0;
+        }
     }
 
-    ProgramNode* prog = (ProgramNode*)program;
+    // EVERY pass below runs over ALL FILES before the next pass begins. That is
+    // the whole content of "the package is the compilation unit": a signature in
+    // one file may name a type declared in another, and a body in one file may
+    // call a function declared in another, no matter which file
+    // resolve_package_dir sorted first. Running the passes per-file instead
+    // would make cross-file resolution depend on filename order.
 
-    // P6 M2-B1 Task 4: this package's own plain-shim imports (see
-    // seed_package_own_shim_imports doc comment above) — must run before
-    // any decl below is checked, since a package-level var/const init or a
-    // function body may reference the shim on line 1.
-    if (!seed_package_own_shim_imports(checker, prog->imports)) {
-        return 0;  // scope/current_package left set; caller aborts the build
+    // P6 M2-B1 Task 4 + multi-file arc: imports are scoped PER FILE, as Go
+    // requires — file A must not reach a package only file B imported.
+    //
+    // The chain is INVERTED from the obvious nesting. A file scope is made the
+    // PARENT of the package scope, not a child:
+    //
+    //     global -> file-import scope (swapped per file) -> package scope
+    //
+    // A child file scope would have been wrong twice over: every top-level
+    // declaration targets checker->current_scope (34 sites in this file alone),
+    // so declarations would land in whichever file scope happened to be current;
+    // and a marker in the package scope would be found BEFORE the file scope on
+    // every lookup, which defeats the hygiene rule completely. As a parent, the
+    // package scope keeps receiving all declarations, and a lookup falls through
+    // to exactly one file's imports. Switching files is a single pointer write.
+    //
+    // pkg_parent is restored before this function returns. That is load-bearing,
+    // not tidiness: scope_pop sets current_scope = old_scope->parent, so leaving
+    // a file scope attached would strand the CALLER one scope away from global
+    // after its single scope_pop (the LIFETIME CONTRACT in types.h).
+    Scope* pkg_scope = checker->current_scope;
+    Scope* pkg_parent = pkg_scope->parent;
+
+    Scope** file_scopes = calloc(program_count, sizeof(Scope*));
+    if (!file_scopes) return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        file_scopes[i] = scope_new(pkg_parent);
+        if (!file_scopes[i]) {
+            for (size_t j = 0; j < i; j++) scope_free(file_scopes[j]);
+            free(file_scopes);
+            return 0;
+        }
+        // seed_package_own_shim_imports seeds into checker->current_scope
+        // (via type_checker_seed_package_marker), so point that at the file
+        // scope for the duration of the seeding and put it straight back.
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        checker->current_scope = file_scopes[i];
+        bool seeded = seed_package_own_shim_imports(checker, prog->imports);
+        checker->current_scope = pkg_scope;
+        if (!seeded) {
+            for (size_t j = 0; j <= i; j++) scope_free(file_scopes[j]);
+            free(file_scopes);
+            return 0;  // scope/current_package left set; caller aborts the build
+        }
     }
+
+// Every pass below runs under the CURRENT file's imports. Restores the
+// package scope's real parent and releases the file scopes on the way out,
+// so no early return can strand either.
+#define PKG_FILE_SCOPE_CLEANUP()                                   \
+    do {                                                            \
+        pkg_scope->parent = pkg_parent;                             \
+        for (size_t fs = 0; fs < program_count; fs++)               \
+            scope_free(file_scopes[fs]);                            \
+        free(file_scopes);                                          \
+    } while (0)
 
     // Mirror type_check_program's comptime pre-pass so an intra-package
     // `is_comptime` const RHS can resolve forward-declared calls.
-    if (prog->decls && checker->comptime_type_ctx
-                    && checker->comptime_type_ctx->comptime_ctx) {
+    if (checker->comptime_type_ctx && checker->comptime_type_ctx->comptime_ctx) {
         ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
-        for (ASTNode* d = prog->decls; d; d = d->next) {
-            if (d->type == AST_FUNC_DECL) {
-                FuncDeclNode* func = (FuncDeclNode*)d;
-                if (func->name) {
-                    comptime_context_bind_func(ctx, func->name, d);
+        for (size_t i = 0; i < program_count; i++) {
+            ProgramNode* prog = (ProgramNode*)programs[i];
+            for (ASTNode* d = prog->decls; d; d = d->next) {
+                if (d->type == AST_FUNC_DECL) {
+                    FuncDeclNode* func = (FuncDeclNode*)d;
+                    if (func->name) {
+                        comptime_context_bind_func(ctx, func->name, d);
+                    }
                 }
             }
         }
     }
+    // Name binding only — no expression is resolved above, so it needs no
+    // file-import context.
 
     // P2.3/T1: mirror type_check_program's shell pre-pass so forward and
     // mutual struct/enum references resolve inside a vendored stdlib package
-    // too — real upstream Go source relies on this pervasively.
-    if (!declare_type_shells(checker, prog->decls)) {
-        return 0;  // scope/current_package left set; caller aborts the build
+    // too — real upstream Go source relies on this pervasively. Across ALL
+    // files first, so a signature in a.go can name a type declared in b.go.
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        pkg_scope->parent = file_scopes[i];
+        if (!declare_type_shells(checker, prog->decls)) {
+            PKG_FILE_SCOPE_CLEANUP();
+            return 0;  // scope/current_package left set; caller aborts the build
+        }
     }
 
     // Two-pass declaration walk (same as type_check_program): register all
     // signatures in source order (pass 1), then check function bodies (pass 2),
     // so a package function may reference another regardless of declaration
     // order — the case that pervades real upstream Go source (e.g.
-    // bits.LeadingZeros calls Len, defined far below it).
-    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (decl->type == AST_FUNC_DECL) {
-            if (!declare_function_signature(checker, (FuncDeclNode*)decl)) {
-                return 0;  // scope/current_package left set; caller aborts the build
+    // bits.LeadingZeros calls Len, defined far below it). With N files the same
+    // argument applies across file boundaries, which is why each of these two
+    // loops completes over every file before the next one starts.
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        pkg_scope->parent = file_scopes[i];
+        for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+            if (decl->type == AST_FUNC_DECL) {
+                if (!declare_function_signature(checker, (FuncDeclNode*)decl)) {
+                    PKG_FILE_SCOPE_CLEANUP();
+                    return 0;  // scope/current_package left set; caller aborts
+                }
+            } else if (!type_check_declaration(checker, decl)) {
+                PKG_FILE_SCOPE_CLEANUP();
+                return 0;  // scope/current_package left set; caller aborts
             }
-        } else if (!type_check_declaration(checker, decl)) {
-            return 0;  // scope/current_package left set; caller aborts the build
         }
     }
-    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (decl->type == AST_FUNC_DECL) {
-            if (!type_check_function_decl(checker, decl)) {
-                return 0;  // scope/current_package left set; caller aborts the build
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        pkg_scope->parent = file_scopes[i];
+        for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+            if (decl->type == AST_FUNC_DECL) {
+                if (!type_check_function_decl(checker, decl)) {
+                    PKG_FILE_SCOPE_CLEANUP();
+                    return 0;  // scope/current_package left set; caller aborts
+                }
             }
         }
     }
 
     // Publish the package's exported (capitalised) top-level symbols so
-    // cross-package selector resolution (Task 5) can reach them by name.
+    // cross-package selector resolution (Task 5) can reach them by name. Run
+    // ONCE over the finished package scope, which now holds every file's
+    // top-level symbols — exports are a property of the package, not of a file.
+    // Ahead of the cleanup below, while no file scope is attached to confuse it.
+    pkg_scope->parent = pkg_parent;
     package_export_filter(checker->current_scope, pkg->exports, pkg);
 
+    // The file scopes are released here, before codegen runs, and deliberately
+    // NOT re-seeded as a union into the package scope. Codegen does re-enter the
+    // checker for some expressions, so re-seeding looked necessary — it is not.
+    // Measured, not assumed: with the union removed, a package function calling
+    // fmt.Println compiles and runs, examples/pkg_shim_share_probe (a package
+    // importing sync and time) passes, and far-halo-probe (goostd/lanes, which
+    // needs its own `import "far"`) passes. A package-qualified selector
+    // resolves through stdlib_package_lookup by name at codegen time, not
+    // through this scope chain. Re-seeding would have been dead code carrying a
+    // false claim.
+    PKG_FILE_SCOPE_CLEANUP();
+#undef PKG_FILE_SCOPE_CLEANUP
     return checker->error_count == 0;
 }
 

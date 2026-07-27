@@ -1,0 +1,12 @@
+// Go spec, Packages: "A package clause begins each source file and defines the
+// package to which the file belongs." A package is therefore the union of its
+// FILES, and a declaration in one file is visible to every other file of the
+// same package without qualification.
+package main
+
+import "fmt"
+import "./pkg_multifile_dir"
+
+func main() {
+	fmt.Println(pkg_multifile_dir.First())
+}

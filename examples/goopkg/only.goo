@@ -1,0 +1,13 @@
+// A package written in .goo rather than .go. resolve_package_dir's file
+// predicate accepted ".go" only, so a package spelled this way resolved to
+// zero buildable files and the import failed outright:
+//
+//   Error: cannot resolve import "./goopkg"
+//
+// The two extensions are disjoint suffixes, not nested ones — for "only.goo"
+// the last three bytes are "goo", so the ".go" test correctly rejects it.
+package goopkg
+
+func Val() int {
+	return 7
+}
