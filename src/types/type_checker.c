@@ -2081,6 +2081,21 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
                 *method_out = im->name; *reason_out = "signature mismatch"; return 0;
             }
         }
+        // Variadicity is part of the signature (Go): a method declaring
+        // `ns []int` does NOT implement an interface method declaring
+        // `ns ...int`, nor the converse — even though the #105 variadic model
+        // lowers both spellings to the same []int slot, which is exactly why
+        // the type_equals loop above cannot see the difference. Without this,
+        // the two spellings became interchangeable the moment the interface
+        // builder started wrapping `...T` (see the AST_INTERFACE_TYPE member
+        // loop in type_from_ast): nothing miscompiled, since the thunk forwards
+        // a slice either way, but the program that compiled was not the one the
+        // author wrote. Same "signature mismatch" reason as its siblings so all
+        // three type_interface_satisfied callers keep their existing wording.
+        if (!!(want && want->data.function.is_variadic) !=
+            !!impl->data.function.is_variadic) {
+            *method_out = im->name; *reason_out = "signature mismatch"; return 0;
+        }
         Type* want_ret = want ? want->data.function.return_type : NULL;
         if (want_ret && want_ret->kind != TYPE_VOID &&
             !type_equals(impl->data.function.return_type, want_ret)) {
@@ -5742,6 +5757,37 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                     }
                 }
 
+                // A variadic parameter must be the LAST one (Go: "can only use
+                // ... with final parameter in list"). Checked BEFORE the
+                // signature is built, mirroring declare_function_signature's
+                // identical guard: an earlier variadic param would otherwise be
+                // wrapped into a slice at a non-final position while
+                // is_variadic claims the LAST slot is the packed one, so every
+                // arity computation downstream (which reads
+                // param_types[param_count-1]) would silently read the wrong
+                // slot. Expressed as "is any AST_VAR_DECL still to come?"
+                // rather than index arithmetic because pcount below counts
+                // NAMES, not nodes, after the `i, j int` fan-out.
+                for (ASTNode* p = fn->params; p; p = p->next) {
+                    if (p->type != AST_VAR_DECL) continue;
+                    if (!((VarDeclNode*)p)->is_variadic_param) continue;
+                    int has_later_param = 0;
+                    for (ASTNode* q = p->next; q; q = q->next) {
+                        if (q->type == AST_VAR_DECL) { has_later_param = 1; break; }
+                    }
+                    if (has_later_param) {
+                        type_error(checker, p->pos,
+                                   "variadic parameter must be the final parameter");
+                        while (head) {
+                            InterfaceMethod* next_im = head->next;
+                            free(head->name);
+                            free(head);
+                            head = next_im;
+                        }
+                        return NULL;
+                    }
+                }
+
                 size_t pcount = 0;
                 for (ASTNode* p = fn->params; p; p = p->next) {
                     if (p->type == AST_VAR_DECL) {
@@ -5751,11 +5797,35 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 }
                 Type** ptypes = pcount ? calloc(pcount, sizeof(Type*)) : NULL;
                 size_t pidx = 0;
+                int is_variadic = 0;
                 for (ASTNode* p = fn->params; p; p = p->next) {
                     if (p->type != AST_VAR_DECL) continue;
                     VarDeclNode* pd = (VarDeclNode*)p;
                     Type* pt = pd->type ? type_from_ast(checker, pd->type) : NULL;
                     if (!pt) { free(ptypes); return NULL; }
+                    // #105 variadic model: the declared `...T` stores the
+                    // ELEMENT type T, and the signature's slot must be []T with
+                    // is_variadic on the function Type — the exact same wrap the
+                    // three OTHER AST-param-walks in the checker apply
+                    // (declare_function_signature, type_from_ast's
+                    // AST_FUNC_TYPE arm below, and type_check_func_lit in
+                    // expression_checker.c). This arm was the only one missing
+                    // it, so an interface method's variadic param stayed a bare
+                    // T while every correct impl carried []T — no impl could
+                    // satisfy the interface ("signature mismatch"), and any
+                    // call that got past that was arity-checked as if the
+                    // variadic slot took exactly one argument. Kept in lockstep
+                    // by cross-reference rather than shared code, following
+                    // type_check_func_lit's own precedent: the four walks
+                    // diverge in their unresolvable-type fallback, their
+                    // comptime-param rejection, and (here only) the name_count
+                    // fan-out. Wrapping before that fan-out is safe — the
+                    // grammar's `identifier ELLIPSIS type` arm binds exactly
+                    // one name, so a variadic node never fans out.
+                    if (pd->is_variadic_param) {
+                        pt = type_slice(pt);
+                        is_variadic = 1;
+                    }
                     // One declared type may cover several names (`i, j int`).
                     size_t n = pd->name_count ? pd->name_count : 1;
                     for (size_t k = 0; k < n && pidx < pcount; k++) ptypes[pidx++] = pt;
@@ -5767,6 +5837,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 if (!ret) { free(ptypes); return NULL; }
 
                 Type* method_fn = type_function(ptypes, pcount, ret);
+                if (method_fn) method_fn->data.function.is_variadic = is_variadic;
                 free(ptypes);  // type_function copies what it needs
 
                 // Build the InterfaceMethod inline (mirrors the struct/enum

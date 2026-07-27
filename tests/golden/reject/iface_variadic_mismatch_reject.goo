@@ -1,0 +1,30 @@
+// Variadicity is part of the signature: a method declaring `ns []int` does NOT
+// implement an interface method declaring `ns ...int`, even though both lower to
+// the same []int parameter type. Go rejects this pairing in both directions.
+//
+// type_interface_satisfied compared param COUNT and each param TYPE but never
+// is_variadic, so once the interface builder started wrapping `...T` into []T
+// the two spellings became indistinguishable and this over-accepted. Nothing
+// miscompiled (the thunk forwards a slice either way), but the accepted program
+// was not the one the author wrote.
+package main
+
+type Adder interface {
+	AddAll(ns ...int)
+}
+
+type Acc struct {
+	total int
+}
+
+// Declares a plain slice parameter, NOT a variadic one.
+func (a *Acc) AddAll(ns []int) {
+	for _, n := range ns {
+		a.total = a.total + n
+	}
+}
+
+func main() {
+	var ad Adder = &Acc{}
+	ad.AddAll(1, 2, 3)
+}
