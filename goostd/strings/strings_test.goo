@@ -1,0 +1,127 @@
+// The first tests the Goo stdlib has ever had.
+//
+// Run with `goo test .` from this directory, and counted by
+// scripts/check_stdlib_coverage.sh as coverage for the functions it calls.
+// Before `goo test` existed, the only way to satisfy that gate was a golden
+// fixture asserting one line of stdout — far weaker evidence than a test that
+// asserts a return value per case.
+//
+// An internal test (package strings, not strings_test), which is what Go's own
+// strings package uses for most of its tests. It therefore calls each function
+// UNQUALIFIED, which is why the coverage gate accepts a bare `Name(` inside a
+// package's own test files.
+//
+// EVERY expected value here was produced by running the equivalent assertions
+// against Go's real strings package on go1.26.1, never hand-reasoned.
+package strings
+
+import "testing"
+
+func TestHasPrefix(t *testing.T) {
+	if !HasPrefix("hello world", "hello") {
+		t.Errorf("HasPrefix(\"hello world\", \"hello\") = false, want true")
+	}
+	if HasPrefix("hello", "world") {
+		t.Errorf("HasPrefix(\"hello\", \"world\") = true, want false")
+	}
+}
+
+func TestHasSuffix(t *testing.T) {
+	if !HasSuffix("hello world", "world") {
+		t.Errorf("HasSuffix(\"hello world\", \"world\") = false, want true")
+	}
+}
+
+func TestTrimPrefix(t *testing.T) {
+	got := TrimPrefix("hello world", "hello ")
+	if got != "world" {
+		t.Errorf("TrimPrefix = %s, want world", got)
+	}
+	// No match leaves the string untouched — not a partial trim.
+	same := TrimPrefix("hello", "xyz")
+	if same != "hello" {
+		t.Errorf("TrimPrefix no-match = %s, want hello", same)
+	}
+}
+
+func TestTrimSuffix(t *testing.T) {
+	got := TrimSuffix("hello world", " world")
+	if got != "hello" {
+		t.Errorf("TrimSuffix = %s, want hello", got)
+	}
+}
+
+func TestIndex(t *testing.T) {
+	got := Index("chicken", "ken")
+	if got != 4 {
+		t.Errorf("Index(chicken, ken) = %d, want 4", got)
+	}
+	absent := Index("chicken", "xyz")
+	if absent != -1 {
+		t.Errorf("Index(chicken, xyz) = %d, want -1", absent)
+	}
+}
+
+func TestCount(t *testing.T) {
+	got := Count("cheese", "e")
+	if got != 3 {
+		t.Errorf("Count(cheese, e) = %d, want 3", got)
+	}
+}
+
+func TestRepeat(t *testing.T) {
+	got := Repeat("ab", 3)
+	if got != "ababab" {
+		t.Errorf("Repeat(ab, 3) = %s, want ababab", got)
+	}
+}
+
+func TestReplace(t *testing.T) {
+	// n limits the number of replacements, so the tail is untouched.
+	got := Replace("aaaa", "a", "b", 2)
+	if got != "bbaa" {
+		t.Errorf("Replace(aaaa, a, b, 2) = %s, want bbaa", got)
+	}
+}
+
+func TestReplaceAll(t *testing.T) {
+	got := ReplaceAll("aaaa", "a", "b")
+	if got != "bbbb" {
+		t.Errorf("ReplaceAll(aaaa, a, b) = %s, want bbbb", got)
+	}
+}
+
+func TestEqualFold(t *testing.T) {
+	if !EqualFold("Go", "GO") {
+		t.Errorf("EqualFold(Go, GO) = false, want true")
+	}
+}
+
+func TestTrimLeft(t *testing.T) {
+	got := TrimLeft("xxhello", "x")
+	if got != "hello" {
+		t.Errorf("TrimLeft = %s, want hello", got)
+	}
+}
+
+func TestTrimRight(t *testing.T) {
+	got := TrimRight("helloxx", "x")
+	if got != "hello" {
+		t.Errorf("TrimRight = %s, want hello", got)
+	}
+}
+
+func TestFields(t *testing.T) {
+	// Runs of whitespace collapse, and leading/trailing whitespace yields no
+	// empty entries.
+	f := Fields("  a b   c  ")
+	if len(f) != 3 {
+		t.Fatalf("Fields len = %d, want 3", len(f))
+	}
+	if f[0] != "a" {
+		t.Errorf("Fields[0] = %s, want a", f[0])
+	}
+	if f[2] != "c" {
+		t.Errorf("Fields[2] = %s, want c", f[2])
+	}
+}
