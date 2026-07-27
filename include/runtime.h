@@ -107,6 +107,16 @@ void goo_print(const char* message);
 void goo_println(const char* message);
 void goo_print_string(goo_string_t str);
 void goo_println_string(goo_string_t str);
+
+// `goo test` runtime (src/runtime/testing.c). testing.Run takes the test
+// FUNCTION as a value so the frame belongs to the runtime — that is what makes
+// t.Fatal implementable, since nothing in Goo can unwind another function's
+// frame. `file`/`line` on goo_testing_log are the CALL SITE's position,
+// threaded down from codegen.
+void goo_testing_run(goo_string_t name, void (*fn)(void*, void*), void* env);
+void goo_testing_fail(void* t);
+void goo_testing_log(void* t, goo_string_t file, int64_t line, goo_string_t msg);
+void goo_testing_summary(void);
 void goo_println_int(int64_t value);
 void goo_println_bool(int value);
 void goo_println_float(double value);

@@ -709,7 +709,7 @@ static bool is_stdlib_shim_import(const char* path) {
     // P4.6: "time" joins sync as a method-aware bespoke shim (Duration/Time
     // synthesized below, no GOOROOT source dir) — same reasoning as sync's
     // own entry.
-    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time", "far"};
+    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time", "far", "testing"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
     }
@@ -744,6 +744,11 @@ static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports)
             seed_sync_package_exports(checker, p);
         } else if (strcmp(normalize_import_path(spec->path), "time") == 0) {
             seed_time_package_exports(checker, p);
+        } else if (strcmp(normalize_import_path(spec->path), "testing") == 0) {
+            // Same bespoke-shim reason as sync/time: testing exports a TYPE
+            // with a method set, which stdlib_package_lookup's per-symbol
+            // table cannot model.
+            seed_testing_package_exports(checker, p);
         }
         type_checker_seed_package_marker(checker, short_name, p);
     }

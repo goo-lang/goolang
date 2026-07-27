@@ -14,7 +14,8 @@
 #   1. SHIM_TABLE rows                  (src/types/shim_signatures.c)
 #   2. Package VALUE members            (os.Args, math.Pi — expression_checker.c)
 #   3. time.Duration constants          (type_checker.c: time_export_value calls)
-#   4. Seeded package funcs             (type_checker.c: time_export_func calls — Sleep/Now)
+#   4. Seeded package funcs             (type_checker.c: shim_export_func calls, package
+#                                        taken from the enclosing seed_<pkg>_package_exports)
 #   5. Seeded methods                   (type_checker.c: sync_export_method + time_export_method)
 #   6. goostd exported funcs            (^func [A-Z] in strings/strconv/utf8/bits/
 #      lanes — the REAL stdlib source dirs; test-only goostd packages like
@@ -168,7 +169,7 @@ time_value_pairs="$(grep -oE 'time_export_value\(pkg, "[A-Za-z0-9_]+"' "$SEED_SR
 TIME_VALUE_MIN=4
 time_value_count="$(printf '%s\n' "$time_value_pairs" | grep -c . || true)"
 if [ "${time_value_count:-0}" -lt "$TIME_VALUE_MIN" ]; then
-    echo "check-stdlib-coverage: FAIL (extracted only $time_value_count time Duration constants from $SEED_SRC, expected >= $TIME_VALUE_MIN — seed_time_package_exports may have moved)"
+    echo "check-stdlib-coverage: FAIL (extracted only $time_value_count time Duration constants from $SEED_SRC, expected >= $TIME_VALUE_MIN — a seed_<pkg>_package_exports may have moved)"
     exit 1
 fi
 
@@ -177,14 +178,27 @@ while IFS=' ' read -r pkg name; do
     record "${pkg}.${name}" "\\b${pkg}\\.${name}\\b" "${pkg}.${name}"
 done <<< "$time_value_pairs"
 
-# --- 4. Seeded package-level funcs (type_checker.c: time_export_func calls) -
-time_func_pairs="$(grep -oE 'time_export_func\(pkg, "[A-Za-z0-9_]+"' "$SEED_SRC" \
-    | sed -E 's/time_export_func\(pkg, "([A-Za-z0-9_]+)"/time \1/')"
+# --- 4. Seeded package-level funcs (type_checker.c: shim_export_func calls) -
+# The package is taken from the ENCLOSING seed_<pkg>_package_exports function,
+# never assumed: shim_export_func is shared by every bespoke shim (time and
+# testing today), and hard-coding "time" here silently filed testing.Run and
+# testing.Summary under `time`, where no golden could ever match them.
+time_func_pairs="$(awk '
+    /^void seed_[a-z]+_package_exports/ {
+        pkg = $2; sub(/^seed_/, "", pkg); sub(/_package_exports.*/, "", pkg)
+    }
+    /shim_export_func\(pkg, "/ {
+        line = $0
+        sub(/.*shim_export_func\(pkg, "/, "", line)
+        sub(/".*/, "", line)
+        if (pkg != "") print pkg, line
+    }
+' "$SEED_SRC")"
 
 TIME_FUNC_MIN=2
 time_func_count="$(printf '%s\n' "$time_func_pairs" | grep -c . || true)"
 if [ "${time_func_count:-0}" -lt "$TIME_FUNC_MIN" ]; then
-    echo "check-stdlib-coverage: FAIL (extracted only $time_func_count time package funcs from $SEED_SRC, expected >= $TIME_FUNC_MIN — seed_time_package_exports may have moved)"
+    echo "check-stdlib-coverage: FAIL (extracted only $time_func_count time package funcs from $SEED_SRC, expected >= $TIME_FUNC_MIN — a seed_<pkg>_package_exports may have moved)"
     exit 1
 fi
 
@@ -194,7 +208,7 @@ while IFS=' ' read -r pkg name; do
 done <<< "$time_func_pairs"
 
 # --- 5. Seeded methods (type_checker.c: sync_export_method + time_export_method) -
-method_names="$(grep -oE '(sync|time)_export_method\([^,]+,[^,]+, *"[A-Za-z0-9_]+"' "$SEED_SRC" \
+method_names="$(grep -oE '(sync|time|testing)_export_method\([^,]+,[^,]+, *"[A-Za-z0-9_]+"' "$SEED_SRC" \
     | sed -E 's/.*, *"([A-Za-z0-9_]+)"$/\1/')"
 
 METHOD_MIN=5

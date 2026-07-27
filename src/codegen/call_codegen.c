@@ -74,6 +74,16 @@ static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, Type
 static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, TypeChecker* checker,
                                                      ASTNode* expr, CallExprNode* call,
                                                      SelectorExprNode* msel, Type* recv_type);
+// Defined far below (near the fmt helpers); forward-declared because the
+// testing intercept above needs it.
+static LLVMValueRef fmt_sprintf_lit(CodeGenerator* codegen, LLVMTypeRef string_llvm,
+                                    const char* text);
+
+// `goo test`: lower a *testing.T method call (Error/Log/Fail) to the
+// goo_testing_* runtime — see its definition below for the receiver contract.
+static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                       ASTNode* expr, CallExprNode* call,
+                                                       SelectorExprNode* msel, Type* recv_type);
 #endif
 
 #if LLVM_AVAILABLE
@@ -454,6 +464,85 @@ static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, Type
     }
 
     LLVMBuildCall2(codegen->builder, fn_type, fn, args, param_count, "");
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+}
+
+// `goo test`: lower a *testing.T method call to the goo_testing_* runtime.
+//
+// RECEIVER CONTRACT, and it differs from sync's. sync.Mutex's runtime wrappers
+// take the ADDRESS OF the struct's one opaque field, because the field is where
+// the pthread handle lives. testing.T is the other way round: goo_testing_run
+// hands the test function `&t` — a GooTest* — and the Goo side receives that as
+// its `*testing.T` parameter, so the RECEIVER POINTER ITSELF is the handle.
+// There is no field to address; passing a slot here would hand the runtime a
+// pointer to the wrong thing.
+//
+// Arguments are formatted by codegen_generate_fmt_sprintln_call, reusing the
+// exact machinery fmt.Sprintln uses. That function reads only call->args and
+// never inspects call->function, so it works verbatim on a t.Error(...) node.
+// Go's t.Error is defined as t.log(fmt.Sprintln(args...)), so this is the same
+// space-joining rule, and the runtime trims the trailing newline Sprintln adds.
+//
+// The call site's file and line are passed down explicitly: the runtime has no
+// other way to produce Go's "file:line: message" log prefix.
+static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                       ASTNode* expr, CallExprNode* call,
+                                                       SelectorExprNode* msel, Type* recv_type) {
+    const char* sel = msel->selector;
+    int is_error = strcmp(sel, "Error") == 0;
+    int is_log   = strcmp(sel, "Log") == 0;
+    int is_fail  = strcmp(sel, "Fail") == 0;
+    if (!is_error && !is_log && !is_fail) {
+        codegen_error(codegen, expr->pos, "internal: unknown testing.T method '%s'", sel);
+        return NULL;
+    }
+
+    // The receiver VALUE is the handle (see contract above).
+    ValueInfo* rv = codegen_generate_expression(codegen, checker, msel->expr);
+    if (!rv) return NULL;
+    LLVMValueRef recv = rv->llvm_value;
+    if (rv->is_lvalue && rv->goo_type) {
+        LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
+        if (rt) recv = LLVMBuildLoad2(codegen->builder, rt, recv, "t.recv");
+    }
+    value_info_free(rv);
+    (void)recv_type;
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef void_type = LLVMVoidTypeInContext(ctx);
+    LLVMTypeRef ptr_type  = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef i64_type  = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+
+    // Error marks the test failed BEFORE logging, so a Fatal-shaped extension
+    // (Task 4) can reuse this ordering unchanged.
+    if (is_error || is_fail) {
+        LLVMTypeRef fail_ty = LLVMFunctionType(void_type, &ptr_type, 1, 0);
+        LLVMValueRef fail_fn = LLVMGetNamedFunction(codegen->module, "goo_testing_fail");
+        if (!fail_fn) fail_fn = LLVMAddFunction(codegen->module, "goo_testing_fail", fail_ty);
+        LLVMValueRef fargs[] = { recv };
+        LLVMBuildCall2(codegen->builder, fail_ty, fail_fn, fargs, 1, "");
+    }
+
+    if (is_error || is_log) {
+        ValueInfo* msg = codegen_generate_fmt_sprintln_call(codegen, checker, expr);
+        if (!msg) return NULL;
+
+        const char* file = expr->pos.filename ? expr->pos.filename : "?";
+        LLVMValueRef file_str = fmt_sprintf_lit(codegen, string_llvm, file);
+        LLVMValueRef line_val = LLVMConstInt(i64_type, (unsigned long long)expr->pos.line, 0);
+
+        LLVMTypeRef log_params[] = { ptr_type, string_llvm, i64_type, string_llvm };
+        LLVMTypeRef log_ty = LLVMFunctionType(void_type, log_params, 4, 0);
+        LLVMValueRef log_fn = LLVMGetNamedFunction(codegen->module, "goo_testing_log");
+        if (!log_fn) log_fn = LLVMAddFunction(codegen->module, "goo_testing_log", log_ty);
+
+        LLVMValueRef largs[] = { recv, file_str, line_val, msg->llvm_value };
+        LLVMBuildCall2(codegen->builder, log_ty, log_fn, largs, 4, "");
+        value_info_free(msg);
+    }
+
+    (void)call;
     return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
 }
 
@@ -1568,6 +1657,53 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
                 return codegen_generate_errorf_call(codegen, checker, expr);
             }
+            if (strcmp(dispatch_pkg, "testing") == 0 && strcmp(sel->selector, "Summary") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_testing_summary", TYPE_VOID, 0);
+            }
+            if (strcmp(dispatch_pkg, "testing") == 0 && strcmp(sel->selector, "Run") == 0) {
+                // testing.Run(name string, fn func(*T)). `fn` is a Goo function
+                // VALUE — the universal fat pointer {fn_ptr, env_ptr}, called as
+                // fn_ptr(env, args...). Both halves are extracted and passed
+                // separately, because the runtime is what performs the call:
+                // handing it only fn_ptr would put the test pointer in the
+                // thunk's env parameter instead of its argument.
+                if (!call->args || !call->args->next) {
+                    codegen_error(codegen, expr->pos, "internal: testing.Run needs (name, func)");
+                    return NULL;
+                }
+                ValueInfo* nv = codegen_generate_expression(codegen, checker, call->args);
+                if (!nv) return NULL;
+                LLVMValueRef name_val = nv->llvm_value;
+                if (nv->is_lvalue && nv->goo_type) {
+                    LLVMTypeRef nt = codegen_type_to_llvm(codegen, nv->goo_type);
+                    if (nt) name_val = LLVMBuildLoad2(codegen->builder, nt, name_val, "trun.name");
+                }
+                value_info_free(nv);
+
+                ValueInfo* fv = codegen_generate_expression(codegen, checker, call->args->next);
+                if (!fv) return NULL;
+                LLVMValueRef fnval = fv->llvm_value;
+                if (fv->is_lvalue && fv->goo_type) {
+                    LLVMTypeRef ft = codegen_type_to_llvm(codegen, fv->goo_type);
+                    if (ft) fnval = LLVMBuildLoad2(codegen->builder, ft, fnval, "trun.fnv");
+                }
+                value_info_free(fv);
+                LLVMValueRef fn_ptr  = LLVMBuildExtractValue(codegen->builder, fnval, 0, "trun.fn");
+                LLVMValueRef env_ptr = LLVMBuildExtractValue(codegen->builder, fnval, 1, "trun.env");
+
+                LLVMContextRef tctx = codegen->context;
+                LLVMTypeRef tvoid = LLVMVoidTypeInContext(tctx);
+                LLVMTypeRef tptr  = LLVMPointerType(LLVMInt8TypeInContext(tctx), 0);
+                LLVMTypeRef tstr  = codegen_get_basic_type(codegen, TYPE_STRING);
+                LLVMTypeRef rparams[] = { tstr, tptr, tptr };
+                LLVMTypeRef rty = LLVMFunctionType(tvoid, rparams, 3, 0);
+                LLVMValueRef rfn = LLVMGetNamedFunction(codegen->module, "goo_testing_run");
+                if (!rfn) rfn = LLVMAddFunction(codegen->module, "goo_testing_run", rty);
+                LLVMValueRef rargs[] = { name_val, fn_ptr, env_ptr };
+                LLVMBuildCall2(codegen->builder, rty, rfn, rargs, 3, "");
+                return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+            }
             if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_exit", TYPE_VOID, 0);
@@ -2027,6 +2163,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // expression_checker.c's method-value rejection).
             if (sync_owner && sync_owner->import_path && strcmp(sync_owner->import_path, "sync") == 0) {
                 return codegen_generate_sync_method_call(codegen, checker, expr, call, msel, recv_type);
+            }
+            if (sync_owner && sync_owner->import_path &&
+                strcmp(sync_owner->import_path, "testing") == 0) {
+                return codegen_generate_testing_method_call(codegen, checker, expr, call, msel, recv_type);
             }
         }
 

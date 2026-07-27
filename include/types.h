@@ -1104,6 +1104,9 @@ int type_check_package(TypeChecker* checker, Package* pkg,
 // type_checker.c's seed_package_own_shim_imports (a vendored/local
 // package's own import) — see either call site's doc comment.
 void seed_sync_package_exports(TypeChecker* checker, Package* pkg);
+// `goo test`: testing.T plus Run/Summary. Bespoke like sync (a type with a
+// method set) and impossible in SHIM_TABLE (no func ParamKind for Run's callback).
+void seed_testing_package_exports(TypeChecker* checker, Package* pkg);
 void seed_time_package_exports(TypeChecker* checker, Package* pkg);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
