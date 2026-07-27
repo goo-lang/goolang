@@ -1,0 +1,17 @@
+// A writer other than os.Stdout / os.Stderr must be a clean compile error, not
+// a write to whatever file descriptor the integer happened to name.
+//
+// The fmt.Fprint family types its writer slot int64 (a descriptor) because v1
+// has no io.Writer. This guard is what makes that safe: no program can name
+// the fd, so none can observe or forge it. Without the guard,
+// fmt.Fprintln(3, "x") would type-check and write to fd 3.
+//
+// Widening this to a real writer is blocked on interface-in-struct embedding,
+// which Goo rejects today — not on a decision here.
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Fprintln(3, "goes nowhere good")
+}

@@ -1,0 +1,29 @@
+// fprint_stderr_probe: a program must be able to write to STDERR.
+//
+// Until this landed, every fmt row printed to stdout and there was no
+// os.Stderr, so a tool reporting an error wrote it into its own data stream.
+// The exit status was right, so a caller could still detect failure — but a
+// PIPELINE received the error text as input. That makes a tool incorrect, not
+// merely limited. Found by writing a real CLI tool (GAP 2,
+// docs/superpowers/specs/2026-07-27-cli-readiness-findings.md).
+//
+// This fixture asserts BOTH streams at once, which is the whole point:
+//   .expected.txt — stdout, exactly, and it must contain no diagnostic
+//   .stderr.txt   — a diagnostic that must appear on stderr
+// A regression that merges the streams fails one sidecar or the other.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), both streams captured separately.
+package main
+
+import "fmt"
+import "os"
+
+func main() {
+	fmt.Println("data one")
+	fmt.Fprintln(os.Stderr, "diagnostic: cannot read file")
+	fmt.Fprintf(os.Stderr, "diagnostic: code=%d\n", 42)
+	fmt.Println("data two")
+	fmt.Fprintln(os.Stdout, "explicit stdout")
+	fmt.Fprint(os.Stderr, "trailing\n")
+}

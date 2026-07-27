@@ -25,6 +25,9 @@ static const ShimParamKind PARAMS_FLOAT64[]              = { SHIM_PARAM_FLOAT64 
 static const ShimParamKind PARAMS_FLOAT64_FLOAT64[]      = { SHIM_PARAM_FLOAT64, SHIM_PARAM_FLOAT64 };
 static const ShimParamKind PARAMS_ERROR[]                = { SHIM_PARAM_ERROR };
 static const ShimParamKind PARAMS_INT64_FLOAT64[]        = { SHIM_PARAM_INT64, SHIM_PARAM_FLOAT64 };
+// fmt.Fprintf(w, format, ...): the writer, then the format string. The reverse
+// order of PARAMS_STRING_INT64, which os.ReadByte uses.
+static const ShimParamKind PARAMS_INT64_STRING[]         = { SHIM_PARAM_INT64, SHIM_PARAM_STRING };
 
 #define NPARAMS(arr) (sizeof(arr) / sizeof((arr)[0]))
 
@@ -46,6 +49,15 @@ static const ShimSignature SHIM_TABLE[] = {
     { "fmt", "Printf",   SHIM_RET_VOID,   PARAMS_STRING, NPARAMS(PARAMS_STRING), 1 },
     { "fmt", "Sprintf",  SHIM_RET_STRING, PARAMS_STRING, NPARAMS(PARAMS_STRING), 1 },
     { "fmt", "Errorf",   SHIM_RET_ERROR,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 1 },
+    // The Fprint family: the same formatting as their unprefixed siblings,
+    // written to a chosen stream. The writer is typed int64 (a file
+    // descriptor) rather than an io.Writer, because io does not exist — the
+    // CHECKER restricts the argument to os.Stdout / os.Stderr, so the fd is an
+    // implementation detail no program can observe or forge. See
+    // check_fprint_writer_arg in expression_checker.c.
+    { "fmt", "Fprint",   SHIM_RET_VOID,   PARAMS_INT64,        NPARAMS(PARAMS_INT64), 1 },
+    { "fmt", "Fprintln", SHIM_RET_VOID,   PARAMS_INT64,        NPARAMS(PARAMS_INT64), 1 },
+    { "fmt", "Fprintf",  SHIM_RET_VOID,   PARAMS_INT64_STRING, NPARAMS(PARAMS_INT64_STRING), 1 },
 
     // os. Args is a value member (skip, per doc comment above).
     { "os", "Exit",      SHIM_RET_VOID,  PARAMS_INT64,        NPARAMS(PARAMS_INT64), 0 },

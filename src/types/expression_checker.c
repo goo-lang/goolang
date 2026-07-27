@@ -4287,6 +4287,49 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                     recv_offset = 0;
                     callee_name = sel->selector;
                 }
+
+                // The fmt.Fprint family takes a WRITER, and v1 has exactly two
+                // of them. The shim table types the slot int64 (a file
+                // descriptor), so without this guard `fmt.Fprintln(3, "x")`
+                // would type-check and write to whatever fd 3 happened to be.
+                // Restricting it here is what lets os.Stdout/os.Stderr be
+                // plain integers underneath: no program can name the fd, so
+                // none can observe or forge it.
+                //
+                // Syntactic on purpose. A general io.Writer needs an interface
+                // embedded in a struct, which Goo rejects today, so widening
+                // this is blocked on that gap rather than on a decision here.
+                if (strcmp(dispatch_pkg, "fmt") == 0 &&
+                    (strcmp(sel->selector, "Fprint") == 0 ||
+                     strcmp(sel->selector, "Fprintln") == 0 ||
+                     strcmp(sel->selector, "Fprintf") == 0)) {
+                    ASTNode* w = call->args;
+                    int writer_ok = 0;
+                    if (w && w->type == AST_SELECTOR_EXPR) {
+                        SelectorExprNode* ws = (SelectorExprNode*)w;
+                        if (ws->expr && ws->expr->type == AST_IDENTIFIER &&
+                            ws->selector &&
+                            (strcmp(ws->selector, "Stdout") == 0 ||
+                             strcmp(ws->selector, "Stderr") == 0)) {
+                            // Resolve the base through the package marker so an
+                            // alias import (`import o "os"`) works, matching how
+                            // dispatch_pkg itself is derived above.
+                            Variable* wm = scope_lookup_variable(
+                                checker->current_scope,
+                                ((IdentifierNode*)ws->expr)->name);
+                            const char* wpkg = (wm && wm->package && wm->package->import_path)
+                                ? wm->package->import_path
+                                : ((IdentifierNode*)ws->expr)->name;
+                            writer_ok = (strcmp(wpkg, "os") == 0);
+                        }
+                    }
+                    if (!writer_ok) {
+                        type_error(checker, w ? w->pos : expr->pos,
+                            "fmt.%s: the writer must be os.Stdout or os.Stderr "
+                            "(v1 has no io.Writer)", sel->selector);
+                        return type_checker_get_builtin(checker, TYPE_VOID);
+                    }
+                }
             }
         }
     }
@@ -4911,6 +4954,32 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
     if (strcmp(package, "os") == 0 && strcmp(name, "Args") == 0) {
         Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
         return type_slice(string_t);
+    }
+
+    // os.Stdout / os.Stderr -> int64. Package VALUE members, like os.Args.
+    //
+    // Go types these *os.File and passes them as io.Writer. Neither exists
+    // here, so the value is the underlying file descriptor. That is safe
+    // ONLY because check_fprint_writer_arg restricts the fmt.Fprint family to
+    // these two selectors: a program cannot obtain the fd any other way, pass
+    // an arbitrary integer as a writer, or observe that it is an integer at
+    // all. When io lands, these become *os.File and the fd goes back to being
+    // private — the spelling at every call site is already Go's.
+    // Written as two separate arms, not one combined condition, because
+    // check_stdlib_coverage.sh extracts value members by pattern-matching the
+    // one-package-one-name shape of the comparisons below. A combined
+    // `(name == "Stdout" || name == "Stderr")` compiles identically and is
+    // INVISIBLE to that extractor, which would leave both symbols ungated
+    // while the gate still reported PASS.
+    //
+    // Do not spell that extractor pattern out literally anywhere in this file:
+    // the extractor greps the SOURCE, so a comment quoting the shape is
+    // matched as if it were a real arm and invents a phantom symbol.
+    if (strcmp(package, "os") == 0 && strcmp(name, "Stdout") == 0) {
+        return type_checker_get_builtin(checker, TYPE_INT64);
+    }
+    if (strcmp(package, "os") == 0 && strcmp(name, "Stderr") == 0) {
+        return type_checker_get_builtin(checker, TYPE_INT64);
     }
 
     // math.Pi -> float64. A package VALUE member, not a call — the

@@ -41,6 +41,9 @@ so this is a genuine coverage hole, not a known-and-accepted gap.
 
 ## GAP 2 — no program can write to stderr
 
+> **RESOLVED**, same day. `fmt.Fprint`/`Fprintln`/`Fprintf` plus `os.Stdout`
+> and `os.Stderr`. See the resolution note at the end of this section.
+
 There is no `os.Stderr`, `fmt.Fprintln` or `fmt.Fprintf`. Every `fmt` row
 prints to stdout. Verified: no user-facing stderr path exists anywhere in
 `src/types/shim_signatures.c`.

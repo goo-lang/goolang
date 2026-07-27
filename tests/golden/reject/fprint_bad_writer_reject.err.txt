@@ -1,0 +1,1 @@
+the writer must be os.Stdout or os.Stderr
