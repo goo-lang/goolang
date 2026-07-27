@@ -3,12 +3,24 @@
 #
 # Extracts the ENTIRE stdlib symbol surface mechanically from source (not a
 # hand-maintained list) and requires each symbol to appear in at least one
-# golden-wired examples/*.goo fixture (a .goo with a sibling .expected.txt —
-# the exact fixture set scripts/run_golden.sh compiles, runs, and asserts
-# stdout/exit code for). A shim row or goostd export added without smoke
-# coverage FAILS this script — the drift catch
-# docs/2026-07-08-v1-roadmap.md:159 asks for. Wired into `verify-core` via
-# the `stdlib-smoke-coverage` Makefile target.
+# COVERAGE SOURCE. A shim row or goostd export added without smoke coverage
+# FAILS this script — the drift catch docs/2026-07-08-v1-roadmap.md:159 asks
+# for. Wired into `verify-core` via the `stdlib-smoke-coverage` Makefile target.
+#
+# TWO coverage sources, both of which actually run in verify-core:
+#
+#   1. Golden-wired examples/*.goo fixtures (a .goo with a sibling
+#      .expected.txt — the exact set scripts/run_golden.sh compiles, runs and
+#      asserts stdout/exit code for).
+#   2. *_test.go / *_test.goo files of the goostd packages, which `goo test`
+#      compiles and runs (goo-test-probe / the package's own test run).
+#
+# Source 2 was added once `goo test` existed. Before it, a stdlib function
+# could be exercised by a real test asserting real behaviour and still be
+# reported as uncovered, which pushed authors toward writing a second,
+# weaker proof — a fixture whose only assertion is one stdout string —
+# purely to satisfy this gate. A test is the STRONGER evidence of the two,
+# so refusing to count it inverted the incentive.
 #
 # Surface extracted:
 #   1. SHIM_TABLE rows                  (src/types/shim_signatures.c)
@@ -34,10 +46,18 @@
 # never a silent "extracted zero symbols, vacuously PASS".
 #
 # Matching is intentionally loose (substring/word-bounded, not full parse):
-# a callable is "covered" if `<pkg>.<Name>(` appears anywhere in a golden
-# fixture's source; a seeded METHOD (sync/time) is covered if `.<Method>(`
-# appears anywhere (methods are called on arbitrary receiver names, e.g.
-# `mu.Lock()`, so there is no fixed package-qualified spelling to anchor on).
+# a callable is "covered" if `<pkg>.<Name>(` appears anywhere in a coverage
+# source. A seeded METHOD (sync/time) is covered if `.<Method>(` appears
+# anywhere (methods are called on arbitrary receiver names, e.g. `mu.Lock()`,
+# so there is no fixed package-qualified spelling to anchor on).
+#
+# One asymmetry is deliberate. A goostd package's OWN test file calls its
+# functions unqualified — `HasPrefix(...)`, not `strings.HasPrefix(...)`,
+# because the test file is in that package. The `<pkg>.<Name>(` pattern
+# therefore does not match there, so goostd symbols additionally accept the
+# bare `<Name>(` spelling, but ONLY within that package's own test files
+# (see goostd_test_files_for). Accepting a bare name across all sources would
+# make any fixture with a local helper called `Index()` mask a real gap.
 #
 # Exit 0 = every extracted symbol covered. Exit 1 = uncovered symbol(s)
 # (all listed, never truncated) or an extraction sanity check failed.
@@ -77,6 +97,26 @@ if [ "${golden_count:-0}" -lt "$GOLDEN_MIN" ]; then
     exit 1
 fi
 
+# --- Coverage source 2: goostd package test files (`goo test` runs these) --
+GOOSTD_TEST_LIST="$(mktemp)"
+COVERAGE_LIST="$(mktemp)"
+trap 'rm -f "$GOLDEN_LIST" "$GOOSTD_TEST_LIST" "$COVERAGE_LIST"' EXIT
+find goostd -maxdepth 2 \( -name '*_test.go' -o -name '*_test.goo' \) \
+    > "$GOOSTD_TEST_LIST" 2>/dev/null || true
+
+# Same reasoning as GOLDEN_MIN: if the find pattern or the goostd layout moves,
+# this source must vanish LOUDLY. Silently dropping it would report every
+# test-only symbol as uncovered, which reads as "add a fixture" rather than
+# "the gate broke". Raise this as more packages gain tests.
+GOOSTD_TEST_MIN=1
+goostd_test_count="$(wc -l < "$GOOSTD_TEST_LIST" | tr -d '[:space:]')"
+if [ "${goostd_test_count:-0}" -lt "$GOOSTD_TEST_MIN" ]; then
+    echo "check-stdlib-coverage: FAIL (found only $goostd_test_count goostd *_test.go/*_test.goo files, expected >= $GOOSTD_TEST_MIN — goostd layout or the test-file naming may have moved)"
+    exit 1
+fi
+
+cat "$GOLDEN_LIST" "$GOOSTD_TEST_LIST" > "$COVERAGE_LIST"
+
 # KNOWN, DOCUMENTED carve-outs: one "symbol:probe-name" pair per line.
 # Each of these symbols is exercised by a REAL functional probe (its own
 # Makefile target, in VERIFY_ALL_DEPS already) that a golden fixture
@@ -106,7 +146,17 @@ lanes.RunFar:far-halo-probe"
 covered() {
     # $1 = extended-regex pattern. Go/Goo identifiers are [A-Za-z0-9_] only,
     # so pkg/name tokens need no metachar escaping.
-    xargs grep -lE -- "$1" < "$GOLDEN_LIST" 2>/dev/null | grep -q .
+    xargs grep -lE -- "$1" < "$COVERAGE_LIST" 2>/dev/null | grep -q .
+}
+
+# A goostd package's OWN test file is IN that package, so it calls the function
+# unqualified. Scoped to that one package's test files on purpose: accepting a
+# bare `<Name>(` across every source would let an unrelated fixture's local
+# helper named `Index()` mask a genuine coverage gap.
+covered_in_own_tests() {
+    # $1 = package dir, $2 = bare-name extended-regex pattern
+    find "$1" -maxdepth 1 \( -name '*_test.go' -o -name '*_test.goo' \) \
+        -exec grep -lE -- "$2" {} + 2>/dev/null | grep -q .
 }
 
 missing=()
@@ -115,8 +165,10 @@ total=0
 
 record() {
     # $1 = human label, $2 = regex pattern, $3 = optional "symbol key" to
-    # check against NON_GOLDEN_COVERABLE (defaults to $1).
-    local label="$1" pattern="$2" key="${3:-$1}"
+    # check against NON_GOLDEN_COVERABLE (defaults to $1). $4/$5 = optional
+    # own-package test dir + bare-name pattern, set only for goostd symbols
+    # (see covered_in_own_tests).
+    local label="$1" pattern="$2" key="${3:-$1}" own_dir="${4:-}" own_pattern="${5:-}"
     total=$((total + 1))
     local probe
     probe="$(printf '%s\n' "$NON_GOLDEN_COVERABLE" | awk -F: -v k="$key" '$1==k{print $2; exit}')"
@@ -124,9 +176,9 @@ record() {
         skipped+=("$label (documented non-golden carve-out; see ${probe})")
         return
     fi
-    if ! covered "$pattern"; then
-        missing+=("$label")
-    fi
+    covered "$pattern" && return
+    [ -n "$own_dir" ] && covered_in_own_tests "$own_dir" "$own_pattern" && return
+    missing+=("$label")
 }
 
 # --- 1. SHIM_TABLE rows (shim_signatures.c) ------------------------------
@@ -249,7 +301,8 @@ for entry in $GOOSTD_PKG_DIRS; do
     while IFS= read -r name; do
         [ -z "$name" ] && continue
         goostd_total=$((goostd_total + 1))
-        record "${pkg}.${name}" "\\b${pkg}\\.${name}\\(" "${pkg}.${name}"
+        record "${pkg}.${name}" "\\b${pkg}\\.${name}\\(" "${pkg}.${name}" \
+               "$dir" "\\b${name}\\("
     done <<< "$names"
 done
 
@@ -259,7 +312,7 @@ if [ "$goostd_total" -lt "$GOOSTD_MIN" ]; then
 fi
 
 # --- Report ---------------------------------------------------------------
-echo "check-stdlib-coverage: extracted $shim_count shim rows, $value_count value members, $time_value_count time constants, $time_func_count time funcs, $method_count seeded methods, $goostd_total goostd funcs ($total symbols total) across $golden_count golden fixtures"
+echo "check-stdlib-coverage: extracted $shim_count shim rows, $value_count value members, $time_value_count time constants, $time_func_count time funcs, $method_count seeded methods, $goostd_total goostd funcs ($total symbols total) across $golden_count golden fixtures + $goostd_test_count goostd test files"
 
 if [ "${#skipped[@]}" -gt 0 ]; then
     echo "check-stdlib-coverage: ${#skipped[@]} documented carve-out(s) (not golden-coverable, verified elsewhere):"
