@@ -1,0 +1,51 @@
+// pkg_arg_shapes_probe: argument shapes crossing into a VENDORED (goostd)
+// package function.
+//
+// The vendored-package call path was the FOURTH argument loop in
+// call_codegen.c, and the only one that never routed through
+// codegen_emit_fixed_call_arg. It was a bare 1:1 positional walk, so it missed
+// two of the five per-argument steps and failed LLVM module verification:
+//
+//   - a SLICE ELEMENT arrived as the raw element address from the GEP, never
+//     loaded:  strings.Index(lines[1], "et")
+//       Call parameter type does not match function signature!
+//        { ptr, i64 } %2 = call i64 @goo_pkg__strings__Index(ptr %slice_elem, ...)
+//   - a concrete value passed to an INTERFACE-typed parameter arrived unboxed:
+//     sort.Sort(s) handed a raw { ptr, i64, i64 } slice to a { ptr, ptr }
+//     interface parameter.
+//
+// Both shapes are ordinary. `strings.Index(lines[i], pat)` is what any
+// text-processing code writes, and sort.Sort's whole signature is an interface.
+// Found by writing a real CLI tool (docs/superpowers/specs/
+// 2026-07-27-cli-readiness-findings.md), not by reading the code.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), per project convention. The Goo source differs from that program
+// in ONE spelling: Go writes the conversion `sort.IntSlice(x)`, which Goo
+// rejects for a named non-struct type, so this assigns instead.
+package main
+
+import "fmt"
+import "sort"
+import "strings"
+
+func main() {
+	lines := []string{"alpha", "beta", "gamma"}
+
+	// Slice element straight into a vendored package function, not bound to a
+	// local first. Binding first always worked, which is what made this gap
+	// easy to miss.
+	fmt.Println(strings.Index(lines[1], "et"))
+	fmt.Println(strings.Count(lines[2], "a"))
+
+	// Interface-typed parameter of a vendored package function.
+	x := []int{3, 1, 2}
+	var s sort.IntSlice = x
+	sort.Sort(s)
+	fmt.Println(x[0], x[1], x[2])
+
+	// And through a second interface layer: Reverse RETURNS an Interface, so
+	// the value handed to Sort is already boxed here.
+	sort.Sort(sort.Reverse(s))
+	fmt.Println(x[0], x[1], x[2])
+}
