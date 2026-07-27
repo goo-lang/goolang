@@ -4186,6 +4186,33 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             return type_check_generic_call(checker, expr, call, callee,
                                             callee_ident->name);
         }
+        // `main()` is the process ENTRY POINT here, not an ordinary function.
+        // Codegen gives it the C entry signature — an i32 return plus
+        // (argc, argv) appended by codegen_append_entry_main_params — so a
+        // Goo-level call emits a 0-argument call to a 2-parameter function and
+        // dies in the LLVM verifier with "Incorrect number of arguments passed
+        // to called function". That is exactly the raw backend noise the
+        // golden-reject harness forbids reaching users.
+        //
+        // Rejected rather than supported, and the divergence is deliberate: Go
+        // permits calling main. Passing dummy argc/argv instead would be WORSE
+        // than the current failure, because the entry prologue re-runs
+        // goo_os_args_init on every call (function_codegen.c), so a recursive
+        // call would silently wipe os.Args — a quiet wrong answer in place of a
+        // loud one. Supporting it properly means emitting the body under a
+        // non-entry symbol and making the C main a thin wrapper; that is the
+        // right fix, and it changes emission for every program, so it is not
+        // worth the blast radius for a construct this rare.
+        if (callee && !callee->is_builtin &&
+            strcmp(callee_ident->name, "main") == 0 &&
+            callee->type && callee->type->kind == TYPE_FUNCTION &&
+            callee->type->data.function.param_count == 0 &&
+            callee->type->data.function.return_type &&
+            callee->type->data.function.return_type->kind == TYPE_VOID) {
+            type_error(checker, expr->pos,
+                "main is the program entry point and cannot be called");
+            return type_checker_get_builtin(checker, TYPE_VOID);
+        }
         if (callee && !callee->is_builtin) {
             check_signature = 1;
             callee_name = callee_ident->name;

@@ -100,6 +100,10 @@ goo_error_t* goo_error_from_string(goo_string_t msg);
 goo_string_t goo_error_message(goo_error_t* e);
 goo_error_t* goo_error_wrap(goo_string_t msg, goo_error_t* cause);
 goo_error_t* goo_error_unwrap(goo_error_t* e);
+// errors.Is — walk the wrap chain comparing IDENTITY. Returns int rather than
+// bool to match goo_strings_contains and the other SHIM_RET_BOOL runtime
+// entries, which predate any stdbool dependency in this header.
+int goo_error_is(goo_error_t* err, goo_error_t* target);
 void goo_error_free(goo_error_t* error);
 
 // I/O functions

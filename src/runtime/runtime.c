@@ -198,6 +198,28 @@ goo_error_t* goo_error_unwrap(goo_error_t* e) {
     return e ? e->cause : NULL;
 }
 
+// errors.Is: does `err`, or anything it wraps, have the same IDENTITY as
+// `target`? An error is a heap pointer, so pointer equality is exactly Go's
+// sentinel semantics — two errors.New calls with identical text are distinct
+// and must not match.
+//
+// The nil-target case is Go's, not an edge we invented: errors.Is checks
+// `err == target` directly when target is nil rather than walking the chain,
+// so Is(nil, nil) is TRUE while Is(err, nil) is false. A loop that simply
+// scanned the chain would return false for both.
+//
+// Go additionally consults an `Is(error) bool` method on each link. That hook
+// is unreachable here for the same reason errors.As is: `error` is a concrete
+// type in v1, so no error can carry methods of its own.
+int goo_error_is(goo_error_t* err, goo_error_t* target) {
+    if (!target) return err == target;
+    while (err) {
+        if (err == target) return 1;
+        err = err->cause;
+    }
+    return 0;
+}
+
 // Return the message as a goo_string. strlen on read (embedded-NUL truncates —
 // accepted v1 edge; error messages are ASCII in practice).
 goo_string_t goo_error_message(goo_error_t* e) {

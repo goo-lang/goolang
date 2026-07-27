@@ -18,6 +18,9 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
 static int codegen_emit_fixed_call_arg(CodeGenerator* codegen, TypeChecker* checker,
                                        ASTNode* arg, Type* param_type,
                                        LLVMTypeRef param_llvm, LLVMValueRef* out);
+static ValueInfo* codegen_emit_variadic_pack(CodeGenerator* codegen, TypeChecker* checker,
+                                             ASTNode* first_trailing, int has_spread,
+                                             Type* variadic_param_type, Position pos);
 static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_fmt_sprint_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
@@ -163,10 +166,6 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
     if (!fn) return NULL;  // not a real package symbol → shim fallback
 
     *handled = 1;
-    size_t argc = 0;
-    for (ASTNode* a = call->args; a; a = a->next) argc++;
-    LLVMValueRef* args = argc ? malloc(sizeof(LLVMValueRef) * argc) : NULL;
-    if (argc && !args) return NULL;
 
     // The DECLARED Goo signature of the callee. Needed, not optional: interface
     // boxing and the nullable auto-wrap are driven by the parameter's Goo kind,
@@ -176,6 +175,25 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
     Type* fnty = type_check_expression(checker, call->function);
     size_t sig_params = (fnty && fnty->kind == TYPE_FUNCTION)
                         ? fnty->data.function.param_count : 0;
+    int pkg_is_variadic = fnty && fnty->kind == TYPE_FUNCTION
+                          && fnty->data.function.is_variadic
+                          && fnty->data.function.param_types
+                          && sig_params > 0;
+
+    // Variadic: one argument per FIXED parameter plus exactly ONE packed
+    // slice, never a 1:1 mapping with the actual argument count. Driving argc
+    // off the SIGNATURE is what makes filepath.Join("a", "b") pass a single
+    // []string instead of two separate strings — the same correction the
+    // method loop needed in PR #224.
+    size_t argc = 0;
+    if (pkg_is_variadic) {
+        argc = sig_params;
+    } else {
+        for (ASTNode* a = call->args; a; a = a->next) argc++;
+    }
+    size_t pkg_fixed_end = pkg_is_variadic ? sig_params - 1 : (size_t)-1;
+    LLVMValueRef* args = argc ? malloc(sizeof(LLVMValueRef) * argc) : NULL;
+    if (argc && !args) return NULL;
 
     // The REAL LLVM parameter types off the resolved callee, for width
     // coercion — the same source the method loop uses, and more accurate than
@@ -187,7 +205,13 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
     if (param_tys) LLVMGetParamTypes(fn_ty, param_tys);
 
     size_t i = 0;
-    for (ASTNode* a = call->args; a; a = a->next, i++) {
+    ASTNode* a = call->args;
+    for (; a; a = a->next, i++) {
+        // Stop at the first trailing actual once the fixed params are filled —
+        // everything from here packs into one slice below. Leaves `a` pointing
+        // at that first trailing node (or NULL if none were given), exactly as
+        // the other three loops do.
+        if (pkg_is_variadic && i >= pkg_fixed_end) break;
         // All five per-argument steps live in codegen_emit_fixed_call_arg,
         // shared with the plain-call, method-call and interface-dispatch loops.
         //
@@ -210,6 +234,20 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
         }
     }
     free(param_tys);
+
+    // Pack every remaining trailing actual into the variadic parameter's
+    // slice. `a` points at the first trailing node, or NULL when none were
+    // given (filepath.Join() — the empty-slice case the helper handles).
+    // Shared with the plain-call, method and dispatch loops.
+    if (pkg_is_variadic) {
+        ValueInfo* packed = codegen_emit_variadic_pack(
+            codegen, checker, a, call->has_spread,
+            fnty->data.function.param_types[sig_params - 1], expr->pos);
+        if (!packed) { free(args); return NULL; }
+        args[sig_params - 1] = packed->llvm_value;
+        value_info_free(packed);
+    }
+
     LLVMValueRef result = LLVMBuildCall2(codegen->builder,
         fn_ty, fn, args, (unsigned)argc, "");
     free(args);
@@ -2000,6 +2038,56 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "en.is_null");
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "en.ptr");
                 return value_info_new(NULL, err_val, err_type);
+            }
+            if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "Is") == 0) {
+                // errors.Is(err, target) -> bool. An error value is
+                // {i1 is_null, i8* handle}; the handle IS the identity, and a
+                // nil error carries a null handle, so passing the two handles
+                // to the runtime covers the nil cases without a separate test
+                // here. Mirrors the Unwrap arm below.
+                if (!call->args || !call->args->next) {
+                    codegen_error(codegen, expr->pos,
+                                  "errors.Is: expected (error, error) -> bool");
+                    return NULL;
+                }
+                LLVMTypeRef is_i8p = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+                LLVMValueRef handles[2];
+                ASTNode* ia = call->args;
+                for (int k = 0; k < 2; k++, ia = ia->next) {
+                    // A bare `nil` argument is NOT an error-shaped value —
+                    // evaluating it yields nothing to extract a field from, so
+                    // the extract below would fault on it. Its handle is simply
+                    // null, which is exactly what the runtime's nil cases read.
+                    // The shared codegen_emit_fixed_call_arg carries the same
+                    // nil-literal pre-arm for the same reason.
+                    if (ia->type == AST_LITERAL &&
+                        ((LiteralNode*)ia)->literal_type == TOKEN_NIL) {
+                        handles[k] = LLVMConstNull(is_i8p);
+                        continue;
+                    }
+                    ValueInfo* iv = codegen_generate_expression(codegen, checker, ia);
+                    if (!iv) return NULL;
+                    LLVMValueRef loaded = iv->llvm_value;
+                    if (iv->is_lvalue && iv->goo_type) {
+                        LLVMTypeRef it = codegen_type_to_llvm(codegen, iv->goo_type);
+                        if (it) loaded = LLVMBuildLoad2(codegen->builder, it, loaded, "is_load");
+                    }
+                    value_info_free(iv);
+                    handles[k] = LLVMBuildExtractValue(codegen->builder, loaded, 1, "is.handle");
+                }
+                LLVMValueRef is_fn = LLVMGetNamedFunction(codegen->module, "goo_error_is");
+                if (!is_fn) {
+                    codegen_error(codegen, expr->pos, "goo_error_is not found in module");
+                    return NULL;
+                }
+                LLVMValueRef raw = LLVMBuildCall2(codegen->builder,
+                    LLVMGlobalGetValueType(is_fn), is_fn, handles, 2, "errors.is");
+                // The runtime returns int (0/1) to match the other
+                // SHIM_RET_BOOL entries; Goo's bool is narrower, so truncate.
+                Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
+                LLVMTypeRef bool_llvm = codegen_type_to_llvm(codegen, bool_type);
+                LLVMValueRef res = LLVMBuildTrunc(codegen->builder, raw, bool_llvm, "errors.is.b");
+                return value_info_new(NULL, res, bool_type);
             }
             if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "Unwrap") == 0) {
                 // errors.Unwrap(error) -> error: read goo_error.cause via the runtime

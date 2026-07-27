@@ -230,6 +230,9 @@ shapes visible in the diagnostic.
 
 ## GAP 5 — calling `main()` emits raw LLVM verifier noise
 
+> **RESOLVED** — as a clean compile REJECT, not as support. See the note at the
+> end of this section for why rejecting is the right answer here.
+
 Found while checking GAP 3's resolution, and **pre-existing and independent of
 it**:
 
@@ -256,6 +259,28 @@ Two reasons it matters beyond the shape itself:
 
 **Severity: low** in practice (calling `main()` is rare), but it is a real
 defect and the diagnostic is the worst kind.
+
+### Resolution — rejected, and why that beats supporting it
+
+`main is the program entry point and cannot be called`, positioned, from the
+checker. Pinned by `tests/golden/reject/call_main_reject.goo`.
+
+This diverges from Go, which permits calling `main`. Two alternatives were
+considered and both lose:
+
+- **Pass dummy `argc`/`argv` at the call site.** WORSE than the current
+  failure. The entry prologue re-runs `goo_os_args_init` on every call
+  (`function_codegen.c`), so a recursive call would silently wipe `os.Args` —
+  replacing a loud wrong answer with a quiet one.
+- **Emit the body under a non-entry symbol, with the C `main` as a thin
+  wrapper.** This is the RIGHT fix and the one to take if anyone ever needs to
+  call `main`. It is also how Go structures a test binary, so it would subsume
+  GAP 3's rename. It changes emission for every program, which is a large blast
+  radius for a construct this rare.
+
+The invariant that actually mattered was "no LLVM verifier noise reaches
+users", and rejecting satisfies it at near-zero risk. The divergence is
+recorded rather than hidden.
 
 ## What worked well, and is worth recording
 
