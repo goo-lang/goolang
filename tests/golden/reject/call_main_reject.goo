@@ -1,0 +1,29 @@
+// Calling `main` must be a clean positioned error, not raw LLVM verifier
+// output. It used to emit:
+//
+//     Module verification failed: Incorrect number of arguments passed to
+//     called function!  %call = call i32 @main()
+//
+// `main` is the process ENTRY POINT: codegen gives it the C signature — an i32
+// return plus (argc, argv) — so a Goo-level call emits a 0-argument call to a
+// 2-parameter function. That is exactly the backend noise this harness forbids
+// reaching users (see its global verifier-noise assertion).
+//
+// REJECTED rather than supported, deliberately. Go permits calling main.
+// Passing dummy argc/argv instead would be WORSE than failing: the entry
+// prologue re-runs goo_os_args_init on every call, so a recursive call would
+// silently wipe os.Args — a quiet wrong answer replacing a loud one. Supporting
+// it properly means emitting the body under a non-entry symbol with the C main
+// as a thin wrapper, which changes emission for every program.
+package main
+
+import "fmt"
+
+func helper() {
+	main()
+}
+
+func main() {
+	fmt.Println("hi")
+	helper()
+}
