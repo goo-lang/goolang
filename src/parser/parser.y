@@ -271,6 +271,18 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 program:
     package_clause opt_import_decl_list opt_top_level_decl_list {
         ProgramNode* prog = ast_program_new(get_current_position());
+        // Carry the package clause onto the program node. The clause used to be
+        // dropped here, which both leaked the PackageDeclNode and left
+        // ProgramNode.package_name permanently NULL despite being declared and
+        // documented. `goo test` needs it: the synthesized _testmain.goo must
+        // repeat the package clause of the package it is generated for.
+        // ACTION-ONLY change — no rule, token or precedence is touched, so the
+        // LALR tables and the conflict counts are unaffected.
+        if ($1 && $1->type == AST_PACKAGE_DECL) {
+            PackageDeclNode* pkg = (PackageDeclNode*)$1;
+            if (pkg->name) prog->package_name = strdup(pkg->name);
+        }
+        ast_node_free($1);
         prog->imports = $2;
         prog->decls = $3;
         ast_root = (ASTNode*)prog;

@@ -36,7 +36,10 @@ int resolve_import(const char* import_path, const char* source_dir, PackageSourc
 // `out->name`/`out->import_path` are set from the directory's own base name.
 // Returns 0 on success, non-0 if the directory does not exist or holds no
 // buildable files, leaving `out` zeroed.
-int resolve_package_dir_path(const char* pkg_dir, PackageSource* out);
+//
+// `include_tests` is set only by `goo test`; every other caller passes 0, so a
+// *_test.go / *_test.goo file never enters an ordinary build.
+int resolve_package_dir_path(const char* pkg_dir, int include_tests, PackageSource* out);
 
 // P4.4: map a Go-style nested import spelling (e.g. "unicode/utf8") to the
 // flat name goostd actually vendors it under (e.g. "utf8"). Returns

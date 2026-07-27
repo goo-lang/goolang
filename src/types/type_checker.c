@@ -943,8 +943,16 @@ static void sync_export_type(Package* pkg, const char* name, Type* type) {
 // Variable (type_check_function_decl never sets is_builtin either).
 // Receiver is always a pointer (*Mutex / *WaitGroup) — every sync method
 // mutates shared state, matching Go's sync package.
+// `is_variadic` marks the built function Type variadic. With only the spliced
+// receiver in param_types, `declared` at the call checker's arity gate is 0, so
+// min_args is 0 and ANY argument count is admitted and left unchecked — the same
+// effect fmt's Println rows get, reached differently because a method always has
+// at least the receiver and so can never have the NULL param_types those rows
+// rely on. testing.T's methods use it: their arguments are consumed by the
+// codegen intercept, not by the signature.
 static void sync_export_method(Package* pkg, Type* recv_struct, const char* method_name,
-                                Type** param_types, size_t param_count, Type* return_type) {
+                                Type** param_types, size_t param_count, Type* return_type,
+                                int is_variadic) {
     char* mangled = type_method_mangled_name(recv_struct->data.struct_type.name, method_name);
     if (!mangled) return;
 
@@ -955,6 +963,7 @@ static void sync_export_method(Package* pkg, Type* recv_struct, const char* meth
     all_params[0] = recv_ptr;
     for (size_t i = 0; i < param_count; i++) all_params[i + 1] = param_types[i];
     Type* func_type = type_function(all_params, total, return_type);
+    if (func_type) func_type->data.function.is_variadic = is_variadic;
     free(all_params);
 
     Variable* v = variable_new(mangled, func_type, (Position){0, 0, 0, "sync"});
@@ -989,13 +998,71 @@ void seed_sync_package_exports(TypeChecker* checker, Package* pkg) {
     sync_export_type(pkg, "Mutex", mutex_t);
     sync_export_type(pkg, "WaitGroup", wg_t);
 
-    sync_export_method(pkg, mutex_t, "Lock", NULL, 0, void_t);
-    sync_export_method(pkg, mutex_t, "Unlock", NULL, 0, void_t);
+    sync_export_method(pkg, mutex_t, "Lock", NULL, 0, void_t, 0);
+    sync_export_method(pkg, mutex_t, "Unlock", NULL, 0, void_t, 0);
 
     Type* add_params[] = { int_t };
-    sync_export_method(pkg, wg_t, "Add", add_params, 1, void_t);
-    sync_export_method(pkg, wg_t, "Done", NULL, 0, void_t);
-    sync_export_method(pkg, wg_t, "Wait", NULL, 0, void_t);
+    sync_export_method(pkg, wg_t, "Add", add_params, 1, void_t, 0);
+    sync_export_method(pkg, wg_t, "Done", NULL, 0, void_t, 0);
+    sync_export_method(pkg, wg_t, "Wait", NULL, 0, void_t, 0);
+}
+
+// `goo test`: the testing package's exports. A bespoke shim for the same reason
+// sync is one — it exports a TYPE WITH A METHOD SET, which
+// stdlib_package_lookup's per-symbol table cannot model (it returns a bare Type
+// for a (package, name) pair, never a method set).
+//
+// It also CANNOT live in shim_signatures.c's SHIM_TABLE: ShimParamKind is a
+// closed enum (STRING/INT64/FLOAT64/ERROR/STRING_SLICE) with no func kind, and
+// testing.Run takes func(*T). This path builds real Type*, so a func-typed
+// parameter is an ordinary type_function — which is exactly why the design uses
+// it.
+// Defined below, beside seed_time_package_exports. Forward-declared because
+// this function sits next to its sync sibling for readability rather than after
+// the helper it borrows. Named `shim_` not `time_`: it exports a package-level
+// function for ANY bespoke shim, and testing uses it too — a name that implies
+// one package is what made the stdlib-coverage scanner attribute testing.Run to
+// `time`.
+static void shim_export_func(Package* pkg, const char* name, Type** param_types,
+                             size_t param_count, Type* return_type);
+
+void seed_testing_package_exports(TypeChecker* checker, Package* pkg) {
+    if (scope_lookup_variable(pkg->exports, "T")) return;
+
+    Type* void_t   = type_checker_get_builtin(checker, TYPE_VOID);
+    Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
+
+    // Opaque one-pointer struct, exactly like sync.Mutex: the runtime owns the
+    // real per-test state and Goo only ever passes *T around.
+    Type* t_ty = sync_make_opaque_struct(checker, pkg, "T");
+    if (!t_ty) return;
+    sync_export_type(pkg, "T", t_ty);
+
+    // Run(name string, fn func(*T)) — the func-typed parameter that rules out
+    // the SHIM_TABLE route. Passing the test as a VALUE is what lets the runtime
+    // own its frame, which is what makes t.Fatal able to stop a test at all.
+    Type* tp_ty = type_pointer(t_ty);
+    Type* fn_params[] = { tp_ty };
+    Type* fn_ty = type_function(fn_params, 1, void_t);
+    Type* run_params[] = { string_t, fn_ty };
+    shim_export_func(pkg, "Run", run_params, 2, void_t);
+    shim_export_func(pkg, "Summary", NULL, 0, void_t);
+
+    // Methods are declared with ZERO fixed params: their arguments are consumed
+    // by the codegen intercept (call_codegen.c), the same way the variadic fmt
+    // rows are left unchecked here.
+    sync_export_method(pkg, t_ty, "Error", NULL, 0, void_t, 1);
+    // The -f variants: their FORMAT plus arguments are consumed by the codegen
+    // intercept, which hands the whole call to fmt.Sprintf's own lowering.
+    sync_export_method(pkg, t_ty, "Errorf", NULL, 0, void_t, 1);
+    sync_export_method(pkg, t_ty, "Logf",   NULL, 0, void_t, 1);
+    sync_export_method(pkg, t_ty, "Log",   NULL, 0, void_t, 1);
+    sync_export_method(pkg, t_ty, "Fail",  NULL, 0, void_t, 0);
+    // Fatal/Fatalf/FailNow: Error/Errorf/Fail plus a stop. The stop happens in
+    // the runtime, which owns the test's call frame.
+    sync_export_method(pkg, t_ty, "Fatal",   NULL, 0, void_t, 1);
+    sync_export_method(pkg, t_ty, "Fatalf",  NULL, 0, void_t, 1);
+    sync_export_method(pkg, t_ty, "FailNow", NULL, 0, void_t, 0);
 }
 
 // P4.6 (packages-C, C1): mint the Time struct — a single int64 field holding
@@ -1079,7 +1146,7 @@ static void time_export_value(Package* pkg, const char* name, Type* type) {
 // receiver splicing, unlike a method). expression_checker.c's package-
 // function-call arm resolves these straight out of pkg->exports by
 // identity, same mechanism as a real source-compiled package's exports.
-static void time_export_func(Package* pkg, const char* name, Type** param_types,
+static void shim_export_func(Package* pkg, const char* name, Type** param_types,
                               size_t param_count, Type* return_type) {
     Type* func_type = type_function(param_types, param_count, return_type);
     if (!func_type) return;
@@ -1138,8 +1205,8 @@ void seed_time_package_exports(TypeChecker* checker, Package* pkg) {
     time_export_type(pkg, "Time", time_t_ty);
 
     Type* sleep_params[] = { duration_t };
-    time_export_func(pkg, "Sleep", sleep_params, 1, void_t);
-    time_export_func(pkg, "Now", NULL, 0, time_t_ty);
+    shim_export_func(pkg, "Sleep", sleep_params, 1, void_t);
+    shim_export_func(pkg, "Now", NULL, 0, time_t_ty);
 
     time_export_method(pkg, time_t_ty, "UnixNano", NULL, 0, int64_t_ty);
 
@@ -1195,6 +1262,14 @@ static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports
         // "time") resolves inside its own scope exactly like main's does
         // (P6 M2-B1 Task 10; see type_checker_is_plain_shim_import's doc
         // comment for why these two are excluded from that table).
+        if (spec->path && strcmp(spec->path, "testing") == 0) {
+            const char* short_name = spec->alias ? spec->alias : spec->path;
+            Package* p = type_checker_add_package(checker, spec->path, short_name);
+            if (!p) return false;
+            seed_testing_package_exports(checker, p);
+            type_checker_seed_package_marker(checker, short_name, p);
+            continue;
+        }
         if (spec->path && (strcmp(spec->path, "sync") == 0 ||
                            strcmp(spec->path, "time") == 0)) {
             const char* short_name = spec->alias ? spec->alias : spec->path;

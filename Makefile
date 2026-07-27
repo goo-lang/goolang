@@ -80,7 +80,7 @@ PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SR
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c $(SRCDIR)/codegen/monomorphize.c
-RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
+RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
 # Only import_resolver.c from package/ is part of the compiler. The rest of
@@ -94,7 +94,7 @@ TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
 COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/hardware_aware.c $(SRCDIR)/comptime/code_specialization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
 CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(PACKAGE_SRCS) $(COMPTIME_SRCS)
-COMPILER_SRCS = $(COMPILERDIR)/goo.c
+COMPILER_SRCS = $(COMPILERDIR)/goo.c $(COMPILERDIR)/test_discovery.c
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
 OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
@@ -119,7 +119,7 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # the runtime entrypoints. runtime.o's goo_init/goo_exit call into
 # deadlock.o, and concurrency.o calls channels/sync/platform — leaving
 # any of these out fails the link of even a hello-world executable.
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/testing.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o
 
 # M2-B1: vendored NNG (far transport). Pinned tarball, static lib, merged
 # into libgoo_runtime.a below so bin/goo-linked executables need no new
@@ -1823,6 +1823,15 @@ nil-deref-probe: $(COMPILER) $(RUNTIME_LIB)
 	@echo "nil-deref-probe: PASS"
 .PHONY: nil-deref-probe
 
+# `goo test`: discovery of TestXxx in _test files, _testmain.goo synthesis, the
+# Go-shaped output format, and the exit status. Two packages — one all-passing,
+# one with a failure and a t.Fatal — because a passing run prints only `ok`,
+# which pins almost nothing on its own. The script normalizes durations before
+# diffing and reads exit codes directly, never through a pipe.
+goo-test-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/goo_test_probe.sh
+.PHONY: goo-test-probe
+
 # fix/const-array-length: a genuinely non-constant array length (a plain
 # runtime variable, not a const) must be a clean type error — NOT a silent
 # fallback to the placeholder length, and not a crash. See
@@ -3257,7 +3266,8 @@ VERIFY_ALL_DEPS := \
     far-stencil-r2-probe \
     far-collective-probe \
     far-jacobi-probe \
-    nil-deref-probe
+    nil-deref-probe \
+    goo-test-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam

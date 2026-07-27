@@ -1,0 +1,11 @@
+// The package under test. An ORDINARY package file: no test functions, no
+// testing import, and `goo build .` compiles it exactly as it always did.
+//
+// This file exists so the test file has something cross-file to call. If
+// _testmain.goo were parsed as a separate compilation unit rather than as one
+// more file OF THIS PACKAGE, the `Add` call in add_test.goo would not resolve.
+package testpkg
+
+func Add(a int, b int) int {
+	return a + b
+}

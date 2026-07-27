@@ -1,0 +1,59 @@
+// testing_shim_probe: the testing package works with a HAND-WRITTEN main,
+// before any _testmain synthesis exists.
+//
+// This fixture is deliberately kept after test discovery and synthesis land. It
+// is the only one that exercises the shim on its own — its type, its two
+// package functions, and the non-format methods — so a later failure in
+// discovery or synthesis can never be confused with a broken testing package.
+//
+// The format matches `go test` with NO flags, which is terser than the -v form:
+// a passing test prints nothing, and a failing one prints its --- FAIL header
+// FOLLOWED BY its log lines. That ordering is why the runtime buffers a test's
+// log output instead of streaming it — the header carries the duration, which is
+// only known once the test has returned.
+//
+// The log line carries file:line exactly as Go does. Codegen has the call site's
+// position, so it passes it to the runtime rather than making the runtime guess.
+//
+// ONE DELIBERATE DIVERGENCE: Go's package summary line is `FAIL\tp/p\t0.002s`;
+// this prints a bare `FAIL`. The elapsed time is dropped because it is not
+// reproducible, and this fixture is an exact-match golden. Per-test `(0.00s)` is
+// kept because it IS stable for a fast test. scripts/goo_test_probe.sh covers
+// the general case by normalizing durations before its diff.
+//
+// HOW THE EXPECTED FILE WAS DERIVED, stated plainly. The FORMAT — which lines
+// appear, in what order, with what punctuation and indent — comes from running
+// `go test` on the equivalent Go package (go1.26.1); that is the part that could
+// be wrong. The file name and line numbers in it are facts about THIS file, and
+// the summary duration is dropped per the divergence above.
+package main
+
+import "testing"
+
+func TestPasses(t *testing.T) {
+}
+
+func TestFails(t *testing.T) {
+	t.Error("boom")
+}
+
+// t.Log's line is only shown for a FAILING test in Go's non-verbose output, so
+// this test also fails — a Log-only test would print nothing and pin nothing.
+func TestLogsThenFails(t *testing.T) {
+	t.Log("a note")
+	t.Error("and a failure")
+}
+
+// t.Fail() marks the test failed with no message: the header appears, no log
+// line does.
+func TestBareFail(t *testing.T) {
+	t.Fail()
+}
+
+func main() {
+	testing.Run("TestPasses", TestPasses)
+	testing.Run("TestFails", TestFails)
+	testing.Run("TestLogsThenFails", TestLogsThenFails)
+	testing.Run("TestBareFail", TestBareFail)
+	testing.Summary()
+}

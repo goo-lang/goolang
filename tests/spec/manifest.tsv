@@ -2,6 +2,8 @@
 ## Columns (tab-separated): id, mode, status, chapter, note
 ## mode:   run    = must compile, run, match .expected.txt (+ .exit if present)
 ##         reject = must FAIL to compile (nonzero exit, no binary)
+##         test   = fixture is a DIRECTORY tests/spec/<id>/ run by `goo test`;
+##                  must match .expected.txt (+ .exit if present)
 ## status: works     = Go-parity behavior, verified against Go semantics
 ##         divergent = compiles+runs but differs from Go; pinned Goo behavior
 ##         rejected  = deliberately not in v1 (clean decision; see note)
@@ -60,3 +62,4 @@ err_interface_bridge	run	works	Errors	(T, error) bridged to !T catch; e.Error() 
 div_named_result_defer	run	divergent	Statements	deferred mutation of named result not returned (Go: 6, Goo: 5); documented in 02-LANGUAGE-SPECIFICATION
 sys_unsafe	reject	rejected	System	package unsafe is a v1 Non-goal (parse reject)
 pkg_multifile	run	works	Packages	a package is the union of its FILES; a decl in one file is visible to the others
+pkg_testing	test	works	Packages	goo test discovers TestXxx in _test files and runs them; per-test output is Go-identical, the package summary line is a bare ok/FAIL (no pkg path, no duration — neither is reproducible)

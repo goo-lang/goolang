@@ -21,6 +21,7 @@
 // #include "errors/error.h"  // TODO: Update to use new error API
 #include "runtime.h"
 #include "import_resolver.h"
+#include "test_discovery.h"
 
 // Compiler version
 #define GOO_VERSION "0.1.0"
@@ -33,10 +34,15 @@ typedef enum {
     GOO_MODE_LEGACY,
     GOO_MODE_BUILD,
     GOO_MODE_RUN,
+    GOO_MODE_TEST,
 } GooMode;
 
 // Compiler options
 typedef struct CompilerOptions {
+    // Which subcommand is running. compile_file branches on this for the
+    // test-only paths (test-file inclusion, the no-tests exit, _testmain
+    // synthesis); it used to be a parse_arguments parameter only.
+    GooMode mode;
     // The argument as written: a source file, or a DIRECTORY (`goo build .`,
     // `goo build ./cmd/tool`). Borrowed from argv.
     char* input_file;
@@ -58,6 +64,10 @@ typedef struct CompilerOptions {
     bool verbose;
     bool run_after_compile;
     bool dump_packages;   // hidden debug flag: print import-graph in topo order
+    // Hidden debug flag: print the synthesized _testmain.goo and exit 0. The
+    // generated source is never written to disk, so without this a failure
+    // inside it is a diagnostic pointing at a file nobody can open.
+    bool emit_testmain;
     char** link_libs;
     int link_lib_count;
     char** run_args;      // P5.3: program args after `--` (borrowed from main's argv)
@@ -91,8 +101,11 @@ int main(int argc, char* argv[]) {
             print_version();
             return 0;
         }
-        if (strcmp(argv[1], "build") == 0 || strcmp(argv[1], "run") == 0) {
-            mode = (argv[1][0] == 'b') ? GOO_MODE_BUILD : GOO_MODE_RUN;
+        if (strcmp(argv[1], "build") == 0 || strcmp(argv[1], "run") == 0 ||
+            strcmp(argv[1], "test") == 0) {
+            mode = (argv[1][0] == 'b') ? GOO_MODE_BUILD
+                 : (argv[1][0] == 'r') ? GOO_MODE_RUN
+                                        : GOO_MODE_TEST;
             // Shift the subcommand out so getopt sees a conventional argv.
             argv[1] = argv[0];
             argv++;
@@ -224,6 +237,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         {"emit-ast", no_argument, 0, 0},
         {"emit-tokens", no_argument, 0, 0},
         {"dump-packages", no_argument, 0, 0},
+        {"emit-testmain", no_argument, 0, 0},
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 0},
         {0, 0, 0, 0}
@@ -244,6 +258,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                     options->emit_tokens = true;
                 } else if (strcmp(long_options[option_index].name, "dump-packages") == 0) {
                     options->dump_packages = true;
+                } else if (strcmp(long_options[option_index].name, "emit-testmain") == 0) {
+                    options->emit_testmain = true;
                 } else if (strcmp(long_options[option_index].name, "version") == 0) {
                     print_version();
                     free(options);
@@ -295,15 +311,21 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         }
     }
     
-    // Check for input file
-    if (optind >= argc) {
-        fprintf(stderr, "Error: No input file specified\n");
-        print_usage(stderr, argv[0]);
-        free(options);
-        return NULL;
-    }
+    options->mode = mode;
 
-    options->input_file = argv[optind];
+    // Check for input file. `goo test` with no argument means the current
+    // directory, matching `go test`; every other mode still requires one.
+    if (optind >= argc) {
+        if (mode != GOO_MODE_TEST) {
+            fprintf(stderr, "Error: No input file specified\n");
+            print_usage(stderr, argv[0]);
+            free(options);
+            return NULL;
+        }
+        options->input_file = ".";
+    } else {
+        options->input_file = argv[optind];
+    }
 
     // A DIRECTORY argument makes the entry package multi-file (`goo build .`,
     // `goo build ./cmd/tool`) — Go's unit of compilation. Expanded through the
@@ -314,7 +336,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         struct stat st;
         if (stat(options->input_file, &st) == 0 && S_ISDIR(st.st_mode)) {
             PackageSource ps;
-            if (resolve_package_dir_path(options->input_file, &ps) != 0) {
+            if (resolve_package_dir_path(options->input_file,
+                                         mode == GOO_MODE_TEST, &ps) != 0) {
                 fprintf(stderr, "Error: no buildable source files in directory '%s'\n",
                         options->input_file);
                 free(options->output_file);
@@ -336,6 +359,22 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
 
     // P5.3: mode-specific argument handling.
     switch (mode) {
+        case GOO_MODE_TEST:
+            if (options->emit_llvm_ir) {
+                fprintf(stderr, "Error: --emit-llvm cannot be combined with 'goo test'\n");
+                free(options->output_file);
+                free(options);
+                return NULL;
+            }
+            // The test binary takes no arguments of its own in this cut (no
+            // -run, no -v), so run_args stays empty. Deliberately NOT
+            // `&argv[optind + 1]` like the run case: `goo test` with no
+            // argument leaves optind == argc, and that expression would then
+            // index one past the end of argv.
+            options->run_args = NULL;
+            options->run_arg_count = 0;
+            options->run_after_compile = true;
+            break;
         case GOO_MODE_RUN:
             if (options->emit_llvm_ir) {
                 fprintf(stderr, "Error: --emit-llvm cannot be combined with 'goo run'\n");
@@ -414,6 +453,10 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 }
                 break;
             }
+            case GOO_MODE_TEST:
+                // Same shape as `goo run`: compile to a temp binary, execute
+                // it, propagate its exit status, then remove it. The test
+                // binary is never an artifact the user asked for.
             case GOO_MODE_RUN:
                 options->output_file = make_temp_output_path();
                 if (!options->output_file) {
@@ -674,7 +717,7 @@ static bool is_stdlib_shim_import(const char* path) {
     // P4.6: "time" joins sync as a method-aware bespoke shim (Duration/Time
     // synthesized below, no GOOROOT source dir) — same reasoning as sync's
     // own entry.
-    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time", "far"};
+    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time", "far", "testing"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
     }
@@ -709,6 +752,11 @@ static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports)
             seed_sync_package_exports(checker, p);
         } else if (strcmp(normalize_import_path(spec->path), "time") == 0) {
             seed_time_package_exports(checker, p);
+        } else if (strcmp(normalize_import_path(spec->path), "testing") == 0) {
+            // Same bespoke-shim reason as sync/time: testing exports a TYPE
+            // with a method set, which stdlib_package_lookup's per-symbol
+            // table cannot model.
+            seed_testing_package_exports(checker, p);
         }
         type_checker_seed_package_marker(checker, short_name, p);
     }
@@ -980,6 +1028,17 @@ static void compute_source_dir(const char* filename, char* out_buf, size_t out_s
     out_buf[len] = '\0';
 }
 
+// Is this one of a package's test files? The suffix set is Go's, extended with
+// the .goo spelling — the same pair is_buildable_source gates on when
+// `include_tests` is set (src/package/import_resolver.c), so the file set the
+// resolver COLLECTS and the file set discovery SCANS cannot drift apart.
+static bool is_test_source_name(const char* fname) {
+    if (!fname) return false;
+    size_t fl = strlen(fname);
+    return (fl >= 8 && memcmp(fname + fl - 8, "_test.go", 8) == 0) ||
+           (fl >= 9 && memcmp(fname + fl - 9, "_test.goo", 9) == 0);
+}
+
 static bool compile_file(const char* filename, CompilerOptions* options) {
     if (options->verbose) {
         printf("Compiling %s...\n", filename);
@@ -1080,6 +1139,146 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // The entry package's first file stands in wherever a single AST is still
     // the right thing to pass (the import-graph dump below).
     ASTNode* ast = asts[0];
+
+    // `goo test` on a package with no _test files: Go reports it and exits 0
+    // rather than treating it as an error, so a whole-tree run is not derailed
+    // by a package that simply has no tests yet.
+    if (options->mode == GOO_MODE_TEST) {
+        int have_test_file = 0;
+        for (size_t fi = 0; fi < nfiles && !have_test_file; fi++) {
+            have_test_file = is_test_source_name(options->input_files[fi]);
+        }
+        if (!have_test_file) {
+            // Named after the entry directory, the same string the output stem
+            // uses; for a single-file argument, that file's own name.
+            char stem[PATH_MAX];
+            const char* src = options->input_file;
+            char resolved[PATH_MAX];
+            if (options->input_is_dir && realpath(options->input_file, resolved)) src = resolved;
+            const char* slash = strrchr(src, '/');
+            snprintf(stem, sizeof(stem), "%s", (slash && slash[1]) ? slash + 1 : src);
+            printf("?   %s  [no test files]\n", stem);
+            // No binary was emitted, so there is nothing to exec. Without
+            // this, main() sees success && run_after_compile and tries to run
+            // the empty file mkstemp created for the temp output path
+            // ("Permission denied", exit 127).
+            options->run_after_compile = false;
+            ENTRY_CLEANUP();
+            return true;
+        }
+
+        // Collect the TestXxx functions, and reject a Test-named function of
+        // the wrong shape. Runs BEFORE type_checker_new() because Task 6's
+        // synthesized _testmain.goo has to join `asts` before the marker-
+        // seeding loop below walks it.
+        //
+        // Only the _test files are scanned, which is both Go's rule and a
+        // consistency requirement: scanning an ordinary package file would
+        // reject a `func TestHelper(x int)` that `goo build` accepts, so the
+        // same source would compile or fail depending on the subcommand.
+        ASTNode** test_asts = calloc(nfiles, sizeof(ASTNode*));
+        const char** test_names = calloc(nfiles, sizeof(char*));
+        if (!test_asts || !test_names) {
+            free(test_asts); free(test_names);
+            fprintf(stderr, "Error: out of memory preparing test discovery\n");
+            ENTRY_CLEANUP();
+            return false;
+        }
+        size_t test_file_count = 0;
+        for (size_t fi = 0; fi < nfiles; fi++) {
+            if (!is_test_source_name(options->input_files[fi])) continue;
+            test_asts[test_file_count] = asts[fi];
+            test_names[test_file_count] = options->input_files[fi];
+            test_file_count++;
+        }
+
+        TestList tests = {0};
+        int discovered = test_discovery_collect(test_asts, test_file_count,
+                                                test_names, &tests);
+        free(test_asts);
+        free(test_names);
+        if (!discovered) {
+            // The diagnostic is already on stderr. Leave no binary behind and
+            // exit non-zero, the same discipline every other reject path keeps.
+            options->run_after_compile = false;
+            ENTRY_CLEANUP();
+            return false;
+        }
+        // Synthesize _testmain.goo and parse it as ONE MORE FILE of the entry
+        // package — the operation PR #226 made ordinary. It is never written to
+        // disk; --emit-testmain prints it.
+        //
+        // This must happen before type_checker_new() below, because the
+        // marker-seeding loop walks every asts[] entry for its imports and the
+        // generated file is what imports "testing".
+        const char* pkg_name = ((ProgramNode*)asts[0])->package_name;
+        char* testmain_src = test_discovery_build_main(pkg_name ? pkg_name : "main",
+                                                       &tests);
+        test_list_free(&tests);
+        if (!testmain_src) {
+            fprintf(stderr, "Error: out of memory generating _testmain.goo\n");
+            ENTRY_CLEANUP();
+            return false;
+        }
+
+        if (options->emit_testmain) {
+            fputs(testmain_src, stdout);
+            free(testmain_src);
+            options->run_after_compile = false;
+            ENTRY_CLEANUP();
+            return true;
+        }
+
+        // Grow the three parallel arrays by one. On a realloc failure the
+        // ORIGINAL pointer is still live, so assign through a temporary —
+        // writing straight into sources/lexers/asts would lose every file
+        // already parsed and leak all of it.
+        char** grown_sources = realloc(sources, (nfiles + 1) * sizeof(char*));
+        if (grown_sources) sources = grown_sources;
+        Lexer** grown_lexers = grown_sources ? realloc(lexers, (nfiles + 1) * sizeof(Lexer*)) : NULL;
+        if (grown_lexers) lexers = grown_lexers;
+        ASTNode** grown_asts = grown_lexers ? realloc(asts, (nfiles + 1) * sizeof(ASTNode*)) : NULL;
+        if (grown_asts) asts = grown_asts;
+        if (!grown_asts) {
+            free(testmain_src);
+            fprintf(stderr, "Error: out of memory generating _testmain.goo\n");
+            ENTRY_CLEANUP();
+            return false;
+        }
+
+        // The source buffer joins `sources` so ENTRY_CLEANUP frees it. No
+        // lexer: parse_input builds its own, which is why the package path
+        // (parse of an imported package's files) sets none either.
+        sources[nfiles] = testmain_src;
+        lexers[nfiles]  = NULL;
+        asts[nfiles]    = NULL;
+
+        // A string literal has static storage duration, so it outlives every
+        // Position that parse_input stamps this pointer into. The real files
+        // must strdup their names because those are built at runtime.
+        static const char kTestMainName[] = "_testmain.goo";
+
+        extern ASTNode* ast_root;
+        ast_root = NULL;
+        if (parse_input(testmain_src, kTestMainName) != 0 || !ast_root) {
+            // Generated source that will not parse is a compiler bug, not a
+            // user error, so point at the flag that shows the text.
+            fprintf(stderr, "Error: failed to parse the synthesized _testmain.goo "
+                            "(re-run with --emit-testmain to see it)\n");
+            nfiles++;   // the slot is owned now; let ENTRY_CLEANUP free it
+            ENTRY_CLEANUP();
+            return false;
+        }
+        asts[nfiles] = ast_root;
+        ast_root = NULL;
+        nfiles++;
+
+        if (options->emit_ast) {
+            printf("=== AST (%s) ===\n", kTestMainName);
+            ast_print(asts[nfiles - 1], 0);
+            printf("\n");
+        }
+    }
 
     // Hidden debug flag: walk the import graph from main and print the
     // resolved packages in topological order (leaves first), then "main".

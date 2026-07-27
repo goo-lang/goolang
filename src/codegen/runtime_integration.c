@@ -93,6 +93,28 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { i32_type };
         add_runtime_function(codegen, "goo_exit", void_type, params, 1);
     }
+
+    // `goo test` runtime (src/runtime/testing.c). Declared here rather than
+    // lazily at each call site so codegen_generate_stdlib_call — which requires
+    // the symbol to already exist in the module — can lower testing.Summary.
+    {
+        // Reuse this file's own goo_string_t layout so the declaration cannot
+        // disagree with the one the call sites build.
+        LLVMTypeRef str_ty = string_type;
+        // void goo_testing_run(goo_string_t name, void (*fn)(void*,void*), void* env)
+        LLVMTypeRef run_params[] = { str_ty, ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_testing_run", void_type, run_params, 3);
+        // void goo_testing_fail(void* t)
+        LLVMTypeRef fail_params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_testing_fail", void_type, fail_params, 1);
+        // void goo_testing_failnow(void* t)  — marks failed and stops the test
+        add_runtime_function(codegen, "goo_testing_failnow", void_type, fail_params, 1);
+        // void goo_testing_log(void* t, goo_string_t file, int64_t line, goo_string_t msg)
+        LLVMTypeRef log_params[] = { ptr_type, str_ty, i64_type, str_ty };
+        add_runtime_function(codegen, "goo_testing_log", void_type, log_params, 4);
+        // void goo_testing_summary(void)
+        add_runtime_function(codegen, "goo_testing_summary", void_type, NULL, 0);
+    }
     
     // Memory management
     // void* goo_alloc(size_t size)

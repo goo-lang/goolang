@@ -1,0 +1,7 @@
+--- FAIL: TestFails (0.00s)
+    testing_shim_probe.goo:37: boom
+--- FAIL: TestLogsThenFails (0.00s)
+    testing_shim_probe.goo:43: a note
+    testing_shim_probe.goo:44: and a failure
+--- FAIL: TestBareFail (0.00s)
+FAIL

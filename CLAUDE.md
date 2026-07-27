@@ -91,6 +91,50 @@ Note: `bin/goo` links only the reachable set (`GOO_OBJS`, P5.6). The full
 frameworks (constraint inference, concept generics, HKT, flow, reference
 manager) — those frameworks are NOT part of the shipped compiler.
 
+## `goo test`
+
+`goo test [dir]` (default `.`) runs one package's tests. It compiles the
+directory as the entry package WITH its test files, discovers the tests,
+synthesizes an entry point, runs the result, and exits on its verdict.
+
+- **A test file** is `*_test.go` or `*_test.goo` in the package directory.
+  Every other command excludes them, so `goo build .` is unaffected.
+- **A test** is `func TestXxx(t *testing.T)` in a test file: the name begins
+  with `Test` followed by a character that is not a lowercase letter (Go's
+  rule, so `Testify` is an ordinary function), exactly one `*testing.T`
+  parameter, no results. A `Test`-named function of any other shape is a
+  **compile error**, never a silent skip.
+- **Discovery scans test files only.** A `func TestHelper(x int)` in an
+  ordinary package file stays an ordinary function, so the same source cannot
+  compile under `goo build` and fail under `goo test`.
+- **`_testmain.goo`** is generated in memory and parsed as one more file of the
+  package — never written to disk. `goo test --emit-testmain .` prints it. Each
+  test is passed to `testing.Run` as a VALUE, which is what lets the runtime own
+  the call frame and `longjmp` out of `t.Fatal`.
+- **`testing.T` methods:** `Error`, `Errorf`, `Log`, `Logf`, `Fail`, `Fatal`,
+  `Fatalf`, `FailNow`. The `Fatal` family stops that test only; the run
+  continues with the next one.
+- **Output** matches `go test` without `-v`: a passing test prints nothing, a
+  failing one prints `--- FAIL: Name (0.00s)` followed by its indented
+  `file:line: message` log lines. Exit 0 when all pass, 1 on any failure. A
+  package with no test files prints `?   <name>  [no test files]` and exits 0.
+  ONE deliberate divergence: the package summary line is a bare `ok` / `FAIL`,
+  where Go prints `ok\t<pkg>\t0.002s` — neither the package path nor the
+  elapsed time is reproducible.
+- **Non-goals in this cut:** no subtests (`t.Run`), no benchmarks, no `-run`
+  filter, no `-v`, no example tests, no coverage. `TestMain` is REJECTED with
+  the ordinary signature diagnostic (it takes `*testing.M`), so it fails loudly
+  rather than being skipped.
+- **Known divergence — external test packages.** A `package foo_test` file in a
+  `foo` directory is compiled as part of `foo`, because the compiler does not
+  yet enforce that a package's files agree on their clause. Its tests therefore
+  run, and they can see unexported identifiers that Go would hide. Do not rely
+  on the isolation `package foo_test` gives in Go.
+
+Gated by `goo-test-probe` (`scripts/goo_test_probe.sh`, two packages — one
+all-passing, one failing) in `make verify-core`, and by the `pkg_testing`
+conformance row.
+
 ## Stdlib model
 
 Two layers, both gated by `scripts/check_stdlib_coverage.sh` in verify-core:
@@ -137,6 +181,8 @@ a documented v1 limitation; GC/ownership reclamation is post-v1
 - **Nullable types** `?T` with `if let` / nil comparison
 - **Comptime** blocks/values and inference-only monomorphized generics
 - **Arena regions** `arena { ... }` with escape-analysis auto-promotion
+- **`goo test`**: runs `func TestXxx(t *testing.T)` in a package's `_test`
+  files, with Go's output format and exit status (see the section above)
 - **LLVM-based code generation** with real -O1/2/3 pipelines (differential
   gate proves -O2 IR differs and behavior matches)
 
