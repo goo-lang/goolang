@@ -292,7 +292,7 @@ done <<< "$method_names"
 # goostd/cpkg is a deliberate fixture package (comptime-generic compose
 # probes) outside stdlib scope, same as kinds/shapes/mypkg/pkgcheck/fwdref —
 # not added here.
-GOOSTD_PKG_DIRS="strings:goostd/strings strconv:goostd/strconv utf8:goostd/utf8 bits:goostd/bits lanes:goostd/lanes"
+GOOSTD_PKG_DIRS="strings:goostd/strings strconv:goostd/strconv utf8:goostd/utf8 bits:goostd/bits lanes:goostd/lanes sort:goostd/sort"
 
 GOOSTD_MIN=50
 goostd_total=0
