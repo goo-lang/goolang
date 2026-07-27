@@ -445,18 +445,39 @@ typedef struct Package {
     Scope* exports;         // fresh Variable copies of exported symbols (owned)
     int state;              // 0=unvisited 1=in-progress 2=done
     struct Package* next;   // intrusive list link
-    // P6 M1 (comptime-wall lift): the package's PROGRAM AST, ownership
-    // transferred here from the PkgGraph (compile_resolved_packages, goo.c)
-    // after the package compiles. The PkgGraph is torn down (pkg_graph_free)
-    // before main is type-checked/codegen'd, but a comptime-param package
-    // function's template FuncDecl — reachable via an export copy's
-    // func_decl_node — must survive until main's monomorphizer emits its
-    // instances (codegen_monomorphize). Holding the AST on the Package, which
-    // outlives codegen (freed only at type_checker_free), is what keeps that
-    // FuncDecl (and every package-level symbol its body references) alive.
-    // NULL for a package whose AST the graph still owns (compile failed, or no
-    // transfer yet). Freed by ast_node_free in type_checker_free.
-    struct ASTNode* owned_ast;
+    // P6 M1 (comptime-wall lift): the package's PROGRAM ASTs — ONE PER FILE,
+    // since a package is the union of its files (multi-file-packages arc).
+    // Ownership is transferred here from the PkgGraph
+    // (compile_resolved_packages, goo.c) after the package compiles. The
+    // PkgGraph is torn down (pkg_graph_free) before main is
+    // type-checked/codegen'd, but a comptime-param package function's template
+    // FuncDecl — reachable via an export copy's func_decl_node — must survive
+    // until main's monomorphizer emits its instances (codegen_monomorphize).
+    // Holding the ASTs on the Package, which outlives codegen (freed only at
+    // type_checker_free), is what keeps that FuncDecl (and every package-level
+    // symbol its body references) alive.
+    //
+    // An ARRAY, deliberately not a ->next chain: ast_node_free recurses into
+    // ->next (ast.c), so chaining the per-file PROGRAM nodes would make one
+    // free reach all of them and turn the per-element teardown below into a
+    // double free. Each element is an independent root.
+    //
+    // Empty (NULL / 0) for a package whose ASTs the graph still owns (compile
+    // failed, or no transfer yet). Each element is freed by ast_node_free in
+    // type_checker_free.
+    struct ASTNode** owned_asts;
+    size_t owned_ast_count;
+
+    // The per-file source paths those ASTs were parsed under, transferred with
+    // them and freed at the same time. NOT decoration: every Position stamped
+    // while parsing a file stores this exact `char*`, and diagnostics
+    // dereference it whenever they are rendered. The ASTs outlive the PkgGraph
+    // (that is the point of owned_asts), and a comptime template's positions can
+    // still be reported during MAIN's monomorphization, long after the graph is
+    // gone — so a filename owned by the graph would be freed while live
+    // Positions still pointed at it. Same length as owned_asts, same lifetime.
+    char** owned_file_names;
+    size_t owned_file_name_count;
 } Package;
 
 // Forward declarations for enhanced interface system
@@ -1054,13 +1075,21 @@ int type_check_program(TypeChecker* checker, ASTNode* program);
 // declaration loop as type_check_program, then publishes the package's A-Z
 // top-level symbols into pkg->exports via package_export_filter.
 //
+// `programs` holds ONE PROGRAM AST PER FILE (multi-file-packages arc); a
+// package is the union of its files, so every pass below runs over ALL files
+// before the next pass starts. That ordering is what it means for a package to
+// be the compilation unit: a signature in a.go may name a type declared in
+// b.go, and a body in b.go may call a function declared in a.go, regardless of
+// which file the resolver happened to sort first.
+//
 // LIFETIME CONTRACT (asymmetric BY DESIGN): on success this returns with the
 // package scope STILL PUSHED and current_package STILL SET. The caller codegens
 // the package while that scope is live (codegen recovers each function's
 // signature by looking it up under its bare name in this scope) and only then
 // calls scope_pop() and clears current_package. Popping here would hide the
 // package's functions from codegen and drop their parameters.
-int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program);
+int type_check_package(TypeChecker* checker, Package* pkg,
+                       ASTNode** programs, size_t program_count);
 // P4.6/P4.7, moved to type_checker.c under P6 M2-B1 Task 10: populate the
 // sync/time shim packages' bespoke struct+method exports on `pkg`. Called
 // from BOTH goo.c's seed_imported_stdlib_markers (main's own import) and

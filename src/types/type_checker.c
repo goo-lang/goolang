@@ -117,12 +117,26 @@ void type_checker_free(TypeChecker* checker) {
         free(pkg->import_path);
         free(pkg->name);
         scope_free(pkg->exports);
-        // P6 M1: the package AST whose ownership compile_resolved_packages
-        // transferred here (NULL if the graph still owns it). Freed last, after
-        // the exports scope whose Variables' func_decl_node pointed into it —
-        // scope_free frees only the Variable copies, never the AST nodes they
-        // reference, so the order is not load-bearing, only tidy.
-        ast_node_free(pkg->owned_ast);
+        // P6 M1: the package's per-file ASTs, whose ownership
+        // compile_resolved_packages transferred here (empty if the graph still
+        // owns them). Freed last, after the exports scope whose Variables'
+        // func_decl_node pointed into them — scope_free frees only the Variable
+        // copies, never the AST nodes they reference, so the order is not
+        // load-bearing, only tidy.
+        //
+        // Element-by-element because each file's PROGRAM node is an independent
+        // root: ast_node_free recurses into ->next, so these must never be
+        // chained (see Package.owned_asts in types.h).
+        for (size_t ai = 0; ai < pkg->owned_ast_count; ai++) {
+            ast_node_free(pkg->owned_asts[ai]);
+        }
+        free(pkg->owned_asts);
+        // Freed only now, with the ASTs: every Position in them points at one of
+        // these strings (see Package.owned_file_names).
+        for (size_t fi = 0; fi < pkg->owned_file_name_count; fi++) {
+            free(pkg->owned_file_names[fi]);
+        }
+        free(pkg->owned_file_names);
         free(pkg);
         pkg = next;
     }
@@ -229,7 +243,12 @@ Package* type_checker_add_package(TypeChecker* checker, const char* import_path,
     pkg->name = str_dup(name);
     pkg->exports = scope_new(NULL);
     pkg->state = 0;  // unvisited
-    pkg->owned_ast = NULL;  // P6 M1: set by compile_resolved_packages on success
+    // P6 M1: all set by compile_resolved_packages on success (one AST and one
+    // source path per file).
+    pkg->owned_asts = NULL;
+    pkg->owned_ast_count = 0;
+    pkg->owned_file_names = NULL;
+    pkg->owned_file_name_count = 0;
     pkg->next = checker->packages;
     checker->packages = pkg;
 
@@ -1193,8 +1212,9 @@ static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports
 // scope down. This deliberately mirrors type_check_program's decl loop rather
 // than calling it, because we must NOT re-run the lexer-error guard (already
 // checked for the whole build) and must run inside the pushed package scope.
-int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
-    if (!checker || !pkg || !program) return 0;
+int type_check_package(TypeChecker* checker, Package* pkg,
+                       ASTNode** programs, size_t program_count) {
+    if (!checker || !pkg || !programs || program_count == 0) return 0;
 
     // Push the package scope and set current_package FIRST, before any failable
     // work, so that EVERY return past this point leaves exactly one scope pushed
@@ -1203,31 +1223,50 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
     checker->current_package = pkg;
     scope_push(checker);
 
-    if (program->type != AST_PROGRAM) {
-        type_error(checker, program->pos, "Expected program node");
-        return 0;
+    for (size_t i = 0; i < program_count; i++) {
+        if (!programs[i] || programs[i]->type != AST_PROGRAM) {
+            type_error(checker, programs[i] ? programs[i]->pos : (Position){0},
+                       "Expected program node");
+            return 0;
+        }
     }
 
-    ProgramNode* prog = (ProgramNode*)program;
+    // EVERY pass below runs over ALL FILES before the next pass begins. That is
+    // the whole content of "the package is the compilation unit": a signature in
+    // one file may name a type declared in another, and a body in one file may
+    // call a function declared in another, no matter which file
+    // resolve_package_dir sorted first. Running the passes per-file instead
+    // would make cross-file resolution depend on filename order.
 
-    // P6 M2-B1 Task 4: this package's own plain-shim imports (see
+    // P6 M2-B1 Task 4: each file's own plain-shim imports (see
     // seed_package_own_shim_imports doc comment above) — must run before
     // any decl below is checked, since a package-level var/const init or a
     // function body may reference the shim on line 1.
-    if (!seed_package_own_shim_imports(checker, prog->imports)) {
-        return 0;  // scope/current_package left set; caller aborts the build
+    //
+    // Multi-file note: this seeds the UNION of every file's imports into the one
+    // package scope, so file A can currently reach a shim only file B imported.
+    // Go scopes imports per FILE. The per-file import scope chain that fixes
+    // this is the next commit in this arc; the reject fixture for it is written
+    // against this permissive behavior on purpose.
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        if (!seed_package_own_shim_imports(checker, prog->imports)) {
+            return 0;  // scope/current_package left set; caller aborts the build
+        }
     }
 
     // Mirror type_check_program's comptime pre-pass so an intra-package
     // `is_comptime` const RHS can resolve forward-declared calls.
-    if (prog->decls && checker->comptime_type_ctx
-                    && checker->comptime_type_ctx->comptime_ctx) {
+    if (checker->comptime_type_ctx && checker->comptime_type_ctx->comptime_ctx) {
         ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
-        for (ASTNode* d = prog->decls; d; d = d->next) {
-            if (d->type == AST_FUNC_DECL) {
-                FuncDeclNode* func = (FuncDeclNode*)d;
-                if (func->name) {
-                    comptime_context_bind_func(ctx, func->name, d);
+        for (size_t i = 0; i < program_count; i++) {
+            ProgramNode* prog = (ProgramNode*)programs[i];
+            for (ASTNode* d = prog->decls; d; d = d->next) {
+                if (d->type == AST_FUNC_DECL) {
+                    FuncDeclNode* func = (FuncDeclNode*)d;
+                    if (func->name) {
+                        comptime_context_bind_func(ctx, func->name, d);
+                    }
                 }
             }
         }
@@ -1235,35 +1274,49 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
 
     // P2.3/T1: mirror type_check_program's shell pre-pass so forward and
     // mutual struct/enum references resolve inside a vendored stdlib package
-    // too — real upstream Go source relies on this pervasively.
-    if (!declare_type_shells(checker, prog->decls)) {
-        return 0;  // scope/current_package left set; caller aborts the build
+    // too — real upstream Go source relies on this pervasively. Across ALL
+    // files first, so a signature in a.go can name a type declared in b.go.
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        if (!declare_type_shells(checker, prog->decls)) {
+            return 0;  // scope/current_package left set; caller aborts the build
+        }
     }
 
     // Two-pass declaration walk (same as type_check_program): register all
     // signatures in source order (pass 1), then check function bodies (pass 2),
     // so a package function may reference another regardless of declaration
     // order — the case that pervades real upstream Go source (e.g.
-    // bits.LeadingZeros calls Len, defined far below it).
-    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (decl->type == AST_FUNC_DECL) {
-            if (!declare_function_signature(checker, (FuncDeclNode*)decl)) {
-                return 0;  // scope/current_package left set; caller aborts the build
+    // bits.LeadingZeros calls Len, defined far below it). With N files the same
+    // argument applies across file boundaries, which is why each of these two
+    // loops completes over every file before the next one starts.
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+            if (decl->type == AST_FUNC_DECL) {
+                if (!declare_function_signature(checker, (FuncDeclNode*)decl)) {
+                    return 0;  // scope/current_package left set; caller aborts
+                }
+            } else if (!type_check_declaration(checker, decl)) {
+                return 0;  // scope/current_package left set; caller aborts
             }
-        } else if (!type_check_declaration(checker, decl)) {
-            return 0;  // scope/current_package left set; caller aborts the build
         }
     }
-    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (decl->type == AST_FUNC_DECL) {
-            if (!type_check_function_decl(checker, decl)) {
-                return 0;  // scope/current_package left set; caller aborts the build
+    for (size_t i = 0; i < program_count; i++) {
+        ProgramNode* prog = (ProgramNode*)programs[i];
+        for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+            if (decl->type == AST_FUNC_DECL) {
+                if (!type_check_function_decl(checker, decl)) {
+                    return 0;  // scope/current_package left set; caller aborts
+                }
             }
         }
     }
 
     // Publish the package's exported (capitalised) top-level symbols so
-    // cross-package selector resolution (Task 5) can reach them by name.
+    // cross-package selector resolution (Task 5) can reach them by name. Run
+    // ONCE over the finished package scope, which now holds every file's
+    // top-level symbols — exports are a property of the package, not of a file.
     package_export_filter(checker->current_scope, pkg->exports, pkg);
 
     return checker->error_count == 0;

@@ -451,7 +451,21 @@ typedef enum { PKG_UNVISITED = 0, PKG_IN_PROGRESS = 1, PKG_DONE = 2 } PkgState;
 typedef struct {
     char* import_path;   // registry key (owned)
     char* name;          // package short name (owned)
-    ASTNode* ast;        // parsed ProgramNode snapshot (owned)
+    // One parsed ProgramNode per FILE of the package (owned). A package is the
+    // union of its files, and each file is parsed separately under its own real
+    // filename — the filename reaches every diagnostic raised while checking
+    // that file, so it must be the true path, not the import path.
+    //
+    // An ARRAY, deliberately not a ->next chain: ast_node_free recurses into
+    // ->next (ast.c), so chaining these roots would make the per-element
+    // teardown in pkg_graph_free a double free.
+    ASTNode** asts;
+    size_t ast_count;
+    // The source path each of those ASTs was parsed under (owned, same length
+    // as asts). Every Position inside asts[i] stores file_names[i] BY POINTER,
+    // so these must live exactly as long as the ASTs — they are transferred to
+    // the Package together with them (see Package.owned_file_names, types.h).
+    char** file_names;
     PkgState state;
 } PkgEntry;
 
@@ -528,7 +542,15 @@ static void pkg_graph_free(PkgGraph* g) {
     for (size_t i = 0; i < g->entry_count; i++) {
         PkgEntry* e = g->entries[i];
         if (!e) continue;
-        if (e->ast) ast_node_free(e->ast);
+        // Per-file ASTs, each an independent root — see PkgEntry.asts. Slots
+        // still owned by the graph are freed here; slots whose ownership moved
+        // to the Package (compile_resolved_packages) were nulled there.
+        for (size_t a = 0; a < e->ast_count; a++) {
+            if (e->asts[a]) ast_node_free(e->asts[a]);
+            if (e->file_names) free(e->file_names[a]);
+        }
+        free(e->asts);
+        free(e->file_names);
         free(e->import_path);
         free(e->name);
         free(e);
@@ -540,41 +562,12 @@ static void pkg_graph_free(PkgGraph* g) {
     memset(g, 0, sizeof(*g));
 }
 
-// Concatenate a package's *.go files into a single source buffer (Go
-// semantics: a package is the union of its files). Returns a malloc'd
-// NUL-terminated buffer the caller owns, or NULL on error.
-static char* concat_package_sources(const PackageSource* ps) {
-    size_t total = 1;  // trailing NUL
-    char** parts = calloc(ps->file_count, sizeof(char*));
-    if (!parts) return NULL;
-    for (size_t i = 0; i < ps->file_count; i++) {
-        parts[i] = read_file(ps->files[i]);
-        if (!parts[i]) {
-            for (size_t j = 0; j < i; j++) free(parts[j]);
-            free(parts);
-            return NULL;
-        }
-        total += strlen(parts[i]) + 1;  // +1 for a joining newline
-    }
-    char* buf = malloc(total);
-    if (!buf) {
-        for (size_t i = 0; i < ps->file_count; i++) free(parts[i]);
-        free(parts);
-        return NULL;
-    }
-    buf[0] = '\0';
-    size_t off = 0;
-    for (size_t i = 0; i < ps->file_count; i++) {
-        size_t len = strlen(parts[i]);
-        memcpy(buf + off, parts[i], len);
-        off += len;
-        buf[off++] = '\n';
-        free(parts[i]);
-    }
-    buf[off] = '\0';
-    free(parts);
-    return buf;
-}
+// concat_package_sources lived here. It joined a package's files into one
+// buffer so a single parse could cover them all. It was never able to work:
+// parser.y's `program` rule admits exactly one package_clause, so any package
+// of more than one file failed on the second file's clause. It also destroyed
+// diagnostic positions, which is why it is deleted rather than repaired —
+// walk_import now parses each file under its own real filename.
 
 // Forward decl for mutual recursion.
 static int walk_import(PkgGraph* g, const char* import_path);
@@ -701,28 +694,74 @@ static int walk_import(PkgGraph* g, const char* import_path) {
     }
     e->name = str_dup(ps.name);
 
-    char* buf = concat_package_sources(&ps);
-    package_source_free(&ps);
-    if (!buf) {
-        fprintf(stderr, "Error: cannot read sources for package \"%s\"\n", import_path);
-        return -1;
-    }
-    if (pkg_graph_keep_source(g, buf) != 0) {
-        free(buf);
+    // Parse each file of the package SEPARATELY, under its own real filename.
+    //
+    // This used to concatenate every file into one buffer and parse that once.
+    // Two things were wrong with it. parser.y's `program` rule admits exactly
+    // ONE package_clause, so any package of more than one file died on the
+    // second file's clause — no multi-file package has ever compiled. And the
+    // position in every diagnostic became concat-relative and attributed to the
+    // import path, so an error in the second file pointed at a line number that
+    // existed in no file and a "filename" that was not a file. PRs #221-#223
+    // made diagnostics report true line:column; concatenation would have
+    // silently undone that for every package.
+    e->asts = calloc(ps.file_count, sizeof(ASTNode*));
+    e->file_names = calloc(ps.file_count, sizeof(char*));
+    if (!e->asts || !e->file_names) {
+        package_source_free(&ps);
         fprintf(stderr, "Error: out of memory resolving imports\n");
         return -1;
     }
 
-    ast_root = NULL;
-    if (parse_input(buf, import_path) != 0 || !ast_root) {
-        fprintf(stderr, "Error: failed to parse package \"%s\"\n", import_path);
-        return -1;
-    }
-    e->ast = ast_root;   // snapshot immediately
-    ast_root = NULL;     // detach so a later parse can't clobber it
+    for (size_t fi = 0; fi < ps.file_count; fi++) {
+        // Own the path: parse_input stamps THIS pointer into every Position it
+        // creates, and `ps` is freed as soon as this loop ends. Passing
+        // ps.files[fi] straight through left every diagnostic in the package
+        // rendering a filename from freed memory.
+        e->file_names[fi] = str_dup(ps.files[fi]);
+        if (!e->file_names[fi]) {
+            package_source_free(&ps);
+            fprintf(stderr, "Error: out of memory resolving imports\n");
+            return -1;
+        }
 
-    if (e->ast->type == AST_PROGRAM) {
-        ProgramNode* prog = (ProgramNode*)e->ast;
+        char* buf = read_file(ps.files[fi]);
+        if (!buf) {
+            fprintf(stderr, "Error: cannot read source file \"%s\" of package \"%s\"\n",
+                    ps.files[fi], import_path);
+            package_source_free(&ps);
+            return -1;
+        }
+        if (pkg_graph_keep_source(g, buf) != 0) {
+            free(buf);
+            package_source_free(&ps);
+            fprintf(stderr, "Error: out of memory resolving imports\n");
+            return -1;
+        }
+
+        // ast_root is a bison global: snapshot it into this file's slot and
+        // null it immediately, so the NEXT file's parse cannot clobber a
+        // pointer we already own (the same snapshot-and-detach discipline the
+        // single-file path used).
+        ast_root = NULL;
+        if (parse_input(buf, e->file_names[fi]) != 0 || !ast_root) {
+            fprintf(stderr, "Error: failed to parse package \"%s\"\n", import_path);
+            package_source_free(&ps);
+            return -1;
+        }
+        e->asts[fi] = ast_root;
+        e->ast_count = fi + 1;   // keep in step so a later failure frees exactly
+                                  // the slots already filled
+        ast_root = NULL;
+    }
+    package_source_free(&ps);
+
+    // Every file's own import list is walked: a package's dependencies are the
+    // union of its files' imports, even though (from the next commit) each
+    // file's import SCOPE stays its own.
+    for (size_t fi = 0; fi < e->ast_count; fi++) {
+        if (e->asts[fi]->type != AST_PROGRAM) continue;
+        ProgramNode* prog = (ProgramNode*)e->asts[fi];
         if (walk_program_imports(g, prog->imports) != 0) return -1;
     }
 
@@ -787,8 +826,35 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
         // signature and emit it under the mangled symbol; we tear both down
         // right after codegen so main compiles in the global scope with bare
         // names (current_package == NULL).
-        bool ok = type_check_package(checker, p, e->ast)
-               && codegen_generate_program(codegen, checker, e->ast);
+        bool ok = type_check_package(checker, p, e->asts, e->ast_count);
+
+        // Forward-reference pre-pass ACROSS THE WHOLE PACKAGE, before any file's
+        // bodies are emitted.
+        //
+        // codegen_generate_program runs this same pre-pass over the decls of the
+        // one program it is given, which is what lets a call resolve a function
+        // defined later in the SAME file (call sites bind via
+        // LLVMGetNamedFunction). Across files that is not enough: emitting a.go
+        // fully before b.go means a.go's bodies look up a prototype that b.go
+        // has not created yet, and a genuine cross-file call fails codegen with
+        // "Undefined identifier" even though it type-checked cleanly. Hoisting
+        // the pre-pass over every file first is the codegen-level counterpart of
+        // type_check_package running each pass over all files.
+        //
+        // Idempotent, so the per-file call inside codegen_generate_program is
+        // harmless: codegen_predeclare_function guards on LLVMGetNamedFunction
+        // and skips a symbol that already exists. Runs while current_package is
+        // still set, which is what package-prefixes each symbol.
+        for (size_t fi = 0; ok && fi < e->ast_count; fi++) {
+            ProgramNode* fprog = (ProgramNode*)e->asts[fi];
+            ok = codegen_predeclare_functions(codegen, checker, fprog->decls);
+        }
+
+        // Then emit each file, while the package scope from type_check_package
+        // is still live (its LIFETIME CONTRACT).
+        for (size_t fi = 0; ok && fi < e->ast_count; fi++) {
+            ok = codegen_generate_program(codegen, checker, e->asts[fi]);
+        }
         scope_pop(checker);
         checker->current_package = NULL;
         if (!ok) {
@@ -806,8 +872,15 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
         // makes pkg_graph_free skip it (no double free). Non-comptime imports
         // are unaffected — they simply keep their (now Package-owned) AST alive
         // a little longer, freed once at the same final teardown.
-        p->owned_ast = e->ast;
-        e->ast = NULL;
+        // The file-name array moves WITH the ASTs, never separately: the
+        // Positions inside those ASTs hold these exact pointers.
+        p->owned_asts = e->asts;
+        p->owned_ast_count = e->ast_count;
+        p->owned_file_names = e->file_names;
+        p->owned_file_name_count = e->ast_count;
+        e->asts = NULL;
+        e->file_names = NULL;
+        e->ast_count = 0;
     }
     return true;
 }

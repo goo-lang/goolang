@@ -1,0 +1,20 @@
+// A type error in the SECOND file of a multi-file package must report THAT
+// file's real path and THAT file's own line:column.
+//
+// This is why concat_package_sources had to be deleted rather than taught to
+// handle several package clauses. Concatenation reported the IMPORT PATH as the
+// filename and a concat-relative line number, so the same error surfaced as
+// "./multifile:21:8" — a line that exists in no file, attributed to a name that
+// is not a file. PRs #221-#223 spent three PRs making diagnostics report true
+// positions; a concatenating multi-file path would have silently undone that
+// for every package the moment it shipped.
+//
+// The sidecar asserts the file name AND the line:column together, so a
+// regression in either one fails this fixture.
+package main
+
+import "./multifilebad"
+
+func main() {
+	_ = multifilebad.Good()
+}
