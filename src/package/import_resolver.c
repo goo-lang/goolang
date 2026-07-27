@@ -86,22 +86,26 @@ static void free_str_array(char** arr, size_t count) {
 
 // Is `fname` a buildable source file of a package? Both extensions count: a
 // package may be written in .go (Go-compatible source, what goostd vendors)
-// or .goo, and a directory may mix them. Test files are excluded under BOTH
-// spellings — Go's own rule, and the reason the exclusion cannot simply test
-// for "_test" anywhere in the name.
-//
-// SINGLE predicate on purpose. resolve_package_dir is the one directory scan
-// in the compiler, shared by imported packages and (since the directory-entry
-// work) by the entry package itself, so the set of files that make up a
-// package is defined here and nowhere else. A second copy would let `goo build
-// .` and `import "./p"` disagree about what a package contains.
+// or .goo, and a directory may mix them. Test files are matched under BOTH
+// spellings — Go's own rule, and the reason the match cannot simply look for
+// "_test" anywhere in the name.
 //
 // ".goo" is not a suffix of ".go": for "x.goo" the last three bytes are "goo",
 // so the .go test correctly rejects it and the .goo test accepts it. The two
 // arms are disjoint, not ordered.
-static int is_buildable_source(const char* fname, size_t len) {
-    if (has_suffix(fname, len, "_test.go", 8)) return 0;
-    if (has_suffix(fname, len, "_test.goo", 9)) return 0;
+//
+// `include_tests` is set ONLY by `goo test`. Everything else — `goo build`,
+// `goo run`, and every `import "./p"` — passes 0, so a _test file never enters
+// an ordinary build.
+//
+// A flag on the ONE predicate, deliberately, rather than a second scan for test
+// mode: the single predicate is what stops the entry package and an imported
+// package from disagreeing about what files a package contains, and a parallel
+// test-mode scanner would reintroduce exactly that.
+static int is_buildable_source(const char* fname, size_t len, int include_tests) {
+    int is_test = has_suffix(fname, len, "_test.go", 8) ||
+                  has_suffix(fname, len, "_test.goo", 9);
+    if (is_test && !include_tests) return 0;
     return has_suffix(fname, len, ".go", 3) || has_suffix(fname, len, ".goo", 4);
 }
 
@@ -152,7 +156,8 @@ const char* normalize_import_path(const char* import_path) {
 // ALL matching files are collected, sorted, and returned — this function has
 // always been N-file correct. The single-file limit lived downstream, in the
 // driver's text concatenation of the list it returns.
-static int resolve_package_dir(const char* pkg_dir, const char* import_path, PackageSource* out) {
+static int resolve_package_dir(const char* pkg_dir, const char* import_path,
+                               int include_tests, PackageSource* out) {
     DIR* dir = opendir(pkg_dir);
     if (!dir) return 1; // package directory doesn't exist
 
@@ -164,7 +169,7 @@ static int resolve_package_dir(const char* pkg_dir, const char* import_path, Pac
     while ((entry = readdir(dir)) != NULL) {
         const char* fname = entry->d_name;
         size_t len = strlen(fname);
-        if (!is_buildable_source(fname, len)) continue;
+        if (!is_buildable_source(fname, len, include_tests)) continue;
 
         if (count == cap) {
             size_t new_cap = cap ? cap * 2 : 4;
@@ -211,7 +216,7 @@ static int resolve_package_dir(const char* pkg_dir, const char* import_path, Pac
     return 0;
 }
 
-int resolve_package_dir_path(const char* pkg_dir, PackageSource* out) {
+int resolve_package_dir_path(const char* pkg_dir, int include_tests, PackageSource* out) {
     if (!out) return 1;
     out->files = NULL;
     out->file_count = 0;
@@ -232,7 +237,7 @@ int resolve_package_dir_path(const char* pkg_dir, PackageSource* out) {
     const char* short_name = (slash && slash[1]) ? slash + 1 : base_src;
 
     // Same scan, same predicate, same sort as an imported package.
-    return resolve_package_dir(pkg_dir, short_name, out);
+    return resolve_package_dir(pkg_dir, short_name, include_tests, out);
 }
 
 int resolve_import(const char* import_path, const char* source_dir, PackageSource* out) {
@@ -253,7 +258,7 @@ int resolve_import(const char* import_path, const char* source_dir, PackageSourc
         if (rel[0] == '\0') return 1; // "./" with nothing after it
         char pkg_dir[4096];
         snprintf(pkg_dir, sizeof(pkg_dir), "%s/%s", source_dir, rel);
-        return resolve_package_dir(pkg_dir, import_path, out);
+        return resolve_package_dir(pkg_dir, import_path, 0, out);
     }
 
     // Bare name: GOOROOT tiers first (unchanged precedence — see the design
@@ -268,14 +273,14 @@ int resolve_import(const char* import_path, const char* source_dir, PackageSourc
     const char* resolved_path = normalize_import_path(import_path);
     char gooroot_pkg_dir[4096];
     snprintf(gooroot_pkg_dir, sizeof(gooroot_pkg_dir), "%s/%s", goo_gooroot_dir(), resolved_path);
-    if (resolve_package_dir(gooroot_pkg_dir, import_path, out) == 0) return 0;
+    if (resolve_package_dir(gooroot_pkg_dir, import_path, 0, out) == 0) return 0;
 
     // LAST tier: the main .goo file's own directory, bare-name fallback.
     // Deliberately tried only after GOOROOT has already failed.
     if (source_dir) {
         char local_pkg_dir[4096];
         snprintf(local_pkg_dir, sizeof(local_pkg_dir), "%s/%s", source_dir, import_path);
-        if (resolve_package_dir(local_pkg_dir, import_path, out) == 0) return 0;
+        if (resolve_package_dir(local_pkg_dir, import_path, 0, out) == 0) return 0;
     }
 
     return 1; // unresolvable in any tier

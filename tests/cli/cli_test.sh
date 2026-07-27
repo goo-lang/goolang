@@ -90,6 +90,14 @@ EOF
 # A directory with no buildable source files must be refused cleanly.
 mkdir -p "$WORK/emptydir"
 
+# A package with no _test files: `goo test` reports Go's no-tests line, exit 0.
+mkdir -p "$WORK/notests"
+cat > "$WORK/notests/only.goo" <<'EOF'
+package notests
+
+func Add(a int, b int) int { return a + b }
+EOF
+
 # check <name> <want_exit> <want_stdout> <stderr_mode> <cmd...>
 #   want_stdout: exact string, or "~substr" for contains
 #   stderr_mode: "empty", "nonempty", or a substring stderr must contain
@@ -165,6 +173,9 @@ check dir-binary-runs          0     "hello 42"    empty                "$WORK/d
 # that already exists there. Real go1.26.1 refuses with this same wording.
 check dir-output-collision     1     ""            "already exists and is a directory" sh -c "cd '$WORK' && '$COMPILER' build ./dirpkg"
 check dir-no-sources           1     ""            "no buildable source files" "$COMPILER" build "$WORK/emptydir"
+# `goo test` on a package with no _test files: Go prints a no-tests line and
+# exits 0 rather than treating it as an error.
+check test-no-test-files       0     "~[no test files]" empty  sh -c "cd '$WORK/notests' && '$COMPILER' test ."
 
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]

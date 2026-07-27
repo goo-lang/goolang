@@ -33,10 +33,15 @@ typedef enum {
     GOO_MODE_LEGACY,
     GOO_MODE_BUILD,
     GOO_MODE_RUN,
+    GOO_MODE_TEST,
 } GooMode;
 
 // Compiler options
 typedef struct CompilerOptions {
+    // Which subcommand is running. compile_file branches on this for the
+    // test-only paths (test-file inclusion, the no-tests exit, _testmain
+    // synthesis); it used to be a parse_arguments parameter only.
+    GooMode mode;
     // The argument as written: a source file, or a DIRECTORY (`goo build .`,
     // `goo build ./cmd/tool`). Borrowed from argv.
     char* input_file;
@@ -91,8 +96,11 @@ int main(int argc, char* argv[]) {
             print_version();
             return 0;
         }
-        if (strcmp(argv[1], "build") == 0 || strcmp(argv[1], "run") == 0) {
-            mode = (argv[1][0] == 'b') ? GOO_MODE_BUILD : GOO_MODE_RUN;
+        if (strcmp(argv[1], "build") == 0 || strcmp(argv[1], "run") == 0 ||
+            strcmp(argv[1], "test") == 0) {
+            mode = (argv[1][0] == 'b') ? GOO_MODE_BUILD
+                 : (argv[1][0] == 'r') ? GOO_MODE_RUN
+                                        : GOO_MODE_TEST;
             // Shift the subcommand out so getopt sees a conventional argv.
             argv[1] = argv[0];
             argv++;
@@ -295,15 +303,21 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         }
     }
     
-    // Check for input file
-    if (optind >= argc) {
-        fprintf(stderr, "Error: No input file specified\n");
-        print_usage(stderr, argv[0]);
-        free(options);
-        return NULL;
-    }
+    options->mode = mode;
 
-    options->input_file = argv[optind];
+    // Check for input file. `goo test` with no argument means the current
+    // directory, matching `go test`; every other mode still requires one.
+    if (optind >= argc) {
+        if (mode != GOO_MODE_TEST) {
+            fprintf(stderr, "Error: No input file specified\n");
+            print_usage(stderr, argv[0]);
+            free(options);
+            return NULL;
+        }
+        options->input_file = ".";
+    } else {
+        options->input_file = argv[optind];
+    }
 
     // A DIRECTORY argument makes the entry package multi-file (`goo build .`,
     // `goo build ./cmd/tool`) — Go's unit of compilation. Expanded through the
@@ -314,7 +328,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         struct stat st;
         if (stat(options->input_file, &st) == 0 && S_ISDIR(st.st_mode)) {
             PackageSource ps;
-            if (resolve_package_dir_path(options->input_file, &ps) != 0) {
+            if (resolve_package_dir_path(options->input_file,
+                                         mode == GOO_MODE_TEST, &ps) != 0) {
                 fprintf(stderr, "Error: no buildable source files in directory '%s'\n",
                         options->input_file);
                 free(options->output_file);
@@ -336,6 +351,22 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
 
     // P5.3: mode-specific argument handling.
     switch (mode) {
+        case GOO_MODE_TEST:
+            if (options->emit_llvm_ir) {
+                fprintf(stderr, "Error: --emit-llvm cannot be combined with 'goo test'\n");
+                free(options->output_file);
+                free(options);
+                return NULL;
+            }
+            // The test binary takes no arguments of its own in this cut (no
+            // -run, no -v), so run_args stays empty. Deliberately NOT
+            // `&argv[optind + 1]` like the run case: `goo test` with no
+            // argument leaves optind == argc, and that expression would then
+            // index one past the end of argv.
+            options->run_args = NULL;
+            options->run_arg_count = 0;
+            options->run_after_compile = true;
+            break;
         case GOO_MODE_RUN:
             if (options->emit_llvm_ir) {
                 fprintf(stderr, "Error: --emit-llvm cannot be combined with 'goo run'\n");
@@ -414,6 +445,10 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 }
                 break;
             }
+            case GOO_MODE_TEST:
+                // Same shape as `goo run`: compile to a temp binary, execute
+                // it, propagate its exit status, then remove it. The test
+                // binary is never an artifact the user asked for.
             case GOO_MODE_RUN:
                 options->output_file = make_temp_output_path();
                 if (!options->output_file) {
@@ -1080,6 +1115,37 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // The entry package's first file stands in wherever a single AST is still
     // the right thing to pass (the import-graph dump below).
     ASTNode* ast = asts[0];
+
+    // `goo test` on a package with no _test files: Go reports it and exits 0
+    // rather than treating it as an error, so a whole-tree run is not derailed
+    // by a package that simply has no tests yet.
+    if (options->mode == GOO_MODE_TEST) {
+        int have_test_file = 0;
+        for (size_t fi = 0; fi < nfiles && !have_test_file; fi++) {
+            const char* fn = options->input_files[fi];
+            size_t fl = strlen(fn);
+            have_test_file = (fl >= 8 && memcmp(fn + fl - 8, "_test.go", 8) == 0) ||
+                             (fl >= 9 && memcmp(fn + fl - 9, "_test.goo", 9) == 0);
+        }
+        if (!have_test_file) {
+            // Named after the entry directory, the same string the output stem
+            // uses; for a single-file argument, that file's own name.
+            char stem[PATH_MAX];
+            const char* src = options->input_file;
+            char resolved[PATH_MAX];
+            if (options->input_is_dir && realpath(options->input_file, resolved)) src = resolved;
+            const char* slash = strrchr(src, '/');
+            snprintf(stem, sizeof(stem), "%s", (slash && slash[1]) ? slash + 1 : src);
+            printf("?   %s  [no test files]\n", stem);
+            // No binary was emitted, so there is nothing to exec. Without
+            // this, main() sees success && run_after_compile and tries to run
+            // the empty file mkstemp created for the temp output path
+            // ("Permission denied", exit 127).
+            options->run_after_compile = false;
+            ENTRY_CLEANUP();
+            return true;
+        }
+    }
 
     // Hidden debug flag: walk the import graph from main and print the
     // resolved packages in topological order (leaves first), then "main".
