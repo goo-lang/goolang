@@ -1058,6 +1058,11 @@ void seed_testing_package_exports(TypeChecker* checker, Package* pkg) {
     sync_export_method(pkg, t_ty, "Logf",   NULL, 0, void_t, 1);
     sync_export_method(pkg, t_ty, "Log",   NULL, 0, void_t, 1);
     sync_export_method(pkg, t_ty, "Fail",  NULL, 0, void_t, 0);
+    // Fatal/Fatalf/FailNow: Error/Errorf/Fail plus a stop. The stop happens in
+    // the runtime, which owns the test's call frame.
+    sync_export_method(pkg, t_ty, "Fatal",   NULL, 0, void_t, 1);
+    sync_export_method(pkg, t_ty, "Fatalf",  NULL, 0, void_t, 1);
+    sync_export_method(pkg, t_ty, "FailNow", NULL, 0, void_t, 0);
 }
 
 // P4.6 (packages-C, C1): mint the Time struct — a single int64 field holding

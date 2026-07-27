@@ -115,6 +115,8 @@ void goo_println_string(goo_string_t str);
 // threaded down from codegen.
 void goo_testing_run(goo_string_t name, void (*fn)(void*, void*), void* env);
 void goo_testing_fail(void* t);
+// Marks failed AND stops the test (longjmp back into goo_testing_run's frame).
+void goo_testing_failnow(void* t);
 void goo_testing_log(void* t, goo_string_t file, int64_t line, goo_string_t msg);
 void goo_testing_summary(void);
 void goo_println_int(int64_t value);

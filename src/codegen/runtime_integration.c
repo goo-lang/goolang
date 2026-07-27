@@ -107,6 +107,8 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         // void goo_testing_fail(void* t)
         LLVMTypeRef fail_params[] = { ptr_type };
         add_runtime_function(codegen, "goo_testing_fail", void_type, fail_params, 1);
+        // void goo_testing_failnow(void* t)  — marks failed and stops the test
+        add_runtime_function(codegen, "goo_testing_failnow", void_type, fail_params, 1);
         // void goo_testing_log(void* t, goo_string_t file, int64_t line, goo_string_t msg)
         LLVMTypeRef log_params[] = { ptr_type, str_ty, i64_type, str_ty };
         add_runtime_function(codegen, "goo_testing_log", void_type, log_params, 4);

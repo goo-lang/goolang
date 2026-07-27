@@ -19,6 +19,20 @@
 // is not known until the test has returned, so the lines cannot be printed as
 // they arrive.
 //
+// TWO KNOWN LIMITATIONS of the longjmp stop, both measured rather than assumed:
+//
+//   1. DEFERS DO NOT RUN. Go stops a test with runtime.Goexit, which unwinds the
+//      stack and runs deferred calls. A longjmp does neither.
+//   2. AN OPEN `arena { }` BLOCK IS NOT RECLAIMED. Its free is emitted at block
+//      exit (statement_codegen.c), and a longjmp is not an exit path codegen
+//      knows about, so the jump skips it. Measured: a t.Fatal inside an arena
+//      produces correct output, the following test still runs, and nothing is
+//      corrupted — the arena simply leaks, bounded by one per such test.
+//
+// Both are v1 limitations documented here and in the arc's design record, not
+// silent behavior. Fixing either needs a real unwind mechanism, which is the
+// same machinery a `recover()` implementation would need (roadmap P3.5).
+//
 // ONE DELIBERATE DIVERGENCE from Go: the package summary line is a bare `FAIL`
 // / `ok` with no elapsed time. Go prints `FAIL\tpkg\t0.002s`. A duration is not
 // reproducible, and the accept fixtures are exact-match goldens; the per-test
@@ -29,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 #include <time.h>
 
 typedef struct {
@@ -36,6 +51,11 @@ typedef struct {
     int         failed;
     char*       log;      // owned; accumulated, already-formatted log lines
     size_t      log_len;
+    // Set for the duration of the test's own call, below. abort_valid guards
+    // the jump: a longjmp with a stale buffer would return into a frame that
+    // has already gone.
+    jmp_buf     abort_to;
+    int         abort_valid;
 } GooTest;
 
 // Whole-run tallies. `goo test` compiles exactly one package into one binary,
@@ -59,6 +79,19 @@ static const char* goo_testing_basename(const char* path) {
 void goo_testing_fail(void* handle) {
     GooTest* t = (GooTest*)handle;
     if (t) t->failed = 1;
+}
+
+// t.Fatal / t.Fatalf / t.FailNow: mark failed AND stop the test.
+//
+// The longjmp lands back in goo_testing_run, which owns the frame the test is
+// running in. Go stops a test with runtime.Goexit, which unwinds and runs
+// defers; this does not run them. That difference is documented rather than
+// hidden — see this file's header and the arc's design record.
+void goo_testing_failnow(void* handle) {
+    GooTest* t = (GooTest*)handle;
+    if (!t) return;
+    t->failed = 1;
+    if (t->abort_valid) longjmp(t->abort_to, 1);
 }
 
 // Append one already-rendered message as a Go-shaped log line:
@@ -107,8 +140,17 @@ void goo_testing_run(goo_string_t name, void (*fn)(void*, void*), void* env) {
     t.log = NULL;
     t.log_len = 0;
 
+    t.abort_valid = 0;
+
     double start = goo_testing_now_sec();
-    if (fn) fn(env, &t);
+    // setjmp must run in THIS frame, which is exactly why the runtime performs
+    // the call instead of the generated main: a Goo-side caller could not offer
+    // a frame for Fatal to return to.
+    if (setjmp(t.abort_to) == 0) {
+        t.abort_valid = 1;
+        if (fn) fn(env, &t);
+    }
+    t.abort_valid = 0;
     double dur = goo_testing_now_sec() - start;
 
     g_total++;

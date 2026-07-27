@@ -183,10 +183,14 @@ A package with no test files exits 0 and prints Go's `?   pkg  [no test files]`.
   (both measured), but not yet verified in a shim row. **This is the first thing
   to probe** — it decides whether §3 stands as written or has to fall back to a
   table built in the generated source.
-- **`setjmp`/`longjmp` across the runtime/generated-code boundary** must not
-  corrupt the arena or defer stacks. A `Fatal` inside a function holding an open
-  `arena { }` block is the case to think about, since the arena's free is emitted
-  at block exit and a longjmp skips it.
+- **`setjmp`/`longjmp` across the runtime/generated-code boundary** — MEASURED,
+  resolved. A `t.Fatal` inside an open `arena { }` block produces correct output,
+  lets the following test run, and corrupts nothing; the arena's block-exit free
+  is simply skipped, so that arena leaks (bounded by one per such test). Deferred
+  calls likewise do not run, where Go's `runtime.Goexit` would run them. Both are
+  documented v1 limitations, in `src/runtime/testing.c`'s header and here — not
+  silent behavior. Fixing either needs a real unwind mechanism, the same
+  machinery `recover()` would need (roadmap P3.5).
 - **Test files change the package's build set**, so a mistake in the
   `include_tests` flag would silently pull `_test` files into `goo build`. The
   existing 473 goldens are the net.

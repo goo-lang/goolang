@@ -1,0 +1,8 @@
+--- FAIL: TestStops (0.00s)
+    testing_fatal_probe.goo:21: stop here
+--- FAIL: TestStillRuns (0.00s)
+    testing_fatal_probe.goo:26: second test ran
+--- FAIL: TestFailNowStops (0.00s)
+--- FAIL: TestFatalfStops (0.00s)
+    testing_fatal_probe.goo:37: bad value 9
+FAIL

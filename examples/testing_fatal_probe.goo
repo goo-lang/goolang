@@ -1,0 +1,47 @@
+// testing_fatal_probe: t.Fatal stops ITS OWN test and nothing else.
+//
+// Two assertions in one fixture, and both matter. The statement after the Fatal
+// must NOT run, and the following test MUST still run. A design where Fatal only
+// set a failed flag would pass the second assertion and silently fail the first,
+// so a test written to stop on a broken precondition would charge on past it and
+// report a confusing second failure — or crash.
+//
+// This is the whole reason testing.Run takes the test as a VALUE rather than a
+// name. Nothing in Goo can unwind another function's frame, so only the runtime,
+// which owns the call, can setjmp before it and longjmp out of Fatal.
+//
+// FORMAT derived from `go test` on the equivalent Go package (go1.26.1); file
+// name and line numbers are facts about this file, and the summary duration is
+// dropped as in the sibling testing probes.
+package main
+
+import "testing"
+
+func TestStops(t *testing.T) {
+	t.Fatal("stop here")
+	t.Log("MUST NOT APPEAR")
+}
+
+func TestStillRuns(t *testing.T) {
+	t.Error("second test ran")
+}
+
+// FailNow is Fatal without a message: it stops the test and logs nothing.
+func TestFailNowStops(t *testing.T) {
+	t.FailNow()
+	t.Log("ALSO MUST NOT APPEAR")
+}
+
+// Fatalf is Fatal with a format: the message is logged, then the test stops.
+func TestFatalfStops(t *testing.T) {
+	t.Fatalf("bad value %d", 9)
+	t.Log("NEVER REACHED")
+}
+
+func main() {
+	testing.Run("TestStops", TestStops)
+	testing.Run("TestStillRuns", TestStillRuns)
+	testing.Run("TestFailNowStops", TestFailNowStops)
+	testing.Run("TestFatalfStops", TestFatalfStops)
+	testing.Summary()
+}

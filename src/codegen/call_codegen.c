@@ -494,7 +494,14 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
     int is_fail   = strcmp(sel, "Fail") == 0;
     int is_errorf = strcmp(sel, "Errorf") == 0;
     int is_logf   = strcmp(sel, "Logf") == 0;
-    if (!is_error && !is_log && !is_fail && !is_errorf && !is_logf) {
+    // Fatal* and FailNow are Error*/Fail plus a stop; the stop is a separate
+    // runtime call emitted last, after any message has been logged, so the
+    // message is not lost to the jump.
+    int is_fatal   = strcmp(sel, "Fatal") == 0;
+    int is_fatalf  = strcmp(sel, "Fatalf") == 0;
+    int is_failnow = strcmp(sel, "FailNow") == 0;
+    if (!is_error && !is_log && !is_fail && !is_errorf && !is_logf &&
+        !is_fatal && !is_fatalf && !is_failnow) {
         codegen_error(codegen, expr->pos, "internal: unknown testing.T method '%s'", sel);
         return NULL;
     }
@@ -518,7 +525,7 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
 
     // Error marks the test failed BEFORE logging, so a Fatal-shaped extension
     // (Task 4) can reuse this ordering unchanged.
-    if (is_error || is_errorf || is_fail) {
+    if (is_error || is_errorf || is_fail || is_fatal || is_fatalf || is_failnow) {
         LLVMTypeRef fail_ty = LLVMFunctionType(void_type, &ptr_type, 1, 0);
         LLVMValueRef fail_fn = LLVMGetNamedFunction(codegen->module, "goo_testing_fail");
         if (!fail_fn) fail_fn = LLVMAddFunction(codegen->module, "goo_testing_fail", fail_ty);
@@ -526,7 +533,7 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
         LLVMBuildCall2(codegen->builder, fail_ty, fail_fn, fargs, 1, "");
     }
 
-    if (is_error || is_log || is_errorf || is_logf) {
+    if (is_error || is_log || is_errorf || is_logf || is_fatal || is_fatalf) {
         // The -f variants hand the WHOLE call node to fmt.Sprintf's own
         // lowering. That function reads the format from call->args's first
         // element and requires it to be a literal — which holds here, because a
@@ -536,7 +543,7 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
         // The non-f variants use Sprintln's lowering, matching Go's definition
         // of t.Error as t.log(fmt.Sprintln(args...)); the runtime trims the
         // trailing newline that adds.
-        ValueInfo* msg = (is_errorf || is_logf)
+        ValueInfo* msg = (is_errorf || is_logf || is_fatalf)
             ? codegen_generate_sprintf_call(codegen, checker, expr)
             : codegen_generate_fmt_sprintln_call(codegen, checker, expr);
         if (!msg) return NULL;
@@ -553,6 +560,17 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
         LLVMValueRef largs[] = { recv, file_str, line_val, msg->llvm_value };
         LLVMBuildCall2(codegen->builder, log_ty, log_fn, largs, 4, "");
         value_info_free(msg);
+    }
+
+    // Emitted LAST: goo_testing_failnow does not return (it longjmps back into
+    // goo_testing_run's frame), so anything after it would be unreachable — the
+    // message above has to be logged first.
+    if (is_fatal || is_fatalf || is_failnow) {
+        LLVMTypeRef fn_ty = LLVMFunctionType(void_type, &ptr_type, 1, 0);
+        LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_testing_failnow");
+        if (!fn) fn = LLVMAddFunction(codegen->module, "goo_testing_failnow", fn_ty);
+        LLVMValueRef a[] = { recv };
+        LLVMBuildCall2(codegen->builder, fn_ty, fn, a, 1, "");
     }
 
     (void)call;
