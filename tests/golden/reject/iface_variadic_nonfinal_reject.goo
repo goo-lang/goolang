@@ -1,0 +1,18 @@
+// A variadic parameter must be the FINAL parameter (Go: "can only use ... with
+// final parameter in list"). declare_function_signature has enforced this for
+// function and method declarations since the variadic feature landed; the
+// interface-type builder had no such guard, so `a ...int` in a non-final
+// position would silently get its element type wrapped and set is_variadic on a
+// signature whose slice param is not last — making every arity computation
+// downstream (which assumes param_types[param_count-1] is the packed slot) read
+// the wrong slot. Rejected at interface-type build time instead.
+package main
+
+type Bad interface {
+	M(a ...int, b int)
+}
+
+func main() {
+	var b Bad
+	_ = b
+}
