@@ -1,0 +1,39 @@
+// The FAILING half of the goo test probe. examples/testpkg covers the passing
+// path, which prints a single `ok` and therefore pins almost nothing: a
+// synthesized main that called no tests at all would print it too.
+//
+// This package pins the parts that only appear when a test fails — the
+// --- FAIL header naming the test, the indented file:line log lines, and the
+// exit status. It is also the only fixture where a duration is printed, which
+// is what scripts/goo_test_probe.sh's normalization exists for.
+//
+// HOW THE EXPECTED FILE WAS DERIVED. The FORMAT — which lines appear, in what
+// order, with what indent and punctuation — comes from running `go test` on the
+// equivalent Go package (go1.26.1). The file name and line numbers in it are
+// facts about THIS file. The package summary line is the ONE deliberate
+// divergence: Go prints `FAIL\tpkg\t0.002s`, the Goo runtime prints a bare
+// `FAIL`, because neither the package path nor the elapsed time is reproducible
+// (see src/runtime/testing.c).
+//
+// A passing test prints NOTHING here, matching `go test` without -v: TestPasses
+// is present precisely to pin that silence.
+package testfailpkg
+
+import "testing"
+
+func TestPasses(t *testing.T) {
+}
+
+func TestBoom(t *testing.T) {
+	t.Errorf("boom %d", 42)
+}
+
+// t.Fatal must stop THIS test and no other: "unreachable" must not appear, and
+// the run must continue past it. Nothing in Goo can unwind another function's
+// frame, so this only works because the synthesized main passes each test to
+// the runtime as a VALUE and the runtime longjmps out of Fatal.
+func TestFatalStops(t *testing.T) {
+	t.Log("before")
+	t.Fatal("stop here")
+	t.Log("unreachable")
+}

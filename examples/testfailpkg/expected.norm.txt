@@ -1,0 +1,6 @@
+--- FAIL: TestBoom (X.XXs)
+    boom_test.goo:28: boom 42
+--- FAIL: TestFatalStops (X.XXs)
+    boom_test.goo:36: before
+    boom_test.goo:37: stop here
+FAIL

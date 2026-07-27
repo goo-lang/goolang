@@ -1823,6 +1823,15 @@ nil-deref-probe: $(COMPILER) $(RUNTIME_LIB)
 	@echo "nil-deref-probe: PASS"
 .PHONY: nil-deref-probe
 
+# `goo test`: discovery of TestXxx in _test files, _testmain.goo synthesis, the
+# Go-shaped output format, and the exit status. Two packages — one all-passing,
+# one with a failure and a t.Fatal — because a passing run prints only `ok`,
+# which pins almost nothing on its own. The script normalizes durations before
+# diffing and reads exit codes directly, never through a pipe.
+goo-test-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/goo_test_probe.sh
+.PHONY: goo-test-probe
+
 # fix/const-array-length: a genuinely non-constant array length (a plain
 # runtime variable, not a const) must be a clean type error — NOT a silent
 # fallback to the placeholder length, and not a crash. See
@@ -3257,7 +3266,8 @@ VERIFY_ALL_DEPS := \
     far-stencil-r2-probe \
     far-collective-probe \
     far-jacobi-probe \
-    nil-deref-probe
+    nil-deref-probe \
+    goo-test-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
