@@ -1,0 +1,19 @@
+// goopkg_probe: a local source package whose file is spelled .goo, not .go.
+//
+// Pins the single file predicate in resolve_package_dir (import_resolver.c),
+// which is the one directory scan in the compiler — shared by imported
+// packages and by the entry package. Both extensions are buildable, and
+// *_test.go / *_test.goo are excluded under both spellings, so `goo build .`
+// and `import "./p"` can never disagree about what files a package contains.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), per the project convention that accept goldens are never
+// hand-written.
+package main
+
+import "fmt"
+import "./goopkg"
+
+func main() {
+	fmt.Println(goopkg.Val())
+}
