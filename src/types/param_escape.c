@@ -340,10 +340,24 @@ static TaintSet call_taint(Ctx* ctx, CallExprNode* call) {
         callee = registry_find(ctx->reg, ((IdentifierNode*)call->function)->name);
     } else {
         // Not a plain-identifier callee (selector-expr method/package call,
-        // an immediately-invoked func literal, ...): evaluate it for side
-        // effects only (e.g. a func literal's captures still sink via
-        // expr_taint's AST_FUNC_LIT case). callee stays NULL => external.
+        // an immediately-invoked func literal, ...): callee stays NULL =>
+        // external.
+        //
+        // The callee's taint ESCAPES, and used to be discarded here. That was
+        // the same under-marking hole handle_go_call closed for `go p.m()`,
+        // left open on the ordinary call path: a method's receiver is not a
+        // member of call->args, so the retain-all rule for an unresolved
+        // callee below never reached it. A parameter used as the receiver of
+        // a method that stores it was therefore reported non-escaping.
+        //
+        // Only the non-identifier shape is marked, so calling a closure held
+        // in a local keeps its old, correct treatment.
+        //
+        // MIRROR of the identical fix in block_escape.c's call_taint — this
+        // file's header requires a soundness fix to the shared
+        // taint-propagation shape to be applied to both.
         TaintSet ft = expr_taint(ctx, call->function);
+        mark_escapes(ctx, &ft);
         taint_set_free(&ft);
     }
     // 7a' non-retaining whitelist: only for calls that do NOT resolve to a user

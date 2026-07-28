@@ -643,7 +643,25 @@ static TaintSet call_taint(Ctx* ctx, CallExprNode* call) {
     if (call->function && call->function->type == AST_IDENTIFIER) {
         callee_name = ((IdentifierNode*)call->function)->name;
     } else {
+        // The CALLEE's taint escapes, exactly as in handle_go_call above.
+        //
+        // This used to compute the taint and DISCARD it, which was the same
+        // under-marking hole handle_go_call closed for `go p.m()`, left open
+        // on the ORDINARY call path: `p.m()` inside an arena block leaves `p`
+        // arena-eligible, because a method's receiver is NOT a member of
+        // call->args, so the retain-all rule for an unresolved callee below
+        // never reaches it. A method that stores its receiver then dangles
+        // once the block frees the arena. Verified at the IR level before the
+        // fix (`&T{}` emitted goo_arena_alloc, valgrind: invalid read).
+        //
+        // Only the non-identifier shape is marked. An IDENTIFIER callee keeps
+        // the old behaviour on purpose: calling a closure through a local
+        // (`c()`) reads its captured cells but cannot leak the environment
+        // itself, which is what row 29 pins.
+        //
+        // param_escape.c carries the identical fix — soundness sibling.
         TaintSet ft = expr_taint(ctx, call->function);
+        mark_escapes(ctx, &ft);
         taint_set_free(&ft);
     }
     const ParamEscapeSummary* callee = param_escape_lookup(ctx->summaries, callee_name);
