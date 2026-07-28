@@ -1,0 +1,72 @@
+// named_type_conv_probe: conversion TO a named non-struct type.
+//
+// `type IntSlice []int` declared and its methods worked before this, but the
+// conversion spelling `IntSlice(x)` was rejected ("Cannot call non-function
+// type IntSlice"), so goostd/sort had to assign (`var s IntSlice = x`)
+// everywhere Go converts.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), per project convention — never hand-written.
+package main
+
+import "fmt"
+
+type IntSlice []int
+
+func (x IntSlice) Sum() int {
+	t := 0
+	for i := 0; i < len(x); i++ {
+		t = t + x[i]
+	}
+	return t
+}
+
+type MyInt int
+
+func (m MyInt) Double() MyInt { return m * 2 }
+
+type Celsius float64
+type Name string
+type Counts map[string]int
+
+func main() {
+	// Slice: the conversion carries the method set.
+	xs := []int{1, 2, 3}
+	fmt.Println(IntSlice(xs).Sum())
+
+	// The converted value ALIASES the same backing array, as in Go — a slice
+	// conversion copies the header, not the elements.
+	//
+	// Bound to a local first on purpose. Go also accepts the direct form
+	// `IntSlice(xs)[0] = 10`, which Goo rejects ("Assignment target must be
+	// an addressable lvalue"). That is a general property of conversion
+	// results here, not something specific to named types, so it is recorded
+	// rather than worked around silently.
+	is := IntSlice(xs)
+	is[0] = 10
+	fmt.Println(xs[0])
+
+	// Named integer, including a method on the result.
+	var n int = 5
+	fmt.Println(int(MyInt(n).Double()))
+
+	// Narrowing a runtime value stays legal truncation.
+	var big int = 300
+	fmt.Println(int(MyInt(big)))
+
+	// Named float.
+	var f float64 = 36.6
+	fmt.Println(Celsius(f))
+
+	// Named string and named map: no instruction is emitted, the name only
+	// carries the type identity.
+	var s string = "goo"
+	fmt.Println(Name(s))
+	fmt.Println(len(Name(s)))
+
+	m := map[string]int{"a": 1, "b": 2}
+	fmt.Println(len(Counts(m)))
+
+	// Conversion of a literal.
+	fmt.Println(int(MyInt(7)))
+}

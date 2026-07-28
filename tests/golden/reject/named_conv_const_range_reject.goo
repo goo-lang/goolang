@@ -1,0 +1,12 @@
+// A constant operand meeting a NARROW named numeric type gets the same range
+// gate a builtin conversion gets: `Tiny(300)` is rejected exactly as
+// `int8(300)` is, rather than silently truncating.
+package main
+
+import "fmt"
+
+type Tiny int8
+
+func main() {
+	fmt.Println(int(Tiny(300)))
+}
