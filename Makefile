@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe
 
 all: lexer
 
@@ -3249,6 +3249,7 @@ VERIFY_ALL_DEPS := \
     arena-free-probe \
     arena-valgrind-probe \
     arena-rss-probe \
+    dead-package-code-probe \
     test-golden \
     test-golden-o2 \
     test-golden-reject \
@@ -4909,6 +4910,17 @@ arena-routing-test: arena_routing_test
 #                                 probes are on this list rather than relying on
 #                                 test-golden alone.
 ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe arena_fmt_println_probe arena_goto_probe arena_closure_reclaim_probe arena_closure_escape_probe
+
+# ADR 0003 compile-speed work: an imported package's UNREACHABLE functions must
+# not survive into the emitted IR. They used to, because package functions
+# carried EXTERNAL linkage and globaldce could not touch them — a hello-world
+# calling strings.Repeat once dragged all of goostd/strings and goostd/utf8
+# through -O2 and into the object (30 functions). Internal linkage cut the
+# hello-world compile from 0.23s to 0.05s and the stencil binary from 534KB to
+# 108KB. This probe asserts a PROPERTY OF THE IR, not a timing, so it is stable
+# on any machine and belongs in verify-core.
+dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/dead_package_code_probe.sh
 
 arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build

@@ -26,11 +26,17 @@ unpinned measurement suggested. So the consolation claim does not hold either.
 
 ### Assumption 2: "Compile speed, probably winning." Half right, for the wrong reason.
 
-Hello-world: Goo 0.23 s against rustc 0.08 s — apparently a loss. The breakdown
-says otherwise. Goo's own pipeline is **0.05 s**, faster than rustc. The rest is
-recompiling `goostd/strings` from source on every single build, because
-`src/package/import_resolver.c` has no package build cache. Go's warm 0.10 s is
-a cache result: Go cold takes 2.64 s.
+Hello-world was 0.23 s against rustc's 0.08 s — apparently a loss. The cause
+was not re-parsing, and not a missing package cache. Imported-package functions
+carried EXTERNAL linkage, so LLVM's `globaldce` could not remove them however
+unreachable they were: a program calling `strings.Repeat` once dragged all of
+`goostd/strings` and `goostd/utf8` through the -O2 pipeline and into the object.
+
+Internal linkage is the correct linkage — Goo compiles a whole program into one
+module and has no separate compilation. **Fixed: hello-world now compiles in
+0.05 s against rustc's 0.07 s and Go's 0.11 s, the fastest of the three**, and
+the stencil binary fell from 534 KB to 108 KB. Go's warm 0.11 s is a cache
+result: Go cold takes 2.64 s.
 
 ### Assumption 3: "Reach parity on memory." The gap is bigger than recorded.
 
@@ -74,7 +80,7 @@ that measures it against Rust:
 |---|---|---|
 | Binary size | **Win, and say so** | 22x Go, 40x Rust, measured |
 | Ease of use | **Win, and say so** | No lifetimes. 26 of 130 stdlib functions would need annotations in Rust |
-| Compile speed | **Win, after a package cache** | Core pipeline 0.05 s already beats rustc 0.08 s |
+| Compile speed | **Win, established** | 0.05 s against rustc 0.07 s and Go 0.11 s |
 | Parallel safety | **Win, and say so** | Compile-time proven disjointness, zero annotations. This is about the PROOF, never about the throughput |
 | Deterministic memory | **Parity target** | ADR 0002. Currently 834x behind Rust |
 | Parallel throughput | **Parity target, not a win** | Currently 1.7x behind rayon, 2.7x behind rayon plus SIMD |
@@ -112,8 +118,9 @@ Goo at all.
 - Every claim gets a probe that measures the competitor named in it.
 - The `7.55x` figure gets stated correctly, which removes a claim that would
   not survive an informed reader.
-- Binary size becomes a claim, having been an unmeasured accident.
-- The compile-speed work gets a target and a known cause.
+- Binary size becomes a claim, having been an unmeasured accident — and it
+  improved again when the linkage fix landed (stencil 534 KB to 108 KB).
+- Compile speed is now a measured win rather than a target.
 
 ### Negative, and named rather than minimised
 
@@ -130,8 +137,9 @@ Goo at all.
 2. **`noalias` from the lane-ownership proof comes before vector types.** Rust
    wins pre-SIMD, so per-lane scalar throughput is the first problem. This also
    hands LLVM exactly the information Rust's borrow checker hands it.
-3. **New arc: a package build cache** in `src/package/import_resolver.c`. Best
-   effort-to-result ratio found in this pass.
+3. **DONE.** Compile speed was fixed by internal linkage for imported packages,
+   not by a package build cache. The cache proposal is withdrawn: it addressed a
+   cost that was never there.
 4. **No scalar work is needed.** Parity is established and can be claimed.
 
 ## Open, and deliberately not decided here
