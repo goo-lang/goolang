@@ -1,0 +1,44 @@
+// arena-closure-reclaim probe (ADR 0002 phase 1a, RSS capstone): a CAPTURING
+// closure's environment is an allocation site, so a non-escaping one is
+// reclaimed by the enclosing arena.
+//
+// Read by scripts/arena_rss_probe.sh, which compiles this twice — once as
+// written and once with `arena {` rewritten to `{` — and asserts the arena
+// build's peak RSS is well below the leaking build's.
+//
+// SHAPE, and why it is not the obvious one. A captured variable becomes its
+// own promoted heap slot (codegen_alloc_local_promoted), and those slots are
+// NOT an arena site in this phase — they leak in BOTH builds. One closure per
+// captured variable would therefore leak more than it reclaims and the RSS
+// ratio would collapse toward 1.0, hiding a real regression. So: ONE captured
+// variable, MANY environments over it. The inner loop allocates a fresh
+// environment per pass from a single AST node, which keeps this one site for
+// block_escape.c while making environments outnumber promoted slots 10:1.
+//
+// `double` never leaves its block — it is called in place, and the if-condition
+// holding its result is a taint that walk_stmt computes and discards, never a
+// sink. So the environment is provably block-local and 7c routes it to
+// goo_arena_alloc. The escaping direction is covered separately, by probes that
+// READ a closure after its arena closes.
+//
+// A miscompiled or prematurely freed environment reads garbage and panics
+// before "done", so the golden/RSS harness fails loudly rather than quietly
+// measuring the wrong thing.
+package main
+
+import "fmt"
+
+func main() {
+	for i := 0; i < 100000; i++ {
+		arena {
+			v := i
+			for j := 0; j < 10; j++ {
+				double := func() int { return v * 2 }
+				if double() != i*2 {
+					panic("arena-closure-reclaim: mismatch")
+				}
+			}
+		}
+	}
+	fmt.Println("done")
+}

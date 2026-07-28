@@ -11,6 +11,11 @@
 #                                return path (early-exit-free follow-up). Without
 #                                that free, every call leaks its arena (~810MB
 #                                measured vs ~14MB).
+#   arena_closure_reclaim_probe — a CAPTURING closure's environment (ADR 0002
+#                                phase 1a). Measured 4.5MB with the arena against
+#                                36.3MB without. Verified RED: with the alloc
+#                                site not threaded through to codegen the arena
+#                                build measures 35.9MB and the ratio is 1.00.
 # Run from repo root after `make` + the runtime archive are built.
 
 set -u
@@ -20,7 +25,7 @@ skip() { echo "arena-rss-probe: SKIPPED ($1)"; exit 0; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPILER="${COMPILER:-$ROOT/bin/goo}"
-PROBES="arena_loop_reclaim_probe arena_return_reclaim_probe arena_loopexit_reclaim_probe"
+PROBES="arena_loop_reclaim_probe arena_return_reclaim_probe arena_loopexit_reclaim_probe arena_closure_reclaim_probe"
 
 [ -x "$COMPILER" ] || fail "compiler not found at $COMPILER (run 'make')"
 

@@ -979,7 +979,18 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
         free(env_fields);
 
         LLVMValueRef env_size = LLVMSizeOf(env_ty);
-        env_ptr = codegen_emit_alloc(codegen, env_size, ALLOC_KIND_DEFAULT, NULL);
+        // ADR 0002 phase 1a: `expr` IS the FuncLitNode block_escape.c
+        // registered as this environment's allocation site (it only registers
+        // a literal that captures, which is exactly this branch). Passing it
+        // instead of NULL lets codegen_arena_eligible route a provably
+        // block-local environment to the enclosing arena. Everything else is
+        // unchanged: outside an arena block, or for a literal whose closure
+        // escapes, the lookup lands on the same heap path as before.
+        //
+        // This is the enclosing function's builder position and arena stack —
+        // both were restored above — so the environment is charged to the
+        // arena the literal was WRITTEN in, not to one the body opened.
+        env_ptr = codegen_emit_alloc(codegen, env_size, ALLOC_KIND_DEFAULT, expr);
 
         for (size_t i = 0; i < lit->captured_count; i++) {
             // Current slot address for this name, in the ENCLOSING

@@ -125,7 +125,10 @@ static TestRow rows[] = {
         1, { true }
     },
     {
-        8, "captured by a closure -> true",
+        // TWO sites since closure environments became a site kind (phase 1a):
+        // the `new(int)` (escapes by sink #3, capture) and the capturing
+        // literal's own environment (escapes by sink #4, the `go`).
+        8, "captured by a closure -> true (and the env escapes via go)",
         "package main\n"
         "func use(p *int) {\n"
         "}\n"
@@ -137,7 +140,7 @@ static TestRow rows[] = {
         "        }()\n"
         "    }\n"
         "}\n",
-        1, { true }
+        2, { true, true }
     },
     {
         9, "goroutine argument -> true (independent of callee's own summary)",
@@ -328,6 +331,137 @@ static TestRow rows[] = {
         "    }\n"
         "}\n",
         1, { false }
+    },
+
+    // ---- Phase 1a: closure environments are an allocation site ------------
+    //
+    // A capturing func literal allocates an environment struct
+    // (function_codegen.c's `env_ptr`). It escapes its arena block EXACTLY
+    // when the closure value does, so the existing taint engine decides it
+    // with no new concept. Rows 22-29 are the matrix
+    // docs/superpowers/specs/2026-07-28-arena-site-widening-findings.md
+    // requires: one precision row, one row per escape sink, a non-capturing
+    // guard, and a row pinning that sink #3 was NOT relaxed.
+    {
+        // PRECISION. The environment is built, called, and dropped inside the
+        // block. Calling a closure does not leak its environment — a body can
+        // read the captured cells but cannot store the env itself — so
+        // call_taint's discard of an identifier callee's taint is correct
+        // here. A lazy mark-everything implementation fails this row, and so
+        // does one that sets the self-bit BEFORE mark_escapes.
+        22, "capturing closure dies in the block -> false (arena-eligible)",
+        "package main\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        n := 1\n"
+        "        c := func() { _ = n }\n"
+        "        c()\n"
+        "    }\n"
+        "}\n",
+        1, { false }
+    },
+    {
+        // Sink #1: returned from the block's function.
+        23, "capturing closure returned -> true",
+        "package main\n"
+        "func f() func() {\n"
+        "    arena {\n"
+        "        n := 1\n"
+        "        return func() { _ = n }\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        // Sink #2: stored to a pre-block outer local, read after the block.
+        24, "capturing closure stored to an outer local -> true",
+        "package main\n"
+        "func f() {\n"
+        "    var keep func()\n"
+        "    arena {\n"
+        "        n := 1\n"
+        "        keep = func() { _ = n }\n"
+        "    }\n"
+        "    keep()\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        // Sink #2 through a package global — a strictly longer-lived location
+        // than the enclosing frame.
+        25, "capturing closure stored to a global -> true",
+        "package main\n"
+        "var g func()\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        n := 1\n"
+        "        g = func() { _ = n }\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        // Sink #4: the goroutine runs past the block. This is the exact path
+        // row 20 pinned in advance — `go c()` on a LOCAL holding a closure
+        // reaches the environment only through handle_go_call's callee taint,
+        // because the call carries no arguments.
+        26, "capturing closure launched with go -> true (callee taint)",
+        "package main\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        n := 1\n"
+        "        c := func() { _ = n }\n"
+        "        go c()\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        // Sink #5: a call argument the callee retains.
+        27, "capturing closure passed to a retaining callee -> true",
+        "package main\n"
+        "var g func()\n"
+        "func stash(fn func()) {\n"
+        "    g = fn\n"
+        "}\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        n := 1\n"
+        "        stash(func() { _ = n })\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        // A literal with NO captures allocates no environment, so registering
+        // it as a site would record a decision with nothing behind it. Guards
+        // the `captured_count > 0` condition in discover_expr.
+        28, "non-capturing closure is not a site -> not recorded",
+        "package main\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        c := func() { }\n"
+        "        c()\n"
+        "    }\n"
+        "}\n",
+        0, { false }
+    },
+    {
+        // Sink #3 is NOT relaxed by this arc. `p` is captured, so `p` escapes
+        // even though the closure holding it dies in the block. Both facts in
+        // one row: decisions[0] (the new(int)) true, decisions[1] (the env)
+        // false. Setting the environment's self-bit BEFORE its mark_escapes
+        // call flips decisions[1] to true and fails here.
+        29, "captured site escapes, its closure env does not -> true, false",
+        "package main\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        p := new(int)\n"
+        "        c := func() { _ = p }\n"
+        "        c()\n"
+        "    }\n"
+        "}\n",
+        2, { true, false }
     },
 };
 
