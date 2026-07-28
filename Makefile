@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe alloc-doors-probe
 
 all: lexer
 
@@ -3250,6 +3250,7 @@ VERIFY_ALL_DEPS := \
     arena-valgrind-probe \
     arena-rss-probe \
     dead-package-code-probe \
+    alloc-doors-probe \
     test-golden \
     test-golden-o2 \
     test-golden-reject \
@@ -4921,6 +4922,15 @@ ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_esc
 # on any machine and belongs in verify-core.
 dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/dead_package_code_probe.sh
+
+# ARC header-feasibility audit rider: Goo-visible heap memory must come from ONE
+# door. A slice's backing store was allocated by a raw calloc in
+# goo_slice_alloc but GROWN by goo_realloc — fine while both are bare libc
+# calls, heap corruption the moment anything puts a header in front of the
+# payload (a refcount for ARC, or a region tag). Pure source check, no build
+# needed, so it is stable everywhere.
+alloc-doors-probe:
+	@bash scripts/alloc_doors_probe.sh
 
 arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build

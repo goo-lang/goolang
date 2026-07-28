@@ -916,22 +916,38 @@ void goo_map_clear_sv(GooMapSV* m) {
 
 // Slice operations
 
-// Zero-initialized backing store for make([]T, n[, cap]). calloc (not
-// goo_alloc/malloc) because Go guarantees zero values for made elements.
-// Never returns NULL: count 0 still yields a valid 1-byte allocation so a
-// zero-length slice keeps a non-NULL data pointer (matches the runtime's
-// "null slice" panic convention in goo_slice_get), and OOM panics the way
-// goo_alloc does rather than handing codegen a NULL to dereference.
+// Zero-initialized backing store for make([]T, n[, cap]).
+//
+// Goes through goo_alloc, NOT a raw calloc. It used to call calloc directly,
+// while goo_slice_append grew the SAME buffer with goo_realloc. That is fine
+// only while both are bare libc calls. The moment anything puts a header in
+// front of the payload — a refcount for ARC, or a region tag — goo_realloc
+// would offset a pointer that never had a header and corrupt the heap. One
+// door in, one door out. Asserted by scripts/alloc_doors_probe.sh.
+//
+// Three properties the previous calloc gave, all preserved deliberately:
+//   1. Zeroed memory, because Go guarantees zero values for made elements.
+//      memset does that now.
+//   2. Never NULL, and never the goo_zerobase sentinel. `bytes` is at least 1,
+//      so goo_alloc always returns real, uniquely-owned, writable memory. A
+//      zero-length slice therefore keeps a non-NULL data pointer, which is
+//      what goo_slice_get's null-slice panic convention relies on.
+//   3. OOM panics rather than handing codegen a NULL — goo_alloc already does.
+//
+// The overflow check is the one thing calloc did for free and a plain multiply
+// does not: calloc detects count * elem_size overflowing and fails, where a
+// wrapped multiply would under-allocate and hand back a buffer the caller then
+// writes past.
 void* goo_slice_alloc(int64_t count, int64_t elem_size) {
-    void* data;
-    if (count <= 0 || elem_size <= 0) {
-        data = calloc(1, 1);
-    } else {
-        data = calloc((size_t)count, (size_t)elem_size);
+    size_t bytes = 1;
+    if (count > 0 && elem_size > 0) {
+        if ((uint64_t)count > (uint64_t)SIZE_MAX / (uint64_t)elem_size) {
+            goo_panic("Out of memory");
+        }
+        bytes = (size_t)count * (size_t)elem_size;
     }
-    if (!data) {
-        goo_panic("Out of memory");
-    }
+    void* data = goo_alloc(bytes);
+    memset(data, 0, bytes);
     return data;
 }
 
