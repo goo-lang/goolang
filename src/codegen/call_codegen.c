@@ -1823,19 +1823,6 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     return NULL;
                 }
 
-                // The checker has already restricted this to os.Stdout /
-                // os.Stderr (see the fmt.Fprint guard in
-                // expression_checker.c), so the descriptor is known here at
-                // COMPILE time and needs no evaluation. Reading it off the
-                // selector rather than emitting the value is what keeps
-                // os.Stdout/os.Stderr from needing a runtime representation
-                // at all.
-                long long fd = 1;
-                if (writer->type == AST_SELECTOR_EXPR) {
-                    SelectorExprNode* ws = (SelectorExprNode*)writer;
-                    if (ws->selector && strcmp(ws->selector, "Stderr") == 0) fd = 2;
-                }
-
                 // A shallow copy whose arg list SKIPS the writer, handed to the
                 // existing lowering. Those functions read call->args and
                 // expr->pos and never inspect call->function, which is the same
@@ -1854,18 +1841,104 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                         : codegen_generate_fmt_sprint_call(codegen, checker, tail_expr);
                 if (!msg) return NULL;
 
-                LLVMContextRef fctx = codegen->context;
-                LLVMTypeRef fvoid = LLVMVoidTypeInContext(fctx);
-                LLVMTypeRef fi64  = LLVMInt64TypeInContext(fctx);
-                LLVMTypeRef fstr  = codegen_get_basic_type(codegen, TYPE_STRING);
-                LLVMTypeRef fparams[] = { fi64, fstr };
-                LLVMTypeRef fty = LLVMFunctionType(fvoid, fparams, 2, 0);
-                LLVMValueRef ffn = LLVMGetNamedFunction(codegen->module, "goo_fwrite_string");
-                if (!ffn) ffn = LLVMAddFunction(codegen->module, "goo_fwrite_string", fty);
-                LLVMValueRef fargs[] = { LLVMConstInt(fi64, (unsigned long long)fd, 0),
-                                         msg->llvm_value };
-                LLVMBuildCall2(codegen->builder, fty, ffn, fargs, 2, "");
+                // Lower to `w.Write([]byte(<formatted>))`.
+                //
+                // This is the whole reason the C shim never learns to dispatch
+                // a Goo method: the formatting stays in the existing Sprint
+                // lowering above, and the WRITE becomes an ordinary interface
+                // dispatch on the Goo side, where codegen_interface_dispatch
+                // already works. The writer used to be a compile-time constant
+                // file descriptor, so this arm emitted a direct call to
+                // goo_fwrite_string; now any io.Writer is accepted and the
+                // implementation is whatever the value holds.
+                ValueInfo* wv = codegen_generate_expression(codegen, checker, writer);
+                if (!wv) { value_info_free(msg); return NULL; }
+                LLVMValueRef wval = wv->llvm_value;
+                Type* wtype = wv->goo_type;
+                if (wv->is_lvalue && wtype) {
+                    LLVMTypeRef wl = codegen_type_to_llvm(codegen, wtype);
+                    if (wl) wval = LLVMBuildLoad2(codegen->builder, wl, wval, "fp.w");
+                }
+
+                // The formatted message is a Goo string {ptr, len}; Write wants
+                // a []byte {ptr, len, cap}. Same bytes, one field wider — build
+                // the slice header directly instead of routing through a
+                // string-to-[]byte conversion that would copy.
+                LLVMTypeRef i64t = LLVMInt64TypeInContext(codegen->context);
+                LLVMValueRef sptr = LLVMBuildExtractValue(codegen->builder, msg->llvm_value, 0, "fp.ptr");
+                LLVMValueRef slen = LLVMBuildExtractValue(codegen->builder, msg->llvm_value, 1, "fp.len");
+                Type* byte_t = type_checker_get_builtin(checker, TYPE_UINT8);
+                Type* bytes_t = type_slice(byte_t);
+                LLVMTypeRef bytes_llvm = codegen_type_to_llvm(codegen, bytes_t);
+                LLVMValueRef buf = LLVMGetUndef(bytes_llvm);
+                buf = LLVMBuildInsertValue(codegen->builder, buf, sptr, 0, "fp.b.ptr");
+                buf = LLVMBuildInsertValue(codegen->builder, buf,
+                                           LLVMBuildZExtOrBitCast(codegen->builder, slen, i64t, "fp.b.len"),
+                                           1, "fp.b.len2");
+                buf = LLVMBuildInsertValue(codegen->builder, buf,
+                                           LLVMBuildZExtOrBitCast(codegen->builder, slen, i64t, "fp.b.cap"),
+                                           2, "fp.b.cap2");
+
+                ValueInfo* wres = NULL;
+                if (wtype && wtype->kind == TYPE_INTERFACE) {
+                    LLVMValueRef dargs[] = { buf };
+                    wres = codegen_interface_dispatch(codegen, checker, wval, wtype,
+                                                      "Write", dargs, 1, expr);
+                } else {
+                    // A CONCRETE writer — os.Stdout is *os.File, and a program
+                    // may pass its own type directly. Call its Write, resolved
+                    // exactly like any other method symbol.
+                    //
+                    // Boxing into io.Writer first would be tidier in principle,
+                    // but it would make `fmt.Fprintln(os.Stdout, ...)` require
+                    // an `import "io"` to have happened somewhere — Go asks for
+                    // no such thing, and the checker's writer test is
+                    // structural for the same reason.
+                    Type* wbase = (wtype && wtype->kind == TYPE_POINTER)
+                                      ? wtype->data.pointer.pointee_type : wtype;
+                    const char* wtn = wbase ? type_receiver_name(wbase) : NULL;
+                    char* wmangled = wtn ? type_method_mangled_name(wtn, "Write") : NULL;
+                    LLVMValueRef wfn = NULL;
+                    Variable* wmv = NULL;
+                    if (wmangled) {
+                        Package* wowner = type_receiver_owner_package(wbase);
+                        if (wowner) {
+                            char* wsym = codegen_pkg_mangled_symbol(wowner->name, wmangled);
+                            if (wsym) { wfn = LLVMGetNamedFunction(codegen->module, wsym); free(wsym); }
+                        } else {
+                            wfn = LLVMGetNamedFunction(codegen->module, wmangled);
+                        }
+                        wmv = type_checker_lookup_method(checker, wbase, "Write", wmangled);
+                        // Seeded shim method (os.File.Write): no compiled
+                        // function exists, so emit its adapter — the same
+                        // helper the interface thunk builder uses.
+                        if (!wfn && wmv && wmv->type) {
+                            Package* wowner2 = type_receiver_owner_package(wbase);
+                            if (wowner2 && wowner2->import_path)
+                                wfn = codegen_get_or_emit_shim_method_adapter(
+                                    codegen, wowner2->import_path, wtn, "Write", wmv->type);
+                        }
+                        free(wmangled);
+                    }
+                    if (!wfn) {
+                        codegen_error(codegen, expr->pos,
+                                      "fmt.%s: cannot resolve the writer's Write method",
+                                      sel->selector);
+                        value_info_free(wv); value_info_free(msg); return NULL;
+                    }
+                    // Value receiver declared but a pointer in hand (or the
+                    // reverse) is already settled by the checker; pass what we
+                    // have, which for *os.File is the runtime global's address.
+                    LLVMValueRef cargs[] = { wval, buf };
+                    LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(wfn), wfn,
+                                   cargs, 2, "");
+                    wres = value_info_new(NULL, NULL,
+                                          type_checker_get_builtin(checker, TYPE_VOID));
+                }
+                value_info_free(wv);
                 value_info_free(msg);
+                if (!wres) return NULL;
+                value_info_free(wres);   // Go's Fprint* result is discarded here
                 return value_info_new(NULL, NULL,
                                       type_checker_get_builtin(checker, TYPE_VOID));
             }
@@ -2477,6 +2550,23 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 }
             } else {
                 fn = LLVMGetNamedFunction(codegen->module, mangled);
+            }
+        }
+
+        // A SEEDED SHIM method (os.Stdout.Write) has no compiled function: the
+        // checker exports it, and no Goo source implements it. Emit its adapter
+        // under the very symbol just looked for, so from here on it behaves
+        // exactly like an ordinary package method — receiver handling,
+        // argument coercion and all. Same helper the interface thunk builder
+        // uses, so the two paths cannot drift.
+        if (!fn && mangled && recv_type) {
+            Package* sowner = type_receiver_owner_package(recv_type);
+            const char* stn = type_receiver_name(recv_type);
+            Variable* smv = type_checker_lookup_method(checker, recv_type,
+                                                       msel->selector, mangled);
+            if (sowner && sowner->import_path && stn && smv && smv->type) {
+                fn = codegen_get_or_emit_shim_method_adapter(
+                    codegen, sowner->import_path, stn, msel->selector, smv->type);
             }
         }
 

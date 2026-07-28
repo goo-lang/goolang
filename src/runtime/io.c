@@ -246,3 +246,50 @@ int goo_os_read_line(goo_string_t* out) {
     out->length = len;
     return 1;
 }
+
+// ---------------------------------------------------------------------------
+// os.File — the write side (io arc).
+//
+// An os.File value is one opaque machine word holding the file descriptor.
+// The compiler seeds a matching one-field struct for the TYPE (see
+// seed_os_package_exports in src/types/type_checker.c), so the two agree on
+// exactly one thing: the fd sits at offset 0. Nothing else about the layout is
+// shared, and no Goo program can name the field.
+//
+// os.Stdout and os.Stderr are *os.File, so they need real storage with a
+// stable address. The runtime owns it: codegen emits a reference to these two
+// globals rather than materializing a file object per use, which is what makes
+// pointer identity work (`os.Stdout == os.Stdout` is true, and boxing one into
+// an io.Writer carries the same address).
+struct goo_os_file { int64_t fd; };
+
+struct goo_os_file goo_os_stdout_file = { 1 };
+struct goo_os_file goo_os_stderr_file = { 2 };
+
+// Write `n` bytes from `buf` to `file`'s descriptor.
+//
+// SCALAR IN, SCALAR OUT, deliberately — this file's stated convention (see the
+// header comment). Go's `Write(p []byte) (int, error)` returns a 24-byte tuple
+// that would have to be ABI-matched by hand here. Instead the compiler emits a
+// small adapter carrying the Goo method ABI, and that adapter calls this. The
+// C side therefore never has to know what a Goo tuple looks like.
+//
+// Returns the byte count on success, or -errno on failure. A short write is
+// retried, because write(2) may return early on a signal and Go's os.File.Write
+// reports a short write as an error rather than silently losing bytes.
+int64_t goo_os_file_write(void* file, const void* buf, int64_t n) {
+    if (!file || (n > 0 && !buf)) return -EINVAL;
+    struct goo_os_file* f = (struct goo_os_file*)file;
+    const char* p = (const char*)buf;
+    int64_t written = 0;
+    while (written < n) {
+        ssize_t w = write((int)f->fd, p + written, (size_t)(n - written));
+        if (w < 0) {
+            if (errno == EINTR) continue;  // signal, not a failure
+            return -errno;
+        }
+        if (w == 0) break;  // no progress; report what we managed
+        written += (int64_t)w;
+    }
+    return written;
+}

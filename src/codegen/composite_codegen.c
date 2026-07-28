@@ -740,6 +740,32 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
             LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, out, "os_args_slice");
             return value_info_new(NULL, slice_val, args_type);
         }
+        // os.Stdout / os.Stderr (*os.File): a reference to a RUNTIME-owned
+        // global, not a fresh object.
+        //
+        // These used to lower to a constant file descriptor, which needed no
+        // runtime representation at all. They are now *os.File, so they need
+        // storage with a stable address — otherwise `os.Stdout == os.Stdout`
+        // would be false and two io.Writer boxes of the same stream would
+        // carry different pointers. goo_os_stdout_file / goo_os_stderr_file
+        // (src/runtime/io.c) provide exactly one object each, and the
+        // descriptor lives at offset 0 by agreement with the seeded File
+        // struct (seed_os_package_exports).
+        if (strcmp(dispatch_pkg, "os") == 0 &&
+            (strcmp(selector->selector, "Stdout") == 0 ||
+             strcmp(selector->selector, "Stderr") == 0)) {
+            const char* sym = (strcmp(selector->selector, "Stdout") == 0)
+                                  ? "goo_os_stdout_file" : "goo_os_stderr_file";
+            LLVMTypeRef i8 = LLVMInt8TypeInContext(codegen->context);
+            LLVMValueRef g = LLVMGetNamedGlobal(codegen->module, sym);
+            if (!g) {
+                // Declare it as an opaque byte; only its ADDRESS is ever used
+                // here, and the runtime owns the layout.
+                g = LLVMAddGlobal(codegen->module, i8, sym);
+                LLVMSetLinkage(g, LLVMExternalLinkage);
+            }
+            return value_info_new(NULL, g, expr->node_type);
+        }
         // P4.6 (packages-C, C1): time.{Nanosecond,Microsecond,Millisecond,
         // Second} — Duration-typed constants, same math.Pi-style intercept
         // (there is no general codegen path for an arbitrary package-level

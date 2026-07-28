@@ -48,6 +48,117 @@ static LLVMTypeRef thunk_fn_type(CodeGenerator* codegen, Type* method_type,
     return fnty;
 }
 
+// Get-or-emit the implementation of a SEEDED SHIM METHOD — a method the
+// checker exports for a bespoke shim type (os.File.Write today) that has no
+// Goo source and therefore no compiled function anywhere in the module.
+//
+// The key choice is the NAME. It is the ordinary mangled package symbol
+// (`goo_pkg__os__File__Write`), which is exactly what the direct method-call
+// path and build_thunk below already look up. So neither caller needs a
+// special case: whoever asks first emits it, and everyone else finds it.
+// That is the "one owner" the seeded-shim spike asked for
+// (docs/superpowers/specs/2026-07-28-seeded-shim-vtable-spike.md).
+//
+// The body exists because the RUNTIME is deliberately scalar — src/runtime/io.c
+// states that convention, and Go's `Write(p []byte) (int, error)` returns a
+// 24-byte tuple that would otherwise have to be ABI-matched by hand in C. The
+// adapter carries the Goo method ABI, calls the scalar runtime function, and
+// packs the result. Adding a second seeded method means one more arm here, not
+// a new mechanism.
+//
+// Returns NULL when (pkg, type, method) is not a seeded shim method, which is
+// the signal to fall through to the ordinary "missing implementation" error.
+LLVMValueRef codegen_get_or_emit_shim_method_adapter(CodeGenerator* codegen,
+                                                     const char* pkg_name,
+                                                     const char* type_name,
+                                                     const char* method_name,
+                                                     Type* method_type) {
+    if (!pkg_name || !type_name || !method_name || !method_type) return NULL;
+    // The single table of seeded methods that need an adapter.
+    int is_os_file_write = strcmp(pkg_name, "os") == 0 &&
+                           strcmp(type_name, "File") == 0 &&
+                           strcmp(method_name, "Write") == 0;
+    if (!is_os_file_write) return NULL;
+
+    char* mangled = type_method_mangled_name(type_name, method_name);
+    if (!mangled) return NULL;
+    char* sym = codegen_pkg_mangled_symbol(pkg_name, mangled);
+    free(mangled);
+    if (!sym) return NULL;
+
+    LLVMValueRef existing = LLVMGetNamedFunction(codegen->module, sym);
+    if (existing && LLVMCountBasicBlocks(existing) > 0) { free(sym); return existing; }
+
+    // Signature: the method's own Goo type, receiver at params[0].
+    size_t np = method_type->data.function.param_count;
+    LLVMTypeRef* pt = malloc(np * sizeof(LLVMTypeRef));
+    if (!pt) { free(sym); return NULL; }
+    for (size_t i = 0; i < np; i++) {
+        pt[i] = codegen_type_to_llvm(codegen, method_type->data.function.param_types[i]);
+        if (!pt[i]) { free(pt); free(sym); return NULL; }
+    }
+    LLVMTypeRef ret_llvm = codegen_type_to_llvm(codegen, method_type->data.function.return_type);
+    if (!ret_llvm) { free(pt); free(sym); return NULL; }
+    LLVMTypeRef fnty = LLVMFunctionType(ret_llvm, pt, (unsigned)np, 0);
+    free(pt);
+
+    LLVMValueRef fn = existing ? existing : LLVMAddFunction(codegen->module, sym, fnty);
+    free(sym);
+    if (!fn) return NULL;
+
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(codegen->context, fn, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry);
+
+    // int64 goo_os_file_write(void* file, const void* buf, int64 n)
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
+    LLVMTypeRef ptrty = iface_ptr_type(codegen);
+    LLVMTypeRef rt_params[] = { ptrty, ptrty, i64 };
+    LLVMTypeRef rt_ty = LLVMFunctionType(i64, rt_params, 3, 0);
+    LLVMValueRef rt = LLVMGetNamedFunction(codegen->module, "goo_os_file_write");
+    if (!rt) rt = LLVMAddFunction(codegen->module, "goo_os_file_write", rt_ty);
+
+    // params: (receiver *File, p []byte). A slice is {ptr, len, cap}.
+    LLVMValueRef recv = LLVMGetParam(fn, 0);
+    LLVMValueRef slice = LLVMGetParam(fn, 1);
+    LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, slice, 0, "p.ptr");
+    LLVMValueRef len  = LLVMBuildExtractValue(codegen->builder, slice, 1, "p.len");
+
+    LLVMValueRef rt_args[] = { recv, data, len };
+    LLVMValueRef n = LLVMBuildCall2(codegen->builder, rt_ty, rt, rt_args, 3, "wrote");
+
+    // Pack (int, error). The runtime reports failure as a negative value, so a
+    // short write and an errno are the same test. The error slot is `error`,
+    // which is a NULLABLE pointer {i1, ptr} — a nil error is {false, null},
+    // and that is what a successful write returns.
+    //
+    // A FAILED write still returns the (negative) count in field 0 here rather
+    // than clamping to 0. Go's contract is that the count is meaningful only
+    // alongside a nil error, and clamping would need an extra branch to
+    // produce a value no correct program reads.
+    // A nil error is `{ i1 true, ptr null }`, NOT a zeroed struct. `error` is
+    // `?*int8`, and for it the i1 means "this slot holds a value" while the
+    // NULL POINTER is what makes that value nil. Read off the IR that a real
+    // `func f() (int, error) { return n, nil }` emits — a zeroinitializer
+    // compiles and runs but compares as NON-nil, which is a silently wrong
+    // program rather than a failure.
+    LLVMValueRef result = LLVMGetUndef(ret_llvm);
+    result = LLVMBuildInsertValue(codegen->builder, result, n, 0, "res.n");
+    LLVMTypeRef err_llvm = LLVMStructGetTypeAtIndex(ret_llvm, 1);
+    LLVMValueRef nil_err = LLVMGetUndef(err_llvm);
+    nil_err = LLVMBuildInsertValue(codegen->builder, nil_err,
+                                   LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 1, 0),
+                                   0, "err.set");
+    nil_err = LLVMBuildInsertValue(codegen->builder, nil_err,
+                                   LLVMConstNull(LLVMStructGetTypeAtIndex(err_llvm, 1)),
+                                   1, "err.null");
+    result = LLVMBuildInsertValue(codegen->builder, result, nil_err, 1, "res.err");
+    LLVMBuildRet(codegen->builder, result);
+
+    if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+    return fn;
+}
+
 // Emit (or reuse) the thunk wrapping concrete method `T__m` for interface method
 // `im`. Returns the thunk function value (a ptr constant), or NULL on failure.
 static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
@@ -149,6 +260,19 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
                 mvar = type_checker_lookup_method(checker, er.owner, im->name, om);
             }
             free(om);
+        }
+    }
+    // A SEEDED SHIM method (os.File.Write) has no compiled function anywhere:
+    // the checker knows the method exists, and no Goo source implements it.
+    // That pair of facts — mvar resolved, real_fn missing — IS the definition
+    // of a seeded method and needs no extra flag. Emit its adapter, which
+    // takes the ordinary mangled symbol name, and carry on as if the method
+    // had always been there.
+    if (!real_fn && !via_iface && mvar && mvar->type) {
+        Package* sowner = type_receiver_owner_package(concrete);
+        if (sowner && sowner->import_path) {
+            real_fn = codegen_get_or_emit_shim_method_adapter(
+                codegen, sowner->import_path, concrete_name, im->name, mvar->type);
         }
     }
     if (!real_fn && !via_iface) {
