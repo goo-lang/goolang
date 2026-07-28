@@ -12,71 +12,20 @@
 // does not even need memory_safety.h — it exposes its own bool escapes[]).
 
 #include "param_escape.h"
+#include "escape_core.h"
 #include "nonretaining.h"
 #include "token.h"
 #include <stdlib.h>
 #include <string.h>
 
-// =============================================================================
-// TaintSet: a growable "which of this function's params may this value
-// alias" bitset. One instance is sized to the CURRENT function's param_count
-// and never resized after creation (every taint set within one function's
-// analysis pass shares that width).
-// =============================================================================
+// TaintSet, LocalEnv and the whole body walk now live in
+// src/types/escape_core.c. This module keeps only what is its own: the
+// function Registry, the interprocedural fixpoint, and the hooks that tell the
+// shared engine that a PARAMETER is the source and the FUNCTION is the
+// boundary. A slot here is a parameter index.
 
-typedef struct {
-    bool*  bits;
-    size_t n;
-} TaintSet;
-
-static TaintSet taint_set_new(size_t n) {
-    TaintSet t;
-    t.n = n;
-    t.bits = n ? calloc(n, sizeof(bool)) : NULL;
-    return t;
-}
-
-static void taint_set_free(TaintSet* t) {
-    if (!t) return;
-    free(t->bits);
-    t->bits = NULL;
-    t->n = 0;
-}
-
-static bool taint_set_empty(const TaintSet* t) {
-    for (size_t i = 0; i < t->n; i++) {
-        if (t->bits[i]) return false;
-    }
-    return true;
-}
-
-// Unions src into dst (dst may be narrower/wider; only overlapping indices
 // are touched — in practice both always share the same n within one
 // function's analysis). Returns true if dst changed.
-static bool taint_set_union_into(TaintSet* dst, const TaintSet* src) {
-    if (!dst || !src) return false;
-    bool changed = false;
-    size_t n = dst->n < src->n ? dst->n : src->n;
-    for (size_t i = 0; i < n; i++) {
-        if (src->bits[i] && !dst->bits[i]) {
-            dst->bits[i] = true;
-            changed = true;
-        }
-    }
-    return changed;
-}
-
-static TaintSet taint_set_copy(const TaintSet* src) {
-    TaintSet t = taint_set_new(src->n);
-    for (size_t i = 0; i < src->n; i++) t.bits[i] = src->bits[i];
-    return t;
-}
-
-static TaintSet taint_set_all(size_t n) {
-    TaintSet t = taint_set_new(n);
-    for (size_t i = 0; i < n; i++) t.bits[i] = true;
-    return t;
-}
 
 // =============================================================================
 // Registry: one FuncInfo per registered AST_FUNC_DECL (ordinary functions and
@@ -183,105 +132,59 @@ static bool collect_functions(Registry* reg, ASTNode* program) {
 }
 
 // =============================================================================
-// LocalEnv: per-function-analysis-pass map from local name (params + any
-// var/:= declared name) to its current taint set. Membership in this map IS
-// this module's definition of "a plain local of F" for the assignment-sink
-// rule (sink #2) — anything NOT in this map (a global, or a name from an
-// enclosing scope) is conservatively a store-escape target.
+// Hooks: what makes this pass param_escape rather than one of its siblings
 // =============================================================================
 
+// Carried through EscapeCtx.owner. The Registry is here rather than in the
+// shared context because only this pass has one.
 typedef struct {
-    char*    name;   // owned
-    TaintSet taint;
-} LocalVar;
+    Registry* reg;
+    bool*     return_escapes;  // accumulator, single bool, only ever set true
+} ParamOwner;
 
-typedef struct {
-    LocalVar* vars;
-    size_t    count;
-    size_t    capacity;
-} LocalEnv;
-
-static void local_env_free(LocalEnv* env) {
-    for (size_t i = 0; i < env->count; i++) {
-        free(env->vars[i].name);
-        taint_set_free(&env->vars[i].taint);
-    }
-    free(env->vars);
-    env->vars = NULL;
-    env->count = env->capacity = 0;
+// A parameter is bound to a NAME, so an ordinary environment union is the
+// whole job. local_escape is the pass that needs more here.
+static bool param_bind(EscapeCtx* ctx, const char* name, const TaintSet* value) {
+    return escape_env_add_or_union(ctx->env, name, value);
 }
 
-static LocalVar* local_env_find(LocalEnv* env, const char* name) {
-    for (size_t i = 0; i < env->count; i++) {
-        if (strcmp(env->vars[i].name, name) == 0) return &env->vars[i];
-    }
-    return NULL;
+// The interprocedural signal: F returns a value derived from one of its own
+// parameters. This is the ONE line by which this pass's walk_stmt differed
+// from its two siblings' before the extraction.
+static void param_on_return(EscapeCtx* ctx, const TaintSet* value_taint) {
+    ParamOwner* own = (ParamOwner*)ctx->owner;
+    if (!escape_taint_empty(value_taint)) *own->return_escapes = true;
 }
 
-// Adds `name` seeded with a COPY of `value` if not already present;
-// otherwise unions `value` into the existing entry. Returns true if this
-// grew the map's information (a fresh binding, or a taint bit flipped
-// false->true) — the caller's local-fixpoint loop uses this to know whether
-// another pass is needed. Returns false (silently, fails closed by simply
-// not registering the local) only on allocation failure.
-static bool local_env_add_or_union(LocalEnv* env, const char* name, const TaintSet* value) {
-    LocalVar* lv = local_env_find(env, name);
-    if (lv) {
-        return taint_set_union_into(&lv->taint, value);
-    }
-    if (env->count >= env->capacity) {
-        size_t new_cap = env->capacity ? env->capacity * 2 : 8;
-        LocalVar* grown = realloc(env->vars, new_cap * sizeof(LocalVar));
-        if (!grown) return false;
-        env->vars = grown;
-        env->capacity = new_cap;
-    }
-    env->vars[env->count].name = strdup(name);
-    env->vars[env->count].taint = taint_set_copy(value);
-    env->count++;
+// Read the callee's summary out of the IN-PROGRESS Registry, not out of a
+// finished ParamEscapeResult. This pass is computing those summaries, so it
+// must see the current iterate of the outer fixpoint — which is exactly why
+// this is a hook and not a shared lookup.
+static bool param_callee_retention(EscapeCtx* ctx, const char* name,
+                                   const bool** out_escapes, size_t* out_count,
+                                   bool* out_return_escapes) {
+    ParamOwner* own = (ParamOwner*)ctx->owner;
+    FuncInfo* callee = registry_find(own->reg, name);
+    if (!callee) return false;
+    *out_escapes = callee->escapes;
+    *out_count = callee->param_count;
+    *out_return_escapes = callee->return_escapes;
     return true;
 }
 
-// =============================================================================
-// Analysis context threaded through one function's body walk.
-// =============================================================================
-
-typedef struct {
-    Registry* reg;
-    LocalEnv* env;
-    size_t    param_count;
-    bool*     escapes;         // accumulator, length param_count, only ever set true
-    bool*     return_escapes;  // accumulator, single bool, only ever set true
-} Ctx;
-
-static void mark_escapes(Ctx* ctx, const TaintSet* t) {
-    size_t n = t->n < ctx->param_count ? t->n : ctx->param_count;
-    for (size_t i = 0; i < n; i++) {
-        if (t->bits[i]) ctx->escapes[i] = true;
-    }
-}
-
-static bool is_assign_op(TokenType op) {
-    switch (op) {
-        case TOKEN_ASSIGN:
-        case TOKEN_PLUS_ASSIGN:
-        case TOKEN_MINUS_ASSIGN:
-        case TOKEN_MUL_ASSIGN:
-        case TOKEN_DIV_ASSIGN:
-        case TOKEN_MOD_ASSIGN:
-        case TOKEN_AND_ASSIGN:
-        case TOKEN_OR_ASSIGN:
-        case TOKEN_XOR_ASSIGN:
-        case TOKEN_LSHIFT_ASSIGN:
-        case TOKEN_RSHIFT_ASSIGN:
-            return true;
-        default:
-            return false;
-    }
-}
-
-static TaintSet expr_taint(Ctx* ctx, ASTNode* expr);
-static void walk_stmt(Ctx* ctx, ASTNode* stmt, bool* env_changed);
+static const EscapeHooks PARAM_HOOKS = {
+    .bind = param_bind,
+    // No expression is a source here: the sources are parameter NAMES, seeded
+    // into the environment before the walk starts.
+    .expr_source_slot = NULL,
+    .on_return = param_on_return,
+    .callee_retention = param_callee_retention,
+    // At FUNCTION granularity a defer'd call runs as part of F's own teardown,
+    // before the frame is gone, so it is an ordinary call rather than a
+    // handover to a possibly-outlasting context. block_escape must answer
+    // differently because its boundary closes first.
+    .defer_is_like_go = false,
+};
 
 // Sink #2 (store to a non-local location). `lhs` is the assignment target;
 // `rhs_taint` is the already-computed taint of the value being stored.
@@ -295,157 +198,16 @@ static void walk_stmt(Ctx* ctx, ASTNode* stmt, bool* env_changed);
 // lvalue as a sink over-approximates a small number of cases where a field
 // of a genuinely local struct is stored through — documented as a known
 // conservative simplification, not fixed here).
-static void assign_to_lvalue(Ctx* ctx, ASTNode* lhs, const TaintSet* rhs_taint, bool* env_changed) {
-    if (!lhs) {
-        mark_escapes(ctx, rhs_taint);
-        return;
-    }
-    if (lhs->type == AST_IDENTIFIER) {
-        const char* name = ((IdentifierNode*)lhs)->name;
-        if (strcmp(name, "_") == 0) {
-            return; // blank: discard, not a sink
-        }
-        LocalVar* lv = local_env_find(ctx->env, name);
-        if (lv) {
-            if (taint_set_union_into(&lv->taint, rhs_taint)) *env_changed = true;
-            return;
-        }
-        // Not a known local of F: a global or a variable from an enclosing
-        // scope. Sink.
-        mark_escapes(ctx, rhs_taint);
-        return;
-    }
-    // *p, obj.field, arr[k], s[lo:hi], ... — always a sink (see doc comment).
-    mark_escapes(ctx, rhs_taint);
-}
 
 // Sink #5 (retaining call argument) + the call-result taint rule. Also
 // applies to a call reached as a bare expression statement (result
 // discarded) since the sink fires purely from argument passing.
-static TaintSet call_taint(Ctx* ctx, CallExprNode* call) {
-    size_t n = ctx->param_count;
-
-    size_t argc = 0;
-    for (ASTNode* a = call->args; a; a = a->next) argc++;
-
-    TaintSet* arg_taints = NULL;
-    if (argc > 0) arg_taints = calloc(argc, sizeof(TaintSet));
-    size_t i = 0;
-    for (ASTNode* a = call->args; a; a = a->next, i++) {
-        arg_taints[i] = expr_taint(ctx, a);
-    }
-
-    FuncInfo* callee = NULL;
-    if (call->function && call->function->type == AST_IDENTIFIER) {
-        callee = registry_find(ctx->reg, ((IdentifierNode*)call->function)->name);
-    } else {
-        // Not a plain-identifier callee (selector-expr method/package call,
-        // an immediately-invoked func literal, ...): callee stays NULL =>
-        // external.
-        //
-        // The callee's taint ESCAPES, and used to be discarded here. That was
-        // the same under-marking hole handle_go_call closed for `go p.m()`,
-        // left open on the ordinary call path: a method's receiver is not a
-        // member of call->args, so the retain-all rule for an unresolved
-        // callee below never reached it. A parameter used as the receiver of
-        // a method that stores it was therefore reported non-escaping.
-        //
-        // Only the non-identifier shape is marked, so calling a closure held
-        // in a local keeps its old, correct treatment.
-        //
-        // MIRROR of the identical fix in block_escape.c's call_taint — this
-        // file's header requires a soundness fix to the shared
-        // taint-propagation shape to be applied to both.
-        TaintSet ft = expr_taint(ctx, call->function);
-        mark_escapes(ctx, &ft);
-        taint_set_free(&ft);
-    }
-    // 7a' non-retaining whitelist: only for calls that do NOT resolve to a user
-    // function (callee == NULL) — a user body, even one shadowing a builtin
-    // name, is analysed by its real summary.
-    bool whitelisted = (callee == NULL) && goo_callee_is_non_retaining(call->function);
-
-    for (i = 0; i < argc; i++) {
-        bool retains;
-        bool variadic_tail = call->has_spread && (i == argc - 1);
-        if (whitelisted) {
-            // A whitelisted external (len/cap/print/println, fmt.Print*/Sprintf)
-            // provably retains no argument — even a spread one.
-            retains = false;
-        } else if (variadic_tail) {
-            // Spread/variadic tail: conservative — retain unless every
-            // covered position is known non-retaining, which this module
-            // does not attempt to prove. Always retain.
-            retains = true;
-        } else if (callee) {
-            retains = (i < callee->param_count) ? callee->escapes[i] : true;
-        } else {
-            // External/unregistered/body-less callee: pure-conservative,
-            // every position retains.
-            retains = true;
-        }
-        if (retains) mark_escapes(ctx, &arg_taints[i]);
-    }
-
-    // Call-result taint: sound over-approximation per the design — if the
-    // callee summary says it MAY return an arg-derived value, we cannot
-    // tell which arg, so the result is tainted by the union of ALL args.
-    TaintSet result = taint_set_new(n);
-    if (whitelisted) {
-        // A whitelisted external returns no argument-derived pointer, so its
-        // result carries none of the arguments' taint (result stays ∅).
-    } else if (callee) {
-        if (callee->return_escapes) {
-            for (i = 0; i < argc; i++) taint_set_union_into(&result, &arg_taints[i]);
-        }
-    } else {
-        for (i = 0; i < argc; i++) taint_set_union_into(&result, &arg_taints[i]);
-    }
-
-    for (i = 0; i < argc; i++) taint_set_free(&arg_taints[i]);
-    free(arg_taints);
-    return result;
-}
 
 // Sink #4 (goroutine). Every argument of the launched call escapes
 // unconditionally, independent of the callee's own summary. A func-literal
-// callee's OWN captures still sink via expr_taint's AST_FUNC_LIT case
+// callee's OWN captures still sink via escape_expr_taint's AST_FUNC_LIT case
 // (sink #3) when we evaluate call->function below — that is a distinct
 // mechanism from "every argument of this call" and both can fire together.
-static void handle_go_call(Ctx* ctx, ASTNode* call_node) {
-    if (!call_node || call_node->type != AST_CALL_EXPR) {
-        // Grammar guarantees `go` is always followed by a call_expr; this
-        // is just defense in depth for a malformed/unexpected AST.
-        TaintSet t = expr_taint(ctx, call_node);
-        mark_escapes(ctx, &t);
-        taint_set_free(&t);
-        return;
-    }
-    CallExprNode* call = (CallExprNode*)call_node;
-
-    // The CALLEE's taint escapes too, not just the arguments.
-    //
-    // MIRROR of the same fix in block_escape.c's handle_go_call — this file's
-    // header requires a soundness fix to the shared taint-propagation shape to
-    // be applied to both. Same hole, one boundary out: `go p.m()` on a
-    // parameter `p` hands the receiver to a goroutine that can outlive this
-    // frame, but the call carries no ARGUMENTS, so nothing marked it.
-    //
-    // Computed and marked for every callee shape, identifier included. A
-    // top-level function name resolves to the empty set, so the extra work is
-    // a no-op there. Over-marking is always safe.
-    {
-        TaintSet ft = expr_taint(ctx, call->function);
-        mark_escapes(ctx, &ft);
-        taint_set_free(&ft);
-    }
-
-    for (ASTNode* a = call->args; a; a = a->next) {
-        TaintSet t = expr_taint(ctx, a);
-        mark_escapes(ctx, &t);
-        taint_set_free(&t);
-    }
-}
 
 // A defer'd call executes synchronously as part of F's own teardown, before
 // F's frame is gone — unlike `go`, it does not hand the value to a
@@ -453,151 +215,6 @@ static void handle_go_call(Ctx* ctx, ASTNode* call_node) {
 // own sink kind in the design; treated the same as an ordinary call
 // expression statement (sink #5 only, not the unconditional sink #4
 // treatment `go` gets). Documented judgment call — see task report.
-static void handle_defer_call(Ctx* ctx, ASTNode* call_node) {
-    if (!call_node) return;
-    TaintSet t = expr_taint(ctx, call_node);
-    taint_set_free(&t);
-}
-
-static TaintSet expr_taint(Ctx* ctx, ASTNode* expr) {
-    size_t n = ctx->param_count;
-    if (!expr) return taint_set_new(n);
-
-    switch (expr->type) {
-        case AST_IDENTIFIER: {
-            const char* name = ((IdentifierNode*)expr)->name;
-            LocalVar* lv = local_env_find(ctx->env, name);
-            if (lv) return taint_set_copy(&lv->taint);
-            return taint_set_new(n); // global/unknown identifier => ∅
-        }
-        case AST_LITERAL:
-            return taint_set_new(n);
-        case AST_BINARY_EXPR: {
-            BinaryExprNode* b = (BinaryExprNode*)expr;
-            // Assignment is only ever produced at the statement level by
-            // this grammar (see simple_stmt), never nested as a
-            // sub-expression, but union both sides regardless if we ever
-            // see one here — harmless and still conservative.
-            TaintSet l = expr_taint(ctx, b->left);
-            TaintSet r = expr_taint(ctx, b->right);
-            taint_set_union_into(&l, &r);
-            taint_set_free(&r);
-            return l;
-        }
-        case AST_UNARY_EXPR:
-            return expr_taint(ctx, ((UnaryExprNode*)expr)->operand);
-        case AST_POSTFIX_EXPR:
-            return expr_taint(ctx, ((PostfixExprNode*)expr)->operand);
-        case AST_INDEX_EXPR: {
-            IndexExprNode* ie = (IndexExprNode*)expr;
-            TaintSet base = expr_taint(ctx, ie->expr);
-            TaintSet idx = expr_taint(ctx, ie->index);
-            taint_set_union_into(&base, &idx);
-            taint_set_free(&idx);
-            return base;
-        }
-        case AST_SLICE_INDEX_EXPR: {
-            SliceIndexExprNode* se = (SliceIndexExprNode*)expr;
-            TaintSet base = expr_taint(ctx, se->expr);
-            TaintSet lo = expr_taint(ctx, se->low);
-            taint_set_union_into(&base, &lo);
-            taint_set_free(&lo);
-            TaintSet hi = expr_taint(ctx, se->high);
-            taint_set_union_into(&base, &hi);
-            taint_set_free(&hi);
-            return base;
-        }
-        case AST_SELECTOR_EXPR:
-            return expr_taint(ctx, ((SelectorExprNode*)expr)->expr);
-        case AST_CALL_EXPR:
-            return call_taint(ctx, (CallExprNode*)expr);
-        case AST_FUNC_LIT: {
-            // Sink #3 (closure capture). We read captured_names[] as
-            // populated by the type checker; we deliberately do NOT re-walk
-            // the closure body (see the design doc and ast.h's doc comment
-            // on FuncLitNode.captured_names).
-            FuncLitNode* lit = (FuncLitNode*)expr;
-            TaintSet t = taint_set_new(n);
-            for (size_t i = 0; i < lit->captured_count; i++) {
-                LocalVar* lv = local_env_find(ctx->env, lit->captured_names[i]);
-                if (lv) taint_set_union_into(&t, &lv->taint);
-            }
-            mark_escapes(ctx, &t);
-            return t;
-        }
-        case AST_STRUCT_LITERAL: {
-            StructLiteralNode* sl = (StructLiteralNode*)expr;
-            TaintSet t = taint_set_new(n);
-            for (ASTNode* v = sl->field_values; v; v = v->next) {
-                TaintSet vt = expr_taint(ctx, v);
-                taint_set_union_into(&t, &vt);
-                taint_set_free(&vt);
-            }
-            return t;
-        }
-        // Slice literal (repurposes the AST_SLICE_EXPR tag — see SliceLitNode's
-        // doc comment in ast.h).
-        case AST_SLICE_EXPR: {
-            SliceLitNode* sl = (SliceLitNode*)expr;
-            TaintSet t = taint_set_new(n);
-            for (ASTNode* e = sl->elements; e; e = e->next) {
-                TaintSet et = expr_taint(ctx, e);
-                taint_set_union_into(&t, &et);
-                taint_set_free(&et);
-            }
-            return t;
-        }
-        case AST_ARRAY_LITERAL: {
-            ArrayLitNode* al = (ArrayLitNode*)expr;
-            TaintSet t = taint_set_new(n);
-            for (ASTNode* e = al->elements; e; e = e->next) {
-                TaintSet et = expr_taint(ctx, e);
-                taint_set_union_into(&t, &et);
-                taint_set_free(&et);
-            }
-            return t;
-        }
-        case AST_KEYED_ELEMENT:
-            return expr_taint(ctx, ((KeyedElementNode*)expr)->value);
-        // Map literal (repurposes the AST_PAREN_EXPR tag — see MapLitNode's
-        // doc comment in ast.h; a parenthesized expression parses as plain
-        // identity and never produces this node).
-        case AST_PAREN_EXPR: {
-            MapLitNode* ml = (MapLitNode*)expr;
-            TaintSet t = taint_set_new(n);
-            for (ASTNode* k = ml->keys; k; k = k->next) {
-                TaintSet kt = expr_taint(ctx, k);
-                taint_set_union_into(&t, &kt);
-                taint_set_free(&kt);
-            }
-            for (ASTNode* v = ml->values; v; v = v->next) {
-                TaintSet vt = expr_taint(ctx, v);
-                taint_set_union_into(&t, &vt);
-                taint_set_free(&vt);
-            }
-            return t;
-        }
-        case AST_SLICE_CONVERSION:
-            return expr_taint(ctx, ((SliceConvNode*)expr)->operand);
-        case AST_TYPE_ASSERT:
-            return expr_taint(ctx, ((TypeAssertNode*)expr)->expr);
-        default:
-            // Genuinely unhandled expression kind (GPU/WASM/comptime/match/
-            // pattern nodes, etc.): conservative escape of every param —
-            // we cannot cheaply enumerate exactly which params are
-            // "mentioned within it" without a fully generic AST walker, so
-            // the safe over-approximation is "all of them, right now".
-            {
-                TaintSet t = taint_set_all(n);
-                mark_escapes(ctx, &t);
-                return t;
-            }
-    }
-}
-
-static void mark_all_escapes(Ctx* ctx) {
-    for (size_t i = 0; i < ctx->param_count; i++) ctx->escapes[i] = true;
-}
 
 // Seeds/updates locals for a VarDeclNode or ConstDeclNode-shaped
 // names/name_count/values triple (var_decl, short_var_decl, and const_decl
@@ -606,257 +223,6 @@ static void mark_all_escapes(Ctx* ctx) {
 // several names) is handled by giving every name the UNION of all provided
 // values' taint — imprecise when names don't line up 1:1 with values, but
 // safe (never under-marks).
-static void seed_names_from_values(Ctx* ctx, char** names, size_t name_count,
-                                    ASTNode* values, bool* env_changed) {
-    TaintSet combined = taint_set_new(ctx->param_count);
-    for (ASTNode* v = values; v; v = v->next) {
-        TaintSet t = expr_taint(ctx, v);
-        taint_set_union_into(&combined, &t);
-        taint_set_free(&t);
-    }
-    for (size_t i = 0; i < name_count; i++) {
-        if (strcmp(names[i], "_") == 0) continue;
-        if (local_env_add_or_union(ctx->env, names[i], &combined)) *env_changed = true;
-    }
-    taint_set_free(&combined);
-}
-
-static void walk_stmt(Ctx* ctx, ASTNode* stmt, bool* env_changed) {
-    for (; stmt; stmt = stmt->next) {
-        switch (stmt->type) {
-            case AST_BLOCK_STMT:
-                walk_stmt(ctx, ((BlockStmtNode*)stmt)->statements, env_changed);
-                break;
-
-            case AST_EXPR_STMT: {
-                ASTNode* e = ((ExprStmtNode*)stmt)->expr;
-                if (e && e->type == AST_BINARY_EXPR) {
-                    BinaryExprNode* b = (BinaryExprNode*)e;
-                    if (is_assign_op(b->operator)) {
-                        // Sink #2 uses only the RHS's taint per the design
-                        // ("rhs is tainted with i"), for both plain `=` and
-                        // compound `op=` forms.
-                        TaintSet rhs = expr_taint(ctx, b->right);
-                        assign_to_lvalue(ctx, b->left, &rhs, env_changed);
-                        taint_set_free(&rhs);
-                        break;
-                    }
-                    if (b->operator == TOKEN_ARROW) {
-                        // Channel send `ch <- v`: the sent value is received by
-                        // another goroutine or by the caller, so it outlives
-                        // this function — taint(v)'s params escape. (Unlike a
-                        // defer, this is a true escape at BOTH function and
-                        // block granularity, so param_escape and block_escape
-                        // both handle it. `<-ch` receive is a UNARY ARROW, a
-                        // fresh in-bound value, correctly not a sink.)
-                        TaintSet lt = expr_taint(ctx, b->left);
-                        taint_set_free(&lt);
-                        TaintSet rhs = expr_taint(ctx, b->right);
-                        mark_escapes(ctx, &rhs);
-                        taint_set_free(&rhs);
-                        break;
-                    }
-                }
-                TaintSet t = expr_taint(ctx, e);
-                taint_set_free(&t);
-                break;
-            }
-
-            case AST_IF_STMT: {
-                IfStmtNode* n = (IfStmtNode*)stmt;
-                TaintSet t = expr_taint(ctx, n->condition);
-                taint_set_free(&t);
-                walk_stmt(ctx, n->then_stmt, env_changed);
-                walk_stmt(ctx, n->else_stmt, env_changed);
-                break;
-            }
-
-            case AST_IF_LET_STMT: {
-                IfLetStmtNode* n = (IfLetStmtNode*)stmt;
-                TaintSet t = expr_taint(ctx, n->nullable_expr);
-                if (n->var_name && strcmp(n->var_name, "_") != 0) {
-                    if (local_env_add_or_union(ctx->env, n->var_name, &t)) *env_changed = true;
-                }
-                taint_set_free(&t);
-                walk_stmt(ctx, n->then_stmt, env_changed);
-                walk_stmt(ctx, n->else_stmt, env_changed);
-                break;
-            }
-
-            case AST_FOR_STMT: {
-                ForStmtNode* n = (ForStmtNode*)stmt;
-                if (n->range_expr) {
-                    TaintSet t = expr_taint(ctx, n->range_expr);
-                    // Index/key is an int, never tainted; the per-iteration
-                    // VALUE is conservatively tainted by the whole
-                    // collection's taint (element-precision is not tracked).
-                    if (n->key_name && strcmp(n->key_name, "_") != 0) {
-                        TaintSet empty = taint_set_new(ctx->param_count);
-                        if (local_env_add_or_union(ctx->env, n->key_name, &empty)) *env_changed = true;
-                        taint_set_free(&empty);
-                    }
-                    if (n->value_name && strcmp(n->value_name, "_") != 0) {
-                        if (local_env_add_or_union(ctx->env, n->value_name, &t)) *env_changed = true;
-                    }
-                    taint_set_free(&t);
-                } else {
-                    if (n->init) walk_stmt(ctx, n->init, env_changed);
-                    if (n->condition) {
-                        TaintSet t = expr_taint(ctx, n->condition);
-                        taint_set_free(&t);
-                    }
-                    if (n->post) walk_stmt(ctx, n->post, env_changed);
-                }
-                walk_stmt(ctx, n->body, env_changed);
-                break;
-            }
-
-            case AST_RETURN_STMT: {
-                ReturnStmtNode* n = (ReturnStmtNode*)stmt;
-                for (ASTNode* v = n->values; v; v = v->next) {
-                    TaintSet t = expr_taint(ctx, v);
-                    mark_escapes(ctx, &t);
-                    if (!taint_set_empty(&t)) *ctx->return_escapes = true;
-                    taint_set_free(&t);
-                }
-                break;
-            }
-
-            case AST_GO_STMT:
-                handle_go_call(ctx, ((GoStmtNode*)stmt)->call);
-                break;
-
-            case AST_DEFER_STMT:
-                handle_defer_call(ctx, ((DeferStmtNode*)stmt)->call);
-                break;
-
-            case AST_BREAK_STMT:
-            case AST_CONTINUE_STMT:
-                break;
-
-            case AST_VAR_DECL: {
-                VarDeclNode* n = (VarDeclNode*)stmt;
-                seed_names_from_values(ctx, n->names, n->name_count, n->values, env_changed);
-                break;
-            }
-
-            case AST_CONST_DECL: {
-                ConstDeclNode* n = (ConstDeclNode*)stmt;
-                seed_names_from_values(ctx, n->names, n->name_count, n->values, env_changed);
-                break;
-            }
-
-            case AST_MULTI_ASSIGN: {
-                MultiAssignNode* n = (MultiAssignNode*)stmt;
-                TaintSet combined = taint_set_new(ctx->param_count);
-                for (ASTNode* v = n->values; v; v = v->next) {
-                    TaintSet t = expr_taint(ctx, v);
-                    taint_set_union_into(&combined, &t);
-                    taint_set_free(&t);
-                }
-                if (n->is_short_decl) {
-                    for (ASTNode* tgt = n->targets; tgt; tgt = tgt->next) {
-                        if (tgt->type == AST_IDENTIFIER) {
-                            const char* nm = ((IdentifierNode*)tgt)->name;
-                            if (strcmp(nm, "_") != 0) {
-                                if (local_env_add_or_union(ctx->env, nm, &combined)) *env_changed = true;
-                            }
-                        } else {
-                            mark_escapes(ctx, &combined);
-                        }
-                    }
-                } else {
-                    for (ASTNode* tgt = n->targets; tgt; tgt = tgt->next) {
-                        assign_to_lvalue(ctx, tgt, &combined, env_changed);
-                    }
-                }
-                taint_set_free(&combined);
-                break;
-            }
-
-            case AST_SWITCH_STMT: {
-                SwitchStmtNode* n = (SwitchStmtNode*)stmt;
-                if (n->tag) {
-                    TaintSet t = expr_taint(ctx, n->tag);
-                    taint_set_free(&t);
-                }
-                for (ASTNode* c = n->cases; c; c = c->next) {
-                    if (c->type == AST_CASE_CLAUSE) {
-                        CaseClauseNode* cc = (CaseClauseNode*)c;
-                        for (ASTNode* e = cc->exprs; e; e = e->next) {
-                            TaintSet t = expr_taint(ctx, e);
-                            taint_set_free(&t);
-                        }
-                        walk_stmt(ctx, cc->body, env_changed);
-                    }
-                }
-                break;
-            }
-
-            case AST_TYPE_SWITCH: {
-                TypeSwitchNode* n = (TypeSwitchNode*)stmt;
-                TaintSet t = expr_taint(ctx, n->expr);
-                if (n->bind_name && n->bind_name->type == AST_IDENTIFIER) {
-                    const char* bn = ((IdentifierNode*)n->bind_name)->name;
-                    if (strcmp(bn, "_") != 0) {
-                        if (local_env_add_or_union(ctx->env, bn, &t)) *env_changed = true;
-                    }
-                }
-                taint_set_free(&t);
-                for (ASTNode* c = n->cases; c; c = c->next) {
-                    if (c->type == AST_TYPE_CASE) {
-                        walk_stmt(ctx, ((TypeCaseNode*)c)->body, env_changed);
-                    }
-                }
-                break;
-            }
-
-            case AST_SELECT_STMT: {
-                SelectStmtNode* n = (SelectStmtNode*)stmt;
-                for (ASTNode* c = n->cases; c; c = c->next) {
-                    if (c->type == AST_SELECT_CASE) {
-                        SelectCaseNode* sc = (SelectCaseNode*)c;
-                        walk_stmt(ctx, sc->comm, env_changed);
-                        walk_stmt(ctx, sc->body, env_changed);
-                    }
-                }
-                break;
-            }
-
-            case AST_UNSAFE_STMT:
-                walk_stmt(ctx, ((UnsafeStmtNode*)stmt)->body, env_changed);
-                break;
-
-            case AST_ARENA_BLOCK:
-                walk_stmt(ctx, ((ArenaBlockNode*)stmt)->body, env_changed);
-                break;
-
-            case AST_ASSERT_STMT: {
-                AssertStmtNode* n = (AssertStmtNode*)stmt;
-                TaintSet t = expr_taint(ctx, n->condition);
-                taint_set_free(&t);
-                if (n->message) {
-                    TaintSet tm = expr_taint(ctx, n->message);
-                    taint_set_free(&tm);
-                }
-                break;
-            }
-
-            case AST_ASSUME_STMT: {
-                TaintSet t = expr_taint(ctx, ((AssumeStmtNode*)stmt)->condition);
-                taint_set_free(&t);
-                break;
-            }
-
-            default:
-                // Genuinely unhandled statement kind: conservative escape of
-                // every one of F's params (see expr_taint's default arm for
-                // the same rationale).
-                mark_all_escapes(ctx);
-                break;
-        }
-    }
-}
 
 // Runs F's intraprocedural taint analysis to a LOCAL fixpoint (the taint map
 // only grows, so repeating the whole-body walk until it stops changing is
@@ -868,18 +234,22 @@ static void walk_stmt(Ctx* ctx, ASTNode* stmt, bool* env_changed) {
 static void analyze_function_body(Registry* reg, FuncInfo* f, bool* local_escapes, bool* local_return_escapes) {
     LocalEnv env = {0};
     for (size_t i = 0; i < f->param_count; i++) {
-        TaintSet seed = taint_set_new(f->param_count);
+        TaintSet seed = escape_taint_new(f->param_count);
         seed.bits[i] = true;
-        local_env_add_or_union(&env, f->param_names[i], &seed);
-        taint_set_free(&seed);
+        escape_env_add_or_union(&env, f->param_names[i], &seed);
+        escape_taint_free(&seed);
     }
 
-    Ctx ctx = {
+    ParamOwner own = {
         .reg = reg,
-        .env = &env,
-        .param_count = f->param_count,
-        .escapes = local_escapes,
         .return_escapes = local_return_escapes,
+    };
+    EscapeCtx ctx = {
+        .env = &env,
+        .slot_count = f->param_count,
+        .escapes = local_escapes,
+        .hooks = &PARAM_HOOKS,
+        .owner = &own,
     };
 
     // Defensive backstop, not the termination argument: the taint map is a
@@ -897,10 +267,10 @@ static void analyze_function_body(Registry* reg, FuncInfo* f, bool* local_escape
             *local_return_escapes = true;
             break;
         }
-        if (f->decl->body) walk_stmt(&ctx, f->decl->body, &changed);
+        if (f->decl->body) escape_walk_stmt(&ctx, f->decl->body, &changed);
     }
 
-    local_env_free(&env);
+    escape_env_free(&env);
 }
 
 // =============================================================================
