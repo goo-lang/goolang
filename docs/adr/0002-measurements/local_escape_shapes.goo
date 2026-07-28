@@ -1,0 +1,126 @@
+package main
+
+// Measurement programs for
+// docs/superpowers/specs/2026-07-28-daemon-alloc-attribution-findings.md.
+//
+// bench/daemon cannot be measured through local_escape_analyze directly: its
+// imports do not resolve in a standalone harness, every stdlib call then reads
+// as an unsummarised external, and the verdicts go conservative for that
+// reason rather than for the reason under test. These shapes reproduce the
+// daemon's constructs with no import, so each verdict has one cause.
+//
+// Build the harness in this directory (dump_local_escape.c) and run it on this
+// file. Expected verdicts are in the findings document's tables.
+
+import "fmt"
+
+// Import-free reproductions of the four shapes bench/daemon/handle uses.
+// The daemon itself cannot be measured directly: its imports fail to resolve
+// in a standalone harness, every stdlib call then reads as an unsummarised
+// external, and the verdicts become conservative for that reason rather than
+// for the reason under test.
+
+// A local copying helper standing in for the C shims (goo_strings_trim_space
+// and friends), all of which allocate a fresh buffer and copy into it.
+func fresh(s string) string {
+	return s + "x"
+}
+
+// A view-returning helper standing in for goostd's TrimPrefix/TrimSuffix.
+func view(s string) string {
+	return s[1:]
+}
+
+// Shape A — control. A fresh local, read and dropped.
+func shapeA(req string) {
+	f := fresh(req)
+	_ = f
+}
+
+// Shape B — the daemon's counting loop: the local becomes a MAP KEY, and the
+// compound assign reads m[f] on the right side as well.
+func shapeB(req string) {
+	m := map[string]int{}
+	f := fresh(req)
+	m[f] = m[f] + 1
+	_ = m
+}
+
+// Shape C — map key with NO read on the right side, to separate "key stored"
+// from "read back through the map".
+func shapeC(req string) {
+	m := map[string]int{}
+	f := fresh(req)
+	m[f] = 1
+	_ = m
+}
+
+// Shape D — the local goes into a slice via append, the `parts` shape.
+func shapeD(req string) {
+	parts := []string{}
+	f := fresh(req)
+	parts = append(parts, f)
+	_ = parts
+}
+
+// Shape E — the local holds a VIEW of a parameter. local_escape should still
+// say "does not outlive", which is why a release consumer needs the separate
+// ownership fact and cannot use this pass alone.
+func shapeE(req string) {
+	f := view(req)
+	_ = f
+}
+
+// Shape F — the map ESCAPES (it is returned) and holds `f` as a key.
+// goo_map_set_sv stores the key pointer verbatim and never frees it, so the
+// returned map genuinely retains `f`. If local_escape reports `f` as
+// non-escaping, an ARC release consumer frees a pointer the live map holds.
+func shapeF(req string) map[string]int {
+	m := map[string]int{}
+	f := fresh(req)
+	m[f] = 1
+	return m
+}
+
+// Shape G — same, but through a slice: the escaping slice holds `f`.
+func shapeG(req string) []string {
+	parts := []string{}
+	f := fresh(req)
+	parts = append(parts, f)
+	return parts
+}
+
+// Shape H — the callee is on the non-retaining whitelist (fmt.*).
+func shapeH(req string) {
+	f := fresh(req)
+	fmt.Println(f)
+}
+
+// Shape I — a user callee WITH a body, so param_escape has a real summary
+// and can prove it does not retain.
+func drop(s string) { _ = s }
+func shapeI(req string) {
+	f := fresh(req)
+	drop(f)
+}
+
+// Shape J — a user callee that DOES retain, to show the summary is load-bearing.
+var sink string
+func keep(s string) { sink = s }
+func shapeJ(req string) {
+	f := fresh(req)
+	keep(f)
+}
+
+func main() {
+	shapeA("a")
+	shapeB("b")
+	shapeC("c")
+	shapeD("d")
+	shapeE("e")
+	_ = shapeF("f")
+	_ = shapeG("g")
+	shapeH("h")
+	shapeI("i")
+	shapeJ("j")
+}
