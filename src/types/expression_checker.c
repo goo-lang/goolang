@@ -3654,6 +3654,69 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 return conv_target;
             }
         }
+        // Conversion to a NAMED non-struct type: `IntSlice(xs)`, `MyInt(n)`.
+        //
+        // type_check_type_decl registers a type name as a Variable whose
+        // `type` IS the named Type and whose is_builtin flag marks it "not a
+        // real variable" (see its own comment). That flag is the whole
+        // discriminator here: it is what separates `IntSlice(xs)` from
+        // `x(3)` on an ordinary int variable, which must still be the
+        // "Cannot call non-function type" error.
+        //
+        // Builtin FUNCTIONS (len/append/...) also carry is_builtin, but their
+        // Variable's type is TYPE_FUNCTION and they are dispatched long before
+        // this point, so they cannot reach here.
+        //
+        // Deliberately NOT handled: a named STRUCT type. `T{...}` is the
+        // composite-literal form, and Go's struct-to-struct conversion between
+        // identical underlying types is a separate feature with no caller
+        // asking for it. A named INTERFACE is excluded for the same reason —
+        // `I(x)` is not a conversion in Go, it is an assignment to an
+        // interface, and admitting it here would bypass satisfaction checking.
+        if (!name_is_user_shadowed(checker, func_ident->name)) {
+            Variable* tv = type_checker_lookup_variable(checker, func_ident->name);
+            Type* named = (tv && tv->is_builtin && tv->type) ? tv->type : NULL;
+            int convertible_kind = named &&
+                (named->kind == TYPE_SLICE || named->kind == TYPE_MAP ||
+                 named->kind == TYPE_STRING || named->kind == TYPE_BOOL ||
+                 type_is_numeric(named));
+            if (convertible_kind) {
+                if (!call->args || call->args->next) {
+                    type_error(checker, expr->pos,
+                               "conversion %s() expects exactly one argument",
+                               func_ident->name);
+                    return NULL;
+                }
+                Type* src = type_check_expression(checker, call->args);
+                if (!src) return NULL;
+
+                // Go's rule, narrowed to what v1 needs: identical underlying
+                // types convert, and numeric kinds convert among themselves.
+                // type_equals compares slices/maps STRUCTURALLY and ignores
+                // the stamped name, which is exactly the "identical underlying
+                // type" test — so `IntSlice([]int)` passes and
+                // `IntSlice([]string)` does not.
+                int ok = type_equals(named, src) ||
+                         (type_is_numeric(named) &&
+                          (type_is_numeric(src) || src->kind == TYPE_CHAR));
+                if (!ok) {
+                    type_error(checker, expr->pos,
+                               "cannot convert %s to %s",
+                               type_to_string(src), func_ident->name);
+                    return NULL;
+                }
+                // A constant operand meeting a narrower numeric named type
+                // gets the same range gate a builtin conversion gets, so
+                // `MyInt8(300)` cannot slip through where `int8(300)` is
+                // rejected.
+                if (type_is_numeric(named) &&
+                    !check_conversion_operand_range(checker, call->args, named, false)) {
+                    return NULL; // error already emitted
+                }
+                expr->node_type = named;
+                return named;
+            }
+        }
         // new(T) -> *T. The sole argument is a type name (e.g. `new(int)`),
         // resolved as a type rather than typechecked as a value expression.
         if (strcmp(func_ident->name, "new") == 0) {

@@ -92,10 +92,7 @@ func Reverse(data Interface) Interface {
 
 // IntSlice attaches Interface to []int.
 //
-// A named slice type with methods, which is Go's exact shape. Note that every
-// use below assigns rather than converting: `var s IntSlice = x` works, but the
-// conversion spelling `IntSlice(x)` is rejected ("Cannot call non-function type
-// IntSlice"). That gap is the only reason this file never writes a conversion.
+// A named slice type with methods, which is Go's exact shape.
 type IntSlice []int
 
 func (x IntSlice) Len() int               { return len(x) }
@@ -130,38 +127,32 @@ func (x Float64Slice) Swap(i int, j int) { x[i], x[j] = x[j], x[i] }
 
 // Ints sorts a slice of ints in ascending order.
 func Ints(x []int) {
-	var s IntSlice = x
-	Sort(s)
+	Sort(IntSlice(x))
 }
 
 // Strings sorts a slice of strings in ascending byte order.
 func Strings(x []string) {
-	var s StringSlice = x
-	Sort(s)
+	Sort(StringSlice(x))
 }
 
 // Float64s sorts a slice of float64s in ascending order, NaNs first.
 func Float64s(x []float64) {
-	var s Float64Slice = x
-	Sort(s)
+	Sort(Float64Slice(x))
 }
 
 // IntsAreSorted reports whether x is in ascending order.
 func IntsAreSorted(x []int) bool {
-	var s IntSlice = x
-	return IsSorted(s)
+	return IsSorted(IntSlice(x))
 }
 
 // StringsAreSorted reports whether x is in ascending order.
 func StringsAreSorted(x []string) bool {
-	var s StringSlice = x
-	return IsSorted(s)
+	return IsSorted(StringSlice(x))
 }
 
 // Float64sAreSorted reports whether x is in ascending order.
 func Float64sAreSorted(x []float64) bool {
-	var s Float64Slice = x
-	return IsSorted(s)
+	return IsSorted(Float64Slice(x))
 }
 
 // SearchInts returns the smallest index at which x could be inserted into a

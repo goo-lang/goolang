@@ -1067,6 +1067,49 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(src);
             return value_info_new(NULL, out, target);
         }
+        // Conversion to a NAMED non-struct type: `IntSlice(xs)`, `MyInt(n)`.
+        // The checker admitted it and stamped the named target on the node
+        // (see its named-type conversion arm), so the only question here is
+        // how to lower it.
+        //
+        // The discriminator matches the checker's: an is_builtin Variable
+        // whose type is not a function is a TYPE NAME, not a value. Anything
+        // else falls through to the ordinary call path unchanged.
+        if (call->args && !call->args->next &&
+            !call_codegen_name_is_user_shadowed(checker, func_name->name)) {
+            Variable* tv = type_checker_lookup_variable(checker, func_name->name);
+            Type* named = (tv && tv->is_builtin && tv->type &&
+                           tv->type->kind != TYPE_FUNCTION) ? tv->type : NULL;
+            int convertible_kind = named &&
+                (named->kind == TYPE_SLICE || named->kind == TYPE_MAP ||
+                 named->kind == TYPE_STRING || named->kind == TYPE_BOOL ||
+                 type_is_numeric(named));
+            if (convertible_kind) {
+                Type* target = expr->node_type ? expr->node_type : named;
+                ValueInfo* src = codegen_generate_expression(codegen, checker, call->args);
+                if (!src) return NULL;
+                LLVMValueRef sval = src->llvm_value;
+                if (src->is_lvalue && src->goo_type) {
+                    LLVMTypeRef st = codegen_type_to_llvm(codegen, src->goo_type);
+                    if (st) sval = LLVMBuildLoad2(codegen->builder, st, sval, "nconv_load");
+                }
+                // A named AGGREGATE (slice/map/string) has the identical LLVM
+                // representation as its underlying type — the name exists only
+                // in the type system, to carry a method set. So the conversion
+                // is a pure retype with no instruction emitted. Only the
+                // numeric case can actually change bits, and it reuses the
+                // same helper the builtin conversion arm above uses rather
+                // than growing a second width-coercion rule.
+                LLVMValueRef out = sval;
+                if (type_is_numeric(target)) {
+                    LLVMTypeRef to_l = codegen_type_to_llvm(codegen, target);
+                    if (!to_l) { value_info_free(src); return NULL; }
+                    out = codegen_numeric_convert(codegen, sval, src->goo_type, target, to_l);
+                }
+                value_info_free(src);
+                return value_info_new(NULL, out, target);
+            }
+        }
         if (strcmp(func_name->name, "new") == 0) {
             // new(T) -> heap-allocated *T. The type checker stored the result
             // type (*T) on the node; allocate sizeof(T) via goo_alloc and

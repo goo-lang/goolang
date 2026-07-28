@@ -1,0 +1,12 @@
+// Conversion to a named type requires an identical underlying type, as in Go.
+// `type IntSlice []int` does not accept a []string operand.
+package main
+
+import "fmt"
+
+type IntSlice []int
+
+func main() {
+	ss := []string{"a", "b"}
+	fmt.Println(len(IntSlice(ss)))
+}
