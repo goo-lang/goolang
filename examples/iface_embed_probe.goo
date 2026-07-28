@@ -1,0 +1,80 @@
+// iface_embed_probe: an interface embedded in a struct (Go's
+// `struct { io.Reader }`), the shape sort.Reverse is written in.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), per project convention — never hand-written.
+package main
+
+import "fmt"
+
+type Greeter interface {
+	Greet() string
+}
+
+type English struct{}
+
+func (e English) Greet() string { return "hello" }
+
+type French struct{}
+
+func (f French) Greet() string { return "bonjour" }
+
+// Wrapper embeds the INTERFACE. Greet is promoted onto Wrapper, and the
+// implementation is whatever concrete sits in the field at runtime.
+type Wrapper struct {
+	Greeter
+	name string
+}
+
+// Shouty embeds the interface AND declares its own Greet, which shadows the
+// promoted one: the outer declaration wins at depth 0.
+type Shouty struct {
+	Greeter
+}
+
+func (s Shouty) Greet() string { return "HELLO" }
+
+// Deep embeds Wrapper, so Greet is promoted through TWO hops — a struct hop
+// and then the interface field.
+type Deep struct {
+	Wrapper
+}
+
+func speak(g Greeter) string { return g.Greet() }
+
+func main() {
+	w := Wrapper{Greeter: English{}, name: "outer"}
+
+	// 1. The promoted method, called directly.
+	fmt.Println(w.Greet())
+
+	// 2. An ordinary field beside the embedded interface.
+	fmt.Println(w.name)
+
+	// 3. Wrapper itself satisfies Greeter through the promoted method, as a
+	//    VALUE — an embedded interface's methods are in the value's method set.
+	var g Greeter = w
+	fmt.Println(g.Greet())
+
+	// 4. The same, passed as an argument rather than assigned.
+	fmt.Println(speak(w))
+
+	// 5. The dynamic implementation really is the field's, not a fixed one.
+	w2 := Wrapper{Greeter: French{}, name: "second"}
+	fmt.Println(speak(w2))
+
+	// 6. An outer method shadows the promoted one.
+	s := Shouty{Greeter: English{}}
+	fmt.Println(s.Greet())
+	fmt.Println(speak(s))
+
+	// 7. Promotion through two hops.
+	d := Deep{Wrapper: Wrapper{Greeter: French{}, name: "deep"}}
+	fmt.Println(d.Greet())
+	fmt.Println(d.name)
+	fmt.Println(speak(d))
+
+	// 8. A pointer to the outer struct also carries the promoted method.
+	pw := &w
+	fmt.Println(pw.Greet())
+}

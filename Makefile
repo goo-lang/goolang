@@ -3218,7 +3218,7 @@ VERIFY_ALL_DEPS := \
     map-nilfunc-abort-probe \
     loopcapture-reject-probe \
     osargs-probe \
-    embed-iface-reject-probe \
+    embed-iface-probe \
     embed-dup-reject-probe \
     embed-badtype-reject-probe \
     embed-enum-reject-probe \
@@ -3852,16 +3852,29 @@ composite-literal-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  out="$$(./build/clr_empty_ok.out)"; if [ "$$out" != "0" ]; then echo "composite-literal-reject-probe: FAIL (bare empty [] output '$$out' != '0')"; exit 1; fi
 	@echo "composite-literal-reject-probe: PASS"
 
-# Embedding: interface embedding is deferred — must reject cleanly, not crash.
-embed-iface-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+# Embedding: an interface embedded in a struct promotes its method set.
+#
+# POLARITY FLIPPED. This target used to assert the REJECTION ("embedded
+# interface types are not yet supported"), because the feature was deferred.
+# It now asserts the feature works. The slot is kept rather than deleted so
+# the gate count does not silently shrink, and so the flip is visible in the
+# diff instead of looking like a removed test.
+#
+# Deliberately minimal: promotion through the embedded interface, dispatched
+# to the concrete stored in the field. The thorough shapes (shadowing by an
+# outer method, two-hop promotion, value vs pointer outer, satisfaction of
+# the interface by the outer VALUE) live in the golden fixture
+# examples/iface_embed_probe.goo, whose expected output came from go run.
+embed-iface-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== embed-iface-reject-probe: embedded interface must reject ==="
-	@printf 'package main\ntype I interface { M() int }\ntype S struct {\n\tI\n}\nfunc main(){ _ = S{} }\n' > build/embed_iface_reject.goo
-	@rm -f build/embed_iface_reject
-	@$(COMPILER) -o build/embed_iface_reject build/embed_iface_reject.goo > build/embed_iface_reject.out 2> build/embed_iface_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "embed-iface-reject-probe: FAIL (compiled rc=0)"; exit 1; fi; \
-	if ! grep -q "embedded interface types are not yet supported" build/embed_iface_reject.err; then echo "embed-iface-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/embed_iface_reject.err; exit 1; fi; \
-	echo "embed-iface-reject-probe: PASS (rejected rc=$$rc)"
+	@echo "=== embed-iface-probe: embedded interface promotes its method set ==="
+	@printf 'package main\nimport "fmt"\ntype I interface { M() int }\ntype C struct{}\nfunc (c C) M() int { return 7 }\ntype S struct {\n\tI\n}\nfunc main(){ s := S{I: C{}}; fmt.Println(s.M()); var i I = s; fmt.Println(i.M()) }\n' > build/embed_iface.goo
+	@rm -f build/embed_iface
+	@$(COMPILER) -o build/embed_iface build/embed_iface.goo > build/embed_iface.out 2> build/embed_iface.err; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "embed-iface-probe: FAIL (rejected rc=$$rc)"; cat build/embed_iface.err; exit 1; fi; \
+	out="$$(./build/embed_iface | tr '\n' ' ')"; \
+	if [ "$$out" != "7 7 " ]; then echo "embed-iface-probe: FAIL (output '$$out' != '7 7 ' — promoted call and/or boxed dispatch wrong)"; exit 1; fi; \
+	echo "embed-iface-probe: PASS (promoted call + boxed outer both dispatch)"
 
 # Embedding: duplicate member names (Base twice, or Base + field Base) reject.
 embed-dup-reject-probe: $(COMPILER) $(RUNTIME_LIB)

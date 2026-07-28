@@ -1,0 +1,45 @@
+// Go spec: an interface embedded in a struct promotes its method set, and the
+// implementation is whatever the field holds at run time. Distinct from
+// type_struct_embed, where the embedded member is a struct with real methods:
+// here there is no function to call, so the promotion must dispatch through
+// the embedded interface's own vtable.
+package main
+
+import "fmt"
+
+type Greeter interface {
+	Greet() string
+}
+
+type English struct{}
+
+func (e English) Greet() string { return "hello" }
+
+type Wrapper struct {
+	Greeter
+	name string
+}
+
+// An outer declaration shadows the promoted method.
+type Shouty struct {
+	Greeter
+}
+
+func (s Shouty) Greet() string { return "HELLO" }
+
+func speak(g Greeter) string { return g.Greet() }
+
+func main() {
+	w := Wrapper{Greeter: English{}, name: "outer"}
+	fmt.Println(w.Greet())
+	fmt.Println(w.name)
+
+	// The outer VALUE satisfies the embedded interface — an embedded
+	// interface's methods are in the value's method set, not only a
+	// pointer's. This is what lets sort.Reverse return a value.
+	var g Greeter = w
+	fmt.Println(g.Greet())
+	fmt.Println(speak(w))
+
+	fmt.Println(speak(Shouty{Greeter: English{}}))
+}
