@@ -1,0 +1,34 @@
+// Arena map-store probe: a pointer allocated in an arena block and stored
+// into a map that OUTLIVES the block must be heap-allocated.
+//
+// `m[k] = p` is an assignment whose lvalue is not an identifier, and
+// assign_to_lvalue treats every non-identifier lvalue as an unconditional
+// sink. So the site is marked and routed to the heap. That rule is a
+// deliberate conservative simplification, stated in block_escape.c, and this
+// probe is what makes it a tested property rather than a comment.
+//
+// It matters more than an ordinary sink row, because a map slot is the one
+// place a pointer stops being a pointer: codegen_map_value_to_slot packs it
+// through LLVMBuildPtrToInt into an i64 (codegen.c:726). Nothing downstream —
+// no analysis, and under ARC no reference count — can see a pointer inside
+// that integer. If the sink rule ever narrows, the arena would free memory
+// the map still addresses, and the map read below would be a use-after-free
+// that no other gate covers.
+//
+// `m` is read AFTER the block frees its arena.
+package main
+
+type T struct {
+	x int
+}
+
+var m map[string]*T
+
+func main() {
+	m = make(map[string]*T)
+	arena {
+		p := &T{x: 7}
+		m["a"] = p
+	}
+	println(m["a"].x)
+}
