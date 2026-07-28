@@ -86,4 +86,6 @@ project_health.*
 
 # Task files
 tasks.json
-tasks/ 
+tasks/
+/local_escape_test
+
