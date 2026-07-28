@@ -111,6 +111,21 @@ Answer the callee-side elision question (item 2) before writing any ARC code.
 It decides whether ARC and `arena { }` can coexist at all, and no amount of
 header plumbing helps if the answer is no.
 
+> **ANSWERED — see `2026-07-28-arc-arena-coexistence.md`.** Yes, they can
+> coexist, via callee-side elision from the 7a summaries, and the machinery is
+> already load-bearing. This document's objection to that option ("a summary
+> says whether a param escapes, not where it was allocated") does not hold:
+> `block_escape` already routes a site to the heap whenever the callee retains
+> that argument, so an arena pointer can only ever bind to a parameter proven
+> non-escaping. The callee never needs to know where the value came from.
+>
+> Item 1 of the same answer supersedes the "flag bit in the header" sketch
+> above: an arena object has NO header at all, so that option needs one added
+> to `goo_arena_alloc` before it works at all.
+>
+> The answer also exposed a live use-after-free — a method call did not mark
+> its receiver — which is fixed alongside it.
+
 ## What was NOT established here
 
 - No header was added. No retain or release is emitted anywhere.
