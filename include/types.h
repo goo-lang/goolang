@@ -852,6 +852,21 @@ Type* type_slice(Type* element_type);
 Type* type_map(Type* key_type, Type* value_type);
 Type* type_channel(Type* element_type, ChannelPattern pattern);
 Type* type_function(Type** param_types, size_t param_count, Type* return_type);
+
+// The signature a method selector yields in VALUE position: `method_type`
+// minus the receiver spliced at params[0] (type_check_function_decl puts a
+// receiver there for every method). Returns NULL if param_count is 0, which
+// is an invariant violation rather than a method with no arguments.
+//
+// The result is a FRESH type that owns its params — type_function copies the
+// array it is given, so passing a pointer into the middle of method_type's own
+// array is safe. `is_variadic` is copied across explicitly, because
+// type_function always zero-initialises it.
+//
+// Two consumers: the checker's method-value path (expression_checker.c) and
+// codegen's bound-thunk path (composite_codegen.c), which cannot rely on the
+// checker having stripped anything — see that call site.
+Type* type_strip_receiver(Type* method_type);
 Type* type_pointer(Type* pointee_type);
 Type* type_reference(Type* referenced_type, int is_mutable);
 

@@ -5166,25 +5166,10 @@ static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position po
     return base;
 }
 
-// P3.6 (method values): build the func type a method selector yields in
-// VALUE position — the same signature `method_type` carries, minus the
-// spliced receiver at params[0] (`type_check_function_decl` puts it there
-// for every method; see the call comment above). type_function COPIES the
-// param_types it's given (types.c), so handing it a pointer into the middle
-// of method_type's OWN array is safe — the result owns an independent copy,
-// and is_variadic is copied across explicitly since type_function always
-// zero-initializes it fresh.
-static Type* type_strip_receiver(Type* method_type) {
-    size_t recv_count = method_type->data.function.param_count;
-    if (recv_count == 0) return NULL;  // invariant violation: every method has a receiver
-    size_t stripped_count = recv_count - 1;
-    Type** stripped_params = stripped_count > 0
-        ? &method_type->data.function.param_types[1] : NULL;
-    Type* stripped = type_function(stripped_params, stripped_count,
-                                   method_type->data.function.return_type);
-    if (stripped) stripped->data.function.is_variadic = method_type->data.function.is_variadic;
-    return stripped;
-}
+// P3.6 (method values): type_strip_receiver builds the func type a method
+// selector yields in VALUE position. It lived here as a static until codegen
+// became a second consumer, and now lives in types.c — see include/types.h
+// for the contract and the reason for the move.
 
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;

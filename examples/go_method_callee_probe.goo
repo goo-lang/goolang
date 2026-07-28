@@ -1,0 +1,71 @@
+// `go c.m()` — a method call in a `go` statement, for BOTH receiver kinds.
+//
+// This did not compile. codegen_generate_go_stmt evaluates the callee with
+// codegen_generate_expression on the selector, which reaches
+// codegen_generate_method_value. That function took the receiver-stripped
+// signature from expr->node_type, and the type checker only strips in VALUE
+// position (expression_checker.c). In `go c.m()` the selector is a call
+// callee, so node_type kept the receiver as params[0], and the bound thunk
+// then handed the method one argument too many:
+//
+//   Module verification failed: Incorrect number of arguments passed to
+//   called function!  call void @C__run(ptr %bound_recv, ptr %1)
+//
+// The ledger recorded this as "on a pointer receiver". It was not: a VALUE
+// receiver produced the identical error, while a plain method value
+// (`f := c.m` then `f()`) with a pointer receiver compiled and ran correctly.
+// The defect was the `go` statement path, not the receiver kind — which is
+// why this probe covers a pointer receiver, a value receiver, AND the
+// method-value path that already worked and must keep working.
+//
+// The channels are CAPTURED IN THE RECEIVER rather than passed as arguments,
+// because `go f(args)` on a function value is a separate, deliberate v1
+// restriction ("go with argument-carrying function values is not yet
+// supported; capture the values instead"). Passing them would test that
+// restriction instead of this fix.
+//
+// Output is synchronised on purpose. A goroutine racing main's print would
+// make this fixture flaky, and a flaky golden is worse than no golden.
+// Expected output comes from `go run` on the equivalent Go program, never
+// hand-written.
+package main
+
+import "fmt"
+
+type Counter struct {
+	n    int
+	done chan int
+}
+
+// Pointer receiver: mutates through the receiver, so the goroutine must act
+// on the same object main allocated, not a copy.
+func (c *Counter) bumpAndSend() {
+	c.n++
+	c.done <- c.n
+}
+
+type Tag struct {
+	label string
+	out   chan string
+}
+
+// Value receiver: the goroutine gets its own copy.
+func (t Tag) send() {
+	t.out <- t.label
+}
+
+func main() {
+	c := &Counter{n: 41, done: make(chan int)}
+	go c.bumpAndSend()
+	fmt.Println(<-c.done)
+
+	t := Tag{label: "value-recv", out: make(chan string)}
+	go t.send()
+	fmt.Println(<-t.out)
+
+	// The method-value path. This already worked before the fix, and the 43
+	// proves the pointer receiver above really did mutate the shared object.
+	f := c.bumpAndSend
+	go f()
+	fmt.Println(<-c.done)
+}

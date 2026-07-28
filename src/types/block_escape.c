@@ -724,9 +724,15 @@ static void handle_go_call(Ctx* ctx, ASTNode* call_node) {
     // dereferences `p` after the block has freed it. Verified at the IR level
     // before the fix — the `new(T)` emitted `goo_arena_alloc`.
     //
-    // Currently masked by a SEPARATE defect (`go p.m()` on a pointer receiver
-    // fails module verification, so the program does not build), but it stops
-    // being masked the moment closure environments become allocation sites:
+    // This was once masked by a SEPARATE defect: `go p.m()` failed module
+    // verification, so no program of this shape built. That defect is FIXED
+    // (the `go` statement handed codegen_generate_method_value a signature
+    // that still carried the receiver), and `examples/arena_go_method_probe.goo`
+    // is now the end-to-end gate for the marking below. It was confirmed to
+    // fail under valgrind with that mark_escapes call removed. The old note
+    // also said "on a pointer receiver", which was wrong — a value receiver
+    // failed identically. Separately, it stops being masked the moment
+    // closure environments become allocation sites:
     // `go f()` on a local holding a closure takes the identifier path, which
     // did not even compute the taint.
     //
