@@ -77,6 +77,29 @@ void goo_free(void* ptr);
 // under-marks, THIS is where the damage lands.
 #define GOO_OBJ_HEADER_SIZE ((size_t)16)
 
+// IMMORTAL: an object that is never freed, whatever the traffic on it.
+//
+// A Goo string LITERAL is the motivating case, and it was a FOURTH headerless
+// pointer kind with nothing excluding it. codegen_const_string_value emitted a
+// literal as { i8* -> private constant global, i64 len }, so goo_release on one
+// would compute `global - 16` and hand a .rodata address to free(). NULL and
+// goo_zerobase are checked for; an arena pointer is excluded by static proof;
+// a literal was excluded by nothing at all. `last := ""` in bench/daemon is
+// exactly that shape, so the first release consumer would have aborted on the
+// benchmark it exists to fix.
+//
+// The fix makes the pointer kind SELF-DESCRIBING instead of demanding another
+// static proof: a literal's global now carries a real header whose count is
+// this sentinel, and retain/release/free are no-ops on it. That is the Swift
+// and Objective-C immortal-object trick.
+//
+// UINT64_MAX, not 0, and the difference matters. 0 already means "not a
+// counted object" for a headerless pointer, so reusing it would make
+// goo_release's underflow panic unreachable — a real caller bug would then
+// pass silently. A live counted object is 1 or more and can never reach
+// UINT64_MAX, so the sentinel is unambiguous.
+#define GOO_RC_IMMORTAL UINT64_MAX
+
 // Current reference count. Returns 0 for NULL and for goo_zerobase, neither of
 // which has a header — 0 is therefore "not a counted object", never a real
 // count, because a live object is always at least 1.

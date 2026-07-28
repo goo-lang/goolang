@@ -270,6 +270,46 @@ int main(void) {
         goo_free(p);  // the one remaining reference
     }
 
+    row(15, "an IMMORTAL object survives retain, release and free");
+    {
+        // A string LITERAL is the motivating case. codegen_const_string_value
+        // emits { [2 x i64] header, [N x i8] bytes } with rc = GOO_RC_IMMORTAL
+        // and hands out a pointer to the BYTES, so the header sits at
+        // `data - 16` exactly as it does for a goo_alloc'd object. This static
+        // reproduces that layout byte for byte, because the runtime guards and
+        // the codegen layout have to agree and neither one alone proves it.
+        //
+        // Before the guards, every call below computed `data - 16` and handed a
+        // .rodata address to free().
+        static const struct {
+            uint64_t rc;
+            uint64_t reserved;
+            char     bytes[8];
+        } __attribute__((aligned(16))) literal = { GOO_RC_IMMORTAL, 0, "hello" };
+
+        void* data = (void*)(uintptr_t)literal.bytes;
+
+        check(goo_obj_refcount(data) == GOO_RC_IMMORTAL,
+              "an immortal object should read back the sentinel");
+
+        goo_retain(data);
+        check(goo_obj_refcount(data) == GOO_RC_IMMORTAL,
+              "retain must not change an immortal count");
+
+        goo_release(data);
+        check(goo_obj_refcount(data) == GOO_RC_IMMORTAL,
+              "release must not change an immortal count");
+
+        goo_free(data);
+        check(goo_obj_refcount(data) == GOO_RC_IMMORTAL,
+              "free must be a no-op on an immortal object");
+
+        // The bytes must still be readable: a wrong guard would have freed the
+        // storage out from under this read.
+        check(literal.bytes[0] == 'h' && literal.bytes[4] == 'o',
+              "an immortal object's payload must survive the traffic above");
+    }
+
     printf("\n=================================================\n");
     printf("obj_header_test summary: %d checks passed, %d failed\n",
            checks - failures, failures);

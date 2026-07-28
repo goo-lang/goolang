@@ -649,22 +649,55 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
 
 #if LLVM_AVAILABLE
 LLVMValueRef codegen_const_string_value(CodeGenerator* codegen, const char* bytes, size_t len) {
-    // Emit the bytes as a private global constant array, then build a constant
-    // { i8* data, i64 len } struct. Builder-free (no LLVMBuild*), so it is valid
-    // at global scope where there is no basic block. The explicit length keeps
-    // embedded NULs (e.g. the math/bits tables that start with "\x00").
+    // Emit an ARC OBJECT — { header, bytes } — as a private global constant,
+    // then build a constant { i8* data, i64 len } struct pointing `data` at the
+    // bytes. Builder-free (no LLVMBuild*), so it is valid at global scope where
+    // there is no basic block. The explicit length keeps embedded NULs (e.g.
+    // the math/bits tables that start with "\x00").
+    //
+    // THE HEADER IS WHY THIS IS NOT JUST A BYTE ARRAY. Every goo_alloc'd object
+    // carries GOO_OBJ_HEADER_SIZE bytes before its payload, and goo_release
+    // reads them at `ptr - 16`. A literal used to be a bare byte array, so a
+    // release on one would have handed a .rodata address to free(). NULL and
+    // goo_zerobase are checked for at runtime and an arena pointer is excluded
+    // by static proof, but a literal was excluded by nothing at all — and
+    // `last := ""` is an ordinary shape. Giving it a real header with an
+    // IMMORTAL count makes the pointer kind self-describing, so retain, release
+    // and free are all no-ops on it with no further proof obligation.
+    LLVMTypeRef i64_type = LLVMInt64TypeInContext(codegen->context);
+    LLVMTypeRef hdr_type = LLVMArrayType(i64_type, 2);   // matches GooObjHeader
+    LLVMValueRef hdr_words[2] = {
+        LLVMConstInt(i64_type, GOO_RC_IMMORTAL, 0),      // rc
+        LLVMConstInt(i64_type, 0, 0),                    // reserved
+    };
+    LLVMValueRef hdr = LLVMConstArray(i64_type, hdr_words, 2);
+
     LLVMValueRef arr = LLVMConstStringInContext(codegen->context, bytes,
                                                 (unsigned)len, /*DontNullTerminate=*/0);
     LLVMTypeRef arr_type = LLVMTypeOf(arr); // [len+1 x i8]
-    LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "str");
-    LLVMSetInitializer(global, arr);
+
+    LLVMTypeRef obj_fields[2] = { hdr_type, arr_type };
+    LLVMTypeRef obj_type = LLVMStructTypeInContext(codegen->context, obj_fields, 2,
+                                                   /*packed=*/0);
+    LLVMValueRef obj_init_fields[2] = { hdr, arr };
+    LLVMValueRef obj_init = LLVMConstStructInContext(codegen->context, obj_init_fields,
+                                                      2, /*packed=*/0);
+
+    LLVMValueRef global = LLVMAddGlobal(codegen->module, obj_type, "str");
+    LLVMSetInitializer(global, obj_init);
     LLVMSetGlobalConstant(global, 1);
     LLVMSetLinkage(global, LLVMPrivateLinkage);
     LLVMSetUnnamedAddr(global, 1);
+    // The payload must keep max_align_t, exactly as goo_alloc's does, and
+    // `data - 16` must be an aligned 8-byte read for the atomic load of rc.
+    LLVMSetAlignment(global, (unsigned)GOO_OBJ_HEADER_SIZE);
 
+    // data points at FIELD 1 (the bytes), so the header sits at data - 16 —
+    // the same relationship goo_alloc gives every heap object.
     LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
-    LLVMValueRef idx[2] = { zero, zero };
-    LLVMValueRef data_ptr = LLVMConstInBoundsGEP2(arr_type, global, idx, 2);
+    LLVMValueRef one  = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 1, 0);
+    LLVMValueRef idx[2] = { zero, one };
+    LLVMValueRef data_ptr = LLVMConstInBoundsGEP2(obj_type, global, idx, 2);
 
     LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), len, 0);
     LLVMValueRef fields[2] = { data_ptr, len_val };
