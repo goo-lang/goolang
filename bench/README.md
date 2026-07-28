@@ -22,6 +22,21 @@ files point back at it rather than repeating it.
 | `text/` | The runtime helper allocation path — `append`, `Fields`, `Join`, `ToUpper` — which ADR 0002 phase 2 owns. |
 | `hello/` | Compile time and binary size. Not run time. |
 
+## Methodology rules, learned the hard way
+
+The first version of this harness had neither rule, and it reported a 1.5x Goo
+deficit on the scalar benchmark that did not exist.
+
+- **Pin the cores.** An unpinned process on a 32-core box migrates between cores
+  and turbo states. The same binary alternated between 0.08 s and 0.12 s run to
+  run. Serial benchmarks get core 2; the 8-lane stencil gets cores 0-7. Every
+  language in a row gets the same set.
+- **Size the workload for at least half a second.** `/usr/bin/time -f %e`
+  resolves to 10 ms. An 0.08 s benchmark is eight ticks, so a four-tick wobble
+  reads as 1.5x.
+
+Re-measured under both rules, Goo and Rust are at exact parity on scalar code.
+
 ## Fairness decisions, recorded so they can be argued with
 
 - **`rayon` is pinned to 8 threads.** It defaults to one worker per logical CPU,
