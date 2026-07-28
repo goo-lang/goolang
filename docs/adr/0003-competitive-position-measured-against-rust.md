@@ -1,7 +1,7 @@
 # 3. Competitive position, measured against Rust
 
 Date: 2026-07-28
-Status: **proposed**
+Status: **accepted** (2026-07-28)
 
 ## Context
 
@@ -18,26 +18,37 @@ asserted to produce identical output before any timing is reported.
 
 The claim rested on `stencil-parallel-probe`'s 7.55x. That figure is Goo-8-lane
 against **Goo-serial** — a self-comparison. On the identical algorithm and the
-identical 8-way decomposition, Rust with `rayon` is 1.25x faster than Goo, and
-Rust with `rayon` plus `std::simd` is 2.3x faster.
+identical 8-way decomposition, Rust with `rayon` is **1.7x** faster than Goo,
+and Rust with `rayon` plus `std::simd` is **2.7x** faster.
 
-Goo does beat Go by 1.3x on the same program. That is real. It is not the claim
-that was being made.
+Against Go it is a tie (0.27 s against 0.29 s), not the 1.3x win an earlier,
+unpinned measurement suggested. So the consolation claim does not hold either.
 
 ### Assumption 2: "Compile speed, probably winning." Half right, for the wrong reason.
 
-Hello-world: Goo 0.32 s against rustc 0.09 s — apparently a loss. The breakdown
-says otherwise. Goo's own pipeline is **0.05 s**, faster than rustc. The other
-0.27 s is recompiling `goostd/strings` from source, because
-`src/package/import_resolver.c` has no package build cache. Go's warm 0.03 s is
+Hello-world: Goo 0.23 s against rustc 0.08 s — apparently a loss. The breakdown
+says otherwise. Goo's own pipeline is **0.05 s**, faster than rustc. The rest is
+recompiling `goostd/strings` from source on every single build, because
+`src/package/import_resolver.c` has no package build cache. Go's warm 0.10 s is
 a cache result: Go cold takes 2.64 s.
 
 ### Assumption 3: "Reach parity on memory." The gap is bigger than recorded.
 
 ADR 0002 measured the daemon against Go. Rust is tighter than Go. Against the
-actual competitor the daemon is **163x** (326 MB against 2.0 MB), and Goo is
-also 3.9x slower in wall clock on that program — the allocation path costs
-throughput, not only memory.
+actual competitor, at 1,000,000 requests, the daemon is **834x** (1,627 MB
+against 1.95 MB), and Goo is also **4.1x slower in wall clock** on that same
+program. The allocation path is the memory problem AND the throughput problem.
+
+### One correction this ADR must carry, because it was published wrong
+
+The first version of the findings reported a 1.5x scalar deficit against Rust.
+It was a measurement artefact — an unpinned CPU and an 0.08 s workload against
+a 10 ms timer. Re-measured properly, **Goo and Rust are at exact parity on
+scalar code (0.86 s each), and Goo is 1.24x faster than Go.**
+
+That correction matters to the position below. Goo's code generation for
+ordinary arithmetic is not a weakness, so every remaining deficit sits in the
+allocation path or in parallel throughput — both of which have owners.
 
 ### One thing nobody had claimed turns out to be a large win
 
@@ -63,11 +74,11 @@ that measures it against Rust:
 |---|---|---|
 | Binary size | **Win, and say so** | 22x Go, 40x Rust, measured |
 | Ease of use | **Win, and say so** | No lifetimes. 26 of 130 stdlib functions would need annotations in Rust |
-| Compile speed | **Win, after a package cache** | Core pipeline 0.05 s already beats rustc 0.09 s |
+| Compile speed | **Win, after a package cache** | Core pipeline 0.05 s already beats rustc 0.08 s |
 | Parallel safety | **Win, and say so** | Compile-time proven disjointness, zero annotations. This is about the PROOF, never about the throughput |
-| Deterministic memory | **Parity target** | ADR 0002. Currently 163x behind Rust |
-| Parallel throughput | **Parity target, not a win** | Currently 1.25x behind rayon, 2.3x behind rayon plus SIMD |
-| Scalar throughput | **Parity target** | 1.5x behind on pure arithmetic, cause unknown |
+| Deterministic memory | **Parity target** | ADR 0002. Currently 834x behind Rust |
+| Parallel throughput | **Parity target, not a win** | Currently 1.7x behind rayon, 2.7x behind rayon plus SIMD |
+| Scalar throughput | **Win over Go, parity with Rust — established** | 0.86 s against Rust's 0.86 s and Go's 1.07 s |
 | Ecosystem | **Concede openly** | 17 files, 3,533 lines |
 
 The distinction that carries the whole position: **Goo competes with Rust on
@@ -110,8 +121,8 @@ Goo at all.
   how this work was described, and it was not true.
 - Parity on parallel throughput is not obviously reachable. Rust wins before
   SIMD enters, so this is not one missing feature.
-- The scalar 1.5x is unexplained. Until it is understood, no throughput claim is
-  safe, because it sits underneath every other benchmark.
+- The allocation path is 4x slower AND 800x heavier. Those are probably the same
+  root cause, but ADR 0002 phase 2 has to prove that rather than assume it.
 
 ## What this changes in the work order
 
@@ -121,7 +132,7 @@ Goo at all.
    hands LLVM exactly the information Rust's borrow checker hands it.
 3. **New arc: a package build cache** in `src/package/import_resolver.c`. Best
    effort-to-result ratio found in this pass.
-4. **New investigation: the scalar 1.5x**, before any throughput claim.
+4. **No scalar work is needed.** Parity is established and can be claimed.
 
 ## Open, and deliberately not decided here
 

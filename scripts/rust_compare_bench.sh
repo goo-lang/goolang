@@ -21,6 +21,23 @@
 # Wall clock is the median of N runs, not the mean — one scheduler hiccup
 # should not move the number.
 #
+# TWO METHODOLOGY RULES, both learned the hard way on 2026-07-28. The first
+# version of this script had neither, and it reported a 1.5x Goo-against-Rust
+# deficit on the scalar benchmark that DID NOT EXIST.
+#
+#   1. PIN THE CORES. On a 32-core box an unpinned process migrates between
+#      cores and turbo states, which made the same binary alternate between
+#      0.08 s and 0.12 s run to run. Serial benchmarks get one core; parallel
+#      benchmarks get cores 0-7, which is the 8 the algorithm asks for. Every
+#      language in a row gets the same set.
+#   2. MAKE THE WORKLOAD BIG ENOUGH. `/usr/bin/time -f %e` resolves to 10 ms.
+#      A benchmark that finishes in 0.08 s is eight ticks, so a one-tick wobble
+#      is a 12% swing and a four-tick wobble reads as 1.5x. Every benchmark
+#      here is now sized to run for at least half a second.
+#
+# When the scalar benchmark was re-measured under both rules it came out at
+# 0.86 s for Goo and 0.86 s for Rust — exact parity. Do not remove either rule.
+#
 # Usage:
 #   bash scripts/rust_compare_bench.sh              # all benchmarks
 #   bash scripts/rust_compare_bench.sh stencil      # one benchmark
@@ -48,18 +65,43 @@ TIME_BIN="/usr/bin/time"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
+# Core pinning — methodology rule 1. PIN is set per benchmark: a single core
+# for the serial ones, cores 0-7 for the 8-way parallel one. If taskset is
+# missing (macOS has no equivalent), say so ONCE and continue unpinned rather
+# than silently reporting noisier numbers as if they were clean.
+PIN=""
+PIN_WARNED=0
+if command -v taskset >/dev/null 2>&1; then
+    HAVE_TASKSET=1
+else
+    HAVE_TASKSET=0
+fi
+pinned() {
+    if [ "$HAVE_TASKSET" = "1" ] && [ -n "$PIN" ]; then
+        taskset -c "$PIN" "$@"
+    else
+        if [ "$HAVE_TASKSET" = "0" ] && [ "$PIN_WARNED" = "0" ]; then
+            echo "  NOTE: taskset unavailable — numbers are UNPINNED and noisier (see the header)" >&2
+            PIN_WARNED=1
+        fi
+        "$@"
+    fi
+}
+
 # Peak RSS in KB. Same parse as scripts/arena_rss_probe.sh's peak_rss_kb.
 peak_rss_kb() {
-    "$TIME_BIN" -v "$@" >/dev/null 2>"$WORKDIR/t.txt" || return 1
+    "$TIME_BIN" -v $( [ "$HAVE_TASKSET" = "1" ] && [ -n "$PIN" ] && echo "taskset -c $PIN" ) "$@" \
+        >/dev/null 2>"$WORKDIR/t.txt" || return 1
     grep -F "Maximum resident set size" "$WORKDIR/t.txt" | grep -oE '[0-9]+' | tail -1
 }
 
-# Median wall-clock seconds over $RUNS runs.
+# Median wall-clock seconds over $RUNS runs, on the pinned core set.
 median_wall() {
     local i
     : > "$WORKDIR/w.txt"
     for i in $(seq 1 "$RUNS"); do
-        "$TIME_BIN" -f "%e" "$@" 2>>"$WORKDIR/w.txt" >/dev/null || return 1
+        "$TIME_BIN" -f "%e" $( [ "$HAVE_TASKSET" = "1" ] && [ -n "$PIN" ] && echo "taskset -c $PIN" ) "$@" \
+            2>>"$WORKDIR/w.txt" >/dev/null || return 1
     done
     sort -g "$WORKDIR/w.txt" | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}'
 }
@@ -127,7 +169,8 @@ echo ""
 
 # --- 1. scalar loop, no allocation ----------------------------------------
 if want scalar; then
-    echo "[scalar] dependent 64-bit LCG chain, 100M iterations. No allocation."
+    PIN=2
+    echo "[scalar] dependent 64-bit LCG chain, 1000M iterations. No allocation. Pinned to core $PIN."
     $COMPILER -O2 -o "$WORKDIR/scalar_goo" "$BENCH/scalar/scalar.goo" >/dev/null 2>&1 || fail "scalar: goo build"
     $GO build -o "$WORKDIR/scalar_go" "$BENCH/scalar/scalar.go" || fail "scalar: go build"
     rustc -O -o "$WORKDIR/scalar_rs" "$BENCH/scalar/scalar.rs" 2>/dev/null || fail "scalar: rustc build"
@@ -140,7 +183,8 @@ fi
 
 # --- 2. the daemon shape ---------------------------------------------------
 if want daemon; then
-    N="${DAEMON_N:-200000}"
+    PIN=2
+    N="${DAEMON_N:-1000000}"
     echo "[daemon] allocate per request, hold nothing. $N requests."
     echo "         This is the retention axis: peak RSS is the number that matters."
     $COMPILER -O2 -o "$WORKDIR/daemon_goo" "$BENCH/daemon/daemon.goo" >/dev/null 2>&1 || fail "daemon: goo build"
@@ -155,7 +199,8 @@ fi
 
 # --- 3. 1D stencil, 8-way parallel ----------------------------------------
 if want stencil; then
-    echo "[stencil] 1<<20 cells, 1000 rounds, 8 lanes. Parallel throughput."
+    PIN=0-7
+    echo "[stencil] 1<<20 cells, 1000 rounds, 8 lanes. Parallel throughput. Pinned to cores $PIN."
     echo "          rust-simd needs nightly. It is reported separately BECAUSE"
     echo "          std::simd is not what Rust ships to users on stable."
     $COMPILER -O2 -o "$WORKDIR/stencil_goo" "$BENCH/stencil/stencil.goo" >/dev/null 2>&1 || fail "stencil: goo build"
@@ -178,7 +223,8 @@ fi
 
 # --- 4. string and slice heavy text processing -----------------------------
 if want text; then
-    N="${TEXT_N:-200000}"
+    PIN=2
+    N="${TEXT_N:-1000000}"
     echo "[text] $N lines through Fields/Index/ToUpper/append/Join."
     echo "       Exercises the runtime helper allocation path ADR 0002 phase 2 owns."
     $COMPILER -O2 -o "$WORKDIR/text_goo" "$BENCH/text/text.goo" >/dev/null 2>&1 || fail "text: goo build"
@@ -193,6 +239,7 @@ fi
 
 # --- 5. hello world: compile time and binary size --------------------------
 if want hello; then
+    PIN=""
     echo "[hello] one library call. COMPILE time and BINARY size, not run time."
     gc=$(compile_secs "$WORKDIR/h_goo" $COMPILER -O2 -o "$WORKDIR/h_goo" "$BENCH/hello/hello.goo")
     oc=$(compile_secs "$WORKDIR/h_go"  $GO build -o "$WORKDIR/h_go"  "$BENCH/hello/hello.go")
