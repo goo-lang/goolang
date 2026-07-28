@@ -409,8 +409,20 @@ static void handle_go_call(Ctx* ctx, ASTNode* call_node) {
     }
     CallExprNode* call = (CallExprNode*)call_node;
 
-    if (!(call->function && call->function->type == AST_IDENTIFIER)) {
+    // The CALLEE's taint escapes too, not just the arguments.
+    //
+    // MIRROR of the same fix in block_escape.c's handle_go_call — this file's
+    // header requires a soundness fix to the shared taint-propagation shape to
+    // be applied to both. Same hole, one boundary out: `go p.m()` on a
+    // parameter `p` hands the receiver to a goroutine that can outlive this
+    // frame, but the call carries no ARGUMENTS, so nothing marked it.
+    //
+    // Computed and marked for every callee shape, identifier included. A
+    // top-level function name resolves to the empty set, so the extra work is
+    // a no-op there. Over-marking is always safe.
+    {
         TaintSet ft = expr_taint(ctx, call->function);
+        mark_escapes(ctx, &ft);
         taint_set_free(&ft);
     }
 
