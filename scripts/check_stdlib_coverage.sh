@@ -29,8 +29,9 @@
 #   4. Seeded package funcs             (type_checker.c: shim_export_func calls, package
 #                                        taken from the enclosing seed_<pkg>_package_exports)
 #   5. Seeded methods                   (type_checker.c: sync_export_method + time_export_method)
-#   6a. goostd exported funcs           (^func [A-Z] in strings/strconv/utf8/bits/
-#      lanes — the REAL stdlib source dirs; test-only goostd packages like
+#   6a. goostd exported funcs           (^func [A-Z] in the REAL stdlib source
+#      dirs, listed in GOOSTD_PKG_DIRS below — keep that list and this comment
+#      in step; test-only goostd packages like
 #      kinds/shapes/mypkg/pkgcheck/fwdref/cpkg are compiler-test fixtures, not
 #      stdlib, and are intentionally out of scope here.)
 #   6b. goostd exported METHODS         (^func (r T) Name / ^func (r *T) Name in
@@ -292,7 +293,7 @@ done <<< "$method_names"
 # goostd/cpkg is a deliberate fixture package (comptime-generic compose
 # probes) outside stdlib scope, same as kinds/shapes/mypkg/pkgcheck/fwdref —
 # not added here.
-GOOSTD_PKG_DIRS="strings:goostd/strings strconv:goostd/strconv utf8:goostd/utf8 bits:goostd/bits lanes:goostd/lanes sort:goostd/sort filepath:goostd/filepath"
+GOOSTD_PKG_DIRS="strings:goostd/strings strconv:goostd/strconv utf8:goostd/utf8 bits:goostd/bits lanes:goostd/lanes sort:goostd/sort filepath:goostd/filepath io:goostd/io bytes:goostd/bytes"
 
 GOOSTD_MIN=50
 goostd_total=0
@@ -331,7 +332,7 @@ for entry in $GOOSTD_PKG_DIRS; do
 done
 
 if [ "$goostd_total" -lt "$GOOSTD_MIN" ]; then
-    echo "check-stdlib-coverage: FAIL (extracted only $goostd_total exported funcs across goostd/{strings,strconv,utf8,bits,lanes}, expected >= $GOOSTD_MIN — package layout may have moved)"
+    echo "check-stdlib-coverage: FAIL (extracted only $goostd_total exported funcs across the GOOSTD_PKG_DIRS packages, expected >= $GOOSTD_MIN — package layout may have moved)"
     exit 1
 fi
 

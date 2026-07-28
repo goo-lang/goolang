@@ -66,3 +66,4 @@ sys_unsafe	reject	rejected	System	package unsafe is a v1 Non-goal (parse reject)
 pkg_multifile	run	works	Packages	a package is the union of its FILES; a decl in one file is visible to the others
 pkg_testing	test	works	Packages	goo test discovers TestXxx in _test files and runs them; per-test output is Go-identical, the package summary line is a bare ok/FAIL (no pkg path, no duration — neither is reproducible)
 expr_named_type_conv	run	works	Expressions	conversion to a named non-struct type: T(x) for slice/map/string/numeric
+pkg_io_writer	run	works	Packages	io.Writer with two implementations: *os.File and bytes.Buffer; fmt.Fprintf to either

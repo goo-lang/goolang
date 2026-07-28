@@ -142,9 +142,21 @@ Two layers, both gated by `scripts/check_stdlib_coverage.sh` in verify-core:
 - **C shim packages** (`fmt`, `os`, `time`, `sync`, ...): declarative
   signature table in `src/types/shim_signatures.c`, implementations in the
   runtime archive (`src/runtime/`).
-- **Vendored source packages** (`strings`, `strconv`, `unicode/utf8`, ...):
-  real Goo/Go source under `goostd/`, resolved via GOOROOT (bare import =
-  GOOROOT-then-local; `./name` = source-dir only).
+- **Vendored source packages** (`strings`, `strconv`, `unicode/utf8`, `io`,
+  `bytes`, ...): real Goo/Go source under `goostd/`, resolved via GOOROOT
+  (bare import = GOOROOT-then-local; `./name` = source-dir only).
+
+A shim package that exports a TYPE WITH A METHOD SET (`sync.Mutex`,
+`time.Time`, `testing.T`, `os.File`) cannot use the signature table — it has
+no way to spell a receiver — so it gets a bespoke `seed_<pkg>_package_exports`
+in `src/types/type_checker.c`, wired into BOTH the main-import path (`goo.c`)
+and the vendored-own-import path.
+
+A seeded method has no Goo source, so nothing implements it. Codegen emits an
+ADAPTER under the ordinary mangled package symbol
+(`codegen_get_or_emit_shim_method_adapter`), which is what lets the direct
+method-call path and the interface thunk builder both resolve it with no
+special case. `os.File.Write` is the first.
 
 ## Memory model (v1 limitation)
 
@@ -173,7 +185,9 @@ a documented v1 limitation; GC/ownership reclamation is post-v1
 ## Key Features (verified — every item is probe-gated in make verify-core)
 
 - **Go-compatible core**: functions/methods/interfaces (method-set
-  enforcement), structs + embedding (incl. qualified `sync.Mutex`),
+  enforcement), structs + embedding (incl. qualified `sync.Mutex` and an
+  embedded INTERFACE, which promotes its method set and dispatches
+  dynamically — Go's `sort.Reverse` shape),
   packages (shim + vendored + local), goroutines/channels/select/close,
   defer (incl. in-loop), switch/type-switch, slices/maps/strings, os.Args,
   Go-parity nil and exit semantics.
@@ -183,6 +197,11 @@ a documented v1 limitation; GC/ownership reclamation is post-v1
 - **Arena regions** `arena { ... }` with escape-analysis auto-promotion
 - **`goo test`**: runs `func TestXxx(t *testing.T)` in a package's `_test`
   files, with Go's output format and exit status (see the section above)
+- **`io.Writer`**: `os.Stdout`/`os.Stderr` are real `*os.File` values, and
+  `bytes.Buffer` is the second implementation. `fmt.Fprint/Fprintln/Fprintf`
+  take any writer, including a user-defined one. Conversion to a named
+  non-struct type (`IntSlice(x)`) works, so a named slice can carry a method
+  set the way Go's does.
 - **LLVM-based code generation** with real -O1/2/3 pipelines (differential
   gate proves -O2 IR differs and behavior matches)
 
