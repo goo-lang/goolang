@@ -1,0 +1,9 @@
+0
+hello world
+11
+hello world!
+count=7
+direct=9
+0
+after reset
+after reset plus

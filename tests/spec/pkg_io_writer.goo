@@ -1,0 +1,64 @@
+// bytes_buffer_probe: bytes.Buffer as the SECOND implementation of io.Writer,
+// exercised from another package.
+//
+// This is the cross-package half of the bytes tests. goostd/bytes's own
+// _test file calls Write and String as plain functions, which never crosses
+// the import path — the blind spot PR #230 found in goostd/sort, where
+// sort.Sort could not be called from another package at all while its
+// internal tests passed. Everything below goes through `import "bytes"`.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), per project convention — never hand-written.
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+)
+
+// Takes the INTERFACE, so each call dispatches through a vtable and neither
+// implementation is known statically.
+func report(w io.Writer, label string, n int) {
+	fmt.Fprintf(w, "%s=%d\n", label, n)
+}
+
+func main() {
+	// 1. The zero value is usable with no initialization.
+	var b bytes.Buffer
+	fmt.Println(b.Len())
+
+	// 2. Both write methods, through the package path.
+	b.WriteString("hello ")
+	b.Write([]byte("world"))
+	fmt.Println(b.String())
+	fmt.Println(b.Len())
+
+	// 3. A Buffer satisfies io.Writer.
+	var w io.Writer = &b
+	w.Write([]byte("!"))
+	fmt.Println(b.String())
+
+	// 4. fmt.Fprintf into a Buffer — impossible before this arc, when the
+	//    writer had to be os.Stdout or os.Stderr.
+	b.Reset()
+	report(&b, "count", 7)
+	fmt.Print(b.String())
+
+	// 5. The SAME function drives a file and a buffer, which is the point of
+	//    having two implementations.
+	report(os.Stdout, "direct", 9)
+
+	// 6. Reset keeps the buffer usable.
+	b.Reset()
+	fmt.Println(b.Len())
+	b.WriteString("after reset")
+	fmt.Println(b.String())
+
+	// 7. A Buffer captured through the interface still reads back through the
+	//    concrete value — one object, two views.
+	var w2 io.Writer = &b
+	io.WriteString(w2, " plus")
+	fmt.Println(b.String())
+}

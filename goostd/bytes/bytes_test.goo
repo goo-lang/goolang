@@ -1,0 +1,101 @@
+// Internal tests for bytes.Buffer.
+//
+// These call Write/String/Len as PLAIN functions, because they are in the
+// package. That is exactly the blind spot PR #230 found in goostd/sort: an
+// internal test never crosses the import path, so it cannot catch a defect in
+// cross-package argument passing or interface boxing. The cross-package
+// exercise is examples/bytes_buffer_probe.goo, which imports bytes from main
+// and boxes a Buffer into io.Writer.
+package bytes
+
+import "testing"
+
+func TestWriteAndString(t *testing.T) {
+	var b Buffer
+	n, err := b.Write([]byte("abc"))
+	if n != 3 {
+		t.Errorf("Write returned %d, want 3", n)
+	}
+	if err != nil {
+		t.Errorf("Write returned a non-nil error")
+	}
+	if b.String() != "abc" {
+		t.Errorf("String = %s, want abc", b.String())
+	}
+}
+
+func TestZeroValueIsUsable(t *testing.T) {
+	// Go's contract: the zero value is an empty buffer ready to use, with no
+	// initialization step. A nil []byte appends correctly, which is what makes
+	// that free here.
+	var b Buffer
+	if b.Len() != 0 {
+		t.Errorf("zero Len = %d, want 0", b.Len())
+	}
+	if b.String() != "" {
+		t.Errorf("zero String = %s, want empty", b.String())
+	}
+	b.WriteString("x")
+	if b.String() != "x" {
+		t.Errorf("after write String = %s, want x", b.String())
+	}
+}
+
+func TestAppendGrows(t *testing.T) {
+	// Repeated writes past any plausible initial capacity, so a growth bug
+	// shows up as wrong content rather than as a crash.
+	var b Buffer
+	i := 0
+	for i < 50 {
+		b.WriteString("ab")
+		i = i + 1
+	}
+	if b.Len() != 100 {
+		t.Errorf("Len after 50 writes = %d, want 100", b.Len())
+	}
+	s := b.String()
+	if len(s) != 100 {
+		t.Errorf("String length = %d, want 100", len(s))
+	}
+	if s[0] != 'a' || s[99] != 'b' {
+		t.Errorf("content wrong at the ends")
+	}
+}
+
+func TestResetKeepsBufferUsable(t *testing.T) {
+	var b Buffer
+	b.WriteString("discard me")
+	b.Reset()
+	if b.Len() != 0 {
+		t.Errorf("Len after Reset = %d, want 0", b.Len())
+	}
+	// Writing after Reset must not resurrect the old contents — the whole
+	// point of re-slicing to zero rather than assigning nil is that the
+	// storage is reused, so a length bug would show the old bytes here.
+	b.WriteString("fresh")
+	if b.String() != "fresh" {
+		t.Errorf("String after Reset+write = %s, want fresh", b.String())
+	}
+}
+
+func TestWriteStringMatchesWrite(t *testing.T) {
+	var a Buffer
+	var c Buffer
+	a.WriteString("same")
+	c.Write([]byte("same"))
+	if a.String() != c.String() {
+		t.Errorf("WriteString and Write disagree: %s vs %s", a.String(), c.String())
+	}
+}
+
+func TestEmptyWriteIsLegal(t *testing.T) {
+	var b Buffer
+	b.WriteString("keep")
+	n, _ := b.Write([]byte(""))
+	if n != 0 {
+		t.Errorf("empty Write returned %d, want 0", n)
+	}
+	if b.String() != "keep" {
+		t.Errorf("empty Write changed the contents to %s", b.String())
+	}
+}
