@@ -356,6 +356,95 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "k", true } }, 1
     },
+
+    // ---------------- SOUNDNESS: the STATEMENT arms, which are the sinks ----
+    //
+    // The arm matrix was extended to escape_walk_stmt, and the statement arms
+    // measured worse than the expression ones. An expression arm only
+    // PROPAGATES taint; a statement arm DECIDES what escapes. Skipping one
+    // deletes a sink outright.
+    //
+    // Measured across all 78 rows of the three suites: AST_MULTI_ASSIGN,
+    // AST_SWITCH_STMT, AST_TYPE_SWITCH and AST_SELECT_STMT were NEVER REACHED,
+    // and AST_IF_STMT had zero hits in param and local. The three
+    // control-flow arms are the dangerous ones, because each RECURSES into a
+    // nested statement body -- skip the arm and the whole body goes unwalked,
+    // so `switch n { case 1: return x }` never marks x at all.
+    //
+    // Each row verified to FAIL under
+    // `scripts/escape_arm_coverage.sh <ARM> stmt-under` and to pass with the
+    // arm restored.
+    {
+        // AST_MULTI_ASSIGN. A sink, and `v, err := f()` is among the commonest
+        // statements in Go, yet nothing in 78 rows exercised it.
+        23, "local stored to a global by MULTI-ASSIGN -> true",
+        "package main\n"
+        "var g *int\n"
+        "var h *int\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    g, h = x, x\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_SWITCH_STMT. The escape is inside a case body, so the arm's
+        // recursion into that body is the only thing that finds it.
+        24, "local returned from inside a SWITCH case -> true",
+        "package main\n"
+        "func f(n int) *int {\n"
+        "    x := new(int)\n"
+        "    switch n {\n"
+        "    case 1:\n"
+        "        return x\n"
+        "    }\n"
+        "    return nil\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_TYPE_SWITCH. Same shape, different arm -- a type switch carries
+        // its own node kind and its own recursion.
+        25, "local stored to a global inside a TYPE SWITCH case -> true",
+        "package main\n"
+        "var g *int\n"
+        "func f(v interface{}) {\n"
+        "    x := new(int)\n"
+        "    switch v.(type) {\n"
+        "    case int:\n"
+        "        g = x\n"
+        "    }\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_SELECT_STMT. The channel send is the sink, and the select arm is
+        // what walks the comm clauses to reach it.
+        26, "local sent on a channel inside a SELECT clause -> true",
+        "package main\n"
+        "func f(ch chan *int) {\n"
+        "    x := new(int)\n"
+        "    select {\n"
+        "    case ch <- x:\n"
+        "    }\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_IF_STMT had 0 hits in param and local. `if` is everywhere in real
+        // code, so an unwalked then-branch is a broad hole rather than a narrow
+        // one.
+        27, "local returned from inside an IF branch -> true",
+        "package main\n"
+        "func f(n int) *int {\n"
+        "    x := new(int)\n"
+        "    if n > 0 {\n"
+        "        return x\n"
+        "    }\n"
+        "    return nil\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
 };
 
 static int failures = 0;

@@ -9,12 +9,17 @@ motivated the work. "After" is the same measurement with the seven rows this
 change adds. Both are kept, because the delta is the evidence that the rows do
 something.
 
+Both arm populations are covered: `escape_expr_taint` (17 arms) and
+`escape_walk_stmt` (20 arms).
+
 | | Before | After |
 |---|---|---|
-| Precision-covered in all three suites | 3 of 17 | 6 of 17 |
-| Soundness-covered in `local` (the pass T4 consumes) | 4 of 16 | 9 of 16 |
-| Arms never reached by any fixture | 6 | 5 |
-| Row counts (param / block / local) | 23 / 31 / 16 | 24 / 32 / 22 |
+| Expression arms precision-covered in all three suites | 3 of 17 | 6 of 17 |
+| Expression arms soundness-covered in `local` (the pass T4 consumes) | 4 of 16 | 9 of 16 |
+| Statement arms soundness-covered in `local` | 7 of 18 | 12 of 18 |
+| Expression arms never reached by any fixture | 6 | 5 |
+| Statement arms never reached by any fixture | 11 | 7 |
+| Row counts (param / block / local) | 23 / 31 / 16 | 24 / 32 / 27 |
 
 ## Why this exists
 
@@ -292,10 +297,156 @@ addition rather than assuming one row buys one cell.
 | Soundness GAPs in param and block for the five arms local now covers | The rows added here went into `local`, because `local` is the pass T4 consumes. param and block need their own |
 | `escape_walk_stmt`'s 20 statement arms are unmeasured | This matrix covers `escape_expr_taint` only. The statement arms hold the SINKS, which is where under-marking does its damage, so this is the higher-value next matrix |
 
+## The statement walk — the second arm population, and the worse one
+
+`escape_walk_stmt` has 20 arms, and they are not the same kind of thing as the
+expression arms. **An expression arm only PROPAGATES taint. A statement arm
+DECIDES what escapes.** The arms ARE the sinks: `return`, `go f(x)`, assignment,
+channel send. So the mutations mean something different:
+
+| Mode | Mutation | Consequence |
+|---|---|---|
+| `stmt-over` | the arm behaves as absent: `escape_mark_all`, which is what the default arm does | more conservative |
+| `stmt-under` | **the statement is SKIPPED ENTIRELY**, which DELETES A SINK | a skipped `return` never marks the returned local |
+
+`stmt-under` is the highest-consequence mutation in this harness. Three arms
+(`AST_SWITCH_STMT`, `AST_TYPE_SWITCH`, `AST_SELECT_STMT`) RECURSE into a nested
+statement body, so skipping one leaves an entire body unwalked, and
+`switch n { case 1: return x }` never marks `x` at all.
+
+**Equivalent mutants here are arms that already do nothing.**
+`AST_BREAK_STMT` (empty, falls through) and `AST_CONTINUE_STMT` (a bare
+`break;`) cannot be made to do less. `--classify` prints the no-op verdict and
+the normalised body for all 20 arms, so the rule can be checked rather than
+trusted — see the instrument defect recorded below for why that mode exists.
+
+### Statement soundness (`--stmt-under`)
+
+Before this change, `local` covered 7 of 18 testable arms. After, 12.
+
+| Arm | param | block | local before | local after |
+|---|---|---|---|---|
+| `AST_BLOCK_STMT` | COVERED | COVERED | COVERED | COVERED |
+| `AST_EXPR_STMT` | COVERED | COVERED | COVERED | COVERED |
+| `AST_IF_STMT` | GAP | COVERED | GAP | **COVERED** |
+| `AST_IF_LET_STMT` | GAP | GAP | GAP | GAP |
+| `AST_FOR_STMT` | GAP | GAP | COVERED | COVERED |
+| `AST_RETURN_STMT` | COVERED | COVERED | COVERED | COVERED |
+| `AST_GO_STMT` | COVERED | COVERED | COVERED | COVERED |
+| `AST_DEFER_STMT` | GAP | COVERED | GAP | GAP |
+| `AST_BREAK_STMT` | N/A | N/A | N/A | N/A |
+| `AST_CONTINUE_STMT` | N/A | N/A | N/A | N/A |
+| `AST_VAR_DECL` | COVERED | COVERED | COVERED | COVERED |
+| `AST_CONST_DECL` | GAP | GAP | GAP | GAP |
+| `AST_MULTI_ASSIGN` | GAP | GAP | GAP | **COVERED** |
+| `AST_SWITCH_STMT` | GAP | GAP | GAP | **COVERED** |
+| `AST_TYPE_SWITCH` | GAP | GAP | GAP | **COVERED** |
+| `AST_SELECT_STMT` | GAP | GAP | GAP | **COVERED** |
+| `AST_UNSAFE_STMT` | GAP | GAP | GAP | GAP |
+| `AST_ARENA_BLOCK` | GAP | GAP | GAP | GAP |
+| `AST_ASSERT_STMT` | GAP | GAP | GAP | GAP |
+| `AST_ASSUME_STMT` | GAP | GAP | GAP | GAP |
+
+The load-bearing sinks — `BLOCK`, `EXPR_STMT`, `RETURN`, `GO`, `VAR_DECL` — were
+already covered in all three suites. That is the reassuring half.
+
+### Statement precision (`--stmt-over`), after
+
+| Arm | param | block | local |
+|---|---|---|---|
+| `AST_BLOCK_STMT` | COVERED | COVERED | COVERED |
+| `AST_EXPR_STMT` | COVERED | COVERED | COVERED |
+| `AST_FOR_STMT` | COVERED | COVERED | COVERED |
+| `AST_RETURN_STMT` | COVERED | COVERED | GAP |
+| `AST_VAR_DECL` | COVERED | COVERED | COVERED |
+| every other arm | GAP | GAP | GAP |
+
+Thin, and expected: `local` carries only four precision rows in total, so an
+over-conservative mutation has almost nothing to break there.
+
+### Statement reach, after
+
+| Arm | param | block | local |
+|---|---|---|---|
+| `AST_BLOCK_STMT` | 59 | 199 | 200 |
+| `AST_EXPR_STMT` | 40 | 108 | 144 |
+| `AST_IF_STMT` | 0 | 4 | 6 |
+| `AST_IF_LET_STMT` | 0 | 0 | 0 |
+| `AST_FOR_STMT` | 2 | 4 | 6 |
+| `AST_RETURN_STMT` | 13 | 14 | 52 |
+| `AST_GO_STMT` | 4 | 18 | 6 |
+| `AST_DEFER_STMT` | 0 | 4 | 0 |
+| `AST_BREAK_STMT` | 0 | 0 | 0 |
+| `AST_CONTINUE_STMT` | 0 | 0 | 0 |
+| `AST_VAR_DECL` | 8 | 136 | 214 |
+| `AST_CONST_DECL` | 0 | 0 | 0 |
+| `AST_MULTI_ASSIGN` | 0 | 0 | 6 |
+| `AST_SWITCH_STMT` | 0 | 0 | 6 |
+| `AST_TYPE_SWITCH` | 0 | 0 | 6 |
+| `AST_SELECT_STMT` | 0 | 0 | 8 |
+| `AST_UNSAFE_STMT` | 0 | 0 | 0 |
+| `AST_ARENA_BLOCK` | 0 | 61 | 0 |
+| `AST_ASSERT_STMT` | 0 | 0 | 0 |
+| `AST_ASSUME_STMT` | 0 | 0 | 0 |
+
+### Statement findings
+
+1. **`AST_MULTI_ASSIGN` was never reached by any of the 78 rows.** It is a sink,
+   and `v, err := f()` is among the commonest statements in Go. `local` row 23
+   closes it.
+
+2. **`switch`, `type switch` and `select` were never reached either.** These are
+   the recursing arms, so an unwalked body is the failure, not a missed
+   propagation. Rows 24, 25 and 26.
+
+3. **`AST_IF_STMT` had 0 hits in param and local.** An unwalked `then` branch is
+   a broad hole rather than a narrow one. Row 27.
+
+4. **`AST_ARENA_BLOCK` is reached 61 times in block yet reads `GAP`, and that is
+   correct.** `block_escape` runs two passes: Pass 1 discovers units with its own
+   walk, and Pass 2 drives `escape_walk_stmt` from the arena block's BODY. So
+   this arm only ever sees a NESTED arena block, and no fixture has one. This was
+   an incorrect assumption in a self-test control before it was checked — see
+   below.
+
+## Instrument defects found while building this, and what they cost
+
+Recorded because each one produced a plausible-looking result.
+
+1. **An empty extraction read as a finding.** `arm_body` matched `case AST_X:` as
+   a complete line, but most statement arms are written `case AST_RETURN_STMT: {`
+   with the brace on the label line. Those returned an EMPTY body. The `under`
+   test asks "does the body equal `return escape_taint_new(n);`", which an empty
+   body simply fails, so the bug was invisible for the expression walk. The
+   `stmt-under` test asks "is the body empty?", and the same bug immediately
+   called **15 of 20 arms no-ops**, including `AST_RETURN_STMT`. The matrix looked
+   entirely plausible. Fixes: the extractor tolerates a brace on the label line,
+   `assert_arm_found` refuses a label that does not exist, and `--classify`
+   prints the verdict for every arm so the rule is checkable by eye.
+
+2. **A self-test control asserted something false about the code.** Control 7
+   expected `stmt-under/AST_ARENA_BLOCK` to move `block` only. It moved nothing,
+   because of the two-pass structure in finding 4 above. The control was wrong,
+   not the harness — and it was replaced with `AST_DEFER_STMT`, whose mixed
+   pattern was found by MEASURING rather than by guessing again.
+
+3. **A control encoded a historical fact that the work then changed.** Control 2
+   asserted PR #255's result. Closing the postfix gap changed it. Re-baselining
+   quietly would have destroyed the control's value, so it was re-pointed at the
+   two new rows it now guards.
+
+4. **`tee | head` truncated a saved matrix.** `head` exited, SIGPIPE killed
+   `tee`, and the file held 5 of 17 rows. The same pipeline family this project
+   has already been bitten by twice.
+
 ## Reproducing
 
 ```sh
-scripts/escape_arm_coverage.sh --self-test   # six controls; run this first
+scripts/escape_arm_coverage.sh --self-test   # seven controls; run this first
+scripts/escape_arm_coverage.sh --stmt-over   # statement precision
+scripts/escape_arm_coverage.sh --stmt-under  # statement soundness (the sinks)
+scripts/escape_arm_coverage.sh --reach-stmt  # statement reach
+scripts/escape_arm_coverage.sh --classify    # the no-op rule, checkable by eye
 scripts/escape_arm_coverage.sh --over        # matrix 1
 scripts/escape_arm_coverage.sh --under       # matrix 2
 scripts/escape_arm_coverage.sh --reach       # matrix 3

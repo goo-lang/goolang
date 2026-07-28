@@ -45,6 +45,11 @@ cd "$REPO_ROOT" || exit 2
 
 ENGINE="src/types/escape_core.c"
 ANCHOR='    if (!expr) return escape_taint_new(n);'
+# The statement walk is a SECOND arm population, and the more dangerous one:
+# escape_walk_stmt's arms ARE the sinks (`return`, `go f(x)`, assignment,
+# channel send), so skipping one stops a value being marked at all. An
+# expression arm only propagates taint; a statement arm decides what escapes.
+STMT_ANCHOR='    for (; stmt; stmt = stmt->next) {'
 MARKER='ESCAPE_ARM_COVERAGE_MUTATION'
 SUITES=(param block local)
 WORK="${ESCAPE_ARM_WORKDIR:-$(mktemp -d)}"
@@ -72,6 +77,18 @@ list_arms() {
         | grep -oP '^\s*case \KAST_[A-Z_0-9]+(?=:)'
 }
 
+list_stmt_arms() {
+    awk '/^void escape_walk_stmt\(/,/^}$/' "$ENGINE" \
+        | grep -oP '^\s*case \KAST_[A-Z_0-9]+(?=:)'
+}
+
+# Which arm population does this mode mutate?
+mode_is_stmt() { case "$1" in stmt-*) return 0 ;; *) return 1 ;; esac; }
+
+arms_for_mode() {
+    if mode_is_stmt "$1"; then list_stmt_arms; else list_arms; fi
+}
+
 # ---------------------------------------------------------------------------
 # Two mutation directions, because they test two DIFFERENT row populations and
 # only one of them is the safety-critical one.
@@ -90,33 +107,51 @@ list_arms() {
 # A precision row cannot catch an `under` mutation and a soundness row cannot
 # catch an `over` one, so the two matrices are complementary, not redundant.
 # ---------------------------------------------------------------------------
+#   MODE=stmt-over   the statement arm behaves as ABSENT: escape_mark_all, which
+#                    is exactly what walk_stmt's default arm does. Precision.
+#   MODE=stmt-under  the statement is SKIPPED ENTIRELY, which DELETES A SINK.
+#                    A skipped `return` never marks the returned local, and T4
+#                    would then free a pointer the caller still holds. This is
+#                    the highest-consequence mutation the harness can make.
 inject() {
-    local arm="$1" mode="${2:-over}" n
-    n=$(grep -cF -- "$ANCHOR" "$ENGINE")
+    local arm="$1" mode="${2:-over}" anchor="$ANCHOR" n
+    mode_is_stmt "$mode" && anchor="$STMT_ANCHOR"
+    n=$(grep -cF -- "$anchor" "$ENGINE")
     [ "$n" -eq 1 ] || die "anchor matched $n times in $ENGINE, expected exactly 1"
 
-    python3 - "$ENGINE" "$ANCHOR" "$arm" "$MARKER" "$mode" <<'PY'
+    python3 - "$ENGINE" "$anchor" "$arm" "$MARKER" "$mode" <<'PY'
 import sys
 path, anchor, arm, marker, mode = sys.argv[1:6]
 src = open(path).read()
 if src.count(anchor) != 1:
     sys.exit("anchor count changed under us")
 if mode == "over":
-    body = ("        TaintSet t_mut = escape_taint_all(n);\n"
-            "        escape_mark(ctx, &t_mut);\n"
-            "        return t_mut;\n")
+    guard = (
+        "    if (expr && (int)expr->type == (int)" + arm + ") {\n"
+        "        TaintSet t_mut = escape_taint_all(n);\n"
+        "        escape_mark(ctx, &t_mut);\n"
+        "        return t_mut;\n"
+        "    }\n")
 elif mode == "under":
-    body = "        return escape_taint_new(n);\n"
+    guard = (
+        "    if (expr && (int)expr->type == (int)" + arm + ") {\n"
+        "        return escape_taint_new(n);\n"
+        "    }\n")
+elif mode == "stmt-over":
+    # `continue` runs the for-loop's `stmt = stmt->next`, so this is exactly
+    # "this statement kind falls to the default arm".
+    guard = (
+        "        if (stmt && (int)stmt->type == (int)" + arm + ") {\n"
+        "            escape_mark_all(ctx);\n"
+        "            continue;\n"
+        "        }\n")
+elif mode == "stmt-under":
+    guard = (
+        "        if (stmt && (int)stmt->type == (int)" + arm + ") { continue; }\n")
 else:
     sys.exit("unknown mutation mode: " + mode)
-guard = (
-    anchor + "\n"
-    "    /* " + marker + " " + mode + " */\n"
-    "    if (expr && (int)expr->type == (int)" + arm + ") {\n"
-    + body +
-    "    }\n"
-)
-open(path, "w").write(src.replace(anchor, guard, 1))
+block = anchor + "\n    /* " + marker + " " + mode + " */\n" + guard
+open(path, "w").write(src.replace(anchor, block, 1))
 PY
     [ $? -eq 0 ] || die "injection script failed for $arm ($mode)"
     grep -q "$MARKER" "$ENGINE" || die "injection for $arm ($mode) did not land in $ENGINE"
@@ -140,22 +175,24 @@ build() {
 # 17 arms.
 # ---------------------------------------------------------------------------
 inject_reach() {
-    local arms=("$@") body="" arm n
-    n=$(grep -cF -- "$ANCHOR" "$ENGINE")
+    local which="$1"; shift
+    local arms=("$@") body="" arm n anchor="$ANCHOR" var="expr"
+    if [ "$which" = "stmt" ]; then anchor="$STMT_ANCHOR"; var="stmt"; fi
+    n=$(grep -cF -- "$anchor" "$ENGINE")
     [ "$n" -eq 1 ] || die "anchor matched $n times in $ENGINE, expected exactly 1"
     for arm in "${arms[@]}"; do
         body+="        case ${arm}: fputs(\"ARMHIT ${arm}\\n\", stderr); break;"$'\n'
     done
-    python3 - "$ENGINE" "$ANCHOR" "$MARKER" "$body" <<'PY'
+    python3 - "$ENGINE" "$anchor" "$MARKER" "$body" "$var" <<'PY'
 import sys
-path, anchor, marker, body = sys.argv[1:5]
+path, anchor, marker, body, var = sys.argv[1:6]
 src = open(path).read()
 if src.count(anchor) != 1:
     sys.exit("anchor count changed under us")
 guard = (
     anchor + "\n"
     "    /* " + marker + " */\n"
-    "    if (expr) { switch (expr->type) {\n"
+    "    if (" + var + ") { switch (" + var + "->type) {\n"
     + body +
     "        default: break;\n"
     "    } }\n"
@@ -167,8 +204,9 @@ PY
 }
 
 reach() {
+    local which="$1"; shift
     local arms=("$@") s arm
-    inject_reach "${arms[@]}"
+    inject_reach "$which" "${arms[@]}"
     build "$WORK/build_reach.log" || die "reach build failed; see $WORK/build_reach.log"
     for s in "${SUITES[@]}"; do
         "./${s}_escape_test" > "$WORK/reach_${s}.out" 2> "$WORK/reach_${s}.err"
@@ -274,6 +312,25 @@ self_test() {
     echo "  got: $r"
     [ "$r" = "PASS PASS PASS" ] || { echo "  CONTROL 5 FAILED"; rc=1; }
 
+    # The statement walk is a different anchor, a different injection shape and a
+    # different arm list, so controls 1-5 prove nothing about it.
+    echo "=== Control 6: stmt-under/AST_BLOCK_STMT -> all three FAIL (nothing is walked) ==="
+    r=$(measure_arm AST_BLOCK_STMT stmt-under)
+    echo "  got: $r"
+    [ "$r" = "FAIL FAIL FAIL" ] || { echo "  CONTROL 6 FAILED"; rc=1; }
+
+    # MIXED pattern for the statement direction, and the one that proves the
+    # injection lands where it should rather than everywhere.
+    #
+    # AST_ARENA_BLOCK was the obvious candidate and it is WRONG: block_escape
+    # runs two passes, and Pass 2 drives escape_walk_stmt from the arena block's
+    # BODY, so this arm only ever sees a NESTED arena block. No fixture has one,
+    # so skipping it moves nothing. Checked, not assumed.
+    echo "=== Control 7: stmt-under/AST_DEFER_STMT -> block FAIL only (mixed) ==="
+    r=$(measure_arm AST_DEFER_STMT stmt-under)
+    echo "  got: $r"
+    [ "$r" = "PASS FAIL PASS" ] || { echo "  CONTROL 7 FAILED"; rc=1; }
+
     assert_engine_clean
     if [ "$rc" -eq 0 ]; then
         echo "SELF-TEST PASSED: the harness reports both a positive and a negative."
@@ -295,19 +352,91 @@ self_test() {
 # This is computed from the source, not hardcoded, so an arm that later becomes
 # (or stops being) equivalent is reclassified automatically.
 # ---------------------------------------------------------------------------
+# Body of one `case` arm, with the leading indentation stripped so the same
+# extractor serves the expression walk (8 spaces) and the statement walk (12).
+#
+# MUST tolerate a brace on the label line. Most statement arms are written
+# `case AST_RETURN_STMT: {`, and an extractor that only matched a bare
+# `case AST_X:` returned an EMPTY body for every one of them. That was harmless
+# while the only test was "does the body equal `return escape_taint_new(n);`"
+# (an empty body just fails it), and it produced 15 FALSE "no-op" verdicts the
+# moment a test asked "is the body empty?". An empty extraction must never be
+# mistaken for a meaningful answer, so `arm_body_or_die` refuses to return one.
 arm_body() {
-    awk '/^TaintSet escape_expr_taint\(/,/^}$/' "$ENGINE" \
-        | awk -v a="        case $1:" '
-            $0 == a { f = 1; next }
-            f && /^        (case AST_|default:)/ { exit }
-            f { print }'
+    local arm="$1" which="${2:-expr}" range
+    if [ "$which" = "stmt" ]; then
+        range='/^void escape_walk_stmt\(/,/^}$/'
+    else
+        range='/^TaintSet escape_expr_taint\(/,/^}$/'
+    fi
+    awk "$range" "$ENGINE" | awk -v a="case $arm:" '
+        { line = $0; sub(/^[ \t]+/, "", line) }
+        !f && index(line, a) == 1 {
+            f = 1
+            rest = substr(line, length(a) + 1)
+            sub(/^[ \t]+/, "", rest)
+            if (rest != "") print rest
+            next
+        }
+        f && (line ~ /^case AST_/ || line ~ /^default:/) { exit }
+        f { print line }'
+}
+
+# True when the arm is a genuine no-op: nothing but braces, a `break;`, or a
+# fallthrough to the next label. Braces are stripped, so `{ break; }` counts.
+arm_is_noop() {
+    local body
+    body=$(arm_body "$1" "$2" | tr -d ' \n\t{}')
+    [ -z "$body" ] || [ "$body" = "break;" ]
+}
+
+# The arm label must EXIST. A typo, a renamed arm, or a changed brace style
+# would otherwise silently classify every arm as a no-op.
+assert_arm_found() {
+    local arm="$1" which="$2" range
+    if [ "$which" = "stmt" ]; then
+        range='/^void escape_walk_stmt\(/,/^}$/'
+    else
+        range='/^TaintSet escape_expr_taint\(/,/^}$/'
+    fi
+    awk "$range" "$ENGINE" | grep -qE "^[[:space:]]+case ${arm}:" \
+        || die "arm $arm not found in the $which walk; the extractor is stale"
 }
 
 is_equivalent_mutant() {
     local arm="$1" mode="$2" body
-    [ "$mode" = "under" ] || return 1
-    body=$(arm_body "$arm" | tr -d ' \n\t')
-    [ "$body" = "returnescape_taint_new(n);" ]
+    case "$mode" in
+        under)
+            # The `under` guard IS `return escape_taint_new(n);`. An arm whose
+            # body already is that line cannot be detected by any row.
+            assert_arm_found "$arm" expr
+            body=$(arm_body "$arm" expr | tr -d ' \n\t')
+            [ "$body" = "returnescape_taint_new(n);" ]
+            ;;
+        stmt-under)
+            # `stmt-under` SKIPS the statement. An arm that already does nothing
+            # cannot be made to do less, so GAP there would be a false finding.
+            # AST_BREAK_STMT and AST_CONTINUE_STMT are the pair: they share a
+            # body that is a bare `break;`.
+            assert_arm_found "$arm" stmt
+            arm_is_noop "$arm" stmt
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Prints the no-op classification for every statement arm, so the equivalence
+# rule can be checked by eye instead of trusted. `--classify` exists because an
+# earlier extractor called 15 of 20 arms no-ops and the matrix looked plausible.
+classify_stmt_arms() {
+    local arm
+    printf '| Arm | no-op? | body (normalised, first 60 chars) |\n|---|---|---|\n'
+    while read -r arm; do
+        assert_arm_found "$arm" stmt
+        printf '| `%s` | %s | `%.60s` |\n' "$arm" \
+            "$(arm_is_noop "$arm" stmt && echo YES || echo no)" \
+            "$(arm_body "$arm" stmt | tr -d '\n' | tr -s ' ')"
+    done < <(list_stmt_arms)
 }
 
 matrix() {
@@ -332,6 +461,14 @@ matrix() {
     done
 }
 
+run_matrix() {
+    local mode="$1" arms
+    mapfile -t arms < <(arms_for_mode "$mode")
+    [ "${#arms[@]}" -gt 0 ] || die "no arms found in $ENGINE for mode $mode"
+    echo "arms found: ${#arms[@]} (mode: $mode)" >&2
+    matrix "$mode" "${arms[@]}"
+}
+
 main() {
     assert_engine_clean
     echo "workdir: $WORK" >&2
@@ -341,16 +478,17 @@ main() {
         --list)      list_arms ;;
         --reach)     mapfile -t arms < <(list_arms)
                      [ "${#arms[@]}" -gt 0 ] || die "no arms found in $ENGINE"
-                     reach "${arms[@]}" ;;
-        --over|"")   mapfile -t arms < <(list_arms)
-                     [ "${#arms[@]}" -gt 0 ] || die "no arms found in $ENGINE"
-                     echo "arms found: ${#arms[@]} (mode: over / precision)" >&2
-                     matrix over "${arms[@]}" ;;
-        --under)     mapfile -t arms < <(list_arms)
-                     [ "${#arms[@]}" -gt 0 ] || die "no arms found in $ENGINE"
-                     echo "arms found: ${#arms[@]} (mode: under / soundness)" >&2
-                     matrix under "${arms[@]}" ;;
-        *)           matrix "${2:-over}" "$1" ;;
+                     reach expr "${arms[@]}" ;;
+        --reach-stmt) mapfile -t arms < <(list_stmt_arms)
+                     [ "${#arms[@]}" -gt 0 ] || die "no statement arms found in $ENGINE"
+                     reach stmt "${arms[@]}" ;;
+        --over|"")     run_matrix over ;;
+        --under)       run_matrix under ;;
+        --stmt-over)   run_matrix stmt-over ;;
+        --stmt-under)  run_matrix stmt-under ;;
+        --list-stmt)   list_stmt_arms ;;
+        --classify)    classify_stmt_arms ;;
+        *)             matrix "${2:-over}" "$1" ;;
     esac
 }
 
