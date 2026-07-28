@@ -1,0 +1,95 @@
+// arena-closure-escape probe (ADR 0002 phase 1a): the SOUNDNESS direction.
+//
+// arena_closure_reclaim_probe.goo proves a block-local closure environment is
+// reclaimed. This file proves the opposite half: an environment that OUTLIVES
+// its arena block is never put in the arena to begin with.
+//
+// Why a runtime probe, when unit rows 23-27 already assert this. Over-marking
+// is invisible — it only costs memory. Under-marking is invisible too, until it
+// corrupts. The unit rows prove block_escape.c reaches the right decision; only
+// a running program proves codegen threaded the right NODE to that decision. A
+// wrong `false` here reads a freed environment, so every case below calls the
+// closure AFTER its arena block has closed. That read is the whole point of the
+// probe — a case that never calls the closure would pass either way.
+//
+// One case per escape sink, mirroring block_escape_test.c rows 23-27. The
+// outer-local sink lives in arena_closure_probe.goo case 3 instead, so it is
+// not repeated here.
+//
+// Also run under scripts/-driven valgrind (ARENA_FREE_PROBE_NAMES), because a
+// use-after-free does not always change the printed value. Wrong output is the
+// lucky case; valgrind covers the unlucky one.
+//
+// Expected output produced by `go run` on the equivalent Go program with the
+// arena blocks removed (go1.26.1), per project convention.
+package main
+
+import "fmt"
+
+var kept func() int
+
+// A retaining callee: it stores the closure somewhere that outlives the call,
+// so param_escape marks the parameter escaping and block_escape must keep the
+// environment off the arena.
+func stash(fn func() int) {
+	kept = fn
+}
+
+// Sink: RETURN. The function body IS the arena block, so the block's
+// fall-through free has already run by the time the caller holds the closure.
+func makeAdder(base int) func() int {
+	arena {
+		v := base
+		return func() int { return v + 1 }
+	}
+}
+
+func main() {
+	// 1. Returned out of the arena, then called by the caller.
+	add := makeAdder(41)
+	fmt.Println(add())
+
+	// 2. Passed to a callee that retains it. The arena closes at the end of
+	//    the block; the call happens after.
+	arena {
+		v := 7
+		stash(func() int { return v * 3 })
+	}
+	fmt.Println(kept())
+
+	// 3. Assigned straight to a package global — a location that strictly
+	//    outlives the enclosing frame, never mind the block.
+	arena {
+		v := 100
+		kept = func() int { return v - 1 }
+	}
+	fmt.Println(kept())
+
+	// 4. Sink: `go`. The goroutine runs past the block, so the environment
+	//    must be on the heap.
+	//
+	//    THE HAZARD: a `go` statement inside the arena block may be scheduled
+	//    BEFORE the block's free runs. If the goroutine reads the captured
+	//    value that early, it reads live memory and the probe passes whether
+	//    or not the environment escaped — it proves nothing. The read must be
+	//    forced to happen AFTER the arena closes.
+	//
+	//    THE FIX: two unbuffered channels. `main` sends on `ready` only after
+	//    the arena block has closed, so the goroutine's read of `v` is ordered
+	//    strictly after goo_arena_free. One channel would leave that order to
+	//    the scheduler, and the probe would pass by luck most of the time.
+	//
+	//    The goroutine sends a value DERIVED from the captured variable, so a
+	//    freed environment shows up as a wrong number rather than as silence.
+	ready := make(chan int)
+	result := make(chan int)
+	arena {
+		v := 5
+		go func() {
+			<-ready
+			result <- v * 8
+		}()
+	}
+	ready <- 1
+	fmt.Println(<-result)
+}

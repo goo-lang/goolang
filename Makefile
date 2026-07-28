@@ -4895,7 +4895,20 @@ arena-routing-test: arena_routing_test
 # eligibility classification (no AST_GOTO_STMT/AST_LABEL_STMT case there),
 # so an RSS-delta assertion on a goto-containing arena probe would measure
 # that unrelated, pre-existing gap instead of this fix.
-ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe arena_fmt_println_probe arena_goto_probe
+# ADR 0002 phase 1a (closure environments as an allocation site) adds two:
+# arena_closure_reclaim_probe   — the PRECISION direction. A block-local
+#                                 environment is reclaimed. Also carries the
+#                                 RSS assertion in scripts/arena_rss_probe.sh
+#                                 (4.5MB with the arena against 36.3MB without).
+# arena_closure_escape_probe    — the SOUNDNESS direction, one case per escape
+#                                 sink, each READING the closure after its arena
+#                                 closes. This is the one that matters here: a
+#                                 wrong `false` frees an environment something
+#                                 still reads, and a golden diff does not always
+#                                 catch that. The valgrind gate below is why both
+#                                 probes are on this list rather than relying on
+#                                 test-golden alone.
+ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe arena_fmt_println_probe arena_goto_probe arena_closure_reclaim_probe arena_closure_escape_probe
 
 arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build

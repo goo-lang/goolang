@@ -250,9 +250,24 @@ static bool discover_expr(ASTNode* expr, UnitList* units, size_t unit_idx) {
         }
         case AST_SELECTOR_EXPR:
             return discover_expr(((SelectorExprNode*)expr)->expr, units, unit_idx);
-        case AST_FUNC_LIT:
-            // Opaque — see doc comment above.
+        case AST_FUNC_LIT: {
+            // Phase 1a (ADR 0002): a CAPTURING literal allocates an
+            // environment struct at function_codegen.c's `env_ptr`, so the
+            // literal node IS that allocation's site. A NON-capturing literal
+            // allocates nothing (that path keeps env NULL), so registering one
+            // would record a decision with no allocation behind it — hence the
+            // captured_count guard. captured_count is populated by the type
+            // checker, which the header already requires to have run.
+            //
+            // Still does NOT recurse into the body — see the doc comment
+            // above. Registering the closure ITSELF and classifying the
+            // allocations written INSIDE it are orthogonal problems.
+            FuncLitNode* lit = (FuncLitNode*)expr;
+            if (lit->captured_count > 0) {
+                if (!site_append(units, unit_idx, expr)) return false;
+            }
             return true;
+        }
         case AST_STRUCT_LITERAL: {
             StructLiteralNode* sl = (StructLiteralNode*)expr;
             for (ASTNode* v = sl->field_values; v; v = v->next) {
@@ -826,6 +841,27 @@ static TaintSet expr_taint(Ctx* ctx, ASTNode* expr) {
                 if (lv) taint_set_union_into(&t, &lv->taint);
             }
             mark_escapes(ctx, &t);
+
+            // Phase 1a: this literal's own environment is a site (registered
+            // by discover_expr above, iff it captures anything). Its self-bit
+            // goes in AFTER the mark_escapes call, NEVER before — before, the
+            // environment would mark ITSELF escaping at its own definition and
+            // registering it as a site would achieve nothing at all.
+            //
+            // Sink #3 is deliberately NOT relaxed by this: the captured values
+            // above still escape, whatever the environment's own fate turns
+            // out to be. The two are independent, and only the environment's
+            // fate is new here. From this point the self-bit rides the
+            // ordinary taint engine, so the environment escapes exactly when
+            // the closure VALUE does — assignment, return, `go`, `defer`, or a
+            // retaining call argument. Calling the closure does not leak it: a
+            // body reads its captured cells but cannot store the env itself.
+            //
+            // find_site_index misses for a nested unit's own literal, which
+            // then just contributes its captured taint — same conservative
+            // fall-through the &composite and new(T) cases take.
+            size_t idx = find_site_index(ctx, expr);
+            if (idx != BLOCK_ESCAPE_NO_UNIT) t.bits[idx] = true;
             return t;
         }
         case AST_STRUCT_LITERAL: {
