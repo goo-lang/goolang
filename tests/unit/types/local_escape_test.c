@@ -189,6 +189,44 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "x", true } }, 1
     },
+    {
+        // SOUNDNESS. A map KEY is a stored reference, and nothing used to say
+        // so: assign_to_lvalue marks only the RIGHT-hand taint, so the INDEX
+        // expression of a non-identifier lvalue was never tainted.
+        //
+        // Measured before the fix: `m` ESCAPES and `k` did NOT. But
+        // goo_map_set_sv (src/runtime/runtime.c) stores the key pointer
+        // VERBATIM and never frees it, so the returned map genuinely holds
+        // `k`. An ARC release consumer acting on that verdict frees a buffer
+        // a live, returned map still points at.
+        //
+        // Found by docs/superpowers/specs/
+        // 2026-07-28-daemon-alloc-attribution-findings.md. The slice
+        // equivalent (row 16) was already sound, because append is an
+        // ordinary call and the call sink covers it.
+        15, "local used as a MAP KEY, map escapes -> true (key is a stored ref)",
+        "package main\n"
+        "func f(s string) map[string]int {\n"
+        "    m := map[string]int{}\n"
+        "    k := s + \"x\"\n"
+        "    m[k] = 1\n"
+        "    return m\n"
+        "}\n",
+        "f", { { "m", true }, { "k", true } }, 2
+    },
+    {
+        // The slice counterpart of row 15, kept as the CONTRAST: this one was
+        // already true before the map-key fix, and it must stay true.
+        16, "local appended to a slice that escapes -> true",
+        "package main\n"
+        "func f(s string) []string {\n"
+        "    parts := []string{}\n"
+        "    k := s + \"x\"\n"
+        "    parts = append(parts, k)\n"
+        "    return parts\n"
+        "}\n",
+        "f", { { "parts", true }, { "k", true } }, 2
+    },
 };
 
 static int failures = 0;
