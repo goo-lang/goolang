@@ -175,6 +175,16 @@ bug class that can dangle a pointer.
 **Not exploitable today**, because nothing emits a release. That is exactly why
 it must be closed before a consumer exists, not after.
 
+**CLOSED.** `escape_core.c` gained sink #2b: a subscript of an assignment
+target is a stored reference, so `m[k] = v` now marks `k`. It marks only the
+INDEX, never the base — `m[k] = v` says nothing about whether `m` itself
+outlives the boundary, and marking the base would cost most of the precision.
+Recursive, so `m[a][b] = v` marks both and a subscript under a field selector
+is still seen. Pinned by local-escape rows 15 and 16, where row 16 is the slice
+contrast that was already sound. Re-measured: shape C and shape F both flip to
+ESCAPES, and shapes A, E, H and I keep their precision. No other row moved, and
+the goldens stayed 493/493 at both -O0 and -O2.
+
 ## What follows, in this order
 
 1. **Give the C shims param_escape summaries.** Nothing else matters until this

@@ -169,6 +169,36 @@ static bool is_assign_op(TokenType op) {
     }
 }
 
+// Mark every SUBSCRIPT inside an assignment target. See sink #2b below for
+// why. Recursive so that `m[a][b] = v` marks both `a` and `b`, and so that a
+// subscript buried under a field selector (`obj.field[k] = v`) is still seen.
+//
+// Deliberately marks only the INDEX, never the base. `m[k] = v` stores into m,
+// which says nothing about whether m itself outlives the boundary — that is
+// decided by how m is used elsewhere. Marking the base would over-mark every
+// container assignment and cost most of the analysis's precision.
+static void mark_lvalue_subscripts(EscapeCtx* ctx, ASTNode* lhs) {
+    if (!lhs) return;
+    switch (lhs->type) {
+        case AST_INDEX_EXPR: {
+            IndexExprNode* ie = (IndexExprNode*)lhs;
+            TaintSet idx = escape_expr_taint(ctx, ie->index);
+            escape_mark(ctx, &idx);
+            escape_taint_free(&idx);
+            mark_lvalue_subscripts(ctx, ie->expr);
+            break;
+        }
+        case AST_SELECTOR_EXPR:
+            mark_lvalue_subscripts(ctx, ((SelectorExprNode*)lhs)->expr);
+            break;
+        case AST_UNARY_EXPR:
+            mark_lvalue_subscripts(ctx, ((UnaryExprNode*)lhs)->operand);
+            break;
+        default:
+            break;
+    }
+}
+
 static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_taint, bool* env_changed) {
     if (!lhs) {
         escape_mark(ctx, rhs_taint);
@@ -188,6 +218,20 @@ static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_t
         return;
     }
     escape_mark(ctx, rhs_taint);
+    // Sink #2b: a SUBSCRIPT of the target is a stored reference too.
+    //
+    // `m[k] = v` stores BOTH v and k. goo_map_set_sv keeps the key pointer
+    // verbatim and never frees it (src/runtime/runtime.c), so a map that
+    // outlives the boundary holds k for as long as it lives. Marking only
+    // rhs_taint left k unmarked, which is UNDER-marking — the one bug class
+    // that can dangle a pointer.
+    //
+    // Measured before this arm existed: in `m[k] = 1; return m` the map
+    // escaped and k did not. Pinned by local-escape row 15. The slice
+    // equivalent was already sound (row 16), because `append(parts, k)` is an
+    // ordinary call and the call sink covers it — which is why this hole
+    // survived: it exists only in the one position that is not a call.
+    mark_lvalue_subscripts(ctx, lhs);
 }
 
 
