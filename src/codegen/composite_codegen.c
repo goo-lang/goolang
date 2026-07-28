@@ -571,13 +571,42 @@ static ValueInfo* codegen_generate_method_value(CodeGenerator* codegen, TypeChec
     }
 
     Type* method_fn_type = method_var->type;   // receiver spliced as params[0]
-    Type* stripped_fn_type = expr->node_type;  // the checker already stripped it (P3.6)
-    if (!stripped_fn_type || stripped_fn_type->kind != TYPE_FUNCTION ||
-        method_fn_type->kind != TYPE_FUNCTION || method_fn_type->data.function.param_count == 0) {
+    if (method_fn_type->kind != TYPE_FUNCTION || method_fn_type->data.function.param_count == 0) {
         codegen_error(codegen, expr->pos,
                       "internal: method value missing resolved signature for '%s'",
                       selector->selector);
         return NULL;
+    }
+
+    // Do NOT assume expr->node_type is receiver-stripped. The checker strips
+    // only in VALUE position (expression_checker.c's method arm); in CALL
+    // position it records the method type verbatim, receiver included. A
+    // `go c.m()` puts the selector in call position and then asks THIS
+    // function for a bound method value, so the two disagreed and the thunk
+    // handed the method one argument too many:
+    //
+    //   Incorrect number of arguments passed to called function!
+    //     call void @Counter__bumpAndSend(ptr %bound_recv, ptr %1)
+    //
+    // Detect it by parameter count rather than by trusting a checker flag: a
+    // stripped signature always has exactly one fewer parameter than the
+    // method it came from, so equality means the receiver is still there.
+    // Cache the result on the node — that is precisely the ownership the
+    // checker's value-position path uses, and node_type is never freed
+    // (ast.c's ast_node_free says so), so this adds no new leak class. It
+    // also keeps a repeated lowering of the same node from re-allocating.
+    Type* stripped_fn_type = expr->node_type;
+    if (!stripped_fn_type || stripped_fn_type->kind != TYPE_FUNCTION ||
+        stripped_fn_type->data.function.param_count ==
+            method_fn_type->data.function.param_count) {
+        stripped_fn_type = type_strip_receiver(method_fn_type);
+        if (!stripped_fn_type) {
+            codegen_error(codegen, expr->pos,
+                          "internal: cannot strip receiver for method '%s'",
+                          selector->selector);
+            return NULL;
+        }
+        expr->node_type = stripped_fn_type;
     }
 
     Type* recv_param_type = method_fn_type->data.function.param_types[0];

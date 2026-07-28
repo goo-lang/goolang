@@ -1,0 +1,52 @@
+// The gate `block_escape.c` said was MASKED, now that it can be built.
+//
+// handle_go_call marks the CALLEE's taint, not just the arguments, so a
+// `go p.m()` inside an arena block marks `p` and forces the site to the heap.
+// That fix carried this note:
+//
+//   Currently masked by a SEPARATE defect (`go p.m()` on a pointer receiver
+//   fails module verification, so the program does not build)
+//
+// So the analysis was correct and had no end-to-end test, because no program
+// of this shape compiled. The `go` method-callee fix removes that defect, and
+// this probe is the test the note was waiting for.
+//
+// `stash` keeps its receiver in a package global, and `kept` is read AFTER
+// the arena block frees its region. Without the callee-taint marking the
+// site is arena-eligible, and that read is a use-after-free.
+//
+// TWO SHAPE CHOICES, both load-bearing — the first version of this probe had
+// neither and could NOT fail:
+//
+//   1. `T` holds NO channel. A struct with a channel field is forced to the
+//      heap for an unrelated reason, which masked the very thing being
+//      tested: the site stayed on the heap even with the marking removed.
+//      Verified by mutation — with `T` channel-free, removing the
+//      mark_escapes line in handle_go_call flips the site to
+//      goo_arena_alloc, and restoring it flips it back.
+//   2. The channel is a PACKAGE GLOBAL, not a field and not an argument.
+//      `go f(args)` on a function value is a separate v1 restriction, and a
+//      channel field would reintroduce problem 1.
+package main
+
+type T struct {
+	x int
+}
+
+var kept *T
+var done chan int
+
+func (t *T) stash() {
+	kept = t
+	done <- 1
+}
+
+func main() {
+	done = make(chan int)
+	arena {
+		p := &T{x: 9}
+		go p.stash()
+		<-done
+	}
+	println(kept.x)
+}

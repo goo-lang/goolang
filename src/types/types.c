@@ -332,6 +332,22 @@ Type* type_function(Type** param_types, size_t param_count, Type* return_type) {
     return type;
 }
 
+// Moved here from expression_checker.c, where it was static, when codegen
+// became a second consumer (the bound-thunk path could not rely on the
+// checker having stripped anything). See include/types.h for the contract.
+Type* type_strip_receiver(Type* method_type) {
+    if (!method_type || method_type->kind != TYPE_FUNCTION) return NULL;
+    size_t recv_count = method_type->data.function.param_count;
+    if (recv_count == 0) return NULL;  // invariant violation: every method has a receiver
+    size_t stripped_count = recv_count - 1;
+    Type** stripped_params = stripped_count > 0
+        ? &method_type->data.function.param_types[1] : NULL;
+    Type* stripped = type_function(stripped_params, stripped_count,
+                                   method_type->data.function.return_type);
+    if (stripped) stripped->data.function.is_variadic = method_type->data.function.is_variadic;
+    return stripped;
+}
+
 Type* type_pointer(Type* pointee_type) {
     if (!pointee_type) return NULL;
     
