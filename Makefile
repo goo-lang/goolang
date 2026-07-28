@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe alloc-doors-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -3254,6 +3254,7 @@ VERIFY_ALL_DEPS := \
     arena-rss-probe \
     dead-package-code-probe \
     alloc-doors-probe \
+    string-literal-header-probe \
     test-golden \
     test-golden-o2 \
     test-golden-reject \
@@ -4981,6 +4982,14 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 # needed, so it is stable everywhere.
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
+
+# A Goo string literal must be a real ARC object: { header, bytes } with the
+# count set to GOO_RC_IMMORTAL. Asserts the IR shape, the 16-byte alignment,
+# that `opt -passes=verify` accepts the module, and that the program still
+# prints the right thing. See the script's header for why a literal was the
+# one headerless pointer kind nothing excluded.
+string-literal-header-probe: $(COMPILER)
+	@bash scripts/string_literal_header_probe.sh
 
 arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build

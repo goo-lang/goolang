@@ -134,9 +134,18 @@ void goo_free(void* ptr) {
     // would be undefined behavior. Every zero-size allocation aliases it,
     // so this is reached routinely (e.g. releasing an empty slice literal's
     // backing "allocation") and must be a silent no-op, not a bug.
-    if (!goo_obj_headerless(ptr)) {
-        free((unsigned char*)ptr - GOO_OBJ_HEADER_SIZE);
+    if (goo_obj_headerless(ptr)) {
+        return;
     }
+    // An IMMORTAL object is not heap memory at all — a string literal's bytes
+    // live in a constant global. goo_release never reaches here for one
+    // (its count never falls), but a direct goo_free would otherwise hand
+    // .rodata to free(). Guarded here so the whole class is closed in the one
+    // place that does the base-pointer arithmetic.
+    if (goo_obj_refcount(ptr) == GOO_RC_IMMORTAL) {
+        return;
+    }
+    free((unsigned char*)ptr - GOO_OBJ_HEADER_SIZE);
 }
 
 // A count that is not lock-free calls into libatomic and takes a LOCK, which
@@ -171,6 +180,13 @@ void goo_retain(void* ptr) {
     if (goo_obj_headerless(ptr)) {
         return;
     }
+    // IMMORTAL objects (string literals) are never freed, so counting them is
+    // pointless AND wrong: the global is a CONSTANT in .rodata, so an
+    // increment would fault. Relaxed matches the increment below — this load
+    // synchronises nothing, and the sentinel never changes once emitted.
+    if (__atomic_load_n(&goo_obj_header(ptr)->rc, __ATOMIC_RELAXED) == GOO_RC_IMMORTAL) {
+        return;
+    }
     __atomic_fetch_add(&goo_obj_header(ptr)->rc, 1, __ATOMIC_RELAXED);
 }
 
@@ -180,6 +196,13 @@ void goo_release(void* ptr) {
     }
 
     GooObjHeader* h = goo_obj_header(ptr);
+
+    // IMMORTAL: never decrement, never free. Checked BEFORE the fetch_sub,
+    // because the sentinel lives in a constant global and the read-modify-write
+    // would fault on it.
+    if (__atomic_load_n(&h->rc, __ATOMIC_RELAXED) == GOO_RC_IMMORTAL) {
+        return;
+    }
 
     // ONE operation, not three. This used to read rc, compare it against 0,
     // and then decrement — so two goroutines could each observe 1 and each
