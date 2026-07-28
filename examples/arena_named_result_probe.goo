@@ -1,0 +1,38 @@
+// Arena named-result probe: the RETURN boundary, via the one return shape
+// that carries no values for the return sink to walk.
+//
+// `id` hands back a parameter-derived pointer through a NAMED result and a
+// BARE `return`. ReturnStmtNode->values is empty there, so param_escape's
+// return sink never fires and return_escapes stays false.
+//
+// The parameter is still marked, by a different sink: LocalEnv is seeded from
+// f->param_names only, so a named result is NOT a local, and `p = q` is a
+// store to a non-local. That fires the store-escape sink, `id`'s param 0 is
+// retained, and block_escape routes the call site to the heap.
+//
+// So this shape is sound today, and it is sound for a reason that is easy to
+// break: anyone who later registers named results as locals removes the ONLY
+// sink covering it, because the return sink cannot see a bare return. This
+// probe fails in that world, which is the point of keeping it.
+//
+// `kept` is read after the block frees its arena.
+package main
+
+type T struct {
+	x int
+}
+
+var kept *T
+
+func id(q *T) (p *T) {
+	p = q
+	return
+}
+
+func main() {
+	arena {
+		a := &T{x: 42}
+		kept = id(a)
+	}
+	println(kept.x)
+}
