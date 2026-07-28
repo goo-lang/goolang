@@ -261,6 +261,30 @@ static TestRow rows[] = {
         "}\n",
         { { "f", 1, { true }, false, false } }, 1
     },
+    {
+        20, "param stored into a NAMED RESULT, bare return -> true",
+        // CHARACTERISATION pin, not a bug fix — this already holds, and the
+        // reason is load-bearing enough to nail down.
+        //
+        // The return sink walks ReturnStmtNode->values, which a bare `return`
+        // leaves empty, so it never fires and return_escapes stays false. The
+        // param is still correctly marked, but by a DIFFERENT sink: LocalEnv
+        // is seeded from f->param_names only (analyze_function_body), a named
+        // result is not a parameter, so `p = q` is a store to a non-local and
+        // fires the store-escape sink instead.
+        //
+        // Anyone who later "tidies" named results into LocalEnv silently turns
+        // this into an under-mark, because the return sink will NOT catch it.
+        // That combination is a use-after-free, so this row must stay red in
+        // that world.
+        "package main\n"
+        "type T struct { x int }\n"
+        "func id(q *T) (p *T) {\n"
+        "    p = q\n"
+        "    return\n"
+        "}\n",
+        { { "id", 1, { true }, false, false } }, 1
+    },
 };
 
 static int g_pass = 0;
