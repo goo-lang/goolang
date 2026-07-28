@@ -83,11 +83,23 @@ void goo_free(void* ptr);
 uint64_t goo_obj_refcount(const void* ptr);
 
 // Increment. No-op on NULL and on goo_zerobase.
+//
+// ATOMIC. Goroutines are not cooperative coroutines on one thread —
+// goo_scheduler_init spawns goo_default_thread_count() OS threads, and a
+// yielded goroutine is republished to a shared ready queue that any worker may
+// take, so a goroutine can also MOVE between OS threads. That settles ADR
+// 0002's open "atomic counts or per-goroutine" question in favour of atomic,
+// and rules out any scheme keyed on the owning OS thread. See
+// docs/superpowers/specs/2026-07-28-arc-atomic-counts.md.
 void goo_retain(void* ptr);
 
 // Decrement, and free the object when the count reaches 0. No-op on NULL and
-// on goo_zerobase. Releasing below 0 is a caller bug; see the implementation
-// for what it does about it.
+// on goo_zerobase. Releasing below 0 is a caller bug, and panics rather than
+// wrapping silently.
+//
+// ATOMIC, and it is ONE read-modify-write, not a read then a compare then a
+// decrement. The three-step form let two goroutines each observe 1 and each
+// decrement, which is a double free — measured, not hypothetical.
 void goo_release(void* ptr);
 
 // Bump/arena allocator: a growable block-list bump allocator that the
