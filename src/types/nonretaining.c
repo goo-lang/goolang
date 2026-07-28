@@ -2,6 +2,7 @@
 // include/nonretaining.h for the contract and the soundness/status notes.
 
 #include "nonretaining.h"
+#include "shim_signatures.h"
 #include <string.h>
 
 // Plain-identifier builtins that provably do not retain a pointer argument:
@@ -18,27 +19,6 @@ static bool is_nonretaining_builtin(const char* name) {
         || strcmp(name, "println") == 0;
 }
 
-// `fmt` selector calls that provably do not retain a pointer argument:
-//   fmt.Print / Println / Printf — format the arguments and write them to
-//     stdout synchronously; nothing outlives the call.
-//   fmt.Sprintf / Sprint / Sprintln — format the arguments into a NEW string
-//     and return it; the argument pointers are not retained, and the returned
-//     string is a fresh copy that does not alias them.
-// Deliberately EXCLUDED (they retain / may retain, so they stay conservative):
-//   fmt.Errorf — with the %w verb the returned error wraps and retains an
-//     argument, so it is NOT safe to whitelist.
-//   append — stores its element arguments into a slice that may outlive the
-//     call; conservative retain is required.
-static bool is_nonretaining_fmt_selector(const char* selector) {
-    if (!selector) return false;
-    return strcmp(selector, "Print") == 0
-        || strcmp(selector, "Println") == 0
-        || strcmp(selector, "Printf") == 0
-        || strcmp(selector, "Sprintf") == 0
-        || strcmp(selector, "Sprint") == 0
-        || strcmp(selector, "Sprintln") == 0;
-}
-
 bool goo_callee_is_non_retaining(const ASTNode* call_function) {
     if (!call_function) return false;
 
@@ -48,11 +28,22 @@ bool goo_callee_is_non_retaining(const ASTNode* call_function) {
 
     if (call_function->type == AST_SELECTOR_EXPR) {
         const SelectorExprNode* sel = (const SelectorExprNode*)call_function;
-        // Only the `fmt` package's listed functions — match the package
-        // identifier AND the selector, so `other.Println` is not whitelisted.
-        if (sel->expr && sel->expr->type == AST_IDENTIFIER
-            && strcmp(((const IdentifierNode*)sel->expr)->name, "fmt") == 0) {
-            return is_nonretaining_fmt_selector(sel->selector);
+        // A package selector call. The answer comes from the shim table's
+        // `non_retaining` column, which is the single declarative home for
+        // every shim fact and carries the per-symbol proof beside the row.
+        //
+        // This used to be a hardcoded list of six `fmt` selectors here. Those
+        // six moved into the table unchanged, so the fact and its signature
+        // can no longer drift apart. The change also widened the answer past
+        // `fmt`: measured on bench/daemon, EVERY local passed to any stdlib
+        // call was marked escaping purely because a C shim has no Goo body,
+        // which made the whole ARC leg unable to reclaim anything.
+        //
+        // Matching is on BOTH the package identifier and the selector, so
+        // `other.Println` is not whitelisted.
+        if (sel->expr && sel->expr->type == AST_IDENTIFIER) {
+            const char* pkg = ((const IdentifierNode*)sel->expr)->name;
+            return shim_signature_is_non_retaining(pkg, sel->selector) != 0;
         }
         return false;
     }

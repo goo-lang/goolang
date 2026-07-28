@@ -235,6 +235,24 @@ static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_t
 }
 
 
+// True when the callee is `base.Sel` and `base` is a LOCAL, not a package.
+//
+// goo_callee_is_non_retaining answers by package name and selector, so a local
+// variable that happens to be named `strings` would otherwise collect the
+// `strings` package's whitelist and `s.Split(x)` would be treated as not
+// retaining x. Membership in ctx->env is the engine's existing definition of
+// "a plain local of this unit", so it is exactly the discriminator needed.
+//
+// Conservative on anything unexpected: a non-identifier base (`pkgs[0].F()`)
+// answers true, which only ever DISABLES the whitelist. A plain-identifier
+// callee is not a selector at all, so builtins are unaffected.
+static bool selector_base_is_local(EscapeCtx* ctx, ASTNode* fn) {
+    if (!fn || fn->type != AST_SELECTOR_EXPR) return false;
+    ASTNode* base = ((SelectorExprNode*)fn)->expr;
+    if (!base || base->type != AST_IDENTIFIER) return true;
+    return escape_env_find(ctx->env, ((IdentifierNode*)base)->name) != NULL;
+}
+
 static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     size_t n = ctx->slot_count;
 
@@ -287,7 +305,9 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     // 7a' non-retaining whitelist: only for calls that do NOT resolve to a user
     // function (callee == NULL) — a user body, even one shadowing a builtin
     // name, is analysed by its real summary above.
-    bool whitelisted = !callee && goo_callee_is_non_retaining(call->function);
+    bool whitelisted = !callee
+                       && !selector_base_is_local(ctx, call->function)
+                       && goo_callee_is_non_retaining(call->function);
 
     for (i = 0; i < argc; i++) {
         bool retains;

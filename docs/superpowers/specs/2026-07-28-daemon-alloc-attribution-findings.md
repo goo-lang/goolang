@@ -140,6 +140,42 @@ argument escaping.
 nothing. This is the dominant blocker, and it sits ahead of every other item
 here.
 
+### CLOSED, and here is what it bought
+
+The shim table gained a `non_retaining` column, and
+`goo_callee_is_non_retaining` now reads it instead of a hardcoded `fmt` list.
+The six `fmt` entries moved into the table unchanged, so the fact and the
+signature can no longer drift apart.
+
+Re-measured on the REAL `bench/daemon/daemon.goo`, through
+`local_escape_analyze`. The whitelist is syntactic — a package identifier and
+a selector — so it answers even where a standalone harness cannot resolve the
+imports:
+
+| Local | Before | After | Bytes it holds |
+|---|---|---|---|
+| `fields` | ESCAPES | **does not escape** | 246 B, 17.9% |
+| `err` | ESCAPES | **does not escape** | 170 B, 12.3% |
+| `total`, `i`, `n` | ESCAPES | does not escape | scalars |
+| `f` | ESCAPES | ESCAPES | correct: the map holds it as a key |
+| `counts` | ESCAPES | ESCAPES | correct |
+| `parts` | ESCAPES | ESCAPES | correct: `append` retains, by design |
+
+**30.2% of the retained bytes became provably non-escaping**, and the three
+that stayed escaping each stayed for a reason the source supports.
+
+**The widening is still inert for arenas, and live only for locals.** No shim
+takes a user pointer — the parameter kinds are string, int64, float64,
+[]string and error — so no arena value can reach a whitelisted call, and
+`block_escape`'s 31 rows and the 17 arena valgrind probes are unchanged. The
+change matters to `local_escape`, whose consumer does not exist yet. That is
+the right order: land the analysis while nothing can act on a wrong answer.
+
+Three rows pin it, and each was proven able to fail by mutation: `param_escape`
+row 21 (a non-retaining shim), row 22 (`errors.Unwrap`, whose result aliases
+its argument, so its column MUST stay 0), and row 23 (a local named `strings`
+must not collect the package's whitelist).
+
 ## Result 3 — a map key is an untracked reference, and it is a soundness defect
 
 Shape C flipping to "does not escape" is not only a lost optimisation. Consider
