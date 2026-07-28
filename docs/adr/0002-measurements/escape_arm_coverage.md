@@ -4,6 +4,18 @@ Measured 2026-07-29 against `ce6af49`, by `scripts/escape_arm_coverage.sh`.
 Re-runnable: the script reads the arm list out of the source, so a new arm joins
 the matrix without an edit here.
 
+**Two states are recorded below.** "Before" is `ce6af49`, the baseline that
+motivated the work. "After" is the same measurement with the seven rows this
+change adds. Both are kept, because the delta is the evidence that the rows do
+something.
+
+| | Before | After |
+|---|---|---|
+| Precision-covered in all three suites | 3 of 17 | 6 of 17 |
+| Soundness-covered in `local` (the pass T4 consumes) | 4 of 16 | 9 of 16 |
+| Arms never reached by any fixture | 6 | 5 |
+| Row counts (param / block / local) | 23 / 31 / 16 | 24 / 32 / 22 |
+
 ## Why this exists
 
 PR #255 merged three hand-mirrored escape walks into one engine,
@@ -48,13 +60,14 @@ under-marking as "the ONLY bug class that can dangle a pointer".
 
 ### Instrument verification
 
-`scripts/escape_arm_coverage.sh --self-test` runs five controls, and no cell of
+`scripts/escape_arm_coverage.sh --self-test` runs six controls, and no cell of
 either matrix should be believed until they pass:
 
 | Control | Expected | Why it is needed |
 |---|---|---|
 | 1 | baseline: all three PASS | A red baseline makes every cell meaningless |
-| 2 | `over`/`AST_POSTFIX_EXPR`: local FAIL, param+block PASS | Reproduces PR #255 exactly. A different answer means the guard is not equal to an absent arm |
+| 2 | `over`/`AST_POSTFIX_EXPR`: all three FAIL | Read `PASS PASS FAIL` at `ce6af49`, which reproduced PR #255 and was the ledger item. Closing the gap CHANGED the fact this control asserted, and the self-test caught that. It now guards param row 24 and block row 32 against deletion |
+| 2b | `over`/`AST_UNARY_EXPR`: block FAIL only | The strongest control here, and the only one with a MIXED pattern. Controls 2-4 all expect every suite red, which a bluntly broken build also produces. A wrongly injected guard, or a build that ignores the injection, cannot produce `PASS FAIL PASS` by accident |
 | 3 | `over`/`AST_IDENTIFIER`: all three FAIL | Proves the harness can turn every suite red |
 | 4 | `under`/`AST_IDENTIFIER`: all three FAIL | Controls 1-3 say nothing about the `under` direction, which flips a different row population |
 | 5 | `under`/`AST_TYPE_ASSERT`: all three PASS | A true negative, cross-checked against `--reach` reporting 0 hits |
@@ -192,10 +205,97 @@ count. Three independently produced measurements, no contradiction.
    at all — reach is 0, not merely undetected. And the arm has no soundness
    coverage in ANY suite, which the ledger did not record.
 
+## After — the same three matrices with this change's rows
+
+Rows added: `param` 24, `block` 32, `local` 17-22.
+
+### Precision (`--over`), after
+
+| Arm | param (24) | block (32) | local (22) |
+|---|---|---|---|
+| `AST_IDENTIFIER` | COVERED | COVERED | COVERED |
+| `AST_LITERAL` | COVERED | COVERED | COVERED |
+| `AST_BINARY_EXPR` | COVERED | COVERED | COVERED |
+| `AST_UNARY_EXPR` | GAP | COVERED | GAP |
+| `AST_POSTFIX_EXPR` | COVERED | COVERED | COVERED |
+| `AST_INDEX_EXPR` | GAP | GAP | GAP |
+| `AST_SLICE_INDEX_EXPR` | GAP | GAP | GAP |
+| `AST_SELECTOR_EXPR` | COVERED | COVERED | GAP |
+| `AST_CALL_EXPR` | COVERED | COVERED | COVERED |
+| `AST_FUNC_LIT` | GAP | COVERED | GAP |
+| `AST_STRUCT_LITERAL` | GAP | COVERED | GAP |
+| `AST_SLICE_EXPR` | GAP | GAP | GAP |
+| `AST_ARRAY_LITERAL` | GAP | GAP | GAP |
+| `AST_KEYED_ELEMENT` | GAP | GAP | GAP |
+| `AST_PAREN_EXPR` | GAP | GAP | GAP |
+| `AST_SLICE_CONVERSION` | GAP | GAP | GAP |
+| `AST_TYPE_ASSERT` | GAP | GAP | GAP |
+
+**Four of these cells were not targeted.** `AST_LITERAL` in param, and
+`AST_BINARY_EXPR` in param and block, closed because the two postfix rows
+contain `i := 0` and `i < 3`. A fixture written for one arm carries others with
+it, which is worth knowing before writing a row per arm: measure after each
+addition rather than assuming one row buys one cell.
+
+### Soundness (`--under`), after
+
+| Arm | param (24) | block (32) | local (22) |
+|---|---|---|---|
+| `AST_IDENTIFIER` | COVERED | COVERED | COVERED |
+| `AST_LITERAL` | N/A-equivalent | N/A-equivalent | N/A-equivalent |
+| `AST_BINARY_EXPR` | GAP | GAP | COVERED |
+| `AST_UNARY_EXPR` | GAP | COVERED | GAP |
+| `AST_POSTFIX_EXPR` | GAP | GAP | GAP |
+| `AST_INDEX_EXPR` | GAP | GAP | COVERED |
+| `AST_SLICE_INDEX_EXPR` | GAP | GAP | GAP |
+| `AST_SELECTOR_EXPR` | COVERED | COVERED | COVERED |
+| `AST_CALL_EXPR` | COVERED | COVERED | COVERED |
+| `AST_FUNC_LIT` | COVERED | COVERED | COVERED |
+| `AST_STRUCT_LITERAL` | GAP | GAP | COVERED |
+| `AST_SLICE_EXPR` | GAP | GAP | COVERED |
+| `AST_ARRAY_LITERAL` | GAP | GAP | GAP |
+| `AST_KEYED_ELEMENT` | GAP | GAP | GAP |
+| `AST_PAREN_EXPR` | GAP | GAP | COVERED |
+| `AST_SLICE_CONVERSION` | GAP | GAP | GAP |
+| `AST_TYPE_ASSERT` | GAP | GAP | GAP |
+
+### Reach, after
+
+| Arm | param | block | local |
+|---|---|---|---|
+| `AST_IDENTIFIER` | 69 | 161 | 332 |
+| `AST_LITERAL` | 4 | 44 | 76 |
+| `AST_BINARY_EXPR` | 2 | 4 | 28 |
+| `AST_UNARY_EXPR` | 4 | 19 | 8 |
+| `AST_POSTFIX_EXPR` | 2 | 4 | 6 |
+| `AST_INDEX_EXPR` | 0 | 0 | 14 |
+| `AST_SLICE_INDEX_EXPR` | 0 | 0 | 0 |
+| `AST_SELECTOR_EXPR` | 10 | 27 | 8 |
+| `AST_CALL_EXPR` | 21 | 127 | 134 |
+| `AST_FUNC_LIT` | 2 | 42 | 6 |
+| `AST_STRUCT_LITERAL` | 4 | 18 | 14 |
+| `AST_SLICE_EXPR` | 0 | 0 | 20 |
+| `AST_ARRAY_LITERAL` | 0 | 0 | 0 |
+| `AST_KEYED_ELEMENT` | 0 | 0 | 0 |
+| `AST_PAREN_EXPR` | 0 | 0 | 14 |
+| `AST_SLICE_CONVERSION` | 0 | 0 | 0 |
+| `AST_TYPE_ASSERT` | 0 | 0 | 0 |
+
+## What is still open, each with its measured cause
+
+| Item | Cause, measured |
+|---|---|
+| `AST_POSTFIX_EXPR` has no SOUNDNESS coverage in any suite | Not a hole for the common shape. In Go `i++` is a STATEMENT, never an expression, and the plain expression-statement arm of `escape_walk_stmt` computes the taint and frees it WITHOUT marking. So under-marking the arm is unobservable for `i++`. It becomes observable only when the operand itself carries taint or has marking side effects (`arr[f(p)]++`), because the arm's recursion is what triggers those. A row would have to be contrived to that shape |
+| `AST_SLICE_INDEX_EXPR`, `AST_ARRAY_LITERAL`, `AST_KEYED_ELEMENT`, `AST_SLICE_CONVERSION`, `AST_TYPE_ASSERT` never reached | Still 0 hits after this change. Whether the cause is "no fixture" or "the front end does not make this node" is UNDETERMINED — a fixture attempt is the only way to tell, and it was not done. `AST_KEYED_ELEMENT` has one known reason: the struct-literal arm walks `field_values` directly, so `&T{x: 1}` never produces a keyed-element node for the walk |
+| `AST_UNARY_EXPR`, `AST_FUNC_LIT`, `AST_STRUCT_LITERAL` precision-GAP in param and local | Reached in both, so the fixtures exist and only a precision row is missing. Bounded, cheap, and not done here |
+| `AST_SELECTOR_EXPR` precision-GAP in local | Reached 8 times. Same shape as the row above |
+| Soundness GAPs in param and block for the five arms local now covers | The rows added here went into `local`, because `local` is the pass T4 consumes. param and block need their own |
+| `escape_walk_stmt`'s 20 statement arms are unmeasured | This matrix covers `escape_expr_taint` only. The statement arms hold the SINKS, which is where under-marking does its damage, so this is the higher-value next matrix |
+
 ## Reproducing
 
 ```sh
-scripts/escape_arm_coverage.sh --self-test   # five controls; run this first
+scripts/escape_arm_coverage.sh --self-test   # six controls; run this first
 scripts/escape_arm_coverage.sh --over        # matrix 1
 scripts/escape_arm_coverage.sh --under       # matrix 2
 scripts/escape_arm_coverage.sh --reach       # matrix 3

@@ -344,6 +344,31 @@ static TestRow rows[] = {
         "}\n",
         { { "f", 1, { true }, false, false } }, 1
     },
+    {
+        24, "param alive across a `for i := 0; i < 3; i++` loop -> false",
+        // PRECISION row, and it closes the ledger item PR #255 opened.
+        //
+        // Deleting the AST_POSTFIX_EXPR arm from the shared engine
+        // (src/types/escape_core.c) failed local-escape row 4 and left ALL 23
+        // rows of this table green, so none of them covered `i++`. The measured
+        // cause was not "undetected" but stronger: `--reach` counts ZERO
+        // postfix nodes across every fixture in this file. No row here even
+        // CONTAINED one.
+        //
+        // The teeth: without that arm the postfix falls to the default arm,
+        // which marks every slot escaping on the spot, so `p` reads true and
+        // this row fails. `for i := 0; i < 3; i = i + 1` would NOT fail, which
+        // is exactly how the original defect was found.
+        //
+        // See docs/adr/0002-measurements/escape_arm_coverage.md.
+        "package main\n"
+        "func f(p *int) {\n"
+        "    for i := 0; i < 3; i++ {\n"
+        "        _ = p\n"
+        "    }\n"
+        "}\n",
+        { { "f", 1, { false }, false, false } }, 1
+    },
 };
 
 static int g_pass = 0;

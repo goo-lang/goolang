@@ -232,10 +232,25 @@ self_test() {
     echo "  got: $r"
     [ "$r" = "PASS PASS PASS" ] || { echo "  CONTROL 1 FAILED"; rc=1; }
 
-    echo "=== Control 2: AST_POSTFIX_EXPR -> local FAIL, param+block PASS (PR #255) ==="
-    r=$(measure_arm AST_POSTFIX_EXPR)
+    # This control READ "PASS PASS FAIL" until param row 24 and block row 32
+    # landed, because that was PR #255's measured state and the ledger item.
+    # Closing the gap changed the fact the control asserted, which is the point
+    # of the change. It now doubles as a regression guard on those two rows:
+    # delete either and this goes back to a PASS.
+    echo "=== Control 2: over/AST_POSTFIX_EXPR -> all three FAIL (param row 24, block row 32) ==="
+    r=$(measure_arm AST_POSTFIX_EXPR over)
     echo "  got: $r"
-    [ "$r" = "PASS PASS FAIL" ] || { echo "  CONTROL 2 FAILED"; rc=1; }
+    [ "$r" = "FAIL FAIL FAIL" ] || { echo "  CONTROL 2 FAILED"; rc=1; }
+
+    # A MIXED pattern, and the strongest control here. Controls 2-4 all expect
+    # every suite to fail, and a bluntly broken build produces that too. This one
+    # expects the mutation to reach block and NOT param or local, so a guard that
+    # is injected wrongly -- or a build that ignores the injection -- cannot
+    # produce it by accident.
+    echo "=== Control 2b: over/AST_UNARY_EXPR -> block FAIL only (mixed pattern) ==="
+    r=$(measure_arm AST_UNARY_EXPR over)
+    echo "  got: $r"
+    [ "$r" = "PASS FAIL PASS" ] || { echo "  CONTROL 2b FAILED"; rc=1; }
 
     echo "=== Control 3: over/AST_IDENTIFIER -> all three FAIL ==="
     r=$(measure_arm AST_IDENTIFIER over)
