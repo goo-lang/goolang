@@ -139,23 +139,39 @@ void goo_free(void* ptr) {
     }
 }
 
+// A count that is not lock-free calls into libatomic and takes a LOCK, which
+// would put a lock inside every retain — a performance defect nobody would see
+// by reading this file.
+static_assert(__atomic_always_lock_free(sizeof(uint64_t), 0),
+              "the ARC reference count must be lock-free on this target");
+
+// ADVISORY ONLY. In a program with two goroutines the answer is stale the
+// instant it is returned, so this is for tests and debugging, never for a
+// decision inside the runtime. Relaxed is therefore the honest order: a
+// stronger one would imply a guarantee the value cannot carry.
 uint64_t goo_obj_refcount(const void* ptr) {
     if (goo_obj_headerless(ptr)) {
         return 0;
     }
-    return goo_obj_header((void*)ptr)->rc;
+    return __atomic_load_n(&goo_obj_header((void*)ptr)->rc, __ATOMIC_RELAXED);
 }
 
-// NOT ATOMIC, and that is an OPEN DECISION rather than an oversight — ADR 0002
-// explicitly left "threaded (atomic counts) or per-goroutine" undecided, and
-// Goo has real goroutines. Nothing emits retain or release yet, so no program
-// can reach these concurrently today. Anything that starts emitting them MUST
-// settle that question first; a data race on rc frees a live object.
+// ATOMIC, and the reason is measured rather than assumed. Goroutines are not
+// cooperative coroutines on one thread: goo_scheduler_init spawns
+// goo_default_thread_count() OS threads (GOMAXPROCS or NCPU, capped at 16),
+// and a yielded goroutine is republished to a SHARED ready queue that any
+// worker may take. So two goroutines genuinely run at once, and one goroutine
+// can even move between OS threads — which is also why no scheme keyed on "the
+// OS thread that owns this object" would be sound here.
+//
+// RELAXED is correct and is not laziness: you must already hold a valid
+// reference in order to retain one, so the increment itself synchronises
+// nothing.
 void goo_retain(void* ptr) {
     if (goo_obj_headerless(ptr)) {
         return;
     }
-    goo_obj_header(ptr)->rc++;
+    __atomic_fetch_add(&goo_obj_header(ptr)->rc, 1, __ATOMIC_RELAXED);
 }
 
 void goo_release(void* ptr) {
@@ -165,19 +181,34 @@ void goo_release(void* ptr) {
 
     GooObjHeader* h = goo_obj_header(ptr);
 
-    // Loud, not clamped. rc is unsigned, so decrementing 0 wraps to a colossal
-    // count and the object leaks forever instead — a silent wrong answer that
-    // hides the emission bug that caused it. An over-release is always a
-    // compiler defect, never a user program's doing.
-    if (h->rc == 0) {
+    // ONE operation, not three. This used to read rc, compare it against 0,
+    // and then decrement — so two goroutines could each observe 1 and each
+    // decrement, which is a double free. Measured before the fix: 8 threads
+    // doing 100k retains each landed on 146,667 of 800,001, and the unwind
+    // then aborted with "free(): double free detected in tcache 2".
+    //
+    // RELEASE order puts every write this goroutine made to the object before
+    // another goroutine's destruction of it.
+    uint64_t prev = __atomic_fetch_sub(&h->rc, 1, __ATOMIC_RELEASE);
+
+    // Loud, not clamped. An over-release is always a compiler defect, never a
+    // user program's doing. rc has already wrapped to a colossal value by this
+    // point, and that does not matter, because the process stops here.
+    if (prev == 0) {
         goo_panic("release of an object with reference count 0");
     }
 
-    // Through goo_free, not a raw free(): the base-pointer arithmetic then
-    // lives in exactly ONE place, and Goo-visible memory keeps leaving by the
-    // single door alloc-doors-probe gates. (That probe caught this line as a
-    // raw free() when it was first written.)
-    if (--h->rc == 0) {
+    if (prev == 1) {
+        // This goroutine took the count to zero, so it owns the destruction.
+        // The ACQUIRE fence pairs with every other goroutine's RELEASE above,
+        // making their writes visible before the memory is reused. Standard
+        // Rust Arc / Boost shared_ptr shape.
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+        // Through goo_free, not a raw free(): the base-pointer arithmetic then
+        // lives in exactly ONE place, and Goo-visible memory keeps leaving by
+        // the single door alloc-doors-probe gates. (That probe caught this
+        // line as a raw free() when it was first written.)
         goo_free(ptr);
     }
 }

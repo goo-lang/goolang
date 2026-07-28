@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test obj-header-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe alloc-doors-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe alloc-doors-probe
 
 all: lexer
 
@@ -3246,6 +3246,7 @@ VERIFY_ALL_DEPS := \
     param-escape-test \
     block-escape-test \
     obj-header-test \
+    obj-header-tsan \
     arena-routing-test \
     arena-free-probe \
     arena-valgrind-probe \
@@ -4860,6 +4861,36 @@ obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(RUNTIME_LIB)
 obj-header-test: obj_header_test
 	@echo "Running ARC object-header tests..."
 	./obj_header_test
+
+# ARC step 1, race gate. The ordinary build CANNOT see a data race on the
+# reference count: rows 12-14 of obj_header_test caught the non-atomic version
+# only because a lost update happened to be large enough to change a total. A
+# race is not guaranteed to show itself on any given run, so the count needs a
+# tool that reasons about the happens-before graph rather than about one
+# schedule.
+#
+# clang is pinned for the same reason the ASan target above pins it (this box's
+# gcc sanitizer runtime is unusable). Skips LOUDLY if clang is absent, in the
+# manner of arena-valgrind-probe — a silent skip reads as a pass in a log.
+obj-header-tsan:
+	@mkdir -p $(BINDIR)
+	@if ! which clang > /dev/null 2>&1; then \
+	  echo "obj-header-tsan: SKIPPED (clang not found)"; \
+	  exit 0; \
+	fi
+	@echo "=== obj-header-tsan: ARC refcount race gate (ThreadSanitizer) ==="
+	@clang $(CFLAGS) -g -fsanitize=thread -Iinclude \
+	  $(TEST_UNIT_DIR)/runtime/obj_header_test.c src/runtime/runtime.c \
+	  src/runtime/platform.c src/runtime/deadlock.c src/runtime/concurrency.c \
+	  src/runtime/sync.c \
+	  -o $(BINDIR)/obj_header_tsan -lm -lpthread
+	@if $(BINDIR)/obj_header_tsan > $(BINDIR)/obj_header_tsan.out 2>&1; then \
+	  echo "obj-header-tsan: PASS (no race reported)"; \
+	else \
+	  echo "obj-header-tsan: FAIL"; \
+	  tail -40 $(BINDIR)/obj_header_tsan.out; \
+	  exit 1; \
+	fi
 
 # Arena leg Task 7b: per-alloc-site block-escape decisions (table-driven,
 # 15-row test matrix — see docs/superpowers/specs/2026-07-07-arena-7b-

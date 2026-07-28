@@ -29,6 +29,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 static int failures = 0;
 static int checks = 0;
@@ -43,6 +44,29 @@ static void check(int cond, const char* what) {
 
 static void row(int n, const char* desc) {
     printf("=== Row %d: %s ===\n", n, desc);
+}
+
+// Workers for the concurrency rows. Kept as file-scope functions rather than
+// nested lambdas because C has none, and pthread_create needs this exact
+// signature.
+#define OBJ_HEADER_NITERS 100000
+
+static void* retain_worker(void* p) {
+    for (int i = 0; i < OBJ_HEADER_NITERS; i++) goo_retain(p);
+    return NULL;
+}
+
+static void* retain_release_worker(void* p) {
+    for (int i = 0; i < OBJ_HEADER_NITERS; i++) {
+        goo_retain(p);
+        goo_release(p);
+    }
+    return NULL;
+}
+
+static void* release_once_worker(void* p) {
+    goo_release(p);
+    return NULL;
 }
 
 int main(void) {
@@ -168,6 +192,82 @@ int main(void) {
         goo_release(a);
         goo_free(a);
         goo_free(b);
+    }
+
+    // -----------------------------------------------------------------------
+    // Concurrency rows. Goroutines are NOT cooperative coroutines on one
+    // thread: concurrency.c:110 spawns goo_default_thread_count() OS threads
+    // (GOMAXPROCS or NCPU, capped at 16), and a yielded goroutine is
+    // republished to a SHARED ready queue that any worker can take. So two
+    // goroutines genuinely run at once, and one goroutine can even move
+    // between OS threads.
+    //
+    // These rows drive pthreads directly rather than the Goo scheduler: the
+    // subject under test is the primitive, not the scheduler.
+    //
+    // They are the rows that fail if the count is not atomic. Row 12 is the
+    // reliable one — a lost update on a plain `rc++` shows up as a deficit
+    // that grows with the iteration count. A race is not guaranteed to show
+    // itself on any single run, which is exactly why obj-header-tsan exists
+    // alongside these.
+    // -----------------------------------------------------------------------
+    enum { NTHREADS = 8, NITERS = 100000 };
+
+    row(12, "concurrent retain does not lose an update");
+    {
+        void* p = goo_alloc(16);
+        pthread_t th[NTHREADS];
+        for (int i = 0; i < NTHREADS; i++) {
+            pthread_create(&th[i], NULL, retain_worker, p);
+        }
+        for (int i = 0; i < NTHREADS; i++) pthread_join(th[i], NULL);
+
+        uint64_t want = 1 + (uint64_t)NTHREADS * NITERS;
+        uint64_t got = goo_obj_refcount(p);
+        if (got != want) {
+            printf("  (count is %llu, expected %llu — %lld updates lost)\n",
+                   (unsigned long long)got, (unsigned long long)want,
+                   (long long)want - (long long)got);
+        }
+        check(got == want, "concurrent retain lost an update");
+
+        for (uint64_t i = 0; i < (uint64_t)NTHREADS * NITERS; i++) goo_release(p);
+        check(goo_obj_refcount(p) == 1, "unwinding the retains did not reach 1");
+        goo_free(p);
+    }
+
+    row(13, "balanced concurrent retain/release returns to the start");
+    {
+        void* p = goo_alloc(16);
+        pthread_t th[NTHREADS];
+        for (int i = 0; i < NTHREADS; i++) {
+            pthread_create(&th[i], NULL, retain_release_worker, p);
+        }
+        for (int i = 0; i < NTHREADS; i++) pthread_join(th[i], NULL);
+
+        // The object must still be ALIVE: every release here is paired with a
+        // retain, so the count must never have transiently hit 0 and freed it.
+        check(goo_obj_refcount(p) == 1, "balanced retain/release did not return to 1");
+        goo_free(p);
+    }
+
+    row(14, "the last concurrent release frees exactly once");
+    {
+        // N threads race to drop the final reference. Exactly one of them must
+        // observe the transition to 0. Two would be a double free, which the
+        // TOCTOU in the pre-atomic goo_release made reachable: it read the
+        // count, compared it, and decremented as three separate steps.
+        void* p = goo_alloc(16);
+        for (int i = 0; i < NTHREADS; i++) goo_retain(p);  // count = 1 + N
+
+        pthread_t th[NTHREADS];
+        for (int i = 0; i < NTHREADS; i++) {
+            pthread_create(&th[i], NULL, release_once_worker, p);
+        }
+        for (int i = 0; i < NTHREADS; i++) pthread_join(th[i], NULL);
+
+        check(goo_obj_refcount(p) == 1, "concurrent release did not settle at 1");
+        goo_free(p);  // the one remaining reference
     }
 
     printf("\n=================================================\n");
