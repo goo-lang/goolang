@@ -5777,8 +5777,26 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                     // data.interface.name rather than the generic Type.name
                     // that the fallback below reads, so it needs its own arm.
                     Type* base_t = ft;
-                    if (base_t->kind == TYPE_POINTER)
+                    int embed_via_ptr = 0;
+                    if (base_t->kind == TYPE_POINTER) {
                         base_t = base_t->data.pointer.pointee_type;
+                        embed_via_ptr = 1;
+                    }
+                    // Go rejects `struct { *I }` outright: a pointer to an
+                    // interface has no method set to promote, since methods
+                    // belong to the interface and not to a pointer to it.
+                    // Caught in review — unwrapping the pointer BEFORE the
+                    // interface arm below would otherwise accept it silently,
+                    // and the promotion walk would then dereference a pointer
+                    // to a fat pointer as though it were the fat pointer.
+                    // Wording is Go's own.
+                    if (embed_via_ptr && base_t && base_t->kind == TYPE_INTERFACE) {
+                        type_error(checker, f->pos,
+                                   "embedded field type cannot be a pointer to an interface");
+                        free(result->data.struct_type.fields);
+                        free(result);
+                        return NULL;
+                    }
                     int named = base_t &&
                         ((base_t->kind == TYPE_STRUCT && base_t->data.struct_type.name) ||
                          (base_t->kind == TYPE_INTERFACE && base_t->data.interface.name) ||
