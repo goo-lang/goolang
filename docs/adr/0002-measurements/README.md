@@ -38,6 +38,37 @@ sed 's/arena {/{/' docs/adr/0002-measurements/a_new.goo > /tmp/a_new_plain.goo
 The Go reference figures come from `go run` / `go build` on the same source
 with the package clause unchanged (`go1.26.1`, `/usr/local/go/bin/go`).
 
+## The C probes, and how to build them
+
+`dump_local_escape.c` prints every local's escape verdict for a `.goo` file.
+`dump_ownership.c` prints the per-CALLEE `param_escape` summaries AND the
+per-local verdicts side by side, because T4's ownership question is answered at
+the callee level and its escape question at the local level — comparing them in
+one run beats reconciling two by hand.
+
+Neither has a Makefile target, because neither is a gate. Link them against the
+same objects the unit suites use:
+
+```bash
+OBJS=$(ls build/**/*.o build/*.o 2>/dev/null | tr '\n' ' ')   # bash, not zsh
+gcc -Wall -std=c23 -g -I. -Iinclude -D_GNU_SOURCE \
+    -include include/xalloc.h -I/usr/lib64/llvm22/include -DLLVM_AVAILABLE=1 \
+    -o dump_ownership docs/adr/0002-measurements/dump_ownership.c $OBJS \
+    -lm -pthread -ljson-c -lcurl -lz -L/usr/lib64/llvm22/lib64 -lLLVM-22
+```
+
+Run `make param_escape_test` first if `build/` is empty, and note that **zsh does
+not word-split an unquoted `$OBJS`** — use bash for that line or the whole object
+list arrives as one filename.
+
+`ownership_shapes.goo` is the T4 condition-2 fixture and it is DELIBERATELY
+IMPORT-FREE. `.handoff.md` records a local_escape table that looked confident and
+was conservative for an unrelated reason: the imports had not resolved, and the
+tell was `i`, a plain int loop counter, reading as escaping. One cause per
+verdict needs a reproduction with nothing to resolve.
+
+Findings: `t4_condition2_findings.md`.
+
 ## The one number that matters
 
 About **1.63 KB retained per request, forever**. At 1,000 requests per second

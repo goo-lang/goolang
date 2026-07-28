@@ -1,0 +1,64 @@
+// T4 condition-2 probe: can anything tell an OWNED local from a BORROWED one?
+//
+// ADR 0004 proposes origin-emptiness as T4's ownership test. This file is the
+// discriminating case, and it is deliberately IMPORT-FREE.
+//
+// Import-free matters. `.handoff.md` records that running local_escape on
+// bench/daemon/daemon.goo printed a confident table whose every verdict was
+// conservative for an UNRELATED reason: the imports had not resolved. The tell
+// was `i`, a plain int loop counter, reading as escaping. One cause per verdict
+// needs a reproduction with nothing to resolve.
+//
+// `borrowView` is the TrimPrefix shape that include/local_escape.h names as the
+// hole: goostd/strings/strings.go returns `s[len(prefix):]`, a view into the
+// argument's buffer. A release consumer acting on "does not outlive f" alone
+// would free the CALLER's string.
+package main
+
+// Returns a VIEW into its argument. Owns nothing.
+func borrowView(s string) string {
+	return s[1:]
+}
+
+// Returns a FRESH allocation. The caller owns the result.
+func makeOwned() *int {
+	return new(int)
+}
+
+// Both locals die with f, so `local_escape` must report false for both.
+// The question is whether ANYTHING distinguishes them, because T4 must
+// release `a` and must NOT release `b`.
+func f(s string) {
+	a := makeOwned()
+	b := borrowView(s)
+	_ = a
+	_ = b
+}
+
+// The direct-slice form, in case the call boundary is what loses the fact.
+func g(s string) {
+	c := s[1:]
+	_ = c
+}
+
+// SCOPE, which is the other half of condition 2 and the one the handoff's T4
+// plan did not account for.
+//
+// `outer` is bound ONCE and dies at h's exit. `inner` is rebound on EVERY
+// iteration, so h leaks one object per iteration and holds only the last.
+//
+// local_escape reports ONE boolean per local NAME for the whole function, and
+// the engine has no kill rule (escape_env_add_or_union only unions, escapes[]
+// only ever becomes true). So a release emitted at FUNCTION EXIT frees whatever
+// `inner` holds at that moment -- one of N -- and leaks the rest.
+//
+// This is the daemon's `err` shape exactly: `n, err := strconv.Atoi(f)` sits
+// inside handle's `for` loop.
+func h(n int) {
+	outer := makeOwned()
+	for i := 0; i < n; i++ {
+		inner := makeOwned()
+		_ = inner
+	}
+	_ = outer
+}

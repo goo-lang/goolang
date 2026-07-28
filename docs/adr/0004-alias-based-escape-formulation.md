@@ -70,21 +70,42 @@ the cost it is already paying.
 
 ## What to take, and what to leave
 
-### Take: origin-emptiness as the ownership test (T4 condition 2)
+### ~~Take: origin-emptiness as the ownership test~~ — MEASURED, and it does not work
 
-A non-empty origin means the value requires a loan, so it is a VIEW and not
-owned. An empty origin means it aliases nothing this unit tracks. That is the
-shape of the answer T4 needs for `TrimPrefix`, and the machinery to carry it
-already exists.
+**Superseded 2026-07-29 by
+`docs/adr/0002-measurements/t4_condition2_findings.md`.** This section proposed
+origin-emptiness as T4's ownership test, and flagged one thing to confirm first:
+that each pass's slot universe is the right loan universe. It is not.
 
-**Before T4 relies on this, confirm the slot universe of each pass is the right
-loan universe.** `param_escape`'s slots are parameters, `block_escape`'s are
-allocation sites, `local_escape`'s are locals. "Aliases none of MY slots" is not
-the same statement as "owns its value", and the difference has not been
-measured. PR #256 is the warning: the `non_retaining` column deliberately
-carries two facts in one bit, and `errors.Unwrap` retains nothing yet returns a
-pointer INTO its argument. A borrowed result is exactly the case a
-retention-only view of the world gets wrong.
+`local_escape.c:45` — "A slot here is a local index." Line 170 — "a local keeps
+its own bit for life." **Every local's TaintSet therefore contains its own bit
+and is never empty, so the test is constant-false and carries no information.**
+It is not imprecise. It can never be true.
+
+Worse: what a local BORROWS FROM is a parameter, and parameters are not in
+`local_escape`'s slot space. The borrowed-from relation is not representable in
+that loan universe at all.
+
+The check this section asked for was the right check. The answer was no.
+
+### Take instead: `return_escapes`, which is the same idea one level up
+
+`ParamEscapeSummary.return_escapes` is documented as "does F return a value
+derived from one of its own params?". That IS Polonius's borrowed-result
+relation, stated per CALLEE rather than per local, and it is already exposed.
+Measured: `borrowView` (returns `s[1:]`) gives true, `makeOwned` (returns
+`new(int)`) gives false.
+
+So condition 2 is answered by a rule at the local's BINDING SITE, not by a
+property of the local. The full rule, and the measurement behind it, are in the
+findings document.
+
+One thing this vindicates: the handoff decided AGAINST a separate
+`returns_borrowed` flag on the shim table, and that decision holds.
+`non_retaining == 1` is audited against each runtime body, every whitelisted
+`strings` entry COPIES, and `errors.Unwrap` is `0` precisely because it returns a
+pointer into its argument. The single bit separates owned from borrowed
+correctly.
 
 ### Leave: the kill rule, because it is the CFG
 
@@ -122,6 +143,14 @@ kill rule would actually reclaim.
 - T4 gets a named source for its ownership condition instead of inventing one.
 - The absence of a CFG becomes a recorded decision with a reason, rather than an
   unexamined limitation.
+- **The kill rule stopped being optional for one of T4's two candidate targets.**
+  The findings document measured `err`, T4's chosen first target, as LOOP-BOUND:
+  `n, err := strconv.Atoi(f)` sits inside `handle`'s loop, so a function-exit
+  release frees one of N and leaks the rest. On the daemon's actual input it
+  frees ZERO, because the last iteration leaves `err` nil. Releasing a loop-bound
+  local IS the kill rule, so `err` is not a small follow-up to a function-scope
+  target — it is the CFG this ADR declines to buy. T4 should target `fields`
+  instead (function scope, bound once, 9.3%).
 - `local_escape`'s `defer_is_like_go = true` stays as it is. Its comment already
   names T4's release-versus-defer ordering as the blocker, and that ordering is
   the same liveness question this ADR declines to buy.
