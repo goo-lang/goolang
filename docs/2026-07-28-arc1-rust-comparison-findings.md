@@ -33,8 +33,8 @@ the same computation. All five rows agree.
 | stencil, peak RSS | 18.6 MB | 19.5 MB | 18.3 MB | 18.1 MB |
 | text, wall (1e6 lines) | 1.43 s | 0.50 s | **0.31 s** | — |
 | text, peak RSS | **768 MB** | 6.7 MB | **1.95 MB** | — |
-| hello, compile | 0.23 s | 0.10 s (warm) | 0.08 s | — |
-| hello, binary | **106 KB** | 2,343 KB | 4,237 KB | — |
+| hello, compile | **0.05 s** | 0.11 s (warm) | 0.07 s | — |
+| hello, binary | **92 KB** | 2,343 KB | 4,237 KB | — |
 
 Wall clock is the median of seven runs, cores pinned (core 2 for the serial
 benchmarks, cores 0-7 for the 8-lane stencil). Peak RSS is `/usr/bin/time -v`.
@@ -77,34 +77,68 @@ Goo is also **4.1x slower** than Rust in wall clock on the daemon and **4.6x
 slower** on text. The allocation path costs throughput as well as memory. This
 strengthens the case for ADR 0002 phase 2 rather than weakening it.
 
-## Finding 3 — the compile-speed loss is not what it looks like, and it is cheap to fix
+## Finding 3 — the compile-speed loss was real, the diagnosis was wrong twice, and it is now FIXED
 
-The headline says Goo compiles hello-world in 0.32 s against rustc's 0.09 s.
-That reading is wrong, and the breakdown matters:
+**Superseded twice. Both wrong diagnoses are kept, because each was acted on.**
 
-| What | Time |
-|---|---|
-| `goo --emit-llvm` (parse, check, IR) | **0.02 s** |
-| `gcc` link against `libgoo_runtime.a` | 0.02 s |
-| Program importing only `fmt` (a C shim) | **0.05 s** |
-| Program importing `strconv` (415 vendored lines) | 0.17 s |
-| Program importing `strings` (630 vendored lines) | 0.32 s |
+*First reading:* Goo compiles hello-world in 0.23 s against rustc's 0.08 s — a
+loss.
 
-Compile time tracks **which packages are imported**, not source size. A
-23-line program with no vendored import compiles in 0.05 s; a 13-line
-hello-world that imports `strings` takes 0.32 s.
+*Second reading (wrong):* the cost is re-parsing the vendored package, so the
+fix is a package build cache. It is not. The front end is **0.02 s**.
+Measuring `--emit-llvm` at each level showed the cost is the **-O2 pass
+pipeline**: 0.02 s at -O0 against 0.24 s at -O2, over 3,034 lines of IR
+produced by a program that calls one function.
 
-The cause: **there is no package build cache.** `src/package/import_resolver.c`
-contains no caching logic, so every build recompiles every vendored `goostd`
-package from source, at roughly 0.4 ms per vendored line.
+*Third reading, and the correct one:* imported-package functions were emitted
+with **external linkage**. Goo compiles a whole program into ONE LLVM module
+and has no separate compilation, so nothing outside can reference a
+`goo_pkg__*` symbol — but external linkage pinned every one of them against
+`globaldce` regardless. A hello-world calling `strings.Repeat` once dragged all
+of `goostd/strings` AND `goostd/utf8` through the optimiser and into the
+object: **30 functions surviving -O2**.
 
-So the true position is the opposite of the headline: **Goo's compiler is fast
-— 0.05 s, faster than rustc's 0.09 s on the same shape.** It is paying 0.27 s
-to rebuild `goostd/strings` on every single invocation. Go's warm-cache 0.03 s
-is a cache result, not raw speed: Go with a cold cache takes **2.64 s**.
+Marking them internal lets LLVM delete what nothing reaches.
 
-This is the cheapest win identified in this pass, and it converts a measured
-loss into a measured win.
+| | `opt -O2` | functions surviving | IR lines |
+|---|---|---|---|
+| external linkage | 0.24 s | 30 | 2,855 |
+| internal linkage | **0.02 s** | **1** | 98 |
+
+One survives because `Repeat` then inlines into `main`.
+
+**Measured end to end after the change:**
+
+| | before | after |
+|---|---|---|
+| hello-world compile | 0.23 s | **0.05 s** |
+| hello-world binary | 106 KB | **92 KB** |
+| stencil binary | 534 KB | **108 KB** |
+| stencil `.text` | 377,830 B | **38,500 B** |
+
+**Goo now compiles hello-world in 0.05 s against rustc's 0.07 s and Go's
+0.11 s — the fastest of the three.** No package build cache was needed, and the
+earlier recommendation to build one is withdrawn.
+
+### The one honest caveat: the stencil moved, and it is placement, not codegen
+
+Interleaved A/B put the stencil at 0.30 s before and 0.35 s after — an
+apparent 17% regression on the axis already losing to Rust. It is not a
+regression in generated code:
+
+- `StencilStep`'s machine code is **354 instructions in both builds, identical**
+  once addresses are normalised. It is not inlined in either.
+- `.text` shrank 10x, which moved the function from `0x403960` to `0x4015c0`.
+- Adding **one never-called function** to the source — shifting the address by
+  16 bytes and changing nothing else — moved the median from 0.29 s to 0.28 s,
+  as much as the change itself did.
+
+So the stencil benchmark is **placement-sensitive at this magnitude on this
+machine**. That is a finding about the harness, not about the compiler: a
+stencil delta below roughly 20% cannot be attributed to a code change without
+an alignment-controlled experiment. Gated by
+`scripts/dead_package_code_probe.sh`, which asserts a property of the IR rather
+than a timing.
 
 ## Finding 4 — binary size is a large, unclaimed win
 
@@ -160,9 +194,10 @@ The methodology rules that came out of this are written into the header of
 2. **Arc 2 needs both halves, and `noalias` is no longer merely "the cheap
    half".** Rust wins before SIMD, so per-lane scalar throughput is the first
    problem. Vector types are still needed for the remaining 1.8x.
-3. **New candidate arc: a package build cache.** Small, well-understood, and it
-   turns compile speed from a loss into a win. Best effort-to-result ratio in
-   this pass.
+3. **DONE, and not by a package build cache.** Internal linkage for imported
+   packages turned compile speed from a loss into a win: 0.05 s against rustc's
+   0.07 s. The cache recommendation is withdrawn — it addressed a cost that was
+   never there.
 4. **Scalar parity is established.** No work needed, and it can be claimed.
 5. **Retire the 7.55x claim in its current form.** It is a self-comparison. Say
    "lanes scale 7.55x against serial Goo", never "Goo beats Rust".

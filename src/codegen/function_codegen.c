@@ -1084,6 +1084,35 @@ static int func_decl_has_comptime_param(FuncDeclNode* fd) {
     return 0;
 }
 
+// ADR 0003 compile-speed work: an imported package's functions are reachable
+// only from INSIDE this module. Goo compiles a whole program into one LLVM
+// module and has no separate compilation, so nothing outside can reference a
+// `goo_pkg__*` symbol.
+//
+// They were emitted with EXTERNAL linkage anyway, which pinned every one of
+// them against globaldce however unreachable it was. A hello-world calling
+// `strings.Repeat` once dragged the whole of goostd/strings AND goostd/utf8
+// through the -O2 pipeline and into the object: 30 functions, 2,855 IR lines.
+// Measured with `opt`, internal linkage cuts the -O2 pass time from 0.24 s to
+// 0.02 s and leaves ONE function, because Repeat then inlines into main.
+//
+// Two things are deliberately NOT touched. `main` and everything in the main
+// package: codegen_package_symbol_name returns NULL there
+// (checker->current_package is NULL), so this is a no-op for them. And a
+// symbol_override — the seeded-shim method adapters — whose name is chosen to
+// be resolvable under the ordinary mangled symbol, which is why the guard
+// compares the pointer rather than just testing pkg_mangled for NULL.
+//
+// ONE owner for this rule, called from both the predeclare pass and the
+// definition site. Gated by scripts/dead_package_code_probe.sh, which fails if
+// a known-unreachable package function reappears in the -O2 IR.
+static void codegen_set_package_linkage(LLVMValueRef fn,
+                                        const char* pkg_mangled,
+                                        const char* symbol_name) {
+    if (!fn || !pkg_mangled || symbol_name != pkg_mangled) return;
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+}
+
 static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* checker,
                                        FuncDeclNode* func_decl) {
     // Function generics Task 4: a generic function template's signature
@@ -1167,7 +1196,8 @@ static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* chec
         if (llvm_return_type) {
             LLVMTypeRef function_type =
                 LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
-            LLVMAddFunction(codegen->module, symbol_name, function_type);
+            LLVMValueRef predecl = LLVMAddFunction(codegen->module, symbol_name, function_type);
+            codegen_set_package_linkage(predecl, pkg_mangled, symbol_name);
         }
         if (param_types) free(param_types);
     }
@@ -1314,7 +1344,11 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     if (!function) {
         function = LLVMAddFunction(codegen->module, symbol_name, function_type);
     }
-    
+    // Set here as well as in the predeclare pass: a function the pre-pass did
+    // not reach is created for the first time right above, and one it DID
+    // reach is re-set to the same value, which is harmless.
+    codegen_set_package_linkage(function, pkg_mangled, symbol_name);
+
     // Handle WebAssembly exports/imports based on function attributes
     if (codegen_is_wasm_target(codegen)) {
         // Check for export/import annotations in function name or comments
