@@ -1,0 +1,60 @@
+// The daemon shape: a long-running loop that allocates per request and holds
+// nothing. Every allocation is dead at the end of its iteration.
+//
+// This is the program class v1 cannot express. It is written WITHOUT an arena
+// on purpose — the question is what happens by default, not what a careful
+// author can achieve by opting in.
+//
+// Deliberately ordinary: a request comes in as a string, gets parsed into a
+// slice, transformed, and formatted into a reply that is then discarded. No
+// exotic construct, nothing that only leaks because it is unusual.
+package main
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+)
+
+// handle is one "request". It allocates a slice, some strings, and a map, and
+// returns a summary. Everything it built is unreachable once it returns.
+func handle(req string) string {
+	fields := strings.Split(req, ",")
+	counts := map[string]int{}
+	total := 0
+	for i := 0; i < len(fields); i++ {
+		f := strings.TrimSpace(fields[i])
+		n, err := strconv.Atoi(f)
+		if err == nil {
+			total = total + n
+			counts[f] = counts[f] + 1
+		} else {
+			counts[strings.ToUpper(f)] = 1
+		}
+	}
+	parts := []string{}
+	for i := 0; i < len(fields); i++ {
+		parts = append(parts, strings.TrimSpace(fields[i]))
+	}
+	return strconv.Itoa(total) + ":" + strconv.Itoa(len(counts)) + ":" + strings.Join(parts, "|")
+}
+
+func main() {
+	// A fixed request count rather than a real socket, so the measurement is
+	// reproducible and needs no network. The allocation behaviour is the same.
+	requests := 50000
+	if len(os.Args) > 1 {
+		n, err := strconv.Atoi(os.Args[1])
+		if err == nil {
+			requests = n
+		}
+	}
+	last := ""
+	for i := 0; i < requests; i++ {
+		arena {
+			last = handle("1, 2, 3, four, 5, six, 7")
+		}
+	}
+	fmt.Println(len(last))
+}
