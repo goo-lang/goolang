@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe alloc-doors-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test obj-header-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe alloc-doors-probe
 
 all: lexer
 
@@ -3245,6 +3245,7 @@ VERIFY_ALL_DEPS := \
     asi-gocompat-probe \
     param-escape-test \
     block-escape-test \
+    obj-header-test \
     arena-routing-test \
     arena-free-probe \
     arena-valgrind-probe \
@@ -4849,6 +4850,16 @@ param_escape_test: $(TEST_UNIT_DIR)/types/param_escape_test.c $(SRC_OBJS)
 param-escape-test: param_escape_test
 	@echo "Running param-escape summary tests..."
 	./param_escape_test
+
+# ARC step 1: the object header. Pins goo_alloc/goo_realloc/goo_free plus the
+# retain/release primitives BEFORE codegen emits any of them, so the allocator
+# change can be proven invisible on its own. Links the runtime only — no LLVM.
+obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(RUNTIME_LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(RUNTIME_LIB) -lm -pthread
+
+obj-header-test: obj_header_test
+	@echo "Running ARC object-header tests..."
+	./obj_header_test
 
 # Arena leg Task 7b: per-alloc-site block-escape decisions (table-driven,
 # 15-row test matrix — see docs/superpowers/specs/2026-07-07-arena-7b-

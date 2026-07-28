@@ -110,6 +110,23 @@ Gates: `block_escape` rows 30 and 31, `param_escape` row 19,
 `arena-valgrind-probe` (14/14 each) and in the golden suite (489). The probe was
 confirmed to FAIL with the two source fixes reverted — the gate has teeth.
 
+## REFINED — the parameter rule is uniform, not summary-driven
+
+`2026-07-28-arc-parameter-boundary.md` strengthens the argument above. Making
+the elision UNIFORM (every parameter borrowed, never summary-driven) is strictly
+better, for the reason the return convention independently established: a
+summary-dependent ABI is unsound when the summary is missing, and Goo's most
+common call shapes are exactly the ones the lookup cannot resolve.
+
+Under uniform borrowing, no callee ever releases a parameter, so an arena
+pointer passed to any function is never released by it — with no appeal to the
+summary at all. The theorem below still holds; it simply stops being the thing
+ARC's safety rests on.
+
+The summary remains load-bearing for the ARENA routing decision it always drove.
+The receiver hole fixed alongside this document is therefore still a real
+defect, and is not retroactively made harmless.
+
 ## Recovering the lost precision — a follow-up, not this change
 
 Resolve `p.m()` to its real summary. Blocked as things stand: the registry keys
