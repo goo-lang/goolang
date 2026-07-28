@@ -88,4 +88,5 @@ project_health.*
 tasks.json
 tasks/
 /local_escape_test
+/release_decision_test
 
