@@ -3438,6 +3438,10 @@ static Type* type_check_minmax_call(TypeChecker* checker, ASTNode* expr,
 // which cannot resolve the param and rejects with the standard
 // "must be a compile-time constant" diagnostic.
 
+// Defined below beside the other writer helpers; declared here because the
+// fmt.Fprint writer check inside this function needs it.
+static int type_has_write_method(TypeChecker* checker, Type* t);
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
@@ -4195,6 +4199,63 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         return NULL;
     }
     
+    // The fmt.Fprint family takes a WRITER, checked HERE rather than inside
+    // the selector block below.
+    //
+    // That block is gated on `!skip_variadic_builtin`, and the Fprint rows now
+    // declare ZERO fixed params (ShimParamKind is a closed enum of scalar kinds
+    // and cannot spell an interface), which puts them in exactly that
+    // skip class. Leaving the check there made a shim-table edit silently
+    // disable a checker diagnostic and hand the job to codegen — caught only by
+    // the golden-reject fixture, which is the rule that no backend noise
+    // reaches users.
+    //
+    // The writer test is STRUCTURAL, not "does it satisfy io.Writer". Go does
+    // not make `fmt.Fprintln(os.Stdout, ...)` require an `import "io"`, so
+    // neither can this. When a program DOES import io, an io.Writer value
+    // arrives here as an interface and passes on its declared Write.
+    if (call->function->type == AST_SELECTOR_EXPR) {
+        SelectorExprNode* wsel = (SelectorExprNode*)call->function;
+        if (wsel->expr && wsel->expr->type == AST_IDENTIFIER && wsel->selector &&
+            (strcmp(wsel->selector, "Fprint") == 0 ||
+             strcmp(wsel->selector, "Fprintln") == 0 ||
+             strcmp(wsel->selector, "Fprintf") == 0)) {
+            // Resolve through the package marker so an alias import
+            // (`import f "fmt"`) dispatches on the canonical path.
+            Variable* wpm = type_checker_lookup_variable(
+                checker, ((IdentifierNode*)wsel->expr)->name);
+            const char* wpkg = (wpm && wpm->package && wpm->package->import_path)
+                ? wpm->package->import_path
+                : ((IdentifierNode*)wsel->expr)->name;
+            if (strcmp(wpkg, "fmt") == 0) {
+                ASTNode* w = call->args;
+                if (!w) {
+                    type_error(checker, expr->pos,
+                               "fmt.%s: missing writer argument", wsel->selector);
+                    return type_checker_get_builtin(checker, TYPE_VOID);
+                }
+                Type* wt = type_check_expression(checker, w);
+                if (!wt) return type_checker_get_builtin(checker, TYPE_VOID);
+                if (!type_has_write_method(checker, wt)) {
+                    type_error(checker, w->pos,
+                               "fmt.%s: %s is not a writer "
+                               "(needs a Write([]byte) (int, error) method)",
+                               wsel->selector, type_to_string(wt));
+                    return type_checker_get_builtin(checker, TYPE_VOID);
+                }
+                if (strcmp(wsel->selector, "Fprintf") == 0) {
+                    ASTNode* f = w->next;
+                    Type* ft = f ? type_check_expression(checker, f) : NULL;
+                    if (!f || !ft || ft->kind != TYPE_STRING) {
+                        type_error(checker, f ? f->pos : expr->pos,
+                                   "fmt.Fprintf: the format must be a string");
+                        return type_checker_get_builtin(checker, TYPE_VOID);
+                    }
+                }
+            }
+        }
+    }
+
     // Decide whether to validate arity/arg types against the callee's
     // declared parameter list. We do so for ordinary *user* functions called
     // by their bare name, AND for user *method* calls (selectors that resolve
@@ -4378,48 +4439,6 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                     callee_name = sel->selector;
                 }
 
-                // The fmt.Fprint family takes a WRITER, and v1 has exactly two
-                // of them. The shim table types the slot int64 (a file
-                // descriptor), so without this guard `fmt.Fprintln(3, "x")`
-                // would type-check and write to whatever fd 3 happened to be.
-                // Restricting it here is what lets os.Stdout/os.Stderr be
-                // plain integers underneath: no program can name the fd, so
-                // none can observe or forge it.
-                //
-                // Syntactic on purpose. A general io.Writer needs an interface
-                // embedded in a struct, which Goo rejects today, so widening
-                // this is blocked on that gap rather than on a decision here.
-                if (strcmp(dispatch_pkg, "fmt") == 0 &&
-                    (strcmp(sel->selector, "Fprint") == 0 ||
-                     strcmp(sel->selector, "Fprintln") == 0 ||
-                     strcmp(sel->selector, "Fprintf") == 0)) {
-                    ASTNode* w = call->args;
-                    int writer_ok = 0;
-                    if (w && w->type == AST_SELECTOR_EXPR) {
-                        SelectorExprNode* ws = (SelectorExprNode*)w;
-                        if (ws->expr && ws->expr->type == AST_IDENTIFIER &&
-                            ws->selector &&
-                            (strcmp(ws->selector, "Stdout") == 0 ||
-                             strcmp(ws->selector, "Stderr") == 0)) {
-                            // Resolve the base through the package marker so an
-                            // alias import (`import o "os"`) works, matching how
-                            // dispatch_pkg itself is derived above.
-                            Variable* wm = scope_lookup_variable(
-                                checker->current_scope,
-                                ((IdentifierNode*)ws->expr)->name);
-                            const char* wpkg = (wm && wm->package && wm->package->import_path)
-                                ? wm->package->import_path
-                                : ((IdentifierNode*)ws->expr)->name;
-                            writer_ok = (strcmp(wpkg, "os") == 0);
-                        }
-                    }
-                    if (!writer_ok) {
-                        type_error(checker, w ? w->pos : expr->pos,
-                            "fmt.%s: the writer must be os.Stdout or os.Stderr "
-                            "(v1 has no io.Writer)", sel->selector);
-                        return type_checker_get_builtin(checker, TYPE_VOID);
-                    }
-                }
             }
         }
     }
@@ -5031,6 +5050,54 @@ Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr) {
 // `type_function(NULL, 0, ret)` stubs — see shim_signatures.h for the full
 // design and shim_signature_is_known_call for the call-checker hook this
 // enables.
+// `*os.File`, resolved from the SEEDED File type rather than built fresh.
+//
+// Pointer identity is load-bearing, not cosmetic: codegen's struct cache is
+// keyed on Type* POINTER identity, so minting a second File type here would
+// reproduce the `%Time` vs `%Time.0` verifier failure PR #220 fixed by
+// interning Package*. Reading it back out of the package's exports guarantees
+// there is exactly one.
+//
+// Returns NULL when os was never seeded, which cannot happen for a program
+// that names os.Stdout (naming it requires the import that seeds it) but keeps
+// the failure a clean "no such member" rather than a crash.
+// Does `t` have a `Write` method usable as a writer?
+//
+// An INTERFACE answers by declaring Write; a concrete type answers by having
+// one registered. Structural on purpose: it is what lets fmt.Fprintln accept
+// os.Stdout with no `import "io"`, matching Go, while io.Writer itself stays
+// the ordinary interface any program can name.
+//
+// The signature is NOT re-verified here beyond the name. A concrete type whose
+// Write has the wrong shape fails at the call the lowering emits, with that
+// call's own diagnostic — and the two writers that exist in this cut
+// (*os.File, and anything satisfying io.Writer) are both checked where they
+// are declared.
+static int type_has_write_method(TypeChecker* checker, Type* t) {
+    if (!t) return 0;
+    if (t->kind == TYPE_INTERFACE) {
+        for (InterfaceMethod* im = t->data.interface.methods; im; im = im->next)
+            if (im->name && strcmp(im->name, "Write") == 0) return 1;
+        return 0;
+    }
+    Type* base = (t->kind == TYPE_POINTER) ? t->data.pointer.pointee_type : t;
+    const char* tn = type_receiver_name(base);
+    if (!tn) return 0;
+    char* mangled = type_method_mangled_name(tn, "Write");
+    if (!mangled) return 0;
+    Variable* mv = type_checker_lookup_method(checker, base, "Write", mangled);
+    free(mangled);
+    return mv && mv->type && mv->type->kind == TYPE_FUNCTION;
+}
+
+static Type* os_file_pointer_type(TypeChecker* checker) {
+    Package* os_pkg = type_checker_find_package(checker, "os");
+    if (!os_pkg || !os_pkg->exports) return NULL;
+    Variable* fv = scope_lookup_variable(os_pkg->exports, "File");
+    if (!fv || !fv->type) return NULL;
+    return type_pointer(fv->type);
+}
+
 static Type* stdlib_package_lookup(TypeChecker* checker,
                                    const char* package,
                                    const char* name) {
@@ -5066,10 +5133,10 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
     // the extractor greps the SOURCE, so a comment quoting the shape is
     // matched as if it were a real arm and invents a phantom symbol.
     if (strcmp(package, "os") == 0 && strcmp(name, "Stdout") == 0) {
-        return type_checker_get_builtin(checker, TYPE_INT64);
+        return os_file_pointer_type(checker);
     }
     if (strcmp(package, "os") == 0 && strcmp(name, "Stderr") == 0) {
-        return type_checker_get_builtin(checker, TYPE_INT64);
+        return os_file_pointer_type(checker);
     }
 
     // math.Pi -> float64. A package VALUE member, not a call — the

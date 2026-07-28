@@ -717,6 +717,22 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
                                       const char* method_name,
                                       LLVMValueRef* args, size_t argc,
                                       ASTNode* expr);
+// Get-or-emit the implementation of a SEEDED SHIM METHOD (os.File.Write) —
+// a method the checker exports for a bespoke shim type that has no Goo source,
+// so no compiled function exists for it anywhere in the module.
+//
+// Named with the ORDINARY mangled package symbol, so the direct method-call
+// path and build_thunk both resolve it with no special case: whichever asks
+// first emits it. One owner for the seeded-method-to-runtime-symbol mapping,
+// per docs/superpowers/specs/2026-07-28-seeded-shim-vtable-spike.md.
+//
+// Returns NULL when the triple is not a seeded shim method — the signal to
+// fall through to the caller's own "no such implementation" handling.
+LLVMValueRef codegen_get_or_emit_shim_method_adapter(CodeGenerator* codegen,
+                                                     const char* pkg_name,
+                                                     const char* type_name,
+                                                     const char* method_name,
+                                                     Type* method_type);
 // Task 2 (type assertions): shared vtable-pointer-compare + unbox lowering
 // for `x.(T)` (comma-ok and single-return) and Task 3's type switch. See
 // interface_codegen.c's doc comments on each for the exact contract.

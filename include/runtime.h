@@ -192,6 +192,24 @@ goo_string_t goo_os_getenv(const char* name);
 int goo_os_read_file(const char* path, goo_string_t* out);
 int goo_os_read_line(goo_string_t* out);
 
+// os.File — the write side (io arc). One opaque word holding the descriptor;
+// the compiler seeds a matching one-field struct for the TYPE, and the two
+// agree on exactly one thing: the fd sits at offset 0.
+//
+// os.Stdout / os.Stderr are *os.File, so they need storage with a STABLE
+// address. Codegen emits a reference to these globals rather than building a
+// file object per use, which is what makes pointer identity hold and lets a
+// boxed io.Writer carry the same address.
+struct goo_os_file;
+extern struct goo_os_file goo_os_stdout_file;
+extern struct goo_os_file goo_os_stderr_file;
+
+// Scalar in, scalar out, per this header's file-I/O convention. Go's
+// `Write(p []byte) (int, error)` returns a 24-byte tuple; rather than
+// ABI-match it in C, the compiler emits an adapter carrying the Goo method
+// ABI and that adapter calls this. Returns the byte count, or -errno.
+int64_t goo_os_file_write(void* file, const void* buf, int64_t n);
+
 // os.Args ([]string): argc/argv captured ONCE from the generated
 // executable's entry point (see the is_entry_main prologue in
 // src/codegen/function_codegen.c, the only caller of goo_os_args_init).

@@ -1007,6 +1007,63 @@ void seed_sync_package_exports(TypeChecker* checker, Package* pkg) {
     sync_export_method(pkg, wg_t, "Wait", NULL, 0, void_t, 0);
 }
 
+// `os` exports a TYPE WITH A METHOD SET (File.Write), which is the same reason
+// sync and testing are bespoke: stdlib_package_lookup returns a bare Type for a
+// (package, name) pair and cannot model a method set, and shim_signatures.c's
+// SHIM_TABLE has no way to express a receiver.
+//
+// The struct mirrors sync's opaque shape, with ONE difference that matters: the
+// single field is the file DESCRIPTOR, and the runtime agrees that it sits at
+// offset 0 (struct goo_os_file, src/runtime/io.c). No Goo program can name the
+// field, so the fd stays as private as it was when os.Stdout was a bare int64 —
+// what changes is that it now has a method set and a stable address.
+//
+// os.File.Write is NOT backed by a Goo function. Its implementation is a
+// codegen-emitted adapter carrying this exact signature, which calls the scalar
+// runtime goo_os_file_write and packs the (int, error) result. The adapter is
+// named with the ordinary mangled package symbol, so every existing consumer —
+// the direct method-call path and the interface thunk builder alike — resolves
+// it with no special case. See codegen_get_or_emit_shim_method_adapter.
+void seed_os_package_exports(TypeChecker* checker, Package* pkg) {
+    if (scope_lookup_variable(pkg->exports, "File")) return;
+
+    Type* file_t = sync_make_opaque_struct(checker, pkg, "File");
+    if (!file_t) return;
+    sync_export_type(pkg, "File", file_t);
+
+    // Write(p []byte) (int, error) — Go's exact signature. The tuple result is
+    // a real multi-value return, the same shape a user function written
+    // `func f() (int, error)` produces, so `n, err := w.Write(p)` destructures
+    // through the ordinary path.
+    Type* byte_t = type_checker_get_builtin(checker, TYPE_UINT8);
+    Type* bytes_t = type_slice(byte_t);
+    Type* int_t = type_checker_get_builtin(checker, TYPE_INT64);   // Go "int"
+    Type* err_t = type_checker_error_type(checker);
+    if (!bytes_t || !int_t || !err_t) return;
+
+    // A multi-value result is an ANONYMOUS struct whose fields carry the
+    // parser's synthetic `_0`, `_1` names — the same shape
+    // declare_function_signature builds for `func f() (int, error)` and the
+    // same shape the comma-ok arms synthesize. Building it by hand here rather
+    // than inventing a tuple type is what lets `n, err := w.Write(p)`
+    // destructure through the ordinary path with no new case anywhere.
+    Type* ret_t = type_new(TYPE_STRUCT);
+    if (!ret_t) return;
+    ret_t->data.struct_type.fields = xcalloc(2, sizeof(StructField));
+    if (!ret_t->data.struct_type.fields) { free(ret_t); return; }
+    ret_t->data.struct_type.field_count = 2;
+    ret_t->data.struct_type.name = NULL;   // anonymous: it is a result list
+    ret_t->data.struct_type.fields[0].name = str_dup("_0");
+    ret_t->data.struct_type.fields[0].type = int_t;
+    ret_t->data.struct_type.fields[0].offset = 0;
+    ret_t->data.struct_type.fields[1].name = str_dup("_1");
+    ret_t->data.struct_type.fields[1].type = err_t;
+    ret_t->data.struct_type.fields[1].offset = 0;
+
+    Type* params[] = { bytes_t };
+    sync_export_method(pkg, file_t, "Write", params, 1, ret_t, 0);
+}
+
 // `goo test`: the testing package's exports. A bespoke shim for the same reason
 // sync is one — it exports a TYPE WITH A METHOD SET, which
 // stdlib_package_lookup's per-symbol table cannot model (it returns a bare Type
@@ -1267,6 +1324,19 @@ static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports
             Package* p = type_checker_add_package(checker, spec->path, short_name);
             if (!p) return false;
             seed_testing_package_exports(checker, p);
+            type_checker_seed_package_marker(checker, short_name, p);
+            continue;
+        }
+        // os joined this list when os.File gained a method set (the io arc).
+        // A vendored package that writes through os.Stdout needs File seeded
+        // into ITS OWN scope, exactly like sync — main happening to import os
+        // as well must not be what makes it work (the masked-false-positive
+        // shape recorded in the M2-B1 Task-0 spike note).
+        if (spec->path && strcmp(spec->path, "os") == 0) {
+            const char* short_name = spec->alias ? spec->alias : spec->path;
+            Package* p = type_checker_add_package(checker, spec->path, short_name);
+            if (!p) return false;
+            seed_os_package_exports(checker, p);
             type_checker_seed_package_marker(checker, short_name, p);
             continue;
         }

@@ -1,0 +1,13 @@
+direct
+7
+err nil
+boxed
+via emit
+9
+7
+7
+1
+true
+false
+0
+zero ok

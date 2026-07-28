@@ -752,6 +752,12 @@ static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports)
             seed_sync_package_exports(checker, p);
         } else if (strcmp(normalize_import_path(spec->path), "time") == 0) {
             seed_time_package_exports(checker, p);
+        } else if (strcmp(normalize_import_path(spec->path), "os") == 0) {
+            // os joined the bespoke seeders when os.File gained a method set
+            // (the io arc). os.Args / os.Stdout / os.Stderr still resolve
+            // through stdlib_package_lookup as VALUE members; this seeding adds
+            // only the File type and its Write method.
+            seed_os_package_exports(checker, p);
         } else if (strcmp(normalize_import_path(spec->path), "testing") == 0) {
             // Same bespoke-shim reason as sync/time: testing exports a TYPE
             // with a method set, which stdlib_package_lookup's per-symbol

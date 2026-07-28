@@ -1,0 +1,74 @@
+// io_writer_probe: package io, and os.Stdout as a real *os.File satisfying
+// io.Writer.
+//
+// Before this, os.Stdout was a bare int64 file descriptor and fmt.Fprint was
+// restricted by a CHECKER rule to those two selectors, because no io.Writer
+// existed to type the slot. The descriptor is now private again — it lives
+// inside an os.File whose field no Goo program can name.
+//
+// Expected output produced by `go run` on the equivalent Go program
+// (go1.26.1), per project convention — never hand-written.
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+)
+
+// A user type satisfying io.Writer, so the interface has more than one
+// implementation from the start.
+type Counter struct {
+	bytes int
+	calls int
+}
+
+func (c *Counter) Write(p []byte) (int, error) {
+	c.bytes = c.bytes + len(p)
+	c.calls = c.calls + 1
+	return len(p), nil
+}
+
+// Takes the interface, so every call below goes through a vtable rather than
+// a statically known method.
+func emit(w io.Writer, s string) int {
+	n, err := io.WriteString(w, s)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+func main() {
+	// 1. The direct method call on a seeded shim type.
+	n, err := os.Stdout.Write([]byte("direct\n"))
+	fmt.Println(n)
+	if err == nil {
+		fmt.Println("err nil")
+	}
+
+	// 2. os.Stdout boxed into io.Writer, dispatched through the vtable.
+	var w io.Writer = os.Stdout
+	w.Write([]byte("boxed\n"))
+
+	// 3. Through a function taking the interface.
+	fmt.Println(emit(os.Stdout, "via emit\n"))
+
+	// 4. A user implementation of the same interface.
+	c := Counter{bytes: 0, calls: 0}
+	fmt.Println(emit(&c, "counted"))
+	fmt.Println(c.bytes)
+	fmt.Println(c.calls)
+
+	// 5. os.Stdout has a stable address, so the same stream compares equal
+	//    and two different streams do not.
+	fmt.Println(os.Stdout == os.Stdout)
+	fmt.Println(os.Stdout == os.Stderr)
+
+	// 6. A zero-length write is legal and writes nothing.
+	z, zerr := os.Stdout.Write([]byte(""))
+	fmt.Println(z)
+	if zerr == nil {
+		fmt.Println("zero ok")
+	}
+}

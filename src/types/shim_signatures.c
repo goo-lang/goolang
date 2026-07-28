@@ -52,14 +52,21 @@ static const ShimSignature SHIM_TABLE[] = {
     { "fmt", "Sprintf",  SHIM_RET_STRING, PARAMS_STRING, NPARAMS(PARAMS_STRING), 1 },
     { "fmt", "Errorf",   SHIM_RET_ERROR,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 1 },
     // The Fprint family: the same formatting as their unprefixed siblings,
-    // written to a chosen stream. The writer is typed int64 (a file
-    // descriptor) rather than an io.Writer, because io does not exist — the
-    // CHECKER restricts the argument to os.Stdout / os.Stderr, so the fd is an
-    // implementation detail no program can observe or forge. See
-    // check_fprint_writer_arg in expression_checker.c.
-    { "fmt", "Fprint",   SHIM_RET_VOID,   PARAMS_INT64,        NPARAMS(PARAMS_INT64), 1 },
-    { "fmt", "Fprintln", SHIM_RET_VOID,   PARAMS_INT64,        NPARAMS(PARAMS_INT64), 1 },
-    { "fmt", "Fprintf",  SHIM_RET_VOID,   PARAMS_INT64_STRING, NPARAMS(PARAMS_INT64_STRING), 1 },
+    // written to a chosen stream. The writer is an io.Writer, so ANY value
+    // implementing Write is accepted — this used to be an int64 file
+    // descriptor with a CHECKER rule restricting the argument to the two
+    // os selectors, because no io.Writer existed to type the slot.
+    //
+    // ZERO fixed params here, exactly like Println above, and for the same
+    // reason: ShimParamKind is a closed enum of scalar kinds with no way to
+    // spell an interface. The writer is therefore validated by the checker's
+    // own arm (check_fprint_writer_arg, expression_checker.c), which runs a
+    // real io.Writer satisfaction test rather than a syntactic name match.
+    // Fprintf's format string is checked there too, since dropping the fixed
+    // params drops the generic check that used to cover it.
+    { "fmt", "Fprint",   SHIM_RET_VOID,   NULL, 0, 1 },
+    { "fmt", "Fprintln", SHIM_RET_VOID,   NULL, 0, 1 },
+    { "fmt", "Fprintf",  SHIM_RET_VOID,   NULL, 0, 1 },
 
     // os. Args is a value member (skip, per doc comment above).
     { "os", "Exit",      SHIM_RET_VOID,  PARAMS_INT64,        NPARAMS(PARAMS_INT64), 0 },
