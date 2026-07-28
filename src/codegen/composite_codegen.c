@@ -73,8 +73,14 @@ void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
 // from an extracted value or an existing i1 rather than a raw pointer.
 //
 // Splits the current block; the builder is left in the continue block.
-void codegen_emit_nil_check_cond(CodeGenerator* codegen, LLVMValueRef is_nil,
-                                 ASTNode* expr) {
+// Position-taking core. Split out for the interface-embedding thunk
+// (interface_codegen.c's build_thunk), which must nil-check the embedded
+// interface field but synthesizes a function body and so has no ASTNode to
+// carry a position — only the Position it was handed. Copying the check
+// there instead would have made a fourth emission site of a
+// deliberately-single-owner helper.
+void codegen_emit_nil_check_cond_pos(CodeGenerator* codegen, LLVMValueRef is_nil,
+                                     Position pos) {
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_nil_deref_fail");
     // Same known footgun as bounds: no symbol -> unguarded (best-effort).
     // codegen_declare_runtime_functions always declares it.
@@ -87,14 +93,19 @@ void codegen_emit_nil_check_cond(CodeGenerator* codegen, LLVMValueRef is_nil,
 
     LLVMPositionBuilderAtEnd(codegen->builder, fail_bb);
     LLVMValueRef file = LLVMBuildGlobalStringPtr(codegen->builder,
-        expr->pos.filename ? expr->pos.filename : "<input>", "nil_file");
+        pos.filename ? pos.filename : "<input>", "nil_file");
     LLVMValueRef line = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
-                                     (unsigned long long)expr->pos.line, 0);
+                                     (unsigned long long)pos.line, 0);
     LLVMValueRef args[2] = { file, line };
     LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "");
     LLVMBuildUnreachable(codegen->builder);
 
     LLVMPositionBuilderAtEnd(codegen->builder, cont_bb);
+}
+
+void codegen_emit_nil_check_cond(CodeGenerator* codegen, LLVMValueRef is_nil,
+                                 ASTNode* expr) {
+    codegen_emit_nil_check_cond_pos(codegen, is_nil, expr->pos);
 }
 
 void codegen_emit_nil_check(CodeGenerator* codegen, LLVMValueRef ptr,

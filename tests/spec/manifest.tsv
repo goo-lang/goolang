@@ -23,6 +23,7 @@ type_array	run	works	Types	fixed arrays, zero value, index assign
 type_slice	run	works	Types	literals, append, len, slicing
 type_map	run	works	Types	make, write, read, delete, comma-ok
 type_struct_embed	run	works	Types	embedding with method promotion
+type_iface_embed	run	works	Types	interface embedded in a struct; promotion dispatches dynamically
 type_pointer	run	works	Types	& * new, pointer-to-pointer
 type_func_closure	run	works	Types	closures capture variables by reference
 type_interface	run	works	Types	satisfaction + dynamic dispatch

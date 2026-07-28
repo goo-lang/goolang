@@ -145,6 +145,26 @@ func main() {
 }
 '
 
+# An EMBEDDED interface left nil. `Wrapper{}` boxed into the interface it
+# embeds, then called, reaches the promotion thunk's own vtable load. Go
+# panics with the same nil dereference (verified against go1.26.1: prints
+# "before", then "invalid memory address or nil pointer dereference",
+# exit status 2). Distinct from nil_interface_dispatch above, which nils the
+# interface VARIABLE — here the outer interface value is perfectly valid and
+# the nil sits one level in, inside the boxed struct's embedded field, so it
+# is the thunk that must check rather than codegen_interface_dispatch.
+check_nilpanic nil_embedded_interface 'package main
+type Greeter interface{ Greet() string }
+type Wrapper struct {
+	Greeter
+}
+func speak(g Greeter) string { return g.Greet() }
+func main() {
+	w := Wrapper{}
+	_ = speak(w)
+}
+'
+
 # LEGAL Go: an interface HOLDING a typed-nil *T dispatches fine; only a
 # field access inside the method panics (covered by Task 2 site C).
 check_ok typed_nil_in_interface 'package main

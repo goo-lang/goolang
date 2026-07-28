@@ -603,6 +603,11 @@ void codegen_emit_nil_check_cond(CodeGenerator* codegen, LLVMValueRef is_nil,
                                  ASTNode* expr);
 void codegen_emit_nil_check(CodeGenerator* codegen, LLVMValueRef ptr,
                             ASTNode* expr);
+// Position-taking core of the cond variant, for a SYNTHESIZED body that has
+// no ASTNode to take a position from (build_thunk's embedded-interface
+// dispatch). Prefer the ASTNode forms everywhere an expression exists.
+void codegen_emit_nil_check_cond_pos(CodeGenerator* codegen, LLVMValueRef is_nil,
+                                     Position pos);
 // Coerce a VALUE to the target LLVM type using the source type's
 // signedness — the single home for the width-coercion rule that was
 // previously inlined (and repeatedly re-broken) at the var-decl,

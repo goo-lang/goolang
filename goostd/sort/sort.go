@@ -74,24 +74,20 @@ func IsSorted(data Interface) bool {
 
 // reverse wraps an Interface and inverts its Less.
 //
-// Go spells this `struct { Interface }` — an EMBEDDED interface, which promotes
-// Len and Swap automatically. Goo rejects an interface embedded in a struct
-// (type_checker.c), so the field is named and the two pass-through methods are
-// written out. Behaviourally identical; only the spelling differs.
+// This is Go's exact spelling: an EMBEDDED interface, which promotes Len and
+// Swap automatically so only Less has to be written. Declaring Less on the
+// outer type SHADOWS the promoted one, which is the whole mechanism.
 type reverse struct {
-	data Interface
+	Interface
 }
 
-func (r reverse) Len() int { return r.data.Len() }
-
-// The whole point: arguments swapped.
-func (r reverse) Less(i int, j int) bool { return r.data.Less(j, i) }
-
-func (r reverse) Swap(i int, j int) { r.data.Swap(i, j) }
+// The whole point: arguments swapped. Len and Swap are promoted from the
+// embedded Interface and dispatch to whatever it holds.
+func (r reverse) Less(i int, j int) bool { return r.Interface.Less(j, i) }
 
 // Reverse returns data with its ordering inverted, for use with Sort.
 func Reverse(data Interface) Interface {
-	return reverse{data: data}
+	return reverse{Interface: data}
 }
 
 // IntSlice attaches Interface to []int.

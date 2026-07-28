@@ -18,9 +18,14 @@ typedef struct {
 } QueueEntry;
 
 // The nameable identity of a type for the visited set / method mangling.
+// An interface keeps its declared name in data.interface.name, NOT in the
+// generic Type.name (type_check_type_decl stamps the two separately), so an
+// embedded interface would otherwise be anonymous to the visited set — two
+// different embedded interfaces would collide on NULL.
 static const char* embed_type_name(Type* t) {
     if (!t) return NULL;
     if (t->kind == TYPE_STRUCT) return t->data.struct_type.name;
+    if (t->kind == TYPE_INTERFACE) return t->data.interface.name;
     return t->name;
 }
 
@@ -45,8 +50,28 @@ static void embed_format_path(char* out, size_t cap,
 
 // Look for `name` DIRECTLY on `t` (fields first, then method T__name).
 // Returns 1 and fills member_type/is_method on a hit.
+// `from_iface` is set when the hit came from an embedded INTERFACE's method
+// list — see EmbedResult.via_interface for why every consumer must branch on
+// it rather than treat the result as an ordinary promoted method.
 static int embed_direct_member(TypeChecker* checker, Type* t, const char* name,
-                               Type** member_type, int* is_method) {
+                               Type** member_type, int* is_method,
+                               int* from_iface) {
+    // An embedded interface contributes its whole method set and nothing else
+    // — it has no fields, and its methods are InterfaceMethod entries rather
+    // than declared method Variables, so the mangled lookup below cannot see
+    // them. Interface-in-interface embedding is already flattened into this
+    // list at declaration time, so one pass over it is complete.
+    if (t->kind == TYPE_INTERFACE) {
+        for (InterfaceMethod* im = t->data.interface.methods; im; im = im->next) {
+            if (im->name && strcmp(im->name, name) == 0 && im->type) {
+                *member_type = im->type;   // receiver-less by construction
+                *is_method = 1;
+                *from_iface = 1;
+                return 1;
+            }
+        }
+        return 0;
+    }
     if (t->kind == TYPE_STRUCT) {
         for (size_t i = 0; i < t->data.struct_type.field_count; i++) {
             StructField* f = &t->data.struct_type.fields[i];
@@ -122,7 +147,8 @@ EmbedResult embedding_resolve(TypeChecker* checker, Type* struct_type,
             if (queue[q].len > 0) {
                 Type* mt = NULL;
                 int ism = 0;
-                if (embed_direct_member(checker, t, name, &mt, &ism)) {
+                int fromif = 0;
+                if (embed_direct_member(checker, t, name, &mt, &ism, &fromif)) {
                     hits++;
                     if (hits == 1) {
                         hit_depth = queue[q].len;
@@ -130,6 +156,7 @@ EmbedResult embedding_resolve(TypeChecker* checker, Type* struct_type,
                         res.type = mt;
                         res.owner = t;
                         res.via_pointer = queue[q].via_ptr;
+                        res.via_interface = fromif;
                         // Path to the OWNER: all hops (the member itself is
                         // resolved at the last hop's type).
                         res.len = queue[q].len;

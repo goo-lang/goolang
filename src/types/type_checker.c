@@ -2209,6 +2209,10 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         Type* impl = NULL;
         int via_embed = 0;
         int embed_via_pointer = 0;
+        // The promoted method came from an embedded INTERFACE's method list,
+        // so `impl` is receiver-less and the receiver-kind rule does not
+        // apply. See EmbedResult.via_interface.
+        int via_embedded_iface = 0;
         if (!mv || !mv->type || mv->type->kind != TYPE_FUNCTION) {
             // Not directly declared — promoted method via embedding? Also
             // through a POINTER to a struct: Go's *Outer method set includes
@@ -2228,6 +2232,7 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
                     impl_via_embed = er.type;
                     via_embed = 1;
                     embed_via_pointer = er.via_pointer;
+                    via_embedded_iface = er.via_interface;
                 }
             }
             if (!impl_via_embed) {
@@ -2264,28 +2269,41 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         // value concrete for a pointer-receiver method. Embedded: a value outer
         // still holds the promoted method iff the embedding path crossed a
         // pointer field (embed_via_pointer). A pointer concrete is always fine.
-        int concrete_is_ptr = (concrete->kind == TYPE_POINTER);
-        int method_is_ptr_recv =
-            impl->data.function.param_count >= 1 &&
-            impl->data.function.param_types[0] &&
-            impl->data.function.param_types[0]->kind == TYPE_POINTER;
-        if (method_is_ptr_recv && !concrete_is_ptr &&
-            (!via_embed || !embed_via_pointer)) {
-            *method_out = im->name;
-            *reason_out = "pointer-receiver";
-            return 0;
+        // A method promoted from an embedded INTERFACE has no receiver to
+        // classify, and the rule it would express is already enforced
+        // elsewhere: whatever concrete was stored into the interface field had
+        // its own receiver kind checked at THAT assignment. Go agrees — an
+        // embedded interface's methods are in the method set of the outer
+        // value, not only of a pointer to it, which is exactly what makes
+        // `sort.Reverse` return a VALUE `reverse` that still satisfies
+        // `Interface`.
+        if (!via_embedded_iface) {
+            int concrete_is_ptr = (concrete->kind == TYPE_POINTER);
+            int method_is_ptr_recv =
+                impl->data.function.param_count >= 1 &&
+                impl->data.function.param_types[0] &&
+                impl->data.function.param_types[0]->kind == TYPE_POINTER;
+            if (method_is_ptr_recv && !concrete_is_ptr &&
+                (!via_embed || !embed_via_pointer)) {
+                *method_out = im->name;
+                *reason_out = "pointer-receiver";
+                return 0;
+            }
         }
 
-        // The registered method carries the receiver as params[0]; the interface
+        // A registered method carries the receiver as params[0]; the interface
         // method's function type has no receiver. So a match requires
         // impl.param_count == want.param_count + 1 and the tails to be equal.
+        // A method promoted from an embedded interface is ALREADY receiver-less
+        // (it is itself an InterfaceMethod type), so it aligns at offset 0.
         Type* want = im->type;
         size_t want_params = want ? want->data.function.param_count : 0;
-        if (impl->data.function.param_count != want_params + 1) {
+        size_t recv_off = via_embedded_iface ? 0 : 1;
+        if (impl->data.function.param_count != want_params + recv_off) {
             *method_out = im->name; *reason_out = "signature mismatch"; return 0;
         }
         for (size_t k = 0; k < want_params; k++) {
-            if (!type_equals(impl->data.function.param_types[k + 1],
+            if (!type_equals(impl->data.function.param_types[k + recv_off],
                              want->data.function.param_types[k])) {
                 *method_out = im->name; *reason_out = "signature mismatch"; return 0;
             }
@@ -5752,21 +5770,36 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                     return NULL;
                 }
                 if (fd->is_embedded) {
-                    // Embedded member: must be a named type or pointer to one;
-                    // interface embedding is a deferred feature, not an error
-                    // of the user's making — say so specifically.
+                    // Embedded member: must be a named type or a pointer to
+                    // one. A named INTERFACE counts (Go's `struct { io.Reader }`
+                    // — the method set is promoted and dispatches dynamically
+                    // through the field), but its declared name lives in
+                    // data.interface.name rather than the generic Type.name
+                    // that the fallback below reads, so it needs its own arm.
                     Type* base_t = ft;
-                    if (base_t->kind == TYPE_POINTER)
+                    int embed_via_ptr = 0;
+                    if (base_t->kind == TYPE_POINTER) {
                         base_t = base_t->data.pointer.pointee_type;
-                    if (base_t && base_t->kind == TYPE_INTERFACE) {
+                        embed_via_ptr = 1;
+                    }
+                    // Go rejects `struct { *I }` outright: a pointer to an
+                    // interface has no method set to promote, since methods
+                    // belong to the interface and not to a pointer to it.
+                    // Caught in review — unwrapping the pointer BEFORE the
+                    // interface arm below would otherwise accept it silently,
+                    // and the promotion walk would then dereference a pointer
+                    // to a fat pointer as though it were the fat pointer.
+                    // Wording is Go's own.
+                    if (embed_via_ptr && base_t && base_t->kind == TYPE_INTERFACE) {
                         type_error(checker, f->pos,
-                                   "embedded interface types are not yet supported");
+                                   "embedded field type cannot be a pointer to an interface");
                         free(result->data.struct_type.fields);
                         free(result);
                         return NULL;
                     }
                     int named = base_t &&
                         ((base_t->kind == TYPE_STRUCT && base_t->data.struct_type.name) ||
+                         (base_t->kind == TYPE_INTERFACE && base_t->data.interface.name) ||
                          base_t->name);
                     if (!named) {
                         type_error(checker, f->pos,

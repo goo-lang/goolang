@@ -1,0 +1,20 @@
+// Go rejects a pointer to an interface as an embedded field: a pointer to an
+// interface has no method set to promote. Verified against go1.26.1, which
+// reports "embedded field type cannot be a pointer to an interface".
+//
+// This fixture exists because the interface-embedding arc made the plain
+// `struct { I }` form legal, and the pointer form sits one pointer-unwrap
+// away from it in the same check.
+package main
+
+type Greeter interface {
+	Greet() string
+}
+
+type Wrapper struct {
+	*Greeter
+}
+
+func main() {
+	_ = Wrapper{}
+}

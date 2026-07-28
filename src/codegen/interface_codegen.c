@@ -115,9 +115,20 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
         mvar = type_checker_lookup_method(checker, concrete, im->name, mangled);
     }
     free(mangled);
+    // Promoted from an EMBEDDED INTERFACE (`struct { io.Reader }`): there is
+    // no function to name. The method reached here is an InterfaceMethod, and
+    // the implementation is whatever concrete sits in the field at RUNTIME, so
+    // the thunk body below dispatches through that field's own vtable instead
+    // of calling a symbol. See EmbedResult.via_interface.
+    int via_iface = 0;
     if (!real_fn && concrete->kind == TYPE_STRUCT) {
         EmbedResult er = embedding_resolve(checker, concrete, im->name);
-        if (er.kind == EMBED_METHOD) {
+        if (er.kind == EMBED_METHOD && er.via_interface) {
+            epath = er;
+            via_iface = 1;
+            real_fn = NULL;
+            mvar = NULL;
+        } else if (er.kind == EMBED_METHOD) {
             epath = er;
             const char* otn = type_receiver_name(er.owner);
             char* om = otn ? type_method_mangled_name(otn, im->name) : NULL;
@@ -140,7 +151,7 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
             free(om);
         }
     }
-    if (!real_fn) {
+    if (!real_fn && !via_iface) {
         codegen_error(codegen, pos,
                       "internal: missing method implementation for interface thunk");
         return NULL;
@@ -194,6 +205,78 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
             cur = ft;
         }
     }
+    // Embedded-interface dispatch. The hop walk above ended ON the interface
+    // field, so `recv_ptr` is its ADDRESS and `cur` is its interface type.
+    // Load the {vtable, data} pair and re-dispatch through it, forwarding this
+    // thunk's own parameters unchanged. The inner thunk has the identical
+    // (ptr data, params...) -> ret shape as this one, because interface
+    // satisfaction already proved the two method signatures equal, so `fnty`
+    // is reused rather than rebuilt.
+    if (via_iface) {
+        LLVMTypeRef iface_llvm = codegen_type_to_llvm(codegen, cur);
+        if (!iface_llvm) {
+            free(call_args);
+            LLVMPositionBuilderAtEnd(codegen->builder, saved);
+            return NULL;
+        }
+        LLVMValueRef iface_val =
+            LLVMBuildLoad2(codegen->builder, iface_llvm, recv_ptr, "embed.iface");
+        LLVMValueRef inner_vt = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "embed.vt");
+
+        // ADR 0001: an embedded interface left nil has nothing to dispatch to.
+        // `Wrapper{}` with no value in the field, boxed and then called, is a
+        // nil dereference in Go too. Checked on the VTABLE only, matching
+        // codegen_interface_dispatch — a typed-nil concrete has a real vtable
+        // and must still dispatch.
+        codegen_emit_nil_check_cond_pos(
+            codegen,
+            LLVMBuildICmp(codegen->builder, LLVMIntEQ, inner_vt,
+                          LLVMConstNull(LLVMTypeOf(inner_vt)), "embed.vt.nil"),
+            pos);
+
+        LLVMValueRef inner_data =
+            LLVMBuildExtractValue(codegen->builder, iface_val, 1, "embed.data");
+
+        // Slot index in the EMBEDDED interface's own declaration order. It need
+        // not match this outer interface's order: `cur` and `iface_name` are
+        // different interfaces that merely share this method's signature.
+        size_t inner_idx = 0;
+        int found_inner = 0;
+        for (InterfaceMethod* m = cur->data.interface.methods; m; m = m->next, inner_idx++) {
+            if (m->name && strcmp(m->name, im->name) == 0) { found_inner = 1; break; }
+        }
+        if (!found_inner) {
+            codegen_error(codegen, pos,
+                          "internal: method '%s' vanished from embedded interface building thunk",
+                          im->name);
+            free(call_args);
+            LLVMPositionBuilderAtEnd(codegen->builder, saved);
+            return NULL;
+        }
+
+        // Slot 0 is the per-concrete-type descriptor, so methods start at 1 —
+        // same layout codegen_interface_vtable writes and
+        // codegen_interface_dispatch reads.
+        LLVMTypeRef ptrty = iface_ptr_type(codegen);
+        LLVMValueRef gidx = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                         inner_idx + 1, 0);
+        LLVMValueRef islot = LLVMBuildGEP2(codegen->builder, ptrty, inner_vt, &gidx, 1,
+                                           "embed.vt.slot");
+        LLVMValueRef ithunk = LLVMBuildLoad2(codegen->builder, ptrty, islot, "embed.thunk");
+
+        call_args[0] = inner_data;
+        for (size_t i = 0; i < np; i++) call_args[i + 1] = LLVMGetParam(thunk, (unsigned)(i + 1));
+
+        int inner_void = (ret_llvm == LLVMVoidTypeInContext(codegen->context));
+        LLVMValueRef icall = LLVMBuildCall2(codegen->builder, fnty, ithunk, call_args,
+                                            (unsigned)(np + 1), inner_void ? "" : "embed.callr");
+        free(call_args);
+        if (inner_void) LLVMBuildRetVoid(codegen->builder);
+        else            LLVMBuildRet(codegen->builder, icall);
+        LLVMPositionBuilderAtEnd(codegen->builder, saved);
+        return thunk;
+    }
+
     if (ptr_recv) {
         call_args[0] = recv_ptr;
     } else {
