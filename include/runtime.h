@@ -46,6 +46,50 @@ void* goo_alloc(size_t size);
 void* goo_realloc(void* ptr, size_t size);
 void goo_free(void* ptr);
 
+// ---------------------------------------------------------------------------
+// ARC object header (ADR 0002 step 1)
+// ---------------------------------------------------------------------------
+// Every goo_alloc'd object carries a header IMMEDIATELY BEFORE its payload,
+// the way malloc itself does: goo_alloc(n) allocates GOO_OBJ_HEADER_SIZE + n
+// and returns base + GOO_OBJ_HEADER_SIZE. Callers keep seeing the object
+// address, so no codegen change and no C shim is affected by the layout.
+//
+// 16 bytes, not 8: the payload must keep max_align_t guarantees, and arena.c
+// already aligns to 16 (GOO_ARENA_ALIGNMENT), so 16 is the consistent choice.
+//
+// TWO POINTER KINDS HAVE NO HEADER, and every operation below is a no-op on
+// them rather than undefined behaviour:
+//
+//   - goo_zerobase. Every zero-size allocation aliases one static byte, so a
+//     header read through it reads whatever precedes a static and a header
+//     write CORRUPTS it.
+//   - NULL.
+//
+// A THIRD kind has no header and is NOT checked for, because it cannot be
+// detected at runtime: an arena pointer. goo_arena_alloc bump-allocates and
+// returns a bare interior pointer, so goo_release on one would read a header
+// out of the previous object's tail and then free an interior pointer. The
+// guarantee that this never happens is STATIC, and it is the whole subject of
+// docs/superpowers/specs/2026-07-28-arc-arena-coexistence.md: block_escape
+// routes a site to the heap whenever a callee retains that argument, so an
+// arena pointer can only ever bind to a parameter proven non-escaping, and no
+// retain or release is emitted for such a parameter. If that analysis ever
+// under-marks, THIS is where the damage lands.
+#define GOO_OBJ_HEADER_SIZE ((size_t)16)
+
+// Current reference count. Returns 0 for NULL and for goo_zerobase, neither of
+// which has a header — 0 is therefore "not a counted object", never a real
+// count, because a live object is always at least 1.
+uint64_t goo_obj_refcount(const void* ptr);
+
+// Increment. No-op on NULL and on goo_zerobase.
+void goo_retain(void* ptr);
+
+// Decrement, and free the object when the count reaches 0. No-op on NULL and
+// on goo_zerobase. Releasing below 0 is a caller bug; see the implementation
+// for what it does about it.
+void goo_release(void* ptr);
+
 // Bump/arena allocator: a growable block-list bump allocator that the
 // arena-region memory model routes allocations into. Opaque; see
 // src/runtime/arena.c for the block-list layout.

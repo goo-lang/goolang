@@ -45,17 +45,51 @@ void goo_exit(int code) {
 // what's shared, never its contents, so it never needs writing or reading.
 unsigned char goo_zerobase;
 
+// ARC object header (ADR 0002 step 1). Sits immediately before the payload;
+// see include/runtime.h for the layout contract and for the two header-less
+// pointer kinds every operation here tolerates.
+typedef struct GooObjHeader {
+    uint64_t rc;
+    uint64_t reserved;  // pads to GOO_OBJ_HEADER_SIZE; future flags/type tag
+} GooObjHeader;
+
+static_assert(sizeof(GooObjHeader) == GOO_OBJ_HEADER_SIZE,
+              "the ARC header must exactly fill GOO_OBJ_HEADER_SIZE, or the "
+              "payload loses its 16-byte alignment");
+
+// True for the pointer kinds that have no header. An arena pointer is NOT
+// detectable here and is excluded statically instead — see runtime.h.
+static inline int goo_obj_headerless(const void* ptr) {
+    return ptr == NULL || ptr == (const void*)&goo_zerobase;
+}
+
+static inline GooObjHeader* goo_obj_header(void* payload) {
+    return (GooObjHeader*)((unsigned char*)payload - GOO_OBJ_HEADER_SIZE);
+}
+
 void* goo_alloc(size_t size) {
     if (size == 0) {
         return &goo_zerobase;
     }
 
-    void* ptr = malloc(size);
-    if (!ptr) {
+    // The header push makes this arithmetic reachable, so it is checked. A
+    // plain add wraps, under-allocates, and hands back a buffer the caller
+    // writes past — the same class the calloc overflow check used to cover
+    // for goo_slice_alloc for free.
+    if (size > SIZE_MAX - GOO_OBJ_HEADER_SIZE) {
         goo_panic("Out of memory");
     }
 
-    return ptr;
+    unsigned char* base = malloc(GOO_OBJ_HEADER_SIZE + size);
+    if (!base) {
+        goo_panic("Out of memory");
+    }
+
+    GooObjHeader* h = (GooObjHeader*)base;
+    h->rc = 1;
+    h->reserved = 0;
+
+    return base + GOO_OBJ_HEADER_SIZE;
 }
 
 void* goo_realloc(void* ptr, size_t size) {
@@ -72,12 +106,27 @@ void* goo_realloc(void* ptr, size_t size) {
         return NULL;
     }
 
-    void* new_ptr = realloc(ptr, size);
-    if (!new_ptr) {
+    if (size > SIZE_MAX - GOO_OBJ_HEADER_SIZE) {
         goo_panic("Out of memory");
     }
 
-    return new_ptr;
+    // Move the BASE, not the payload. Handing the payload pointer to realloc()
+    // would offset a pointer libc never returned. The header sits at the front
+    // of the block, so realloc preserves the count across the move for free.
+    unsigned char* base = ptr ? (unsigned char*)ptr - GOO_OBJ_HEADER_SIZE : NULL;
+    unsigned char* new_base = realloc(base, GOO_OBJ_HEADER_SIZE + size);
+    if (!new_base) {
+        goo_panic("Out of memory");
+    }
+
+    if (!ptr) {
+        // Grew from nothing: there was no header to preserve.
+        GooObjHeader* h = (GooObjHeader*)new_base;
+        h->rc = 1;
+        h->reserved = 0;
+    }
+
+    return new_base + GOO_OBJ_HEADER_SIZE;
 }
 
 void goo_free(void* ptr) {
@@ -85,8 +134,51 @@ void goo_free(void* ptr) {
     // would be undefined behavior. Every zero-size allocation aliases it,
     // so this is reached routinely (e.g. releasing an empty slice literal's
     // backing "allocation") and must be a silent no-op, not a bug.
-    if (ptr && ptr != &goo_zerobase) {
-        free(ptr);
+    if (!goo_obj_headerless(ptr)) {
+        free((unsigned char*)ptr - GOO_OBJ_HEADER_SIZE);
+    }
+}
+
+uint64_t goo_obj_refcount(const void* ptr) {
+    if (goo_obj_headerless(ptr)) {
+        return 0;
+    }
+    return goo_obj_header((void*)ptr)->rc;
+}
+
+// NOT ATOMIC, and that is an OPEN DECISION rather than an oversight — ADR 0002
+// explicitly left "threaded (atomic counts) or per-goroutine" undecided, and
+// Goo has real goroutines. Nothing emits retain or release yet, so no program
+// can reach these concurrently today. Anything that starts emitting them MUST
+// settle that question first; a data race on rc frees a live object.
+void goo_retain(void* ptr) {
+    if (goo_obj_headerless(ptr)) {
+        return;
+    }
+    goo_obj_header(ptr)->rc++;
+}
+
+void goo_release(void* ptr) {
+    if (goo_obj_headerless(ptr)) {
+        return;
+    }
+
+    GooObjHeader* h = goo_obj_header(ptr);
+
+    // Loud, not clamped. rc is unsigned, so decrementing 0 wraps to a colossal
+    // count and the object leaks forever instead — a silent wrong answer that
+    // hides the emission bug that caused it. An over-release is always a
+    // compiler defect, never a user program's doing.
+    if (h->rc == 0) {
+        goo_panic("release of an object with reference count 0");
+    }
+
+    // Through goo_free, not a raw free(): the base-pointer arithmetic then
+    // lives in exactly ONE place, and Goo-visible memory keeps leaving by the
+    // single door alloc-doors-probe gates. (That probe caught this line as a
+    // raw free() when it was first written.)
+    if (--h->rc == 0) {
+        goo_free(ptr);
     }
 }
 
