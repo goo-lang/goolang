@@ -285,6 +285,65 @@ static TestRow rows[] = {
         "}\n",
         { { "id", 1, { true }, false, false } }, 1
     },
+    {
+        21, "param passed to a non-retaining SHIM -> false (whitelist widened past fmt)",
+        // Rows 17 and 18 pin the fmt/builtin half of the whitelist. This is
+        // the half that used to be missing, and its absence dominated
+        // everything else in the ARC leg.
+        //
+        // A C shim has no Goo body, so param_escape_lookup misses and
+        // call_taint took its "external/unregistered: pure-conservative"
+        // branch. Measured on bench/daemon: EVERY local passed to any stdlib
+        // call was marked escaping for that reason alone, so no release
+        // consumer could ever reclaim anything in a real program. See
+        // docs/superpowers/specs/2026-07-28-daemon-alloc-attribution-findings.md.
+        //
+        // goo_strings_trim_space does goo_alloc + memcpy, so it neither keeps
+        // the argument nor returns a view of it. NOTE that is the SHIM's
+        // behaviour, not Go's: Go's strings.TrimSpace returns a slice of its
+        // argument.
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) string {\n"
+        "    return strings.TrimSpace(s)\n"
+        "}\n",
+        { { "f", 1, { false }, false, false } }, 1
+    },
+    {
+        22, "param passed to errors.Unwrap -> true (its result ALIASES the argument)",
+        // SOUNDNESS row, and the counterweight to row 21. Widening the
+        // whitelist to a whole table is only safe if the table says no where
+        // it must. goo_error_unwrap returns `e->cause` (src/runtime/runtime.c)
+        // — a pointer INTO the argument's own structure — so its row is 0 and
+        // has to stay 0.
+        "package main\n"
+        "import \"errors\"\n"
+        "func f(e error) error {\n"
+        "    return errors.Unwrap(e)\n"
+        "}\n",
+        { { "f", 1, { true }, false, true } }, 1
+    },
+    {
+        23, "shim name SHADOWED by a local -> true (the base is a variable, not a package)",
+        // SOUNDNESS row. goo_callee_is_non_retaining answers by package name
+        // and selector, so a local named `strings` would otherwise collect the
+        // strings package's whitelist and `strings.Split(p)` would read as
+        // non-retaining — while Split is really a method on the local that
+        // stores p. selector_base_is_local (escape_core.c) is the guard, and
+        // membership in the walk's own LocalEnv is what it tests.
+        "package main\n"
+        "type Splitter struct { held *int }\n"
+        "var g *Splitter\n"
+        "func (s *Splitter) Split(p *int) {\n"
+        "    s.held = p\n"
+        "    g = s\n"
+        "}\n"
+        "func f(p *int) {\n"
+        "    strings := &Splitter{}\n"
+        "    strings.Split(p)\n"
+        "}\n",
+        { { "f", 1, { true }, false, false } }, 1
+    },
 };
 
 static int g_pass = 0;

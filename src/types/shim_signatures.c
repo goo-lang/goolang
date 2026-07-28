@@ -14,6 +14,22 @@ typedef struct {
                                   // the variadic tail (see is_variadic below)
     size_t param_count;
     int is_variadic;
+
+    // ARC / escape analysis: does this shim provably NOT retain a pointer
+    // argument past the call, AND provably NOT return a value that aliases
+    // one? Both halves are required, because escape_core.c's `whitelisted`
+    // branch uses this one bit for both — it skips marking the arguments
+    // escaping AND gives the call result an empty taint.
+    //
+    // SOUNDNESS: 1 is a TRUST assertion. If a row marked 1 actually retained
+    // an argument, an arena value passed to it would be freed while still
+    // referenced, and under ARC a released value would be freed while the
+    // callee still held it. This bit only ever REDUCES escaping, so a wrong 1
+    // is the one direction that can dangle a pointer. 0 is always safe.
+    //
+    // Every 1 below is justified against the runtime C body that implements
+    // it, named in the row's comment. Adding a 1 needs the same proof.
+    int non_retaining;
 } ShimSignature;
 
 static const ShimParamKind PARAMS_STRING[]              = { SHIM_PARAM_STRING };
@@ -44,13 +60,13 @@ static const ShimSignature SHIM_TABLE[] = {
     // skip_variadic_builtin path already leaves fully unchecked (no new
     // hook needed for these four). Printf/Sprintf/Errorf require a real
     // first string param, checked, then an unchecked "any" tail.
-    { "fmt", "Println",  SHIM_RET_VOID,   NULL,          0, 1 },
-    { "fmt", "Print",    SHIM_RET_VOID,   NULL,          0, 1 },
-    { "fmt", "Sprint",   SHIM_RET_STRING, NULL,          0, 1 },
-    { "fmt", "Sprintln", SHIM_RET_STRING, NULL,          0, 1 },
-    { "fmt", "Printf",   SHIM_RET_VOID,   PARAMS_STRING, NPARAMS(PARAMS_STRING), 1 },
-    { "fmt", "Sprintf",  SHIM_RET_STRING, PARAMS_STRING, NPARAMS(PARAMS_STRING), 1 },
-    { "fmt", "Errorf",   SHIM_RET_ERROR,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 1 },
+    { "fmt", "Println",  SHIM_RET_VOID,   NULL,          0, 1, 1 },
+    { "fmt", "Print",    SHIM_RET_VOID,   NULL,          0, 1, 1 },
+    { "fmt", "Sprint",   SHIM_RET_STRING, NULL,          0, 1, 1 },
+    { "fmt", "Sprintln", SHIM_RET_STRING, NULL,          0, 1, 1 },
+    { "fmt", "Printf",   SHIM_RET_VOID,   PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 1 },
+    { "fmt", "Sprintf",  SHIM_RET_STRING, PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 1 },
+    { "fmt", "Errorf",   SHIM_RET_ERROR,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 0 },
     // The Fprint family: the same formatting as their unprefixed siblings,
     // written to a chosen stream. The writer is an io.Writer, so ANY value
     // implementing Write is accepted — this used to be an int64 file
@@ -64,59 +80,91 @@ static const ShimSignature SHIM_TABLE[] = {
     // real io.Writer satisfaction test rather than a syntactic name match.
     // Fprintf's format string is checked there too, since dropping the fixed
     // params drops the generic check that used to cover it.
-    { "fmt", "Fprint",   SHIM_RET_VOID,   NULL, 0, 1 },
-    { "fmt", "Fprintln", SHIM_RET_VOID,   NULL, 0, 1 },
-    { "fmt", "Fprintf",  SHIM_RET_VOID,   NULL, 0, 1 },
-
+    { "fmt", "Fprint",   SHIM_RET_VOID,   NULL, 0, 1, 0 },
+    { "fmt", "Fprintln", SHIM_RET_VOID,   NULL, 0, 1, 0 },
+    { "fmt", "Fprintf",  SHIM_RET_VOID,   NULL, 0, 1, 0 },
     // os. Args is a value member (skip, per doc comment above).
-    { "os", "Exit",      SHIM_RET_VOID,  PARAMS_INT64,        NPARAMS(PARAMS_INT64), 0 },
-    { "os", "Getenv",    SHIM_RET_STRING, PARAMS_STRING,      NPARAMS(PARAMS_STRING), 0 },
-    { "os", "WriteFile", SHIM_RET_INT32, PARAMS_STRING_STRING, NPARAMS(PARAMS_STRING_STRING), 0 },
-    { "os", "ReadByte",  SHIM_RET_INT32, PARAMS_STRING_INT64, NPARAMS(PARAMS_STRING_INT64), 0 },
-    { "os", "FileSize",  SHIM_RET_INT32, PARAMS_STRING,       NPARAMS(PARAMS_STRING), 0 },
+    //
+    // NON-RETAINING: Exit only. It takes an int64 and does not return, so no
+    // pointer argument exists to retain. Every other os row stays 0: their
+    // runtime bodies were not audited for retention in this cut, and 0 is the
+    // safe answer.
+    { "os", "Exit",      SHIM_RET_VOID,  PARAMS_INT64,        NPARAMS(PARAMS_INT64), 0, 1 },
+    { "os", "Getenv",    SHIM_RET_STRING, PARAMS_STRING,      NPARAMS(PARAMS_STRING), 0, 0 },
+    { "os", "WriteFile", SHIM_RET_INT32, PARAMS_STRING_STRING, NPARAMS(PARAMS_STRING_STRING), 0, 0 },
+    { "os", "ReadByte",  SHIM_RET_INT32, PARAMS_STRING_INT64, NPARAMS(PARAMS_STRING_INT64), 0, 0 },
+    { "os", "FileSize",  SHIM_RET_INT32, PARAMS_STRING,       NPARAMS(PARAMS_STRING), 0, 0 },
     // P4.8: os.ReadFile(string) !string, os.ReadLine() !string — see
     // SHIM_RET_STRING_RESULT's doc comment in shim_signatures.h.
-    { "os", "ReadFile",  SHIM_RET_STRING_RESULT, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0 },
-    { "os", "ReadLine",  SHIM_RET_STRING_RESULT, NULL,          0, 0 },
-
+    { "os", "ReadFile",  SHIM_RET_STRING_RESULT, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 0 },
+    { "os", "ReadLine",  SHIM_RET_STRING_RESULT, NULL,          0, 0, 0 },
     // math. Pi is a value member (skip, per doc comment above).
-    { "math", "Sqrt", SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0 },
-    { "math", "Pow",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0 },
-    { "math", "Abs",  SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0 },
-    { "math", "Min",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0 },
-    { "math", "Max",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0 },
-
+    //
+    // NON-RETAINING, all five, trivially: every parameter and every result is
+    // a float64. There is no pointer for the callee to keep.
+    { "math", "Sqrt", SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0, 1 },
+    { "math", "Pow",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1 },
+    { "math", "Abs",  SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0, 1 },
+    { "math", "Min",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1 },
+    { "math", "Max",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1 },
     // strings: Contains/ToUpper/ToLower/Split/Join stay in this table as
     // the FALLBACK below source exports (goostd/strings) — see
     // is_stdlib_shim_import's doc comment in goo.c for why `strings` walks
     // as a source package while still routing some symbols through here.
-    { "strings", "Contains",   SHIM_RET_BOOL,        PARAMS_STRING_STRING,       NPARAMS(PARAMS_STRING_STRING), 0 },
-    { "strings", "ToUpper",    SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0 },
-    { "strings", "ToLower",    SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0 },
-    { "strings", "TrimSpace",  SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0 },
-    { "strings", "Split",      SHIM_RET_STRING_SLICE, PARAMS_STRING_STRING,      NPARAMS(PARAMS_STRING_STRING), 0 },
-    { "strings", "Join",       SHIM_RET_STRING,       PARAMS_STRING_SLICE_STRING, NPARAMS(PARAMS_STRING_SLICE_STRING), 0 },
-
-    { "strconv", "Itoa", SHIM_RET_STRING,       PARAMS_INT64,  NPARAMS(PARAMS_INT64), 0 },
-    { "strconv", "Atoi", SHIM_RET_ATOI_RESULT,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 0 },
-
-    { "errors", "New",    SHIM_RET_ERROR, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0 },
-    { "errors", "Unwrap", SHIM_RET_ERROR, PARAMS_ERROR,  NPARAMS(PARAMS_ERROR), 0 },
+    //
+    // NON-RETAINING, all six, and each one COPIES into a fresh goo_alloc
+    // buffer, so no result aliases an argument either (src/runtime/runtime.c):
+    //   Contains  -> goo_strings_contains: strstr, returns bool, stores nothing
+    //   ToUpper   -> goo_strings_map_case: goo_alloc + per-byte write
+    //   ToLower   -> goo_strings_map_case, same body
+    //   TrimSpace -> goo_strings_trim_space: goo_alloc + memcpy. NOTE this is
+    //                a COPY where Go's strings.TrimSpace returns a SLICE of
+    //                its argument. The shim's behaviour is what is asserted
+    //                here, not Go's.
+    //   Split     -> goo_strings_split: goo_alloc for the goo_string_t array,
+    //                then goo_string_new_with_length per part, which copies
+    //   Join      -> goo_strings_join: goo_alloc + memcpy. Reads the parts
+    //                slice, stores neither it nor its elements.
+    { "strings", "Contains",   SHIM_RET_BOOL,        PARAMS_STRING_STRING,       NPARAMS(PARAMS_STRING_STRING), 0, 1 },
+    { "strings", "ToUpper",    SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1 },
+    { "strings", "ToLower",    SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1 },
+    { "strings", "TrimSpace",  SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1 },
+    { "strings", "Split",      SHIM_RET_STRING_SLICE, PARAMS_STRING_STRING,      NPARAMS(PARAMS_STRING_STRING), 0, 1 },
+    { "strings", "Join",       SHIM_RET_STRING,       PARAMS_STRING_SLICE_STRING, NPARAMS(PARAMS_STRING_SLICE_STRING), 0, 1 },
+    // NON-RETAINING, both:
+    //   Itoa -> goo_int_to_string: goo_alloc + memcpy of a stack buffer. The
+    //           argument is an int64 anyway.
+    //   Atoi -> reads the string and writes an int64 out-param. Its ERROR
+    //           branch builds the COMPILE-TIME literal "strconv.Atoi: invalid
+    //           syntax" (call_codegen.c, LLVMBuildGlobalStringPtr), so the
+    //           returned error does not alias the argument.
+    { "strconv", "Itoa", SHIM_RET_STRING,       PARAMS_INT64,  NPARAMS(PARAMS_INT64), 0, 1 },
+    { "strconv", "Atoi", SHIM_RET_ATOI_RESULT,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 1 },
+    // NON-RETAINING: New and Is only.
+    //   New -> goo_error_from_string -> goo_error_wrap, which does
+    //          goo_alloc(len+1) + memcpy of the message. The returned error
+    //          owns a COPY and does not alias the argument.
+    //   Is  -> walks the %w chain comparing pointer identity. Stores nothing.
+    //
+    // Unwrap is 0 and MUST stay 0: goo_error_unwrap returns `e->cause`
+    // (runtime.c), a pointer INTO the argument's own structure. Its result
+    // aliases its argument, which is exactly what this bit must not claim.
+    { "errors", "New",    SHIM_RET_ERROR, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 1 },
+    { "errors", "Unwrap", SHIM_RET_ERROR, PARAMS_ERROR,  NPARAMS(PARAMS_ERROR), 0, 0 },
     // errors.Is walks the %w chain comparing identity. errors.As is
     // deliberately absent and is VACUOUS rather than merely hard: `error` is a
     // concrete type in v1 (pinned by custom_error_type_reject), so there are
     // no distinct concrete error types for it to recover.
-    { "errors", "Is",     SHIM_RET_BOOL,  PARAMS_ERROR_ERROR, NPARAMS(PARAMS_ERROR_ERROR), 0 },
-
+    { "errors", "Is",     SHIM_RET_BOOL,  PARAMS_ERROR_ERROR, NPARAMS(PARAMS_ERROR_ERROR), 0, 1 },
     // far (M2-B1): far-transport shims, runtime side src/runtime/far_transport.c.
     // Listen/Dial reuse the !int construction ATOI_RESULT already builds;
     // RecvF64 needs the new !float64 tag. Error spellings are API (see
     // far_transport.h).
-    { "far", "Listen",  SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0 },
-    { "far", "Dial",    SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0 },
-    { "far", "SendF64", SHIM_RET_VOID,        PARAMS_INT64_FLOAT64, NPARAMS(PARAMS_INT64_FLOAT64), 0 },
-    { "far", "RecvF64", SHIM_RET_F64_RESULT,  PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0 },
-    { "far", "Close",   SHIM_RET_VOID,        PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0 },
+    { "far", "Listen",  SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0, 0 },
+    { "far", "Dial",    SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0, 0 },
+    { "far", "SendF64", SHIM_RET_VOID,        PARAMS_INT64_FLOAT64, NPARAMS(PARAMS_INT64_FLOAT64), 0, 0 },
+    { "far", "RecvF64", SHIM_RET_F64_RESULT,  PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0, 0 },
+    { "far", "Close",   SHIM_RET_VOID,        PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0, 0 },
 };
 #define SHIM_TABLE_COUNT (sizeof(SHIM_TABLE) / sizeof(SHIM_TABLE[0]))
 
@@ -132,6 +180,13 @@ static const ShimSignature* shim_signature_find(const char* package, const char*
 
 int shim_signature_is_known_call(const char* package, const char* name) {
     return shim_signature_find(package, name) != NULL;
+}
+
+int shim_signature_is_non_retaining(const char* package, const char* name) {
+    const ShimSignature* row = shim_signature_find(package, name);
+    // An unknown pair is not a shim at all, so it gets the conservative answer
+    // — the same answer every unaudited row carries.
+    return row ? row->non_retaining : 0;
 }
 
 // Fresh "any" = the empty interface (Go 1.18+ predeclared `any`). Mirrors

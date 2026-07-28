@@ -95,4 +95,14 @@ Type* shim_signature_lookup(TypeChecker* checker, const char* package, const cha
 // table as the single source of truth for "is this shim callee real."
 int shim_signature_is_known_call(const char* package, const char* name);
 
+// True iff (package, name) is a shim that provably does NOT retain a pointer
+// argument past the call AND does NOT return a value aliasing one. 0 for an
+// unknown pair, and 0 for every shim whose runtime body has not been audited
+// — see the `non_retaining` field's comment in shim_signatures.c for the
+// soundness rule and the per-package proofs.
+//
+// The escape analyses reach this through goo_callee_is_non_retaining
+// (nonretaining.h), which is the single predicate they both consult.
+int shim_signature_is_non_retaining(const char* package, const char* name);
+
 #endif // SHIM_SIGNATURES_H
