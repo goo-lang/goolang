@@ -1,0 +1,104 @@
+// multiret-narrow probe: a multi-value return whose result types are NARROWER
+// than the default constant width.
+//
+// The bug this pins. statement_codegen.c builds a multi-value return by
+// InsertValue-ing each value into an aggregate of the function's result type.
+// It coerced a nullable and it boxed an interface, but it never width-coerced a
+// plain number. An untyped integer constant is generated as i64 and a float
+// constant as double, so returning 'A' from a (rune, int) function
+// emitted
+//
+//     ret { i32, i64 } { i64 65, i64 0 }
+//
+// where element 0 is declared i32 and the constant is i64. That is not valid
+// LLVM IR. `opt -passes=verify` rejects it, so `goo --emit-llvm` output could
+// not be re-parsed by LLVM's own tools, and at -O2 the backend aborted with
+// "LLVM ERROR: Cannot emit physreg copy instruction" on some shapes.
+//
+// goostd/utf8 has exactly this shape (RuneError returned from a (rune, int)
+// function), so every program importing strings carried invalid IR.
+//
+// int8, int16, int32, rune and float32 were all affected. bool was already
+// correct, which is why nothing caught this: the one narrow type in common use
+// happened to work.
+//
+// Expected output produced by `go run` on the equivalent Go program, per
+// project convention.
+package main
+
+import "fmt"
+
+func asRune(b bool) (rune, int) {
+	if b {
+		return '\uFFFD', 0
+	}
+	return 'A', 1
+}
+
+func asInt32(b bool) (int32, int) {
+	if b {
+		return 2147483647, 0
+	}
+	return -7, 1
+}
+
+func asInt16(b bool) (int16, int) {
+	if b {
+		return 32767, 0
+	}
+	return -9, 1
+}
+
+func asInt8(b bool) (int8, int) {
+	if b {
+		return 127, 0
+	}
+	return -3, 1
+}
+
+func asFloat32(b bool) (float32, int) {
+	if b {
+		return 1.5, 0
+	}
+	return -2.25, 1
+}
+
+func asBool(b bool) (bool, int) {
+	if b {
+		return true, 0
+	}
+	return false, 1
+}
+
+func main() {
+	r, n := asRune(true)
+	fmt.Println(int(r) + n)
+	r2, n2 := asRune(false)
+	fmt.Println(int(r2) + n2)
+
+	a, an := asInt32(true)
+	fmt.Println(int(a) + an)
+	b2, bn := asInt32(false)
+	fmt.Println(int(b2) + bn)
+
+	c, cn := asInt16(true)
+	fmt.Println(int(c) + cn)
+	d, dn := asInt16(false)
+	fmt.Println(int(d) + dn)
+
+	e, en := asInt8(true)
+	fmt.Println(int(e) + en)
+	f, fn := asInt8(false)
+	fmt.Println(int(f) + fn)
+
+	g, gn := asFloat32(true)
+	fmt.Println(float64(g))
+	fmt.Println(gn)
+	h, hn := asFloat32(false)
+	fmt.Println(float64(h))
+	fmt.Println(hn)
+
+	i, in := asBool(true)
+	fmt.Println(i)
+	fmt.Println(in)
+}

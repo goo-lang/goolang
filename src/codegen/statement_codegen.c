@@ -1848,6 +1848,30 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                     }
                     raw = boxed;
                 }
+                // Width-coerce a plain number to the result slot. An untyped
+                // integer constant is generated as i64 and a float constant as
+                // double, so `return 'A', 0` from a `(rune, int)` function
+                // produced `ret { i32, i64 } { i64 65, i64 0 }` — element 0
+                // declared i32, constant i64. That is not valid LLVM IR:
+                // `opt -passes=verify` rejects it, and at -O2 the backend
+                // aborted with "Cannot emit physreg copy instruction" on some
+                // shapes. goostd/utf8 returns `RuneError, 0` from a
+                // `(rune, int)` function, so EVERY program importing strings
+                // carried it. int8/int16/int32/rune/float32 were all affected;
+                // bool already worked, which is why nothing caught it.
+                //
+                // codegen_coerce_to_type is the single owner of this rule (its
+                // own doc comment lists the four sites that previously
+                // re-broke it) — this was a fifth site that never adopted it.
+                // It returns the value unchanged for matching types, pointers
+                // and aggregates, so the nullable and interface arms above are
+                // unaffected. Runs AFTER them on purpose: both already produce
+                // a value whose type matches the slot.
+                LLVMTypeRef slot_ty = LLVMStructGetTypeAtIndex(ret_llvm, (unsigned)i);
+                if (slot_ty) {
+                    int src_signed = vv->goo_type ? type_is_signed(vv->goo_type) : 1;
+                    raw = codegen_coerce_to_type(codegen, raw, src_signed, slot_ty);
+                }
                 agg = LLVMBuildInsertValue(codegen->builder, agg, raw, (unsigned)i, "ret_field");
                 value_info_free(vv);
             }
