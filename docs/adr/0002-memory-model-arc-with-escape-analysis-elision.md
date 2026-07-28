@@ -1,7 +1,7 @@
 # 2. Memory model: automatic reference counting, elided by the existing escape analysis
 
 Date: 2026-07-28
-Status: proposed
+Status: accepted (2026-07-28)
 
 ## Context
 
@@ -89,6 +89,47 @@ runtime-counted model the figure is zero.
 codegen. `src/types/ownership_checker.c` compiles into `bin/goo` but exports
 one function with zero call sites — it is a name, not a system, and must not
 be mistaken for a starting point.
+
+### Why the arena reaches so little — diagnosed after the decision
+
+The measurements above say arenas cover almost nothing. The follow-up says WHY,
+and it changes the shape of the implementation work:
+
+- **11 of the 13 `codegen_emit_alloc` call sites pass `NULL` as the alloc
+  site** — interface boxing (`interface_codegen.c`), closure environments and
+  go-arg boxes (`function_codegen.c`), map value boxes
+  (`composite_codegen.c`). `block_escape_site_escapes` returns TRUE for a NULL
+  site by contract, so those allocations fall through to the heap NO MATTER
+  what the analysis could prove. Measured: interface boxing inside an arena,
+  400,000 iterations, 13.9 MB with the arena against 14.5 MB without.
+- **`append` and slice growth allocate inside the RUNTIME**
+  (`goo_slice_alloc`, `goo_slice_append` in `src/runtime/runtime.c`), which has
+  no arena awareness at all. They never reach `codegen_emit_alloc`.
+
+**Both the plumbing AND the analysis are short, and neither alone is enough.**
+`include/block_escape.h` states its own scope: it classifies exactly two site
+kinds, `new(T)` and `&<composite literal>`, and says every other allocation
+funnelled through `codegen_emit_alloc` "is out of scope for this cut … a lookup
+finds no decision for them -> miss -> heap (conservative, safe)". So threading
+the AST node through those 11 sites would produce a MISS, not a decision, and
+change nothing on its own.
+
+That gives two phases, and the first is larger than a plumbing job:
+
+1. Extend `block_escape` to classify the additional site kinds (interface box,
+   closure env, go-arg box, map value box, slice-literal backing) AND thread
+   the real node through the call sites that currently discard it. Both halves
+   ship together or neither has an effect.
+2. Give the runtime allocator a notion of the current region, so
+   helper-allocated memory (`append`, string operations, map inserts) can be
+   region-routed at all. This is where the daemon's 1.63 KB per request lives.
+
+**The soundness rule constrains phase 1 hard, and it is asymmetric.** Per that
+same header: `true` (escapes) is always a safe answer, and `false` asserts
+"provably does not outlive the block". Under-marking is the ONLY bug class that
+can dangle a pointer — a use-after-free, not a lost optimisation. Every new
+site kind must therefore default to `true` and be narrowed only where the
+analysis genuinely understands the construct.
 
 ## Decision
 
