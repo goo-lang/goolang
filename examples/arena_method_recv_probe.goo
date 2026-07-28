@@ -1,0 +1,46 @@
+// Arena receiver-escape probe: a method call must mark its RECEIVER, not just
+// its arguments.
+//
+// The same escape — stash the pointer in a package global — is spelled two
+// ways inside one arena{} block. `stashFn(a)` has an identifier callee, so
+// block_escape looks up the 7a summary, sees param 0 retained, and routes the
+// site to the heap. `b.stashM()` has a SELECTOR callee, which resolves to no
+// summary, and a receiver is not a member of call->args — so the retain-all
+// rule for an unresolved callee never covered it.
+//
+// Before the fix the receiver taint was computed and discarded, `&T{x: 22}`
+// emitted goo_arena_alloc, and reading keptM after the block printed garbage
+// (measured: 4503668347830287) while still exiting 0. Valgrind called it an
+// invalid read of size 8. This is the same hole handle_go_call already closed
+// for `go p.m()`, left open on the ordinary call path.
+//
+// Both globals are read AFTER the block frees its arena, so a regression is a
+// wrong number here and an invalid read under arena-valgrind-probe.
+package main
+
+type T struct {
+	x int
+}
+
+var keptFn *T
+var keptM *T
+
+func stashFn(p *T) {
+	keptFn = p
+}
+
+func (t *T) stashM() {
+	keptM = t
+}
+
+func main() {
+	arena {
+		a := &T{x: 11}
+		stashFn(a)
+
+		b := &T{x: 22}
+		b.stashM()
+	}
+	println(keptFn.x)
+	println(keptM.x)
+}

@@ -243,6 +243,24 @@ static TestRow rows[] = {
         "}\n",
         { { "f", 1, { false }, false, false } }, 1
     },
+    {
+        19, "param used as a method-call RECEIVER -> true (unresolved callee)",
+        // Soundness row, mirroring block_escape row 30. A selector callee does
+        // not resolve to a summary, and the receiver is not in call->args, so
+        // the retain-all rule for an unresolved callee never covered it. The
+        // receiver taint was computed and freed, so `stash` storing its
+        // receiver in a global left f's param 0 marked non-escaping.
+        "package main\n"
+        "type T struct { x int }\n"
+        "var g *T\n"
+        "func (t *T) stash() {\n"
+        "    g = t\n"
+        "}\n"
+        "func f(p *T) {\n"
+        "    p.stash()\n"
+        "}\n",
+        { { "f", 1, { true }, false, false } }, 1
+    },
 };
 
 static int g_pass = 0;

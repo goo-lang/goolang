@@ -463,6 +463,50 @@ static TestRow rows[] = {
         "}\n",
         2, { true, false }
     },
+    {
+        30, "method call on the site, receiver retained by the method -> true",
+        // Soundness row. The callee is a SELECTOR expr, so the summary lookup
+        // (which needs an AST_IDENTIFIER) misses and `callee` stays NULL. The
+        // receiver is not an entry in call->args, so the retain-all rule for
+        // an unresolved callee never reaches it. Before the fix the receiver
+        // taint was computed and freed, leaving this site arena-eligible while
+        // the method body stored it in a global: a use-after-free once the
+        // block frees the arena. Same hole handle_go_call already closed for
+        // `go p.m()`.
+        "package main\n"
+        "type T struct { x int }\n"
+        "var g *T\n"
+        "func (t *T) stash() {\n"
+        "    g = t\n"
+        "}\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        p := &T{x: 1}\n"
+        "        p.stash()\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        31, "method call on the site, method does NOT retain -> still true",
+        // Precision cost of the conservative fix, pinned deliberately rather
+        // than left to drift. An unresolved callee cannot be proven
+        // non-retaining, so ANY method call on a site marks it. Recovering
+        // this row needs receiver-type-qualified summary keys: the registry
+        // keys on the bare name and returns the first match, so resolving
+        // `p.touch()` by name alone can find a different type's `touch`.
+        "package main\n"
+        "type T struct { x int }\n"
+        "func (t *T) touch() {\n"
+        "}\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        p := &T{x: 1}\n"
+        "        p.touch()\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
 };
 
 static int g_pass = 0;

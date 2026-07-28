@@ -4910,7 +4910,7 @@ arena-routing-test: arena_routing_test
 #                                 catch that. The valgrind gate below is why both
 #                                 probes are on this list rather than relying on
 #                                 test-golden alone.
-ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe arena_fmt_println_probe arena_goto_probe arena_closure_reclaim_probe arena_closure_escape_probe
+ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe arena_fmt_println_probe arena_goto_probe arena_closure_reclaim_probe arena_closure_escape_probe arena_method_recv_probe
 
 # ADR 0003 compile-speed work: an imported package's UNREACHABLE functions must
 # not survive into the emitted IR. They used to, because package functions
