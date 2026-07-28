@@ -227,6 +227,224 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "parts", true }, { "k", true } }, 2
     },
+
+    // ---------------- SOUNDNESS: one row per unguarded engine arm ----------
+    //
+    // docs/adr/0002-measurements/escape_arm_coverage.md mutated all 17 arms of
+    // escape_expr_taint in BOTH directions and measured which suite notices.
+    // Eleven of the 16 testable arms had NO soundness coverage in ANY of the
+    // three suites: nothing detected the arm claiming its expression aliases
+    // nothing, and under-marking is the one bug class that can dangle a
+    // pointer once T4 emits a release.
+    //
+    // Every row below routes the taint THROUGH one arm with NO OTHER PATH to a
+    // sink. That is deliberate and it is why row 15 does not already cover the
+    // binary arm: row 15 contains `k := s + "x"`, but `k`'s verdict comes from
+    // sink #2b (the map key), so under-marking the binary arm leaves row 15
+    // green. A row that passes for a second reason measures nothing.
+    //
+    // Each row was verified to FAIL under
+    // `scripts/escape_arm_coverage.sh <ARM> under` and to pass with the arm
+    // restored.
+    {
+        // AST_BINARY_EXPR. `s` is bound to a LITERAL, so it carries only its
+        // own bit and no call sink touches it. The concatenation is the only
+        // route to the global.
+        17, "local reaches a global THROUGH a binary expression -> true",
+        "package main\n"
+        "var g string\n"
+        "func f() {\n"
+        "    s := \"abc\"\n"
+        "    g = s + \"def\"\n"
+        "}\n",
+        "f", { { "s", true } }, 1
+    },
+    {
+        // AST_STRUCT_LITERAL. The arm unions over field_values, which is also
+        // why AST_KEYED_ELEMENT never runs: the parser hands the values list
+        // directly and no keyed-element node is walked.
+        18, "local carried into a global inside a STRUCT LITERAL -> true",
+        "package main\n"
+        "type T struct { p *int }\n"
+        "var g T\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    g = T{p: x}\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_SLICE_EXPR (a SliceLitNode, not a slice-index). This is the
+        // analysis-side guard for the "slices of pointers" ledger item:
+        // goo_slice_append copies raw bytes, so nothing counts an appended
+        // pointer at RUNTIME, but the analysis must at least mark it.
+        19, "local carried into a global inside a SLICE LITERAL -> true",
+        "package main\n"
+        "var g []*int\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    g = []*int{x}\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_PAREN_EXPR is the MAP LITERAL (MapLitNode). The arm walks the
+        // keys list AND the values list, so this row taints one of each: `k`
+        // proves the key loop, `x` proves the value loop. One row, two loops.
+        // The map is 23.2% of the daemon's retained bytes.
+        20, "locals carried into a global inside a MAP LITERAL -> true, true",
+        "package main\n"
+        "var g map[string]*int\n"
+        "func f() {\n"
+        "    k := \"a\"\n"
+        "    x := new(int)\n"
+        "    g = map[string]*int{k: x}\n"
+        "}\n",
+        "f", { { "k", true }, { "x", true } }, 2
+    },
+    {
+        // AST_INDEX_EXPR, and this is its FIRST fixture in any of the three
+        // suites. `--reach` measured 0 hits across all 70 rows before this one.
+        //
+        // That zero looked wrong against PR #255, whose headline was the
+        // map-key sink, so it was checked: assign_to_lvalue handles the WRITE
+        // `m[k] = v` through mark_lvalue_subscripts (sink #2b) and never routes
+        // through this arm. This arm is the READ, `v := xs[i]`, and nothing
+        // exercised it.
+        //
+        // What it must assert: an element read OUT of a container aliases the
+        // container. `xs[0]` can be a pointer the slice's buffer holds, so if
+        // the element reaches a global the slice has to be kept alive too.
+        // Under-marking here would let T4 release a buffer that a live global
+        // still points into.
+        21, "local read by INDEX into a global -> true (the element aliases the base)",
+        "package main\n"
+        "var g *int\n"
+        "func f() {\n"
+        "    xs := []*int{}\n"
+        "    g = xs[0]\n"
+        "}\n",
+        "f", { { "xs", true } }, 1
+    },
+    {
+        // PRECISION COST of the arm above, pinned deliberately rather than left
+        // to drift -- the same treatment block-escape row 31 gets.
+        //
+        // AST_INDEX_EXPR unions the taint of the BASE and of the INDEX. On a
+        // WRITE that is required (sink #2b: goo_map_set_sv keeps the key
+        // pointer verbatim). On a READ it is over-conservative, because
+        // goo_map_get stores nothing -- yet `k` still reads as escaping here,
+        // and a local used only as a lookup key can therefore never be
+        // released.
+        //
+        // MEASURED before deciding to keep it: the daemon's string local stays
+        // escaping because the map holds it as a key in a WRITE, not a read
+        // (docs/superpowers/specs/
+        // 2026-07-28-daemon-alloc-attribution-findings.md). So tightening this
+        // to mark only the base would reclaim ~0% of the daemon, and it would
+        // be a soundness-relevant change to the shared engine. Not worth it
+        // until a measurement says otherwise.
+        //
+        // If T4 ever does tighten it, this row is the one that must change, and
+        // changing it should be an argument, not an accident.
+        22, "local used only as a map READ key -> true (conservative, see comment)",
+        "package main\n"
+        "var g *int\n"
+        "func f(m map[string]*int) {\n"
+        "    k := \"a\"\n"
+        "    g = m[k]\n"
+        "}\n",
+        "f", { { "k", true } }, 1
+    },
+
+    // ---------------- SOUNDNESS: the STATEMENT arms, which are the sinks ----
+    //
+    // The arm matrix was extended to escape_walk_stmt, and the statement arms
+    // measured worse than the expression ones. An expression arm only
+    // PROPAGATES taint; a statement arm DECIDES what escapes. Skipping one
+    // deletes a sink outright.
+    //
+    // Measured across all 78 rows of the three suites: AST_MULTI_ASSIGN,
+    // AST_SWITCH_STMT, AST_TYPE_SWITCH and AST_SELECT_STMT were NEVER REACHED,
+    // and AST_IF_STMT had zero hits in param and local. The three
+    // control-flow arms are the dangerous ones, because each RECURSES into a
+    // nested statement body -- skip the arm and the whole body goes unwalked,
+    // so `switch n { case 1: return x }` never marks x at all.
+    //
+    // Each row verified to FAIL under
+    // `scripts/escape_arm_coverage.sh <ARM> stmt-under` and to pass with the
+    // arm restored.
+    {
+        // AST_MULTI_ASSIGN. A sink, and `v, err := f()` is among the commonest
+        // statements in Go, yet nothing in 78 rows exercised it.
+        23, "local stored to a global by MULTI-ASSIGN -> true",
+        "package main\n"
+        "var g *int\n"
+        "var h *int\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    g, h = x, x\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_SWITCH_STMT. The escape is inside a case body, so the arm's
+        // recursion into that body is the only thing that finds it.
+        24, "local returned from inside a SWITCH case -> true",
+        "package main\n"
+        "func f(n int) *int {\n"
+        "    x := new(int)\n"
+        "    switch n {\n"
+        "    case 1:\n"
+        "        return x\n"
+        "    }\n"
+        "    return nil\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_TYPE_SWITCH. Same shape, different arm -- a type switch carries
+        // its own node kind and its own recursion.
+        25, "local stored to a global inside a TYPE SWITCH case -> true",
+        "package main\n"
+        "var g *int\n"
+        "func f(v interface{}) {\n"
+        "    x := new(int)\n"
+        "    switch v.(type) {\n"
+        "    case int:\n"
+        "        g = x\n"
+        "    }\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_SELECT_STMT. The channel send is the sink, and the select arm is
+        // what walks the comm clauses to reach it.
+        26, "local sent on a channel inside a SELECT clause -> true",
+        "package main\n"
+        "func f(ch chan *int) {\n"
+        "    x := new(int)\n"
+        "    select {\n"
+        "    case ch <- x:\n"
+        "    }\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // AST_IF_STMT had 0 hits in param and local. `if` is everywhere in real
+        // code, so an unwalked then-branch is a broad hole rather than a narrow
+        // one.
+        27, "local returned from inside an IF branch -> true",
+        "package main\n"
+        "func f(n int) *int {\n"
+        "    x := new(int)\n"
+        "    if n > 0 {\n"
+        "        return x\n"
+        "    }\n"
+        "    return nil\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
 };
 
 static int failures = 0;

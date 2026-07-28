@@ -507,6 +507,31 @@ static TestRow rows[] = {
         "}\n",
         1, { true }
     },
+    {
+        32, "site allocated inside a `for i := 0; i < 3; i++` loop -> false",
+        // PRECISION row, the block-granularity half of the ledger item PR #255
+        // opened. Deleting the AST_POSTFIX_EXPR arm from the shared engine left
+        // all 31 rows of this table green. `--reach` gives the stronger cause:
+        // ZERO postfix nodes across every fixture in this file.
+        //
+        // This is also the commonest arena shape there is -- allocate per
+        // iteration, let the block reclaim -- so its absence mattered more here
+        // than the row count suggests.
+        //
+        // The teeth: without the arm the postfix falls to the default arm,
+        // which marks every SITE escaping, so this reads true and the row
+        // fails. See docs/adr/0002-measurements/escape_arm_coverage.md.
+        "package main\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        for i := 0; i < 3; i++ {\n"
+        "            x := new(int)\n"
+        "            _ = x\n"
+        "        }\n"
+        "    }\n"
+        "}\n",
+        1, { false }
+    },
 };
 
 static int g_pass = 0;
