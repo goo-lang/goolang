@@ -1,0 +1,45 @@
+// String and slice heavy text processing.
+//
+// This measures the RUNTIME HELPER allocation path — append, string
+// concatenation, Fields, Join, ToUpper. ADR 0002 records that none of these
+// reaches codegen_emit_alloc, so the arena cannot touch them and phase 2 is
+// the only thing that will. The daemon benchmark measures retention; this one
+// measures throughput on the same path.
+//
+// strings.Contains is not in goostd, so this uses strings.Index(s, x) >= 0,
+// which is what Contains is defined as anyway.
+package main
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+)
+
+func main() {
+	lines := 200000
+	if len(os.Args) > 1 {
+		n, err := strconv.Atoi(os.Args[1])
+		if err == nil {
+			lines = n
+		}
+	}
+	hits := 0
+	total := 0
+	for i := 0; i < lines; i++ {
+		line := "alpha beta gamma " + strconv.Itoa(i) + " delta epsilon zeta"
+		words := strings.Fields(line)
+		kept := []string{}
+		for j := 0; j < len(words); j++ {
+			if strings.Index(words[j], "a") >= 0 {
+				hits = hits + 1
+				kept = append(kept, strings.ToUpper(words[j]))
+			}
+			total = total + len(words[j])
+		}
+		joined := strings.Join(kept, ",")
+		total = total + strings.Count(joined, ",")
+	}
+	fmt.Println(total + hits)
+}

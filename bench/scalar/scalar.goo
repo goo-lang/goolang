@@ -1,0 +1,23 @@
+// Scalar loop, no allocation. Measures raw backend code quality: what LLVM
+// makes of a dependent integer chain that it cannot fold, vectorise or elide.
+//
+// The recurrence is a 64-bit LCG, so each iteration depends on the previous
+// one. That defeats both auto-vectorisation and loop reordering, which is the
+// point: this program isolates scalar codegen from every runtime concern.
+// Signed overflow wraps in Go and in Goo. The Rust version therefore uses
+// wrapping_mul and wrapping_add, which is the same machine operation.
+package main
+
+import "fmt"
+
+func main() {
+	var x int64 = 1
+	var acc int64 = 0
+	i := 0
+	for i < 100000000 {
+		x = x*6364136223846793005 + 1442695040888963407
+		acc = acc + (x >> 33)
+		i = i + 1
+	}
+	fmt.Println(acc)
+}

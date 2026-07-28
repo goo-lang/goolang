@@ -1,0 +1,54 @@
+// 1D heat-equation stencil — Goo, using goostd/lanes.
+//
+// THE ALGORITHM, which every language version below implements identically:
+//   N = 1<<20 float64 cells, all 0.0 except a unit spike at N/2.
+//   100 rounds of new[i] = 0.25*old[i-1] + 0.5*old[i] + 0.25*old[i+1],
+//   with a Dirichlet 0.0 boundary outside the domain.
+//   8 lanes / threads / chunks.
+//
+// THE CHECKSUM is deliberately not the plain sum. After 100 rounds the mass
+// still totals about 1.0 whatever the implementation does with it, so a plain
+// sum prints "1" for a correct AND for a broken program. Weighting each cell
+// by i%97 makes the result sensitive to WHERE the mass sits, which is what the
+// halo exchange actually has to get right. The result is scaled and truncated
+// to an integer so the comparison never depends on how three languages format
+// a float.
+//
+// The summation runs sequentially over 0..n-1 in every version, so the
+// floating-point addition order is identical and the checksums are comparable
+// bit-for-bit.
+package main
+
+import "fmt"
+import "lanes"
+
+func main() {
+	n := 1 << 20
+	data := make([]float64, n)
+	i := 0
+	for i < n {
+		data[i] = 0.0
+		i = i + 1
+	}
+	data[n/2] = 1.0
+	coeffs := []float64{0.25, 0.5, 0.25}
+
+	// Partition MOVES data. Only Run's return value may be read after this.
+	p := lanes.Partition(data, 8)
+	out := lanes.Run(p, 1000, func(ctx *lanes.Lane) {
+		for {
+			lanes.StencilStep(ctx, 1, coeffs)
+			if !ctx.Step() {
+				break
+			}
+		}
+	})
+
+	acc := 0.0
+	i = 0
+	for i < n {
+		acc = acc + out[i]*float64(i%97)
+		i = i + 1
+	}
+	fmt.Println(int64(acc * 1000000000.0))
+}

@@ -1,0 +1,13 @@
+// Hello world with one library call. Measures COMPILE time and BINARY size,
+// not run time. This is the axis the project assumed it was winning and had
+// never measured.
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+func main() {
+	fmt.Println(strings.Repeat("hello ", 2))
+}
