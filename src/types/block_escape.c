@@ -682,8 +682,28 @@ static void handle_go_call(Ctx* ctx, ASTNode* call_node) {
     }
     CallExprNode* call = (CallExprNode*)call_node;
 
-    if (!(call->function && call->function->type == AST_IDENTIFIER)) {
+    // The CALLEE's taint escapes too, not just the arguments.
+    //
+    // This used to compute the callee's taint and DISCARD it, and for a
+    // non-identifier callee that was an under-marking hole: `go p.m()` inside
+    // an arena block left `p` arena-eligible, because the call carries no
+    // arguments and nothing else marks the receiver. The method body then
+    // dereferences `p` after the block has freed it. Verified at the IR level
+    // before the fix — the `new(T)` emitted `goo_arena_alloc`.
+    //
+    // Currently masked by a SEPARATE defect (`go p.m()` on a pointer receiver
+    // fails module verification, so the program does not build), but it stops
+    // being masked the moment closure environments become allocation sites:
+    // `go f()` on a local holding a closure takes the identifier path, which
+    // did not even compute the taint.
+    //
+    // So the taint is now computed and marked for EVERY callee shape,
+    // identifier included. A top-level function name resolves to the empty
+    // set, making the extra work a no-op there. Over-marking is always safe;
+    // under-marking is what dangles a pointer.
+    {
         TaintSet ft = expr_taint(ctx, call->function);
+        mark_escapes(ctx, &ft);
         taint_set_free(&ft);
     }
 

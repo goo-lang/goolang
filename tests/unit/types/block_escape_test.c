@@ -278,6 +278,57 @@ static TestRow rows[] = {
         "}\n",
         1, { false }
     },
+    {
+        // The go-callee hole. handle_go_call marked a goroutine's ARGUMENTS
+        // escaping but computed the CALLEE's taint and discarded it, so a
+        // receiver reached by `go p.m()` stayed arena-eligible while the
+        // goroutine held it. The call carries no arguments, so nothing else
+        // could have saved it. Verified at the IR level before the fix: the
+        // new(T) emitted goo_arena_alloc.
+        19, "go p.m() receiver -> true (callee taint escapes, not just args)",
+        "package main\n"
+        "type T struct { x int }\n"
+        "func (t *T) m() { _ = t.x }\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        p := new(T)\n"
+        "        go p.m()\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        // Same hole through an IDENTIFIER callee, which the old code did not
+        // even compute a taint for. Harmless while only new(T)/&composite are
+        // sites, but it stops being harmless the moment closure environments
+        // become sites — `go f()` on a local holding a closure takes exactly
+        // this path. Pinned now so the fix cannot be reverted quietly.
+        20, "go through a value reached from an arena alloc -> true",
+        "package main\n"
+        "type B struct { fn func() }\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        b := new(B)\n"
+        "        b.fn = func() {}\n"
+        "        go b.fn()\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        // Over-marking guard for the same fix: an ORDINARY call (no `go`) to a
+        // whitelisted non-retaining function must stay arena-eligible. The
+        // callee-taint change must not leak into the plain-call path.
+        21, "plain call is unaffected by the go-callee fix -> false",
+        "package main\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        p := new(int)\n"
+        "        fmt.Println(p)\n"
+        "    }\n"
+        "}\n",
+        1, { false }
+    },
 };
 
 static int g_pass = 0;

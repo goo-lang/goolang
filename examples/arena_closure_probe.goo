@@ -1,0 +1,76 @@
+// arena_closure_probe: a capturing closure inside an `arena { }` block.
+//
+// This did not COMPILE before the fix. The arena stack lives on the
+// CodeGenerator and was not saved when codegen entered a func-literal body, so
+// the closure — a separate LLVM function — inherited the enclosing function's
+// arena_depth. Its own `return` then ran the arena-free path and emitted
+// `goo_arena_free(%arena_new)` against an SSA value defined in the OUTER
+// function:
+//
+//     Module verification failed: Referring to an instruction in another
+//     function!  call void @goo_arena_free(ptr %arena_new)
+//
+// It failed loudly at the verifier rather than miscompiling, which is the good
+// case. Had it linked it would also have been a double free, because the
+// enclosing function frees the same arena on fall-through.
+//
+// Expected output produced by `go run` on the equivalent Go program with the
+// arena blocks removed (go1.26.1), per project convention.
+package main
+
+import "fmt"
+
+func main() {
+	// 1. A closure that captures and RETURNS — the return is what triggered
+	//    the bogus free.
+	total := 0
+	for i := 0; i < 3; i++ {
+		arena {
+			v := i
+			double := func() int { return v * 2 }
+			total = total + double()
+		}
+	}
+	fmt.Println(total)
+
+	// 2. A closure with no return value, captured by reference.
+	count := 0
+	arena {
+		bump := func() { count = count + 1 }
+		bump()
+		bump()
+	}
+	fmt.Println(count)
+
+	// 3. A closure that ESCAPES the arena block, called after it closes. Its
+	//    environment must be on the heap, so this must print the captured
+	//    value rather than garbage.
+	var escaped func() int
+	arena {
+		kept := 99
+		escaped = func() int { return kept }
+	}
+	fmt.Println(escaped())
+
+	// 4. Nested arena blocks, each with its own closure.
+	sum := 0
+	arena {
+		a := 10
+		outer := func() int { return a }
+		arena {
+			b := 5
+			inner := func() int { return b }
+			sum = outer() + inner()
+		}
+	}
+	fmt.Println(sum)
+
+	// 5. A closure alongside an ordinary arena allocation, so the two
+	//    mechanisms are exercised in one block.
+	arena {
+		p := new(int)
+		*p = 7
+		grab := func() int { return *p }
+		fmt.Println(grab())
+	}
+}

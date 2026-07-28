@@ -767,6 +767,28 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     Type* saved_return_type = checker->current_return_type;
     Scope* enclosing_scope = checker->current_scope;
 
+    // The ARENA STACK is ambient state too, and leaving it visible here was a
+    // real defect: a closure body is a SEPARATE LLVM function, but it inherited
+    // the enclosing function's arena_depth, so the closure's own `return` ran
+    // the arena-free path and emitted `goo_arena_free(%arena_new)` against an
+    // SSA value defined in the OUTER function.
+    //
+    // Symptom before this save: any capturing closure inside an `arena { }`
+    // block failed module verification with "Referring to an instruction in
+    // another function", so the construct did not compile at all. Had it
+    // linked it would also have been a double free, since the enclosing
+    // function frees the same arena on fall-through.
+    //
+    // The whole ARRAY is saved, not just the depth. Zeroing the depth alone
+    // would let a closure that contains its own `arena { }` push at index 0
+    // and clobber the outer function's live entries.
+    LLVMValueRef saved_arena_stack[16];
+    int saved_arena_loop_depth[16];
+    memcpy(saved_arena_stack, codegen->arena_stack, sizeof(saved_arena_stack));
+    memcpy(saved_arena_loop_depth, codegen->arena_loop_depth, sizeof(saved_arena_loop_depth));
+    int saved_arena_depth = codegen->arena_depth;
+    codegen->arena_depth = 0;   // the closure body starts with no active arena
+
     // Codegen hardening R1: save the outer function's ENTIRE control-flow
     // state (loop/break stack, goto-label table, pending label,
     // fallthrough stack) in one struct assignment — see this function's
@@ -926,6 +948,11 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     memcpy(g_escape_names, saved_escape_names, sizeof(g_escape_names));
     g_escape_count = saved_escape_count;
     g_escape_has_go = saved_escape_has_go;
+
+    // Restore the enclosing function's arena stack — see the save above.
+    memcpy(codegen->arena_stack, saved_arena_stack, sizeof(saved_arena_stack));
+    memcpy(codegen->arena_loop_depth, saved_arena_loop_depth, sizeof(saved_arena_loop_depth));
+    codegen->arena_depth = saved_arena_depth;
 
     // Codegen hardening R1: restore the outer function's entire saved
     // control-flow state in one struct assignment — see this function's
