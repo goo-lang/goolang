@@ -1,0 +1,19 @@
+package main
+
+import "fmt"
+
+type Pair struct{ A, B int }
+
+func main() {
+	for i := 0; i < 400000; i++ {
+		arena {
+			p := new(int)
+			*p = i
+			pr := &Pair{A: i, B: i + 1}
+			if *p != i || pr.A != i {
+				panic("x")
+			}
+		}
+	}
+	fmt.Println("done")
+}

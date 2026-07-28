@@ -161,10 +161,23 @@ special case. `os.File.Write` is the first.
 ## Memory model (v1 limitation)
 
 v1 heap allocations are malloc with NO systematic reclamation — no GC, no
-ownership-based freeing. Opt-in `arena { ... }` regions (with escape
-analysis auto-promoting escapers) are the only bulk-free mechanism. This is
-a documented v1 limitation; GC/ownership reclamation is post-v1
-(docs/2026-07-08-v1-roadmap.md Post-v1).
+ownership-based freeing.
+
+Opt-in `arena { ... }` regions are the only bulk-free mechanism, and their
+reach is NARROWER than that phrasing suggests. Measured (ADR 0002): an arena
+reclaims only the allocation sites codegen emits directly in the block
+(`new`, `&T{}`) and that `block_escape` proves non-escaping. Every allocation
+made through a runtime helper — `append`, slice/map literals, string
+operations, and therefore EVERY stdlib call — is untouched. Wrapping ordinary
+code in an arena can measure identically to not doing so.
+
+Consequence: a long-running service is not expressible. A per-request loop
+retains ~1.63 KB per request forever (651 MB at 400k requests, against Go's
+flat 8 MB on the same program).
+
+The successor model is DECIDED but not implemented — ADR 0002
+(docs/adr/0002-memory-model-arc-with-escape-analysis-elision.md): automatic
+reference counting with the existing escape analysis as the elision pass.
 
 ## Project Structure
 
