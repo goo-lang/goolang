@@ -5169,6 +5169,29 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  substring:   clean, and output matches the control"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_cond_off examples/arc_release_cond_probe.goo > build/arc_cond_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, cond probe, release off)"; cat build/arc_cond_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_cond_on examples/arc_release_cond_probe.goo > build/arc_cond_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, cond probe, release on)"; cat build/arc_cond_on.cerr; exit 1; }; \
+	valgrind --leak-check=no --error-exitcode=99 ./build/arc_cond_on > /dev/null 2> build/arc_cond_err.vg; \
+	rc=$$?; \
+	if [ $$rc -ne 0 ] || grep -qE "Use of uninitialised|Invalid read|Invalid write|Invalid free|double free" build/arc_cond_err.vg; then \
+	  echo "  FAIL: a CONDITIONALLY-declared local was released (rc=$$rc)"; \
+	  echo "        goo_release read a slot the taken path never wrote."; \
+	  tail -30 build/arc_cond_err.vg; fail=1; \
+	else \
+	  echo "  conditional: clean — the unwritten slot was never released"; \
+	fi; \
+	valgrind --leak-check=full ./build/arc_cond_off > /dev/null 2> build/arc_cond_offl.vg; \
+	valgrind --leak-check=full ./build/arc_cond_on  > /dev/null 2> build/arc_cond_onl.vg; \
+	c_off=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_cond_offl.vg | tr -d ,); \
+	c_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_cond_onl.vg | tr -d ,); \
+	if [ -z "$$c_on" ]; then c_on=0; fi; \
+	if [ -z "$$c_off" ] || [ "$$c_on" -ge "$$c_off" ]; then \
+	  echo "  FAIL: cond probe reclaimed nothing ($$c_off -> $$c_on) — it measures nothing"; fail=1; \
+	else \
+	  echo "  conditional: $$c_off -> $$c_on bytes (the refused inner local is the remainder)"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 
