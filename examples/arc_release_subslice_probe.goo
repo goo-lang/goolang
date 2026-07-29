@@ -1,0 +1,39 @@
+// T4 slice release, the NEGATIVE case: a SUB-SLICE must never be released.
+//
+// `s := ys[1:3]` gives an INTERIOR pointer into the buffer that `xs` owns in
+// main. A release of it computes `interior - GOO_OBJ_HEADER_SIZE` and hands that
+// to free(), which is the single most dangerous thing the slice release could do.
+// `goo_obj_headerless` (src/runtime/runtime.c) catches only NULL and
+// goo_zerobase, so nothing at RUNTIME would notice. The refusal is entirely
+// static.
+//
+// Condition 2 refuses it: AST_SLICE_INDEX_EXPR is a view, not an owned value.
+// Measured on this shape before the emission was written -- `s` reads
+// RELEASE_NO_NOT_OWNED. release_decision_test row 7 pins the rule.
+//
+// main reads `xs` AFTER take has returned a thousand times, so a wrongly released
+// sub-slice shows up as an invalid free and then an invalid read rather than as
+// silent corruption.
+//
+// `xs` itself is NOT released either, and that is load-bearing for this probe:
+// take's summary marks its parameter escaping, so the buffer survives for the
+// final read.
+//
+// IMPORT-FREE, for the reason the other arc probes record.
+package main
+
+var sink int
+
+func take(ys []int) int {
+	s := ys[1:3]
+	return len(s) + s[0]
+}
+
+func main() {
+	xs := []int{1, 2, 3, 4, 5}
+	total := 0
+	for i := 0; i < 1000; i++ {
+		total = total + take(xs)
+	}
+	sink = total + xs[0]
+}

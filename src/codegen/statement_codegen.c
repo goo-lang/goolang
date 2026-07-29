@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "release_decision.h"
+#include "types.h"
 #include "comptime.h"
 #include "value_scope.h"
 #include <stdlib.h>
@@ -2610,9 +2611,19 @@ static void emit_scope_releases(CodeGenerator* codegen) {
     if (!rel_fn) return;
 
     for (size_t i = 0; i < fi->arc_release_count; i++) {
-        LLVMValueRef slot = fi->arc_release_slots[i];
-        if (!slot) continue;
-        LLVMValueRef obj = LLVMBuildLoad2(codegen->builder, ptr_ty, slot, "arc.release.obj");
+        ArcReleaseSite* site = &fi->arc_release_slots[i];
+        if (!site->slot) continue;
+
+        // field == -1: the slot holds the object pointer. field >= 0: the slot
+        // holds a fat value and that field holds the object pointer.
+        LLVMValueRef addr = site->slot;
+        if (site->field >= 0) {
+            if (!site->slot_ty) continue;
+            addr = LLVMBuildStructGEP2(codegen->builder, site->slot_ty, site->slot,
+                                       (unsigned)site->field, "arc.release.fld");
+            if (!addr) continue;
+        }
+        LLVMValueRef obj = LLVMBuildLoad2(codegen->builder, ptr_ty, addr, "arc.release.obj");
         // goo_release is a no-op on NULL, on goo_zerobase and on an immortal
         // header (include/runtime.h), so no guard is emitted for those here.
         LLVMBuildCall2(codegen->builder, rel_ty, rel_fn, &obj, 1, "");
@@ -2630,33 +2641,59 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
 
     if (!release_plan_should_release(codegen->release_plan, fi->name, info->name)) return;
 
-    // Only an alloca holding a POINTER can carry an ARC object. Checking the
-    // allocated type here rather than trusting the plan keeps a mis-typed entry
-    // from producing a load of the wrong kind at exit.
     if (LLVMGetValueKind(info->llvm_value) != LLVMInstructionValueKind) return;
     if (LLVMGetInstructionOpcode(info->llvm_value) != LLVMAlloca) return;
     LLVMTypeRef slot_ty = LLVMGetAllocatedType(info->llvm_value);
-    if (!slot_ty || LLVMGetTypeKind(slot_ty) != LLVMPointerTypeKind) return;
+    if (!slot_ty) return;
+
+    // WHICH PART OF THIS SLOT IS THE HEAP OBJECT? Answered by shape, and for a
+    // fat value cross-checked against the Goo type. Anything not matched here is
+    // refused, because the safe answer is "release nothing".
+    int field;
+    if (LLVMGetTypeKind(slot_ty) == LLVMPointerTypeKind) {
+        // A bare pointer: new(T), &T{}, and a map (whose LLVM form is an opaque
+        // pointer). This is PR #261's behaviour, unchanged, and it is what the
+        // 493 goldens already cover.
+        field = -1;
+    } else if (LLVMGetTypeKind(slot_ty) == LLVMStructTypeKind &&
+               info->goo_type && info->goo_type->kind == TYPE_SLICE &&
+               LLVMCountStructElementTypes(slot_ty) == 3 &&
+               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 0)) == LLVMPointerTypeKind) {
+        // A slice: `{ T*, i64, i64 }`, and the data buffer is field 0. BOTH the
+        // Goo kind and the LLVM shape must agree. If they disagree the type
+        // system and codegen have diverged, and a GEP on the wrong shape is
+        // precisely the defect this guard exists to stop.
+        field = 0;
+    } else {
+        // Refused on purpose, TYPE_STRING and TYPE_INTERFACE included. A string
+        // is the next increment. An interface is `{ vtable*, data* }`, so field 0
+        // is a VTABLE and must never be freed.
+        return;
+    }
 
     // The same name can be bound twice in sibling blocks. The plan already
     // refuses such a name (RELEASE_NO_REBOUND, because it counts bindings), so a
     // duplicate here would mean the plan and this hook disagree. Skip it rather
     // than release one slot twice.
     for (size_t i = 0; i < fi->arc_release_count; i++) {
-        if (fi->arc_release_slots[i] == info->llvm_value) return;
+        if (fi->arc_release_slots[i].slot == info->llvm_value) return;
     }
 
     if (fi->arc_release_count >= fi->arc_release_capacity) {
         size_t ncap = fi->arc_release_capacity ? fi->arc_release_capacity * 2 : 4;
-        LLVMValueRef* grown = realloc(fi->arc_release_slots, ncap * sizeof(LLVMValueRef));
+        ArcReleaseSite* grown = realloc(fi->arc_release_slots, ncap * sizeof(ArcReleaseSite));
         if (!grown) return;   // fail closed: no release rather than a bad one
         fi->arc_release_slots = grown;
         fi->arc_release_capacity = ncap;
     }
-    fi->arc_release_slots[fi->arc_release_count++] = info->llvm_value;
+    fi->arc_release_slots[fi->arc_release_count].slot = info->llvm_value;
+    fi->arc_release_slots[fi->arc_release_count].slot_ty = slot_ty;
+    fi->arc_release_slots[fi->arc_release_count].field = field;
+    fi->arc_release_count++;
 
     if (getenv("GOO_ARC_DEBUG")) {
-        fprintf(stderr, "[arc] %s: will release %s at exit\n", fi->name, info->name);
+        fprintf(stderr, "[arc] %s: will release %s at exit (field=%d)\n",
+                fi->name, info->name, field);
     }
 #else
     (void)codegen; (void)info;
