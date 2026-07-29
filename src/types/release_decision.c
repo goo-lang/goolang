@@ -100,15 +100,43 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
     r->binding_count++;
 }
 
-// An ASSIGNMENT, not a declaration. Only the COUNT matters: condition 4 refuses
-// any local bound more than once, so the assigned value never needs classifying.
-static void note_assignment(WalkCtx* ctx, ASTNode* lhs) {
+// Is this `L = append(L, ...)` -- a SELF-APPEND?
+//
+// It matters because such an assignment does not REBIND `L` to a different
+// object. It GROWS L's object: append either writes into the existing buffer or
+// reallocs it, and goo_realloc frees the old base itself. One local, one live
+// buffer, and ownership never moves. So a release at exit frees exactly the
+// buffer `L` still holds, which is correct.
+//
+// `t := append(s, x)` is a DIFFERENT and dangerous shape, and it is NOT this
+// one. There, t and s can hold the SAME buffer when capacity suffices, and two
+// owners means a double free. It stays refused by condition 2, because
+// call_result_is_owned finds no summary for `append` and answers false.
+//
+// The arg-0 identifier must match the assignment target by NAME. `a = append(b,
+// x)` is a rebind of `a` to b's buffer, not a self-append.
+static bool is_self_append(const char* target, ASTNode* rhs) {
+    if (!target || !rhs || rhs->type != AST_CALL_EXPR) return false;
+    CallExprNode* call = (CallExprNode*)rhs;
+    if (!call->function || call->function->type != AST_IDENTIFIER) return false;
+    if (strcmp(((IdentifierNode*)call->function)->name, "append") != 0) return false;
+    ASTNode* first = call->args;
+    if (!first || first->type != AST_IDENTIFIER) return false;
+    return strcmp(((IdentifierNode*)first)->name, target) == 0;
+}
+
+// An ASSIGNMENT, not a declaration. The COUNT is what condition 4 reads, so the
+// assigned value needs classifying only far enough to spot a self-append.
+static void note_assignment(WalkCtx* ctx, ASTNode* lhs, ASTNode* rhs, bool plain_assign) {
     if (!lhs) return;
     if (lhs->type != AST_IDENTIFIER) return;   // a field/index store is not a rebind of the local
     const char* name = ((IdentifierNode*)lhs)->name;
     if (!name || strcmp(name, "_") == 0) return;
     LocalRecord* r = intern_record(ctx->out, name);
     if (!r) { ctx->out->unreadable = true; return; }
+    // A self-append grows the same object, so it is not a new binding. Only a
+    // plain `=` qualifies; a compound operator is never an append.
+    if (plain_assign && is_self_append(name, rhs)) return;
     r->binding_count++;
 }
 
@@ -165,7 +193,10 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 ASTNode* e = ((ExprStmtNode*)stmt)->expr;
                 if (e && e->type == AST_BINARY_EXPR) {
                     BinaryExprNode* b = (BinaryExprNode*)e;
-                    if (is_assign_operator(b->operator)) note_assignment(ctx, b->left);
+                    if (is_assign_operator(b->operator)) {
+                        note_assignment(ctx, b->left, b->right,
+                                        b->operator == TOKEN_ASSIGN);
+                    }
                 }
                 break;
             }
@@ -201,7 +232,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                                              (tcount == vcount) ? v : NULL);
                         }
                     } else {
-                        note_assignment(ctx, t);
+                        note_assignment(ctx, t, v, !n->is_short_decl);
                     }
                     if (v) v = v->next;
                 }

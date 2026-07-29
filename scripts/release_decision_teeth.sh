@@ -49,6 +49,9 @@ MUTATIONS=(
 "cond4-loop	    if (r->loop_depth > 0)    return RELEASE_NO_LOOP_SCOPE;"
 "cond4-rebound	    if (r->binding_count > 1) return RELEASE_NO_REBOUND;"
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
+# Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
+# `L = append(L, x)` counts as a rebind and row 18 must fail.
+"self-append	    if (plain_assign && is_self_append(name, rhs)) return;"
 )
 
 # Baseline first. A red baseline makes every cell below meaningless.

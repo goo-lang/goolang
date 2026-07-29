@@ -282,6 +282,77 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "a", RELEASE_NO_UNKNOWN } }, 1
     },
+
+    // ---------------- SELF-APPEND, and the double-free it must not cause -----
+    //
+    // `L = append(L, x)` does not REBIND L to a different object. It GROWS L's
+    // object: append writes into the buffer or reallocs it, and goo_realloc frees
+    // the old base itself. One local, one live buffer, ownership never moves.
+    //
+    // Two changes made this reachable, and NEITHER alone did anything. Measured:
+    // before them `xs = append(xs, n)` read RELEASE_NO_ESCAPES; after giving
+    // `append` a non-retaining slice argument it read RELEASE_NO_REBOUND; only
+    // with the self-append rule as well does it read RELEASE_OK. Building either
+    // half alone would have been worth 0%.
+    {
+        18, "L = append(L, x) is a self-append, not a rebind -> RELEASE",
+        "package main\n"
+        "var sink int\n"
+        "func f(n int) {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, n)\n"
+        "    sink = sink + len(xs)\n"
+        "}\n",
+        "f", { { "xs", RELEASE_OK } }, 1
+    },
+    {
+        // THE DOUBLE-FREE GUARD, and the reason the self-append rule is written
+        // as `L = append(L, ...)` and not as "any append".
+        //
+        // `t := append(s, x)` can leave t.data == s.data, because append reuses
+        // the buffer when capacity suffices. Two owners of one buffer is a double
+        // free. It is refused because call_result_is_owned finds no summary for
+        // `append` and answers false, so this row pins condition 2 carrying the
+        // weight rather than the self-append rule being widened.
+        19, "t := append(s, x) may SHARE s's buffer -> refuse, NOT_OWNED",
+        "package main\n"
+        "var sink int\n"
+        "func f(s []int, n int) {\n"
+        "    t := append(s, n)\n"
+        "    sink = sink + len(t)\n"
+        "}\n",
+        "f", { { "t", RELEASE_NO_NOT_OWNED } }, 1
+    },
+    {
+        // A CROSS-append is a real rebind: `a` ends up holding b's buffer, so it
+        // has two candidate owners and must stay refused. The self-append rule
+        // matches arg 0 against the target BY NAME precisely to exclude this.
+        20, "a = append(b, x) is a rebind of a to b's buffer -> refuse, REBOUND",
+        "package main\n"
+        "var sink int\n"
+        "func f(n int) {\n"
+        "    a := []int{1}\n"
+        "    b := []int{2}\n"
+        "    a = append(b, n)\n"
+        "    sink = sink + len(a) + len(b)\n"
+        "}\n",
+        // `b` is still its own owner and still releases; only `a` is refused.
+        "f", { { "a", RELEASE_NO_REBOUND }, { "b", RELEASE_OK } }, 2
+    },
+    {
+        // A COMPOUND operator is never an append, so it stays a rebind. Without
+        // the `plain_assign` guard, `xs += ...` would take the self-append path
+        // by accident.
+        21, "a compound assignment is not a self-append -> refuse, REBOUND",
+        "package main\n"
+        "var sink int\n"
+        "func f(n int) {\n"
+        "    xs := []int{1}\n"
+        "    xs = []int{2}\n"
+        "    sink = sink + len(xs) + n\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_REBOUND } }, 1
+    },
 };
 
 static int failures = 0;
