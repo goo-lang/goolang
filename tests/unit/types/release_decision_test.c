@@ -751,6 +751,110 @@ static KeyRow key_rows[] = {
     },
 };
 
+// =============================================================================
+// SLICE ELEMENT OWNERSHIP
+// =============================================================================
+//
+// Same question as a map key, one container along. The difference is that
+// ownership here is ALL OR NOTHING per local: the release site is a single
+// `for i < len` walk of the buffer, so it cannot skip a borrowed entry the way
+// a per-entry map flag can.
+typedef struct {
+    int         row;
+    const char* description;
+    const char* src;
+    const char* fn;
+    const char* local;
+    bool        expect_owns_elems;
+} ElemRow;
+
+static ElemRow elem_rows[] = {
+    {
+        // THE ROW THIS CHANGE EXISTS FOR. Every appended element is a fresh
+        // shim result, so the slice is the only thing that can free them.
+        1, "appends of fresh shim results -> owns its elements",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f() int {\n"
+        "    p := []string{}\n"
+        "    p = append(p, strings.TrimSpace(\" a \"))\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", true
+    },
+    {
+        // THE DANGEROUS SHAPE, and the reason the end-to-end gate now has a
+        // borrowed-element probe. Appending a PARAMETER means the CALLER owns
+        // the value, so releasing it with the slice frees memory that outlives
+        // this function -- a use-after-free in the caller, not a leak.
+        //
+        // Rows 2 and 3 below are conservatism rather than safety: their
+        // elements are fresh locals with no other owner, so releasing them
+        // would in fact be correct. This row is the one where a wrong `true`
+        // corrupts memory.
+        0, "appending a PARAMETER -> does NOT own its elements (the caller owns it)",
+        "package main\n"
+        "func f(s string) int {\n"
+        "    p := []string{}\n"
+        "    p = append(p, s)\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", false
+    },
+    {
+        // SOUNDNESS. A bare local is borrowed: releasing it with the slice
+        // would free memory the local still names.
+        2, "appending a LOCAL -> does NOT own its elements",
+        "package main\n"
+        "func f(s string) int {\n"
+        "    k := s + \"x\"\n"
+        "    p := []string{}\n"
+        "    p = append(p, k)\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", false
+    },
+    {
+        // SOUNDNESS, and the one that shows why this is not per entry. ONE
+        // borrowed element poisons the whole slice, because the release walks
+        // every slot and has nowhere to record an exception.
+        3, "one fresh element and one borrowed -> does NOT own its elements",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    k := s + \"x\"\n"
+        "    p := []string{}\n"
+        "    p = append(p, strings.TrimSpace(s))\n"
+        "    p = append(p, k)\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", false
+    },
+    {
+        // A slice nothing is ever stored into owns nothing. Vacuous ownership
+        // would be harmless (the walk has zero iterations) but it would make
+        // the flag mean two different things.
+        4, "no elements stored -> does NOT own its elements",
+        "package main\n"
+        "func f() int {\n"
+        "    p := []string{}\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", false
+    },
+    {
+        // A LITERAL's own elements count exactly as appended ones do.
+        5, "a literal built from fresh results -> owns its elements",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    p := []string{strings.TrimSpace(s), strings.ToUpper(s)}\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", true
+    },
+};
+
 static int failures = 0;
 static int checks = 0;
 
@@ -877,6 +981,56 @@ int main(void) {
         }
 
         printf("  Key row %d: %s\n", row->row, row_failed ? "FAIL" : "PASS");
+
+        release_plan_free(plan);
+        if (checker) type_checker_free(checker);
+        ast_node_free(ast_root);
+        ast_root = NULL;
+    }
+
+    // ---------------- slice element ownership ----------------
+    size_t nelems = sizeof(elem_rows) / sizeof(elem_rows[0]);
+    for (size_t i = 0; i < nelems; i++) {
+        ElemRow* row = &elem_rows[i];
+        printf("\n=== Elem row %d: %s ===\n", row->row, row->description);
+
+        if (parse_input(row->src, "elemrow.goo") != 0 || !ast_root) {
+            printf("  FAIL: parse failed\n");
+            failures++;
+            continue;
+        }
+        TypeChecker* checker = type_checker_new();
+        if (checker) type_check_program(checker, ast_root);
+
+        ReleasePlan* plan = release_plan_analyze(ast_root);
+        if (!plan) {
+            printf("  FAIL: release_plan_analyze returned NULL\n");
+            failures++;
+            if (checker) type_checker_free(checker);
+            ast_node_free(ast_root);
+            ast_root = NULL;
+            continue;
+        }
+
+        int row_failed = 0;
+        checks++;
+        bool got = release_plan_slice_owns_elems(plan, row->fn, row->local);
+        if (got != row->expect_owns_elems) {
+            printf("  FAIL: local '%s' owns_elems=%d, expected %d\n",
+                   row->local, (int)got, (int)row->expect_owns_elems);
+            failures++;
+            row_failed = 1;
+        }
+
+        // A miss must be conservative, asserted on every row.
+        checks++;
+        if (release_plan_slice_owns_elems(plan, "__no_such_function__", row->local)) {
+            printf("  FAIL: unknown function returned owns_elems=true\n");
+            failures++;
+            row_failed = 1;
+        }
+
+        printf("  Elem row %d: %s\n", row->row, row_failed ? "FAIL" : "PASS");
 
         release_plan_free(plan);
         if (checker) type_checker_free(checker);

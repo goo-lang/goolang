@@ -253,6 +253,34 @@ void goo_release(void* ptr) {
     goo_release_with(ptr, NULL);
 }
 
+// Release the first `len` elements of a slice buffer, then leave the buffer to
+// the caller's own goo_release.
+//
+// WHY THIS IS NOT A GooObjDtor, unlike goo_map_dtor. A destructor is handed
+// only the object pointer, and freeing elements needs the LENGTH. The object
+// header is {rc, reserved} and carries no size. Even a size would be the WRONG
+// number: it covers CAP, and the elements between len and cap are
+// uninitialised, so a size-driven walk would release garbage pointers. `len`
+// lives in field 1 of the slice value and only codegen can read it at the
+// release point, so codegen passes it in.
+//
+// `stride` is sizeof(element). The releasable pointer must sit at element
+// offset 0, which is true of the two element shapes codegen permits here: a
+// bare pointer (stride 8) and a string, whose {i8*, i64} puts its data pointer
+// first (stride 16). codegen_arc_slice_owns_elems refuses everything else, the
+// same way codegen_arc_note_local refuses a slot that is not a pointer or a
+// fat value.
+//
+// goo_release is a no-op on NULL, on a headerless pointer and on an IMMORTAL
+// one, so a zero element or a string literal costs nothing here.
+void goo_slice_release_elems(void* buf, int64_t len, int64_t stride) {
+    if (!buf || len <= 0 || stride <= 0) return;
+    for (int64_t i = 0; i < len; i++) {
+        void* elem = *(void**)((char*)buf + i * stride);
+        goo_release(elem);
+    }
+}
+
 // Error handling
 
 // Decode the UTF-8 rune at data[i] (caller guarantees i < len). Writes the rune

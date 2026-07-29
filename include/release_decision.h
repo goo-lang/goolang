@@ -125,6 +125,16 @@ typedef enum {
 typedef struct ReleaseDecision {
     char*           local_name;  // owned
     ReleaseVerdict  verdict;
+
+    // Does this local's slice own the values stored in it? True only when it
+    // HAS stored elements and every one was a fresh temporary by condition 2's
+    // table. One borrowed element makes it false, because the release is a
+    // single walk of the whole buffer and cannot skip an entry.
+    //
+    // Independent of `verdict`. A local that refuses to release still gets a
+    // meaningful answer here, and the caller must check BOTH -- there is no
+    // element release without a buffer release to hang it on.
+    bool            owns_elems;
 } ReleaseDecision;
 
 typedef struct ReleasePlanFunction {
@@ -182,5 +192,18 @@ const char* release_verdict_name(ReleaseVerdict v);
 // did before key ownership existed.
 bool release_plan_key_is_owned(const ReleasePlan* plan, const char* fn,
                                const ASTNode* key_expr);
+
+// Does this local's slice own its ELEMENTS, so releasing the buffer should
+// release each of them first?
+//
+// True only when the local has stored elements and every one was a fresh
+// temporary. HALF THE GUARD, as always: this module holds no types, so the
+// caller must confirm the local really is a slice and that its element shape
+// puts a releasable pointer at offset 0. Codegen does that.
+//
+// Conservative on every miss. False means the elements stay, which is what
+// every program did before this existed.
+bool release_plan_slice_owns_elems(const ReleasePlan* plan, const char* fn,
+                                   const char* local);
 
 #endif // RELEASE_DECISION_H
