@@ -286,6 +286,24 @@ struct CodeGenerator {
 };
 
 // Function information for code generation
+// T4: one place a function must emit `goo_release` at exit.
+//
+// `field == -1` targets the slot's CONTENTS, which is the bare-pointer case
+// (`new(T)`, `&T{}`, and a map, whose LLVM form is already an opaque pointer).
+//
+// `field >= 0` targets a FIELD of the value the slot holds, which is what a fat
+// value needs. Only TYPE_SLICE uses it today, at field 0, the data buffer.
+//
+// FIELD 0 IS NOT UNIVERSAL, and that is why this is per-site rather than a rule.
+// TYPE_INTERFACE is `{ vtable*, data* }` — field 0 there is the VTABLE, and
+// free() on a vtable is catastrophic. Every type not named in
+// codegen_arc_note_local is refused.
+typedef struct ArcReleaseSite {
+    LLVMValueRef slot;      // the alloca
+    LLVMTypeRef  slot_ty;   // its allocated type, needed to build the GEP
+    int          field;     // -1 = the slot's contents; >= 0 = that field
+} ArcReleaseSite;
+
 struct FunctionInfo {
     char* name;
     LLVMValueRef function;
@@ -310,7 +328,12 @@ struct FunctionInfo {
     // only the parameter, and the local the plan had approved was already gone.
     // Every local passes through vscope_add, which is the one choke point where a
     // slot is still live and its name is still known.
-    LLVMValueRef* arc_release_slots;
+    //
+    // A slice is a FAT VALUE (`{ T*, i64, i64 }` held inline), so the heap object
+    // is a FIELD of the slot rather than the slot's contents. `field` says which:
+    // -1 releases what the slot holds (a bare pointer, PR #261's behaviour), and
+    // >= 0 releases that field of the struct the slot holds.
+    ArcReleaseSite* arc_release_slots;
     size_t arc_release_count;
     size_t arc_release_capacity;
 

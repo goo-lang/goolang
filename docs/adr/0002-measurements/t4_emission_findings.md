@@ -61,6 +61,41 @@ A slice is a FAT VALUE — pointer, length, capacity, held inline. It is not a
 pointer, so `codegen_arc_note_local`'s type guard skips it and no release is
 emitted. `goo_release` appears 0 times in the daemon's IR.
 
+## UPDATE 2026-07-29: slice release landed, and the daemon moved
+
+`TYPE_SLICE` now releases field 0, the data buffer. Measured on
+`bench/daemon/daemon.goo` at 400,000 requests:
+
+| | peak RSS |
+|---|---|
+| `GOO_ARC_RELEASE=0` | 750,500 KB |
+| default | **694,372 KB** |
+
+**54.8 MB reclaimed**, which is 140 B for each request against a projection of
+128 B. The 0% below is the state BEFORE that change, and it is kept because the
+diagnosis is what led to the fix.
+
+`arc_release_slice_probe.goo` goes from 880,000 bytes lost in 20,000 blocks to 0,
+valgrind clean.
+
+**The sub-slice negative is the important half.** `s := ys[1:3]` is an INTERIOR
+pointer into a buffer another local owns, so a release of it hands
+`interior - 16` to `free()`. Condition 2 refuses it, measured before the emission
+was written, and `arc_release_subslice_probe.goo` now gates it with zero invalid
+operations.
+
+**Teeth on the new target.** Changing the slice case from `field = 0` to
+`field = 1` gives `goo_release` the LENGTH as a pointer. The probe segfaults:
+rc=139, `Invalid read`, SIGSEGV. So the gate guards the field index and not merely
+the presence of a release.
+
+`append` is still refused. `xs = append(xs, n)` marks `xs` escaping, because
+`append` has no `param_escape` summary and an unresolved callee is conservative.
+That is why the daemon gains `fields` (from `strings.Split`) and not `parts`.
+
+Still refused, and unchanged: `TYPE_STRING` (the next increment) and
+`TYPE_INTERFACE` (field 0 is the VTABLE, so it must never be released).
+
 ## The limitation, stated precisely
 
 T4 releases a local whose SLOT is a bare pointer. That covers `new(T)` and

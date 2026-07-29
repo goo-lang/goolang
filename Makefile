@@ -5079,6 +5079,37 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  escape probe: clean — the plan refused the returned local"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_sl_off examples/arc_release_slice_probe.goo > build/arc_sl_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, slice probe, release off)"; cat build/arc_sl_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_sl_on examples/arc_release_slice_probe.goo > build/arc_sl_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, slice probe, release on)"; cat build/arc_sl_on.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_sub examples/arc_release_subslice_probe.goo > build/arc_sub.cerr 2>&1 \
+	  || { echo "  FAIL (compile, sub-slice probe)"; cat build/arc_sub.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_sl_off > /dev/null 2> build/arc_sl_off.vg; \
+	sl_off=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_sl_off.vg | tr -d ,); \
+	if [ -z "$$sl_off" ] || [ "$$sl_off" -eq 0 ]; then \
+	  echo "  FAIL: slice probe with GOO_ARC_RELEASE=0 did not leak — it measures nothing"; fail=1; \
+	else \
+	  echo "  slice OFF: $$sl_off bytes leaked (expected)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_sl_on > /dev/null 2> build/arc_sl_on.vg; \
+	rc=$$?; \
+	sl_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_sl_on.vg | tr -d ,); \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_sl_on.vg; then \
+	  echo "  FAIL: slice release is not valgrind-clean (rc=$$rc)"; tail -30 build/arc_sl_on.vg; fail=1; \
+	elif [ -n "$$sl_on" ] && [ "$$sl_on" -ne 0 ]; then \
+	  echo "  FAIL: slice release ON still leaked $$sl_on bytes"; fail=1; \
+	else \
+	  echo "  slice ON:    valgrind clean, 0 bytes leaked (was $$sl_off)"; \
+	fi; \
+	valgrind --leak-check=no --error-exitcode=99 ./build/arc_sub > /dev/null 2> build/arc_sub.vg; \
+	rc=$$?; \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_sub.vg; then \
+	  echo "  FAIL: a SUB-SLICE was released — an interior pointer reached free() (rc=$$rc)"; \
+	  tail -30 build/arc_sub.vg; fail=1; \
+	else \
+	  echo "  sub-slice:   clean — the interior pointer was never released"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 
