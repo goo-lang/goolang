@@ -57,8 +57,23 @@ jobs:
         # Guards the NULL-deref / handle-leak class of bug that fix #9 addressed.
         # detect_leaks=0 isolates memory-safety faults from pre-existing,
         # unrelated shutdown-accounting leaks in the demo.
+        #
+        # `-include include/xalloc.h` is NOT optional, and its absence is why
+        # this step was broken. PR #194 routed fixed-size allocations through
+        # xmalloc/xcalloc, which are declared only in that header, and the
+        # Makefile supplies it for every ordinary build from CFLAGS
+        # (Makefile:18). This step hand-writes its compile line, so it did not
+        # inherit the flag and stopped compiling with `use of undeclared
+        # identifier 'xcalloc'`. Nothing reported it, because auto-run had been
+        # off since 2026-06-29 — this was the FIRST push-triggered run since,
+        # and it caught it immediately.
+        #
+        # Keep this line in step with Makefile:18 CFLAGS, or better, stop
+        # duplicating the flags: hand-copied build flags rot the same way the
+        # hand-copied probe list in tests.yml did.
         run: |
-          clang -std=c23 -g -D_GNU_SOURCE -fsanitize=address -Iinclude \
+          clang -std=c23 -g -D_GNU_SOURCE -include include/xalloc.h \
+            -fsanitize=address -Iinclude \
             -o async_resource_demo_asan \
             examples/async_resource_demo.c src/async/async_resource.c src/errors/error.c \
             -lpthread
