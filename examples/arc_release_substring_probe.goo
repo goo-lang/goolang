@@ -1,0 +1,65 @@
+// T4 string release, the NEGATIVE case: a SUBSTRING must never be released.
+//
+// `t := s[1:3]` gives an INTERIOR pointer into the buffer that `base` owns in
+// main. codegen_generate_slice_index_expr builds a substring as `data + low`
+// with NO COPY (src/codegen/composite_codegen.c), so a release of it computes
+// `interior - GOO_OBJ_HEADER_SIZE` and treats whatever sits there as a header.
+// That is the most dangerous thing the string release could do, and it is the
+// twin of examples/arc_release_subslice_probe.goo.
+//
+// The refusal is entirely STATIC: condition 2 reads AST_SLICE_INDEX_EXPR as a
+// view, not an owned value. release_decision_test row 7 pins the rule. Nothing
+// at runtime can be relied on to catch a miss, and the two functions below are
+// here because MEASUREMENT showed the failure mode depends on the OFFSET.
+//
+// MEASURED, by making binding_is_owned return true for AST_SLICE_INDEX_EXPR and
+// rebuilding:
+//
+//   near()  low=1.  `interior - 16` lands in the REAL header, which reads as
+//           refcount 0, so goo_release panics: "release of an object with
+//           reference count 0". Exit status 2. LOUD, and the arc-release-probe
+//           rc check catches it.
+//
+//   far()   low=32. `interior - 16` lands in the PAYLOAD. The bytes there read
+//           as a large non-zero count, so the underflow panic does NOT fire and
+//           the count never reaches 0. goo_release's __atomic_fetch_sub then
+//           WRITES a decrement into the middle of the string and returns.
+//           No free(), no valgrind error, exit status 0 — SILENT CORRUPTION of
+//           eight payload bytes.
+//
+// That is why this probe PRINTS `base` at the end. The far case produces no
+// valgrind finding and no non-zero exit, so the only thing that can catch it is
+// comparing the output against the GOO_ARC_RELEASE=0 control. A probe that
+// checked valgrind alone would have no teeth against half of its own subject.
+//
+// `base` IS A CONCATENATION AND NOT A LITERAL, and that is load-bearing. A
+// literal's bytes carry GOO_RC_IMMORTAL, so goo_release returns early on one and
+// a wrong release would be a silent no-op — the probe would prove nothing. A
+// concat buffer is ordinary goo_alloc memory with a real header.
+//
+// `base` ITSELF IS RELEASED, correctly: it is a concatenation bound once at
+// function scope, so condition 2 owns it. The final println reads it BEFORE the
+// exit path runs, so that release is not what this probe is watching.
+//
+// IMPORT-FREE, for the reason the other arc probes record.
+package main
+
+func near(s string) int {
+	t := s[1:3]
+	return len(t)
+}
+
+func far(s string) int {
+	t := s[32:36]
+	return len(t)
+}
+
+func main() {
+	base := "abcdefghijklmnopqrstuvwxyz012345" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ678901"
+	total := 0
+	for i := 0; i < 100; i++ {
+		total = total + near(base) + far(base)
+	}
+	println(base)
+	println(total)
+}

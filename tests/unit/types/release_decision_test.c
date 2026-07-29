@@ -353,6 +353,97 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "xs", RELEASE_NO_REBOUND } }, 1
     },
+
+    // ---------------- STRING CONCATENATION, condition 2's binary arm ----------
+    //
+    // `s := a + b` on strings lowers to goo_string_concat (src/runtime/runtime.c
+    // :523), which ALWAYS returns fresh goo_alloc memory, or {NULL, 0} when both
+    // operands are empty. goo_release is a no-op on NULL. So the local is the one
+    // owner and the binding site is an allocation, exactly as `new(T)` is.
+    //
+    // WITHOUT THIS ARM THE STRING RELEASE IS WORTH NOTHING. AST_BINARY_EXPR fell
+    // to the conservative default, so the only owned string bindings left were a
+    // Goo call and a non-retaining shim. Concatenation is how ordinary Goo code
+    // builds a string, and `.handoff.md` records five plans that shipped-looking
+    // work would have been worth 0% without a measurement first.
+    {
+        22, "s := a + b on strings is a fresh allocation -> RELEASE",
+        "package main\n"
+        "var sink int\n"
+        "func f() {\n"
+        "    a := \"abc\"\n"
+        "    b := \"def\"\n"
+        "    s := a + b\n"
+        "    sink = sink + len(s)\n"
+        "}\n",
+        // `a` and `b` stay refused: a bare literal is immortal (GOO_RC_IMMORTAL),
+        // owns no heap object, and falls to the conservative default. Asserting
+        // them here proves the arm widened the CONCATENATION and nothing else.
+        "f", { { "s", RELEASE_OK },
+               { "a", RELEASE_NO_NOT_OWNED },
+               { "b", RELEASE_NO_NOT_OWNED } }, 3
+    },
+    {
+        // OWNERSHIP DOES NOT DEPEND ON THE OPERANDS, and that is the whole
+        // difference between concatenation and `borrowView` in row 6. borrowView
+        // returns `s[1:]`, a VIEW into the caller's buffer. Concatenation COPIES
+        // both operands into new memory, so a parameter operand is as safe as a
+        // local one and the result aliases neither.
+        23, "s := p + \"x\" with a PARAMETER operand still copies -> RELEASE",
+        "package main\n"
+        "var sink int\n"
+        "func f(p string) {\n"
+        "    s := p + \"x\"\n"
+        "    sink = sink + len(s)\n"
+        "}\n",
+        "f", { { "s", RELEASE_OK } }, 1
+    },
+    {
+        // CONDITION 4 STILL BITES, and this row is why the concat arm does not
+        // need a kill rule of its own. `s += "e"` is a compound assignment, so
+        // note_assignment counts a second binding and decide() refuses BEFORE it
+        // ever reaches condition 2.
+        //
+        // Releasing the last value would in fact be correct here, because each
+        // concatenation returns new memory. The refusal costs reclamation and is
+        // never unsafe, and relaxing condition 4 is a separate change with its
+        // own rows. Recorded in the .handoff.md ledger.
+        24, "s := a + b then s += \"e\" is a rebind -> refuse, REBOUND",
+        "package main\n"
+        "var sink int\n"
+        "func f() {\n"
+        "    a := \"abc\"\n"
+        "    s := a + \"d\"\n"
+        "    s += \"e\"\n"
+        "    sink = sink + len(s)\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_REBOUND } }, 1
+    },
+    {
+        // AN INTEGER `+` REACHES THE SAME ARM, and this verdict is DELIBERATE.
+        //
+        // release_decision.c is a pure AST module with no type information, so it
+        // cannot tell a string `+` from an integer one. Approving both costs
+        // nothing, because the decision is only HALF the guard: codegen_arc_note_
+        // local refuses any slot that is not a pointer, a 3-field slice or a
+        // 2-field string, and `n`'s slot is a bare i64.
+        //
+        // Do not "fix" this row by narrowing the arm. The two-layer split is what
+        // lets each layer stay simple, and arc-release-probe is what proves the
+        // second layer actually refuses.
+        // `_ = n` and NOT `sink = sink + n`. Measured: the global store makes `n`
+        // ESCAPE, so the row read RELEASE_NO_ESCAPES and would have gone green on
+        // condition 1 the moment condition 2 widened -- passing for a cause it was
+        // not written to measure. Row 22 avoids this because `len(s)` yields a
+        // fresh int and propagates none of s's taint.
+        25, "an INTEGER + reaches the same arm -> RELEASE_OK, refused by codegen",
+        "package main\n"
+        "func f(x int, y int) {\n"
+        "    n := x + y\n"
+        "    _ = n\n"
+        "}\n",
+        "f", { { "n", RELEASE_OK } }, 1
+    },
 };
 
 static int failures = 0;

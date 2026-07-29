@@ -375,6 +375,32 @@ static bool binding_is_owned(Collected* c, const ParamEscapeResult* pe, ASTNode*
         case AST_CALL_EXPR:
             return call_result_is_owned(c, pe, value);
 
+        // CONCATENATION IS AN ALLOCATION. `s := a + b` on strings lowers to
+        // goo_string_concat (src/runtime/runtime.c:523), which always returns
+        // fresh goo_alloc memory -- or {NULL, 0} when both operands are empty,
+        // and goo_release is a no-op on NULL. It COPIES both operands, so the
+        // result aliases neither and a parameter operand is as safe as a local
+        // one. That is the whole difference from borrowView's `s[1:]`, which
+        // returns a view and stays refused by AST_SLICE_INDEX_EXPR below.
+        //
+        // WITHOUT THIS ARM THE STRING RELEASE IS WORTH NOTHING: the only owned
+        // string bindings left are a Goo call and a non-retaining shim, and
+        // concatenation is how ordinary Goo code builds a string.
+        //
+        // AN INTEGER `+` REACHES HERE TOO, and that is deliberate. This module is
+        // pure AST and holds no type information, so it cannot tell the two
+        // apart. Approving both costs nothing, because the decision is only HALF
+        // the guard: codegen_arc_note_local refuses every slot that is not a
+        // pointer, a 3-field slice or a 2-field string, and an int's slot is a
+        // bare i64. Do NOT narrow this arm to "recover" precision -- the
+        // two-layer split is what keeps each layer simple. Pinned by rows 22-25.
+        //
+        // ONLY `+`. No other binary operator yields a heap value in Go: the
+        // comparisons and the logical operators yield a bool, and the remaining
+        // arithmetic operators are numeric.
+        case AST_BINARY_EXPR:
+            return ((BinaryExprNode*)value)->operator == TOKEN_PLUS;
+
         // A VIEW into something this local does not own. `c := s[1:]` is the
         // shape include/local_escape.h names, and it needs no call to be wrong.
         case AST_SLICE_INDEX_EXPR:

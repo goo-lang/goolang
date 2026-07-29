@@ -5131,6 +5131,44 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  sub-slice:   clean — the interior pointer was never released"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_str_off examples/arc_release_string_probe.goo > build/arc_str_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, string probe, release off)"; cat build/arc_str_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_str_on examples/arc_release_string_probe.goo > build/arc_str_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, string probe, release on)"; cat build/arc_str_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_str_off > /dev/null 2> build/arc_str_off.vg; \
+	str_off=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_str_off.vg | tr -d ,); \
+	if [ -z "$$str_off" ] || [ "$$str_off" -eq 0 ]; then \
+	  echo "  FAIL: string probe with GOO_ARC_RELEASE=0 did not leak — it measures nothing"; fail=1; \
+	else \
+	  echo "  string OFF: $$str_off bytes leaked (expected)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_str_on > /dev/null 2> build/arc_str_on.vg; \
+	rc=$$?; \
+	str_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_str_on.vg | tr -d ,); \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_str_on.vg; then \
+	  echo "  FAIL: string release is not valgrind-clean (rc=$$rc)"; tail -30 build/arc_str_on.vg; fail=1; \
+	elif [ -n "$$str_on" ] && [ "$$str_on" -ne 0 ]; then \
+	  echo "  FAIL: string release ON still leaked $$str_on bytes"; fail=1; \
+	else \
+	  echo "  string ON:   valgrind clean, 0 bytes leaked (was $$str_off)"; \
+	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_substr_off examples/arc_release_substring_probe.goo > build/arc_substr_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, substring probe, release off)"; cat build/arc_substr_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_substr_on examples/arc_release_substring_probe.goo > build/arc_substr_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, substring probe, release on)"; cat build/arc_substr_on.cerr; exit 1; }; \
+	./build/arc_substr_off > build/arc_substr_off.out 2>&1; \
+	valgrind --error-exitcode=99 ./build/arc_substr_on > build/arc_substr_on.out 2> build/arc_substr.vg; \
+	rc=$$?; \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_substr.vg; then \
+	  echo "  FAIL: a SUBSTRING was released — an interior pointer reached goo_release (rc=$$rc)"; \
+	  tail -30 build/arc_substr.vg; fail=1; \
+	elif ! cmp -s build/arc_substr_off.out build/arc_substr_on.out; then \
+	  echo "  FAIL: substring output DIFFERS from the GOO_ARC_RELEASE=0 control"; \
+	  echo "        A released substring decremented eight PAYLOAD bytes in place."; \
+	  diff build/arc_substr_off.out build/arc_substr_on.out | head -5; fail=1; \
+	else \
+	  echo "  substring:   clean, and output matches the control"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 
