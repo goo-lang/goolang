@@ -1,0 +1,43 @@
+// T4 string release, the POSITIVE case: a string local's data buffer is
+// reclaimed.
+//
+// A string is a FAT VALUE -- `{ i8*, i64 }`, held inline (type_mapping.c). The
+// heap object is field 0, the data buffer, so the release targets the field and
+// not the slot. That is the same shape the slice probe covers; the ELEMENT COUNT
+// is what tells the two apart, 2 here against a slice's 3.
+//
+// THE BINDING SITE IS A CONCATENATION, and it is the reason this probe leaks
+// anything at all. `s := a + b` lowers to goo_string_concat, which ALWAYS
+// returns fresh goo_alloc memory and COPIES both operands, so the local is the
+// one owner. Before the AST_BINARY_EXPR arm in release_decision.c that binding
+// read RELEASE_NO_NOT_OWNED, and the only owned string bindings were a Goo call
+// and a non-retaining shim -- neither of which ordinary code writes to build a
+// string.
+//
+// `a` IS NOT RELEASED, and that is not a hole. A literal carries a real header
+// whose count is GOO_RC_IMMORTAL (scripts/string_literal_header_probe.sh), so it
+// owns no heap object and condition 2 refuses it. A release on one is a no-op
+// rather than free() on .rodata.
+//
+// Called in a loop, so the difference is measurable rather than theoretical.
+// Without a release this leaks one 16-byte GOO_OBJ_HEADER plus a 33-byte payload
+// per iteration.
+//
+// IMPORT-FREE, for the reason the other arc probes record: an unresolved import
+// makes a confident table read as conservative, and a gate whose verdict can
+// move for an unrelated cause is not a gate.
+package main
+
+var sink int
+
+func work(n int) {
+	a := "abcdefghijklmnop"
+	s := a + "qrstuvwxyz012345"
+	sink = sink + len(s) + n
+}
+
+func main() {
+	for i := 0; i < 10000; i++ {
+		work(i)
+	}
+}

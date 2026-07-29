@@ -292,7 +292,9 @@ struct CodeGenerator {
 // (`new(T)`, `&T{}`, and a map, whose LLVM form is already an opaque pointer).
 //
 // `field >= 0` targets a FIELD of the value the slot holds, which is what a fat
-// value needs. Only TYPE_SLICE uses it today, at field 0, the data buffer.
+// value needs. TYPE_SLICE (`{ T*, i64, i64 }`) and TYPE_STRING (`{ i8*, i64 }`)
+// both use it, at field 0, the data buffer. The ELEMENT COUNT tells them apart:
+// 3 for a slice, 2 for a string.
 //
 // FIELD 0 IS NOT UNIVERSAL, and that is why this is per-site rather than a rule.
 // TYPE_INTERFACE is `{ vtable*, data* }` — field 0 there is the VTABLE, and
