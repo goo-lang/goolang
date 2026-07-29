@@ -309,6 +309,27 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
                        && !selector_base_is_local(ctx, call->function)
                        && goo_callee_is_non_retaining(call->function);
 
+    // `append` DOES NOT RETAIN ITS SLICE ARGUMENT, and until this arm it was
+    // treated as an unregistered callee, so arg 0 was marked escaping and every
+    // appended slice became unreleasable. That is why the daemon's `parts` stayed
+    // refused while `fields` (from strings.Split) did not.
+    //
+    // The truth: append reads arg 0's buffer and either writes into it or
+    // reallocs, and it stores arg 0 NOWHERE that outlives the call. What it does
+    // do is RETURN a value that may alias arg 0's buffer -- and the result taint
+    // below already unions every argument's taint on the no-callee path, so if
+    // that result escapes, arg 0 is marked at THAT sink instead. The information
+    // is not lost, only moved to where it is true.
+    //
+    // The ELEMENTS (args 1..n) keep retains = true. The buffer keeps a copy of
+    // each, so a pointer element genuinely outlives the call inside the slice.
+    //
+    // Guarded the same way the whitelist is: a user function named `append`, or a
+    // local shadowing the name, must not collect this rule.
+    bool is_append = !callee && !whitelisted && callee_name
+                     && strcmp(callee_name, "append") == 0
+                     && !selector_base_is_local(ctx, call->function);
+
     for (i = 0; i < argc; i++) {
         bool retains;
         bool variadic_tail = call->has_spread && (i == argc - 1);
@@ -316,6 +337,8 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
             retains = false; // whitelisted external retains no argument (7a')
         } else if (variadic_tail) {
             retains = true;
+        } else if (is_append && i == 0) {
+            retains = false;  // append does not store the slice; it returns it
         } else if (callee) {
             retains = (i < callee_count) ? callee_escapes[i] : true;
         } else {

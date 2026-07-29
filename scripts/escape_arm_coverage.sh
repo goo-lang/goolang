@@ -60,7 +60,20 @@ die() { printf 'FATAL: %s\n' "$*" >&2; exit 2; }
 # The engine is restored on EVERY exit path, including a kill. Without this a
 # mutated escape_core.c could be committed by the next `git add`.
 # ---------------------------------------------------------------------------
-restore_engine() { git checkout -- "$ENGINE" 2>/dev/null; }
+# ONLY restore if this script actually injected something.
+#
+# This guard exists because the trap DESTROYED uncommitted work. `main` runs
+# assert_engine_clean first, and when that found a modified escape_core.c it
+# called `die` -- which fired the EXIT trap, which ran `git checkout --` and threw
+# away the very edit the guard was complaining about. The guard was meant to
+# protect that work and deleted it instead. Measured: an uncommitted `is_append`
+# arm vanished, and the test row that covered it went from PASS to FAIL.
+INJECTED=0
+restore_engine() {
+    [ "$INJECTED" -eq 1 ] || return 0
+    git checkout -- "$ENGINE" 2>/dev/null
+    INJECTED=0
+}
 trap restore_engine EXIT INT TERM
 
 assert_engine_clean() {
@@ -155,6 +168,7 @@ open(path, "w").write(src.replace(anchor, block, 1))
 PY
     [ $? -eq 0 ] || die "injection script failed for $arm ($mode)"
     grep -q "$MARKER" "$ENGINE" || die "injection for $arm ($mode) did not land in $ENGINE"
+    INJECTED=1
 }
 
 build() {
@@ -201,6 +215,7 @@ open(path, "w").write(src.replace(anchor, guard, 1))
 PY
     [ $? -eq 0 ] || die "reach injection failed"
     grep -q "$MARKER" "$ENGINE" || die "reach injection did not land in $ENGINE"
+    INJECTED=1
 }
 
 reach() {

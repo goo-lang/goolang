@@ -96,6 +96,32 @@ That is why the daemon gains `fields` (from `strings.Split`) and not `parts`.
 Still refused, and unchanged: `TYPE_STRING` (the next increment) and
 `TYPE_INTERFACE` (field 0 is the VTABLE, so it must never be released).
 
+## UPDATE 2026-07-29: the self-append idiom, and the daemon halves again
+
+| daemon, 400,000 requests | peak RSS |
+|---|---|
+| `GOO_ARC_RELEASE=0` | 750,996 KB |
+| default | **632,464 KB** |
+
+**115.8 MB**, up from 54.8 MB with `fields` alone. `parts` releases now too, and
+the output is identical (`23` either way).
+
+**Neither half of this was worth a byte on its own**, and that was measured rather
+than assumed before either half was built:
+
+| state | verdict for `xs = append(xs, n)` |
+|---|---|
+| before | `RELEASE_NO_ESCAPES` |
+| after `append` gets a non-retaining slice argument | `RELEASE_NO_REBOUND` |
+| after the self-append rule as well | `RELEASE_OK` |
+
+To build append-only would have produced a correct-looking change worth 0%, which
+is the trap the pointer-only emission fell into.
+
+The hazard is `t := append(s, x)`, where `t.data` can equal `s.data`. Condition 2
+refuses it, so the self-append rule matches arg 0 against the target by NAME.
+`a = append(b, x)` is a real rebind and stays refused.
+
 ## The limitation, stated precisely
 
 T4 releases a local whose SLOT is a bare pointer. That covers `new(T)` and

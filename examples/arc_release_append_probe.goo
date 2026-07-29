@@ -1,0 +1,40 @@
+// T4 self-append: `L = append(L, x)` grows L's object, so L stays releasable.
+//
+// This shape needed TWO changes and NEITHER alone was worth a byte:
+//   1. `append` does not retain its slice argument. Before that, arg 0 was marked
+//      escaping and condition 1 refused the local.
+//   2. `L = append(L, x)` is not a REBIND. Before that, condition 4 refused it,
+//      because it counts bindings and an assignment is normally a second one.
+//
+// Measured on the way through: RELEASE_NO_ESCAPES, then RELEASE_NO_REBOUND after
+// change 1, then RELEASE_OK only with both. It is the daemon's `parts` shape.
+//
+// WHY THIS IS SAFE. append writes into the existing buffer or reallocs, and
+// goo_realloc frees the old base itself, so the intermediate buffers are already
+// gone. One local, one live buffer at exit, and ownership never moves.
+//
+// The dangerous cousin is `t := append(s, x)`, which can leave t.data == s.data
+// and give one buffer two owners. It stays refused by condition 2, and
+// release_decision_test row 19 pins that.
+//
+// Grows to 64 elements so the buffer reallocs several times, which exercises the
+// realloc path rather than only the first allocation.
+//
+// IMPORT-FREE, for the reason the other arc probes record.
+package main
+
+var sink int
+
+func build(n int) {
+	xs := []int{}
+	for i := 0; i < 64; i++ {
+		xs = append(xs, i+n)
+	}
+	sink = sink + len(xs)
+}
+
+func main() {
+	for i := 0; i < 2000; i++ {
+		build(i)
+	}
+}

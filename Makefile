@@ -5102,6 +5102,27 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  slice ON:    valgrind clean, 0 bytes leaked (was $$sl_off)"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_ap_off examples/arc_release_append_probe.goo > build/arc_ap_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, append probe, release off)"; cat build/arc_ap_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_ap_on examples/arc_release_append_probe.goo > build/arc_ap_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, append probe, release on)"; cat build/arc_ap_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_ap_off > /dev/null 2> build/arc_ap_off.vg; \
+	ap_off=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_ap_off.vg | tr -d ,); \
+	if [ -z "$$ap_off" ] || [ "$$ap_off" -eq 0 ]; then \
+	  echo "  FAIL: append probe with GOO_ARC_RELEASE=0 did not leak — it measures nothing"; fail=1; \
+	else \
+	  echo "  append OFF: $$ap_off bytes leaked (expected)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_ap_on > /dev/null 2> build/arc_ap_on.vg; \
+	rc=$$?; \
+	ap_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_ap_on.vg | tr -d ,); \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_ap_on.vg; then \
+	  echo "  FAIL: self-append release is not valgrind-clean (rc=$$rc)"; tail -30 build/arc_ap_on.vg; fail=1; \
+	elif [ -n "$$ap_on" ] && [ "$$ap_on" -ne 0 ]; then \
+	  echo "  FAIL: self-append release ON still leaked $$ap_on bytes"; fail=1; \
+	else \
+	  echo "  append ON:   valgrind clean, 0 bytes leaked (was $$ap_off)"; \
+	fi; \
 	valgrind --leak-check=no --error-exitcode=99 ./build/arc_sub > /dev/null 2> build/arc_sub.vg; \
 	rc=$$?; \
 	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_sub.vg; then \
