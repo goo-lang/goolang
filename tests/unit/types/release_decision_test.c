@@ -575,37 +575,24 @@ static TestRow rows[] = {
         "f", { { "v", RELEASE_NO_NOT_OWNED } }, 1
     },
     {
-        // A TRIPWIRE ROW, and the verdict here is NOT the one the select arm
-        // computes. Read the whole comment before changing it.
+        // SOUNDNESS ROW, and it was a TRIPWIRE until the select arm was fixed.
         //
         // `case a = <-ch:` is SelectCaseNode.is_declare == 0 -- an assignment into
         // an ALREADY-DECLARED outer local. The declaration site is a clean
         // allocation, so condition 2 reads `a` as owned, and only counting the
         // select's rebind catches that `a` ends up holding what the channel
-        // delivered. The AST_SELECT_STMT arm does count it.
+        // delivered.
         //
-        // BUT CONDITION 1 REFUSES FIRST, so REBOUND is unobservable here.
-        // MEASURED, three ways:
-        //   - a function with a `chan *int` parameter and NO select releases `a`
-        //   - adding a select refuses it, even with a non-pointer channel and
-        //     even when the select does not mention `a` at all
-        //   - bypassing condition 1 in decide() makes this row read REBOUND
+        // IT ASSERTED RELEASE_NO_ESCAPES UNTIL escape_core's select arm LANDED.
+        // That arm walked `sc->comm` -- an EXPRESSION -- with escape_walk_stmt, so
+        // it fell to a `default:` that called escape_mark_all and every local in
+        // any function containing a select read as escaping. Condition 1 therefore
+        // refused first and this rule was unobservable; bypassing condition 1 was
+        // the only way to see it. The row was written to FAIL when that was fixed,
+        // and it did.
         //
-        // THE CAUSE IS UPSTREAM, in escape_core.c. Its AST_SELECT_STMT arm calls
-        // escape_walk_stmt on `sc->comm`, but the grammar builds every select case
-        // from `CASE ... expression COLON case_body`, so comm is an EXPRESSION.
-        // It lands on that walk's `default:`, which calls escape_mark_all -- so
-        // EVERY local in ANY function containing a select reads as escaping.
-        // A precision bug, not a soundness one, which is why it went unseen:
-        // escape_core's safe answer is `true`.
-        //
-        // NOT FIXED HERE ON PURPOSE. That arm is shared by param_escape,
-        // block_escape and local_escape, so touching it means re-running all
-        // three arm matrices. Recorded in the .handoff.md ledger.
-        //
-        // WHEN THAT IS FIXED, THIS ROW MUST BECOME RELEASE_NO_REBOUND. It failing
-        // is the signal that the select precision arrived -- not a regression.
-        32, "case a = <-ch: is masked by condition 1 -> ESCAPES (tripwire)",
+        // Fails now if the AST_SELECT_STMT arm stops reading is_declare == 0.
+        32, "case a = <-ch: rebinds an OUTER local -> refuse, REBOUND",
         "package main\n"
         "var sink int\n"
         "func f(ch chan *int) {\n"
@@ -616,7 +603,7 @@ static TestRow rows[] = {
         "    }\n"
         "    _ = a\n"
         "}\n",
-        "f", { { "a", RELEASE_NO_ESCAPES } }, 1
+        "f", { { "a", RELEASE_NO_REBOUND } }, 1
     },
     {
         // SOUNDNESS ROW, and the one that fails if the case BODIES are not walked

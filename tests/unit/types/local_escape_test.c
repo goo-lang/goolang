@@ -419,7 +419,15 @@ static TestRow rows[] = {
     },
     {
         // AST_SELECT_STMT. The channel send is the sink, and the select arm is
-        // what walks the comm clauses to reach it.
+        // what routes the comm clause to reach it.
+        //
+        // THIS COMMENT WAS ONLY TRUE FROM THE COMM FIX ONWARDS. Before it, the
+        // arm handed comm -- an EXPRESSION -- to escape_walk_stmt, which fell to
+        // `default:` and called escape_mark_all. `x` was marked because
+        // EVERYTHING was, so this row was green whether or not a send sink
+        // existed. Measured during the fix: routing comm through plain
+        // escape_expr_taint with no sink makes this row report `x` NOT escaping.
+        // That is the under-mark this row now genuinely guards.
         26, "local sent on a channel inside a SELECT clause -> true",
         "package main\n"
         "func f(ch chan *int) {\n"
@@ -444,6 +452,28 @@ static TestRow rows[] = {
         "    return nil\n"
         "}\n",
         "f", { { "x", true } }, 1
+    },
+    {
+        // THE PRECISION ROW, and it is the one this change exists for. `y` is
+        // never named by the select, so nothing should make it escape. Before the
+        // select arm was fixed it DID: escape_walk_stmt got `sc->comm`, which is
+        // an EXPRESSION, fell to `default:` and called escape_mark_all, so every
+        // local in any function containing a select read as escaping.
+        //
+        // `x` in the same function still escapes, and that contrast is what keeps
+        // the row honest: the send sink survived the change. A version that simply
+        // stopped walking comm would pass on `y` and fail on `x`.
+        28, "a local NOT named by a select does not escape; the sent one still does",
+        "package main\n"
+        "func f(ch chan *int) {\n"
+        "    x := new(int)\n"
+        "    y := new(int)\n"
+        "    select {\n"
+        "    case ch <- x:\n"
+        "    }\n"
+        "    _ = y\n"
+        "}\n",
+        "f", { { "x", true }, { "y", false } }, 2
     },
 };
 

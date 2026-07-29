@@ -225,6 +225,24 @@ static TestRow rows[] = {
         { { "send", 2, { false, true }, false, false } }, 1
     },
     {
+        // THE SAME SEND, INSIDE A SELECT CASE. Row 16 covers `ch <- p` as an
+        // expression statement; this reaches the identical sink through the
+        // select arm, where comm is an EXPRESSION and goes to
+        // escape_walk_expr_stmt rather than escape_walk_stmt.
+        //
+        // Before that fix this passed because escape_walk_stmt dropped the
+        // expression on `default:` and called escape_mark_all. The row exists so
+        // the sink is pinned in each of the three passes and not in one.
+        25, "param sent on a channel inside a SELECT case -> true",
+        "package main\n"
+        "func sendsel(ch chan *int, p *int) {\n"
+        "    select {\n"
+        "    case ch <- p:\n"
+        "    }\n"
+        "}\n",
+        { { "sendsel", 2, { false, true }, false, false } }, 1
+    },
+    {
         // 7a' non-retaining whitelist: fmt.Println does not retain its args, so
         // a param only passed to it does NOT escape (was `true` pre-whitelist).
         17, "param passed to fmt.Println -> false (7a' whitelist, non-retaining)",
