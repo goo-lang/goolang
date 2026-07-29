@@ -1,7 +1,10 @@
-// T4 condition 5, the NEGATIVE case: a local declared inside a conditional
-// block must never be released.
+// T4: a local declared inside a conditional block is reclaimed SAFELY.
 //
-// THIS WAS A LIVE BUG, not a hypothetical. Measured on `main` before condition 5,
+// This probe began life as the negative case for condition 5, which refused such
+// a local outright. codegen_arc_zero_slot retired that condition, so `inner`
+// reclaims now and the probe gates the thing that makes it safe.
+//
+// THIS WAS A LIVE BUG, not a hypothetical. Measured on `main` before the fix,
 // with `maybe(false)`:
 //
 //     Use of uninitialised value of size 8
@@ -23,11 +26,11 @@
 // plain run proved nothing -- only valgrind saw it. That is why this probe is
 // gated on valgrind's exit status and not on the program's.
 //
-// `alive` IS RELEASED, and that is load-bearing: without it this probe would pass
-// just as well with the release machinery switched off entirely, and would
-// therefore measure nothing. It is the row 28 contrast in probe form -- condition
-// 5 is about the DECLARATION SITE, not about the presence of a branch in the
-// function.
+// BOTH LOCALS ARE RELEASED NOW: `alive` at function scope and `inner` inside the
+// branch. The 240,048 -> 0 differential is what proves the probe is not vacuous;
+// before the zero store the ON run still leaked 24 bytes, because `inner` was
+// refused. `alive` remains load-bearing -- without a function-scope local this
+// probe would pass just as well with the release machinery switched off.
 //
 // NOTHING IS READ THROUGH A POINTER INTO A GLOBAL, and that is deliberate.
 // escape_expr_taint's AST_UNARY_EXPR arm returns the operand's taint for EVERY

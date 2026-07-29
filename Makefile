@@ -5187,10 +5187,13 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	c_off=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_cond_offl.vg | tr -d ,); \
 	c_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_cond_onl.vg | tr -d ,); \
 	if [ -z "$$c_on" ]; then c_on=0; fi; \
-	if [ -z "$$c_off" ] || [ "$$c_on" -ge "$$c_off" ]; then \
-	  echo "  FAIL: cond probe reclaimed nothing ($$c_off -> $$c_on) — it measures nothing"; fail=1; \
+	if [ -z "$$c_off" ] || [ "$$c_off" -eq 0 ]; then \
+	  echo "  FAIL: cond probe with GOO_ARC_RELEASE=0 did not leak — it measures nothing"; fail=1; \
+	elif [ "$$c_on" -ne 0 ]; then \
+	  echo "  FAIL: a conditionally-declared local was NOT reclaimed ($$c_off -> $$c_on)"; \
+	  echo "        the entry-block zero store is what makes it releasable."; fail=1; \
 	else \
-	  echo "  conditional: $$c_off -> $$c_on bytes (the refused inner local is the remainder)"; \
+	  echo "  conditional: $$c_off -> $$c_on bytes (the branch-local reclaims too)"; \
 	fi; \
 	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_sw_off examples/arc_release_switch_probe.goo > build/arc_sw_off.cerr 2>&1 \
 	  || { echo "  FAIL (compile, switch probe, release off)"; cat build/arc_sw_off.cerr; exit 1; }; \

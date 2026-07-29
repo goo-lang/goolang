@@ -2633,6 +2633,59 @@ static void emit_scope_releases(CodeGenerator* codegen) {
 #endif
 }
 
+// T4: zero a release candidate's slot immediately after its alloca.
+//
+// WHY THIS EXISTS. codegen_alloc_local_promoted hoists an ordinary local's alloca
+// to the entry block but leaves the initialising store at the DECLARATION SITE.
+// A local declared inside a branch therefore has a slot on every path and a value
+// only on the taken one, and an LLVM alloca is undef. Before this, releasing such
+// a slot read -- and through __atomic_fetch_sub WROTE -- through garbage, which
+// condition 5 had to refuse outright. goo_release is a no-op on NULL, so zeroing
+// the slot turns that refusal into reclamation. Same trick as
+// defer_entry_store_zero above, which solved the identical problem for a defer
+// placed in a branch that is never taken.
+//
+// POSITION IS A CORRECTNESS RULE, NOT A PREFERENCE, and it differs from
+// defer_entry_store_zero on purpose. That helper stores before the entry block's
+// TERMINATOR, which is safe for a defer flag because the flag's real store always
+// happens later, in another block. A LOCAL IS NOT LIKE THAT: a function-scope
+// local is declared IN the entry block, so its initialising store is in the entry
+// block too -- and at the moment this runs the entry block has NO terminator yet,
+// so "before the terminator" degrades to "at the end", i.e. AFTER that store.
+//
+// MEASURED, by building exactly that variant: `p := new(int)` was zeroed straight
+// back to NULL, and examples/arc_release_probe.goo died on its FIRST call with
+//     nil dereference at examples/arc_release_probe.goo:33
+//     panic: runtime error: invalid memory address or nil pointer dereference
+// exiting 2 after leaking the single object it had allocated. The 24-byte leak
+// figure that variant reports is the panic, not a near miss.
+//
+// Storing immediately after the alloca puts the zero before every initialising
+// store, wherever that store lives. The emitted entry block reads:
+//     %p = alloca ptr
+//     store ptr null, ptr %p        <- here
+//     ...
+//     store ptr %alloc, ptr %p      <- the declaration's own store
+//
+// The WHOLE slot is zeroed, not just field 0. One store either way, and it keeps
+// a fat value's len/cap defined rather than leaving them undef for anything that
+// reads them on the untaken path.
+static bool codegen_arc_zero_slot(CodeGenerator* codegen, LLVMValueRef slot, LLVMTypeRef slot_ty) {
+    if (!codegen || !codegen->builder || !slot || !slot_ty) return false;
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(codegen->builder);
+    LLVMValueRef next = LLVMGetNextInstruction(slot);
+    if (next) {
+        LLVMPositionBuilderBefore(codegen->builder, next);
+    } else {
+        LLVMBasicBlockRef home = LLVMGetInstructionParent(slot);
+        if (!home) return false;
+        LLVMPositionBuilderAtEnd(codegen->builder, home);
+    }
+    LLVMValueRef st = LLVMBuildStore(codegen->builder, LLVMConstNull(slot_ty), slot);
+    if (cur) LLVMPositionBuilderAtEnd(codegen->builder, cur);
+    return st != NULL;
+}
+
 void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
 #if LLVM_AVAILABLE
     if (!codegen || !codegen->release_plan || !info || !info->name || !info->llvm_value) return;
@@ -2712,6 +2765,13 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     for (size_t i = 0; i < fi->arc_release_count; i++) {
         if (fi->arc_release_slots[i].slot == info->llvm_value) return;
     }
+
+    // FAIL CLOSED, and this is what lets condition 5 be retired. The release at
+    // exit loads the slot unconditionally, so it is only safe when the slot is
+    // guaranteed to hold either NULL or a real object. If the zero store cannot
+    // be emitted, that guarantee is absent and the site is NOT recorded -- a lost
+    // reclamation rather than a read through undef.
+    if (!codegen_arc_zero_slot(codegen, info->llvm_value, slot_ty)) return;
 
     if (fi->arc_release_count >= fi->arc_release_capacity) {
         size_t ncap = fi->arc_release_capacity ? fi->arc_release_capacity * 2 : 4;

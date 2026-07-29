@@ -48,7 +48,6 @@ MUTATIONS=(
 "cond3-arena	    if (r->arena_depth > 0) return RELEASE_NO_ARENA;"
 "cond4-loop	    if (r->loop_depth > 0)    return RELEASE_NO_LOOP_SCOPE;"
 "cond4-rebound	    if (r->binding_count > 1) return RELEASE_NO_REBOUND;"
-"cond5-conditional	    if (r->cond_depth > 0)    return RELEASE_NO_COND_SCOPE;"
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
 # Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
 # `L = append(L, x)` counts as a rebind and row 18 must fail.

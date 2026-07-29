@@ -17,7 +17,7 @@
 // way it already reads block_escape's.
 //
 // =============================================================================
-// FIVE CONDITIONS, ALL OF WHICH MUST HOLD
+// FOUR CONDITIONS, ALL OF WHICH MUST HOLD
 // =============================================================================
 //
 // Every one of these was established by MEASUREMENT, not by reasoning. See
@@ -61,33 +61,17 @@
 //      Releasing a loop-bound local is the KILL RULE, which ADR 0004 records as
 //      inseparable from building a CFG.
 //
-//   5. NOT DECLARED INSIDE A CONDITIONAL BLOCK. codegen_alloc_local_promoted
-//      (src/codegen/function_codegen.c) sends an ordinary local to
-//      codegen_create_entry_alloca, so the SLOT is hoisted to the entry block
-//      while the initialising store stays at the DECLARATION SITE. A local
-//      declared inside a branch therefore has a slot on every path and a VALUE
-//      only on the taken one, and an LLVM alloca is undef rather than zero.
-//      goo_obj_headerless screens only NULL and goo_zerobase, so nothing
-//      downstream catches it.
+// A FIFTH CONDITION EXISTED AND IS RETIRED. It refused any local declared inside
+// a conditional block, because codegen_alloc_local_promoted hoists the alloca to
+// the entry block while the initialising store stays at the DECLARATION SITE --
+// so an unexecuted declaration left the slot undef, and goo_release read, and
+// through __atomic_fetch_sub WROTE, through garbage. That was a LIVE BUG,
+// reachable through a plain `if` (PR #265).
 //
-//      THIS CLOSED A LIVE BUG, not a hypothetical one. Measured on
-//      `if c { a := new(int) }` called with c false:
-//
-//          Use of uninitialised value of size 8
-//             at goo_release (runtime.c:203)     <- the immortal-count read
-//             by f
-//           Uninitialised value was created by a stack allocation at f
-//
-//      and again at runtime.c:215, which is the __atomic_fetch_sub -- a WRITE
-//      through the garbage pointer, to an arbitrary address. The program still
-//      exited 0, because the garbage happened to be benign; only valgrind saw
-//      it. Introduced with the first emission and unnoticed until T4 widened.
-//
-//      AN ENTRY-BLOCK ZERO STORE WOULD LIFT THIS, in the shape
-//      defer_entry_store_zero already uses for a defer placed in a branch that
-//      is never taken (src/codegen/statement_codegen.c). An unexecuted
-//      declaration would then leave NULL, and goo_release no-ops on NULL. That
-//      is a separate increment; until it lands, this condition is the guard.
+// codegen_arc_zero_slot (src/codegen/statement_codegen.c) now stores NULL into
+// every release candidate's slot immediately after its alloca, and goo_release is
+// a no-op on NULL, so the premise is gone. The guarantee is FAIL-CLOSED: codegen
+// records no release site at all unless that store was emitted.
 //
 // =============================================================================
 // CONDITION 2 -- the binding-site table
@@ -128,13 +112,12 @@
 // the CAUSE and not merely the verdict. A row that passes for the wrong reason
 // measures nothing, which this arc has now been bitten by twice.
 typedef enum {
-    RELEASE_OK = 0,             // all five conditions hold
+    RELEASE_OK = 0,             // all four conditions hold
     RELEASE_NO_ESCAPES,         // condition 1: may outlive the function
     RELEASE_NO_NOT_OWNED,       // condition 2: a borrowed view, or an alias
     RELEASE_NO_ARENA,           // condition 3: declared inside `arena { }`
     RELEASE_NO_LOOP_SCOPE,      // condition 4: declared inside a loop body
     RELEASE_NO_REBOUND,         // condition 4: assigned again after declaration
-    RELEASE_NO_COND_SCOPE,      // condition 5: declared inside a conditional block
     RELEASE_NO_NO_BINDING,      // no binding site found for the name
     RELEASE_NO_UNKNOWN,         // a statement kind this module cannot read
 } ReleaseVerdict;
@@ -162,7 +145,7 @@ typedef struct ReleasePlan {
 ReleasePlan* release_plan_analyze(ASTNode* program);
 void         release_plan_free(ReleasePlan* plan);
 
-// True ONLY when all five conditions hold. Conservative on every miss -- an
+// True ONLY when all four conditions hold. Conservative on every miss -- an
 // unknown function or an unknown local returns false, because the caller frees
 // on a true.
 bool release_plan_should_release(const ReleasePlan* plan, const char* fn, const char* local);
