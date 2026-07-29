@@ -613,6 +613,52 @@ void escape_seed_names_from_values(EscapeCtx* ctx, char** names, size_t name_cou
 }
 
 
+// The body of an EXPRESSION STATEMENT, and of a select case's comm clause.
+//
+// SHARED ON PURPOSE, and not copied. A select case's comm is an EXPRESSION -- the
+// grammar builds every case from `CASE ... expression COLON case_body`
+// (src/parser/parser.y) -- so it never reaches the AST_EXPR_STMT arm. The select
+// arm used to hand it to escape_walk_stmt, where an expression node fell to
+// `default:` and called escape_mark_all. EVERY local in ANY function containing a
+// select therefore read as escaping. A precision defect, not a soundness one,
+// which is why it survived: the safe answer here is `true`.
+//
+// THE SEND SINK IS WHY THIS IS A HELPER AND NOT A DELETION. escape_mark_all was
+// covering `case ch <- v:` BY ACCIDENT. Measured: routing comm through plain
+// escape_expr_taint instead, with no sink, makes local_escape row 26 report `x`
+// as NOT escaping -- an under-mark, which is the use-after-free direction. The
+// sink has to travel with the change, and sharing this helper is what stops the
+// two callers from drifting apart later.
+static void escape_walk_expr_stmt(EscapeCtx* ctx, ASTNode* e, bool* env_changed) {
+    if (!e) return;
+    if (e->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)e;
+        if (is_assign_op(b->operator)) {
+            TaintSet rhs = escape_expr_taint(ctx, b->right);
+            assign_to_lvalue(ctx, b->left, &rhs, env_changed);
+            escape_taint_free(&rhs);
+            return;
+        }
+        if (b->operator == TOKEN_ARROW) {
+            // Channel send `ch <- v`: the sent value LEAVES this block — a
+            // receiver (another goroutine, or code running after the block) reads
+            // it once the arena is already freed. So taint(v) escapes the block,
+            // exactly like a goroutine/defer argument (a bare send of an arena
+            // value was a use-after-free before this). `<-ch` receive is a UNARY
+            // ARROW (a fresh in-bound value), correctly NOT a sink — handled by
+            // escape_expr_taint.
+            TaintSet lt = escape_expr_taint(ctx, b->left);
+            escape_taint_free(&lt);
+            TaintSet rhs = escape_expr_taint(ctx, b->right);
+            escape_mark(ctx, &rhs);
+            escape_taint_free(&rhs);
+            return;
+        }
+    }
+    TaintSet t = escape_expr_taint(ctx, e);
+    escape_taint_free(&t);
+}
+
 void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
     for (; stmt; stmt = stmt->next) {
         switch (stmt->type) {
@@ -620,37 +666,9 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
                 escape_walk_stmt(ctx, ((BlockStmtNode*)stmt)->statements, env_changed);
                 break;
 
-            case AST_EXPR_STMT: {
-                ASTNode* e = ((ExprStmtNode*)stmt)->expr;
-                if (e && e->type == AST_BINARY_EXPR) {
-                    BinaryExprNode* b = (BinaryExprNode*)e;
-                    if (is_assign_op(b->operator)) {
-                        TaintSet rhs = escape_expr_taint(ctx, b->right);
-                        assign_to_lvalue(ctx, b->left, &rhs, env_changed);
-                        escape_taint_free(&rhs);
-                        break;
-                    }
-                    if (b->operator == TOKEN_ARROW) {
-                        // Channel send `ch <- v`: the sent value LEAVES this
-                        // block — a receiver (another goroutine, or code
-                        // running after the block) reads it once the arena is
-                        // already freed. So taint(v) escapes the block, exactly
-                        // like a goroutine/defer argument (a bare send of an
-                        // arena value was a use-after-free before this).
-                        // `<-ch` receive is a UNARY ARROW (a fresh in-bound
-                        // value), correctly NOT a sink — handled by escape_expr_taint.
-                        TaintSet lt = escape_expr_taint(ctx, b->left);
-                        escape_taint_free(&lt);
-                        TaintSet rhs = escape_expr_taint(ctx, b->right);
-                        escape_mark(ctx, &rhs);
-                        escape_taint_free(&rhs);
-                        break;
-                    }
-                }
-                TaintSet t = escape_expr_taint(ctx, e);
-                escape_taint_free(&t);
+            case AST_EXPR_STMT:
+                escape_walk_expr_stmt(ctx, ((ExprStmtNode*)stmt)->expr, env_changed);
                 break;
-            }
 
             case AST_IF_STMT: {
                 IfStmtNode* n = (IfStmtNode*)stmt;
@@ -809,7 +827,10 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type == AST_SELECT_CASE) {
                         SelectCaseNode* sc = (SelectCaseNode*)c;
-                        escape_walk_stmt(ctx, sc->comm, env_changed);
+                        // comm is an EXPRESSION, so it goes to the shared helper
+                        // and NOT to escape_walk_stmt. See that helper for what
+                        // walking it as a statement used to cost.
+                        escape_walk_expr_stmt(ctx, sc->comm, env_changed);
                         escape_walk_stmt(ctx, sc->body, env_changed);
                     }
                 }

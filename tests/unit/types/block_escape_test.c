@@ -266,6 +266,30 @@ static TestRow rows[] = {
         1, { true }
     },
     {
+        // THE SAME SEND, INSIDE A SELECT CASE. Row 17 covers `ch <- p` as an
+        // expression statement. This one covers it as a select case's comm
+        // clause, which reaches the sink by a DIFFERENT path: comm is an
+        // EXPRESSION, so the select arm routes it through escape_walk_expr_stmt
+        // rather than escape_walk_stmt.
+        //
+        // Before that arm was fixed this row passed for the wrong reason --
+        // escape_walk_stmt sent the expression to `default:`, which calls
+        // escape_mark_all and marks everything. Pinning the send in its own row
+        // is what stops a future narrowing of the select arm from silently
+        // dropping the sink.
+        33, "sent on a channel inside a SELECT case -> true (same sink, other path)",
+        "package main\n"
+        "func f(ch chan *int) {\n"
+        "    arena {\n"
+        "        p := new(int)\n"
+        "        select {\n"
+        "        case ch <- p:\n"
+        "        }\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
         // 7a' non-retaining whitelist: fmt.Println does not retain its args, so
         // an arena value passed ONLY to it does not escape the block and stays
         // arena-eligible (was `true` under the pure-conservative external rule).
