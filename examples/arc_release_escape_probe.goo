@@ -1,0 +1,28 @@
+// T4 gate, the NEGATIVE case: a local that DOES escape must not be released.
+//
+// `p` is returned, so condition 1 refuses it. If the release decision ever
+// approves an escaping local, this program reads through a freed pointer and
+// valgrind reports `Invalid read`. Verified to do exactly that: with decide()
+// forced to return RELEASE_OK unconditionally, this reported three
+// `Invalid read of size 8` and exited 99.
+//
+// So this file is the half of arc-release-probe that proves the gate has teeth.
+// A gate that only ever sees safe programs cannot report an unsafe one.
+//
+// IMPORT-FREE, for the same reason as arc_release_probe.goo.
+package main
+
+var g *int
+
+func leak() *int {
+	p := new(int)
+	*p = 7
+	return p
+}
+
+func main() {
+	q := leak()
+	g = q
+	v := *q
+	_ = v
+}

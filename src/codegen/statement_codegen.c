@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "release_decision.h"
 #include "comptime.h"
 #include "value_scope.h"
 #include <stdlib.h>
@@ -2574,7 +2575,102 @@ static void codegen_emit_arena_frees_to_depth(CodeGenerator* codegen, int target
 // does not run), splicing the synthetic nodes into the call transactionally
 // for the duration of that one emission and restoring the originals
 // immediately after (see the splice/restore below).
+static void emit_deferred_calls_only(CodeGenerator* codegen, TypeChecker* checker);
+
+// T4: emit `goo_release` for every local of the current function that the release
+// plan approves.
+//
+// ORDERING IS A SOUNDNESS RULE, NOT A PREFERENCE. Releases run AFTER the deferred
+// calls, because Go's deferred functions run before the function returns and can
+// read a local through a closure. Release first and such a defer reads freed
+// memory. That ordering is enforced STRUCTURALLY below rather than by convention:
+// this is called from the one wrapper every exit path already goes through, so a
+// ninth exit path cannot be added that releases too early.
+//
+// The return VALUE is computed before this runs (codegen_generate_return_stmt
+// stores it, then calls the wrapper, then emits `ret`), so `return *p` loads
+// through `p` before `p` is released. Anything returned BY POINTER escapes, and
+// condition 1 refuses it.
+//
+// Locals come from the value table slice this function owns. A local declared in
+// an inner block that already closed is gone from the table, so it simply gets no
+// release -- a lost reclamation, never an unsafe one. Each exit path emits its
+// own releases and exactly one path runs, so nothing is released twice.
+static void emit_scope_releases(CodeGenerator* codegen) {
+#if LLVM_AVAILABLE
+    if (!codegen || !codegen->release_plan) return;   // NULL plan == GOO_ARC_RELEASE=0
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi || !codegen->builder || fi->arc_release_count == 0) return;
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef rel_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_ty, 1, 0);
+    LLVMValueRef rel_fn = LLVMGetNamedFunction(codegen->module, "goo_release");
+    if (!rel_fn) rel_fn = LLVMAddFunction(codegen->module, "goo_release", rel_ty);
+    if (!rel_fn) return;
+
+    for (size_t i = 0; i < fi->arc_release_count; i++) {
+        LLVMValueRef slot = fi->arc_release_slots[i];
+        if (!slot) continue;
+        LLVMValueRef obj = LLVMBuildLoad2(codegen->builder, ptr_ty, slot, "arc.release.obj");
+        // goo_release is a no-op on NULL, on goo_zerobase and on an immortal
+        // header (include/runtime.h), so no guard is emitted for those here.
+        LLVMBuildCall2(codegen->builder, rel_ty, rel_fn, &obj, 1, "");
+    }
+#else
+    (void)codegen;
+#endif
+}
+
+void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
+#if LLVM_AVAILABLE
+    if (!codegen || !codegen->release_plan || !info || !info->name || !info->llvm_value) return;
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi || !fi->name) return;
+
+    if (!release_plan_should_release(codegen->release_plan, fi->name, info->name)) return;
+
+    // Only an alloca holding a POINTER can carry an ARC object. Checking the
+    // allocated type here rather than trusting the plan keeps a mis-typed entry
+    // from producing a load of the wrong kind at exit.
+    if (LLVMGetValueKind(info->llvm_value) != LLVMInstructionValueKind) return;
+    if (LLVMGetInstructionOpcode(info->llvm_value) != LLVMAlloca) return;
+    LLVMTypeRef slot_ty = LLVMGetAllocatedType(info->llvm_value);
+    if (!slot_ty || LLVMGetTypeKind(slot_ty) != LLVMPointerTypeKind) return;
+
+    // The same name can be bound twice in sibling blocks. The plan already
+    // refuses such a name (RELEASE_NO_REBOUND, because it counts bindings), so a
+    // duplicate here would mean the plan and this hook disagree. Skip it rather
+    // than release one slot twice.
+    for (size_t i = 0; i < fi->arc_release_count; i++) {
+        if (fi->arc_release_slots[i] == info->llvm_value) return;
+    }
+
+    if (fi->arc_release_count >= fi->arc_release_capacity) {
+        size_t ncap = fi->arc_release_capacity ? fi->arc_release_capacity * 2 : 4;
+        LLVMValueRef* grown = realloc(fi->arc_release_slots, ncap * sizeof(LLVMValueRef));
+        if (!grown) return;   // fail closed: no release rather than a bad one
+        fi->arc_release_slots = grown;
+        fi->arc_release_capacity = ncap;
+    }
+    fi->arc_release_slots[fi->arc_release_count++] = info->llvm_value;
+
+    if (getenv("GOO_ARC_DEBUG")) {
+        fprintf(stderr, "[arc] %s: will release %s at exit\n", fi->name, info->name);
+    }
+#else
+    (void)codegen; (void)info;
+#endif
+}
+
+// Everything that must happen at a function exit, in the order it must happen.
+// The 8 exit paths call THIS, so the defer-before-release ordering cannot drift.
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
+    emit_deferred_calls_only(codegen, checker);
+    emit_scope_releases(codegen);
+}
+
+static void emit_deferred_calls_only(CodeGenerator* codegen, TypeChecker* checker) {
 #if LLVM_AVAILABLE
     if (!codegen || !checker) return;
     // Free the arenas this return is leaving BEFORE running defers. Defers'

@@ -1,0 +1,41 @@
+// T4 gate: does an approved local actually get reclaimed, and safely?
+//
+// `p` is the shape the release decision approves, and nothing in the compiler
+// freed it before T4:
+//   condition 1  it does not outlive work
+//   condition 2  bound to new(int), so work owns it
+//   condition 3  no arena block
+//   condition 4  function scope, bound once, never re-assigned
+//
+// Called in a loop, so the difference is measurable rather than theoretical.
+// Without a release this leaks one 24-byte object per iteration (a 16-byte
+// GOO_OBJ_HEADER plus an 8-byte int), which is the daemon's per-request shape in
+// miniature. Measured before T4: 10,001 allocs, 1 free, 240,000 bytes in 10,000
+// blocks definitely lost.
+//
+// IMPORT-FREE ON PURPOSE. `.handoff.md` records a local_escape table that read
+// as confident and was conservative because the imports had not resolved. A gate
+// whose verdict can move for an unrelated reason is not a gate.
+//
+// WHY NOTHING DERIVED FROM `p` LEAVES work. escape_expr_taint's AST_UNARY_EXPR
+// arm returns the operand's taint for EVERY unary operator. That is right for
+// `&x`, where the address aliases x, and over-conservative for `*p`, where the
+// deref copies the pointee out. So `return *p` marks `p` escaping and the release
+// is refused. Sound, never a bug, and it is why this probe increments a global
+// instead of returning a value read through `p`. Recorded in the ledger; fixing it
+// means changing the arm all three escape passes share.
+package main
+
+var count int
+
+func work(n int) {
+	p := new(int)
+	*p = n
+	count = count + 1
+}
+
+func main() {
+	for i := 0; i < 10000; i++ {
+		work(i)
+	}
+}

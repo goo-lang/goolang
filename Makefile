@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -3252,6 +3252,7 @@ VERIFY_ALL_DEPS := \
     arena-routing-test \
     arena-free-probe \
     arena-valgrind-probe \
+    arc-release-probe \
     arena-rss-probe \
     dead-package-code-probe \
     alloc-doors-probe \
@@ -5029,6 +5030,58 @@ arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 # free" text in valgrind's own diagnostic is what would indicate the arena
 # free-at-block-exit design has a use-after-free or double-free. If
 # valgrind isn't installed, SKIP loudly rather than silently passing.
+# T4 capstone: the first memory this compiler ever reclaims, proven differentially.
+#
+# THREE CHECKS, and the first exists so the other two mean something:
+#   1. With GOO_ARC_RELEASE=0 the probe MUST LEAK. A gate that cannot report the
+#      unreclaimed state cannot prove reclamation.
+#   2. With the release on, the same program must free every block and be
+#      valgrind-clean.
+#   3. The ESCAPE probe returns its local, so the plan must refuse it and the
+#      program must stay clean. Verified to have teeth: with decide() forced to
+#      return RELEASE_OK, it reports `Invalid read of size 8` and exits 99.
+arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@if ! which valgrind > /dev/null 2>&1; then \
+	  echo "valgrind not found — SKIPPED"; \
+	  exit 0; \
+	fi
+	@echo "=== arc-release-probe: T4 release emission (valgrind, differential) ==="
+	@fail=0; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_off examples/arc_release_probe.goo > build/arc_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, release off)"; cat build/arc_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_on examples/arc_release_probe.goo > build/arc_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, release on)"; cat build/arc_on.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_esc examples/arc_release_escape_probe.goo > build/arc_esc.cerr 2>&1 \
+	  || { echo "  FAIL (compile, escape probe)"; cat build/arc_esc.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_off > /dev/null 2> build/arc_off.vg; \
+	lost_off=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_off.vg | tr -d ,); \
+	if [ -z "$$lost_off" ] || [ "$$lost_off" -eq 0 ]; then \
+	  echo "  FAIL: with GOO_ARC_RELEASE=0 nothing leaked — the probe measures nothing"; \
+	  fail=1; \
+	else \
+	  echo "  release OFF: $$lost_off bytes leaked (expected — the probe has something to measure)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_on > /dev/null 2> build/arc_on.vg; \
+	rc=$$?; \
+	lost_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_on.vg | tr -d ,); \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_on.vg; then \
+	  echo "  FAIL: release ON is not valgrind-clean (rc=$$rc)"; tail -30 build/arc_on.vg; fail=1; \
+	elif [ -n "$$lost_on" ] && [ "$$lost_on" -ne 0 ]; then \
+	  echo "  FAIL: release ON still leaked $$lost_on bytes"; fail=1; \
+	else \
+	  echo "  release ON:  valgrind clean, 0 bytes leaked (was $$lost_off)"; \
+	fi; \
+	valgrind --error-exitcode=99 ./build/arc_esc > /dev/null 2> build/arc_esc.vg; \
+	rc=$$?; \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_esc.vg; then \
+	  echo "  FAIL: an ESCAPING local was released (rc=$$rc)"; tail -30 build/arc_esc.vg; fail=1; \
+	else \
+	  echo "  escape probe: clean — the plan refused the returned local"; \
+	fi; \
+	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
+	echo "arc-release-probe: PASS"
+
 arena-valgrind-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@if ! which valgrind > /dev/null 2>&1; then \
