@@ -444,6 +444,82 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "n", RELEASE_OK } }, 1
     },
+
+    // ---------------- CONDITION 5: declared inside a conditional block -------
+    //
+    // A SOUNDNESS ARC, not a precision one, and it was a LIVE BUG on main before
+    // these rows. Measured on the shape row 26 uses, with `f(false)`:
+    //
+    //   Use of uninitialised value of size 8
+    //      at goo_release (runtime.c:203)      <- the immortal-count read
+    //      by f
+    //    Uninitialised value was created by a stack allocation at f
+    //   ... and again at runtime.c:215, which is the __atomic_fetch_sub -- a
+    //   WRITE through the garbage pointer, to an arbitrary address.
+    //
+    // WHY. codegen_alloc_local_promoted (src/codegen/function_codegen.c) sends an
+    // ordinary local to codegen_create_entry_alloca, so the SLOT is hoisted to the
+    // entry block. The initialising store stays at the declaration site. A local
+    // declared inside a branch therefore has a slot on every path and a VALUE only
+    // on the taken one, and an LLVM alloca is undef rather than zero.
+    // goo_obj_headerless screens only NULL and goo_zerobase, so nothing downstream
+    // catches it.
+    //
+    // The direct run exited 0 -- the garbage happened to be benign that time. Only
+    // valgrind saw it. That is why this is a refusal and not a "known limitation".
+    //
+    // THE FIX THAT WOULD RECOVER THE PRECISION is an entry-block zero store, the
+    // shape defer_entry_store_zero already uses for a defer placed in a branch
+    // that is never taken (src/codegen/statement_codegen.c). Then an unexecuted
+    // declaration leaves NULL and goo_release no-ops. That is the NEXT increment,
+    // deliberately not this one.
+    {
+        26, "declared inside an IF branch -> refuse, COND_SCOPE",
+        "package main\n"
+        "var sink int\n"
+        "func f(c bool) {\n"
+        "    if c {\n"
+        "        a := new(int)\n"
+        "        sink = sink + 1\n"
+        "        _ = a\n"
+        "    }\n"
+        "}\n",
+        "f", { { "a", RELEASE_NO_COND_SCOPE } }, 1
+    },
+    {
+        // The ELSE branch is the same hazard. Written separately because the arm
+        // raises the depth around then_stmt and else_stmt independently, so a fix
+        // that covered only one would leave this green.
+        27, "declared inside an ELSE branch -> refuse, COND_SCOPE",
+        "package main\n"
+        "var sink int\n"
+        "func f(c bool) {\n"
+        "    if c {\n"
+        "        sink = sink + 1\n"
+        "    } else {\n"
+        "        b := new(int)\n"
+        "        _ = b\n"
+        "    }\n"
+        "}\n",
+        "f", { { "b", RELEASE_NO_COND_SCOPE } }, 1
+    },
+    {
+        // THE CONTRAST, and it is what keeps condition 5 about the DECLARATION
+        // SITE rather than about the presence of an `if` in the function. Mirrors
+        // row 12's outer/inner pair for loops. Without this row, a fix that
+        // refused every local in any function containing a branch would pass.
+        28, "function scope local, with an `if` elsewhere -> RELEASE",
+        "package main\n"
+        "var sink int\n"
+        "func f(c bool) {\n"
+        "    outer := new(int)\n"
+        "    if c {\n"
+        "        sink = sink + 1\n"
+        "    }\n"
+        "    _ = outer\n"
+        "}\n",
+        "f", { { "outer", RELEASE_OK } }, 1
+    },
 };
 
 static int failures = 0;

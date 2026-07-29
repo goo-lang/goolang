@@ -1,0 +1,64 @@
+// T4 condition 5, the NEGATIVE case: a local declared inside a conditional
+// block must never be released.
+//
+// THIS WAS A LIVE BUG, not a hypothetical. Measured on `main` before condition 5,
+// with `maybe(false)`:
+//
+//     Use of uninitialised value of size 8
+//        at goo_release (runtime.c:203)      <- the immortal-count read
+//        by maybe
+//      Uninitialised value was created by a stack allocation at maybe
+//
+// and again at runtime.c:215, which is the __atomic_fetch_sub -- a WRITE through
+// the garbage pointer, to an arbitrary address.
+//
+// WHY. codegen_alloc_local_promoted (src/codegen/function_codegen.c) sends an
+// ordinary local to codegen_create_entry_alloca, so the SLOT is hoisted to the
+// entry block. The initialising store stays at the DECLARATION SITE. A local
+// declared inside a branch therefore has a slot on every path and a VALUE only on
+// the taken one, and an LLVM alloca is undef rather than zero. goo_obj_headerless
+// screens only NULL and goo_zerobase, so nothing downstream catches it.
+//
+// THE PROGRAM EXITED 0. The garbage on the stack happened to be benign, so a
+// plain run proved nothing -- only valgrind saw it. That is why this probe is
+// gated on valgrind's exit status and not on the program's.
+//
+// `alive` IS RELEASED, and that is load-bearing: without it this probe would pass
+// just as well with the release machinery switched off entirely, and would
+// therefore measure nothing. It is the row 28 contrast in probe form -- condition
+// 5 is about the DECLARATION SITE, not about the presence of a branch in the
+// function.
+//
+// NOTHING IS READ THROUGH A POINTER INTO A GLOBAL, and that is deliberate.
+// escape_expr_taint's AST_UNARY_EXPR arm returns the operand's taint for EVERY
+// unary operator -- right for `&x`, over-conservative for `*p`, where the deref
+// copies the pointee out. Measured while writing this probe: `sink = sink + *alive`
+// marked `alive` escaping, so it read RELEASE_NO_ESCAPES and NOTHING released.
+// The probe was green and vacuous. examples/arc_release_probe.goo records the
+// same arm as the reason it increments a counter, and this one does the same.
+//
+// The false path runs far more often than the true one, so the unwritten slot is
+// the common case rather than a rare one.
+//
+// IMPORT-FREE, for the reason the other arc probes record.
+package main
+
+var sink int
+
+func maybe(c bool) {
+	alive := new(int)
+	*alive = 1
+	if c {
+		inner := new(int)
+		*inner = 2
+		sink = sink + 1
+	}
+	sink = sink + 1
+}
+
+func main() {
+	for i := 0; i < 10000; i++ {
+		maybe(false)
+	}
+	maybe(true)
+}
