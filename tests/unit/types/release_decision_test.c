@@ -254,24 +254,21 @@ static TestRow rows[] = {
         "f", { { "u", RELEASE_NO_NOT_OWNED } }, 1
     },
     {
-        // THE UNREADABLE-FUNCTION REFUSAL, and it pins a real PRECISION CLIFF
-        // rather than hiding it. The walk in release_decision.c does not read
-        // `switch`, `type switch`, `select` or `if let`, so any function
-        // containing one is refused ENTIRELY -- `a` here is an obvious release
-        // candidate and still gets refused.
+        // THE CLIFF, LIFTED. This row used to assert RELEASE_NO_UNKNOWN: the walk
+        // did not read `switch`, `type switch`, `select` or `if let`, so ANY
+        // function containing one was refused entirely and `a` -- an obvious
+        // candidate at function scope -- went with it.
         //
-        // That is deliberate for this first cut and it is the SAFE direction: an
-        // unread statement might assign to a local, and a missed assignment would
-        // let a rebound local be released. Refusing the function is sound;
-        // guessing is not.
+        // The four arms now read those statements, so this row asserts the
+        // OPPOSITE verdict, and that flip IS the feature. The row is kept rather
+        // than deleted because it is the record of what the limit was and of the
+        // exact shape that measured it.
         //
-        // It is also a narrow limitation to lift -- those arms only need
-        // recursion into their bodies -- and lifting it is a change with its own
-        // rows, not a silent widening of this one. Recorded in the ledger.
-        //
-        // Added because scripts/release_decision_teeth.sh reported this condition
-        // UNGUARDED: deleting it from decide() left all 15 original rows green.
-        17, "a function containing a SWITCH is refused entirely -> UNKNOWN",
+        // RELEASE_NO_UNKNOWN IS STILL REACHABLE, and row 34 is what keeps it so.
+        // Without a row holding that verdict, release_decision_teeth.sh would
+        // report the unreadable condition as unguarded -- which is precisely why
+        // this row was added in the first place.
+        17, "a function containing a SWITCH is now READ -> RELEASE",
         "package main\n"
         "func f(n int) {\n"
         "    a := new(int)\n"
@@ -280,7 +277,7 @@ static TestRow rows[] = {
         "        _ = a\n"
         "    }\n"
         "}\n",
-        "f", { { "a", RELEASE_NO_UNKNOWN } }, 1
+        "f", { { "a", RELEASE_OK } }, 1
     },
 
     // ---------------- SELF-APPEND, and the double-free it must not cause -----
@@ -519,6 +516,148 @@ static TestRow rows[] = {
         "    _ = outer\n"
         "}\n",
         "f", { { "outer", RELEASE_OK } }, 1
+    },
+
+    // ---------------- THE SWITCH / SELECT PRECISION CLIFF, now read ----------
+    //
+    // The walk used to meet `switch`, `type switch`, `select` and `if let` at its
+    // `default:` arm and mark the WHOLE function unreadable, so every local in it
+    // refused with RELEASE_NO_UNKNOWN. Row 17 pinned that. Ordinary Goo code
+    // contains a switch frequently, so it was the widest precision limit left.
+    //
+    // Reading them is not merely recursion. Each one BINDS, and a missed binding
+    // is a use-after-free rather than a lost optimisation. Rows 32 and 33 are the
+    // two that carry that weight.
+    {
+        29, "a local declared inside a SWITCH case body -> refuse, COND_SCOPE",
+        "package main\n"
+        "var sink int\n"
+        "func f(n int) {\n"
+        "    switch n {\n"
+        "    case 1:\n"
+        "        c := new(int)\n"
+        "        sink = sink + 1\n"
+        "        _ = c\n"
+        "    }\n"
+        "}\n",
+        "f", { { "c", RELEASE_NO_COND_SCOPE } }, 1
+    },
+    {
+        // A TYPE SWITCH BIND IS A VIEW of the interface's data pointer, so no
+        // local owns it. Recorded with a NULL binding value, which condition 2
+        // then refuses. Not a limit to lift -- releasing it would free through
+        // the interface the caller still holds.
+        30, "v := x.(type) binds a VIEW of the operand -> refuse, NOT_OWNED",
+        "package main\n"
+        "var sink int\n"
+        "type Shape interface { Area() int }\n"
+        "func f(x Shape) {\n"
+        "    switch v := x.(type) {\n"
+        "    case Shape:\n"
+        "        sink = sink + 1\n"
+        "        _ = v\n"
+        "    }\n"
+        "}\n",
+        "f", { { "v", RELEASE_NO_NOT_OWNED } }, 1
+    },
+    {
+        // AN `if let` BIND IS THE UNWRAPPED NULLABLE, which aliases whatever the
+        // nullable held. Same treatment, same cause.
+        31, "if let v = opt binds the unwrapped value -> refuse, NOT_OWNED",
+        "package main\n"
+        "var sink int\n"
+        "func f(p ?*int) {\n"
+        "    if let v = p {\n"
+        "        sink = sink + 1\n"
+        "        _ = v\n"
+        "    }\n"
+        "}\n",
+        "f", { { "v", RELEASE_NO_NOT_OWNED } }, 1
+    },
+    {
+        // A TRIPWIRE ROW, and the verdict here is NOT the one the select arm
+        // computes. Read the whole comment before changing it.
+        //
+        // `case a = <-ch:` is SelectCaseNode.is_declare == 0 -- an assignment into
+        // an ALREADY-DECLARED outer local. The declaration site is a clean
+        // allocation, so condition 2 reads `a` as owned, and only counting the
+        // select's rebind catches that `a` ends up holding what the channel
+        // delivered. The AST_SELECT_STMT arm does count it.
+        //
+        // BUT CONDITION 1 REFUSES FIRST, so REBOUND is unobservable here.
+        // MEASURED, three ways:
+        //   - a function with a `chan *int` parameter and NO select releases `a`
+        //   - adding a select refuses it, even with a non-pointer channel and
+        //     even when the select does not mention `a` at all
+        //   - bypassing condition 1 in decide() makes this row read REBOUND
+        //
+        // THE CAUSE IS UPSTREAM, in escape_core.c. Its AST_SELECT_STMT arm calls
+        // escape_walk_stmt on `sc->comm`, but the grammar builds every select case
+        // from `CASE ... expression COLON case_body`, so comm is an EXPRESSION.
+        // It lands on that walk's `default:`, which calls escape_mark_all -- so
+        // EVERY local in ANY function containing a select reads as escaping.
+        // A precision bug, not a soundness one, which is why it went unseen:
+        // escape_core's safe answer is `true`.
+        //
+        // NOT FIXED HERE ON PURPOSE. That arm is shared by param_escape,
+        // block_escape and local_escape, so touching it means re-running all
+        // three arm matrices. Recorded in the .handoff.md ledger.
+        //
+        // WHEN THAT IS FIXED, THIS ROW MUST BECOME RELEASE_NO_REBOUND. It failing
+        // is the signal that the select precision arrived -- not a regression.
+        32, "case a = <-ch: is masked by condition 1 -> ESCAPES (tripwire)",
+        "package main\n"
+        "var sink int\n"
+        "func f(ch chan *int) {\n"
+        "    a := new(int)\n"
+        "    select {\n"
+        "    case a = <-ch:\n"
+        "        sink = sink + 1\n"
+        "    }\n"
+        "    _ = a\n"
+        "}\n",
+        "f", { { "a", RELEASE_NO_ESCAPES } }, 1
+    },
+    {
+        // SOUNDNESS ROW, and the one that fails if the case BODIES are not walked
+        // at all. Row 16's shape, moved inside a case: the declaration site is a
+        // clean allocation and the later `a = t.p` leaves `a` holding a field of
+        // someone else's struct. Refusing the whole function used to cover this
+        // by accident; now the walk has to actually see it.
+        33, "an assignment INSIDE a case body is still a rebind -> refuse, REBOUND",
+        "package main\n"
+        "var sink int\n"
+        "type T struct { p *int }\n"
+        "func f(n int, t *T) {\n"
+        "    a := new(int)\n"
+        "    switch n {\n"
+        "    case 1:\n"
+        "        a = t.p\n"
+        "    }\n"
+        "    sink = sink + 1\n"
+        "    _ = a\n"
+        "}\n",
+        "f", { { "a", RELEASE_NO_REBOUND } }, 1
+    },
+    {
+        // RELEASE_NO_UNKNOWN MUST STAY REACHABLE, or release_decision_teeth.sh
+        // reports the unreadable condition as unguarded once `switch` becomes
+        // readable. AST_LABEL_STMT and AST_GOTO_STMT are still unread, and a
+        // label WRAPS a statement -- `L: a = t.p` assigns -- so refusing on one
+        // is conservative for a real cause and not an arbitrary placeholder.
+        34, "a function containing a LABEL is still unreadable -> UNKNOWN",
+        "package main\n"
+        "var sink int\n"
+        "func f(n int) {\n"
+        "    a := new(int)\n"
+        "    if n > 0 {\n"
+        "        goto done\n"
+        "    }\n"
+        "    sink = sink + 1\n"
+        "done:\n"
+        "    _ = a\n"
+        "}\n",
+        "f", { { "a", RELEASE_NO_UNKNOWN } }, 1
     },
 };
 

@@ -5192,6 +5192,28 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  conditional: $$c_off -> $$c_on bytes (the refused inner local is the remainder)"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_sw_off examples/arc_release_switch_probe.goo > build/arc_sw_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, switch probe, release off)"; cat build/arc_sw_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_sw_on examples/arc_release_switch_probe.goo > build/arc_sw_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, switch probe, release on)"; cat build/arc_sw_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_sw_off > /dev/null 2> build/arc_sw_off.vg; \
+	sw_off=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_sw_off.vg | tr -d ,); \
+	if [ -z "$$sw_off" ] || [ "$$sw_off" -eq 0 ]; then \
+	  echo "  FAIL: switch probe with GOO_ARC_RELEASE=0 did not leak — it measures nothing"; fail=1; \
+	else \
+	  echo "  switch OFF: $$sw_off bytes leaked (expected)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_sw_on > /dev/null 2> build/arc_sw_on.vg; \
+	rc=$$?; \
+	sw_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_sw_on.vg | tr -d ,); \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_sw_on.vg; then \
+	  echo "  FAIL: switch release is not valgrind-clean (rc=$$rc)"; tail -30 build/arc_sw_on.vg; fail=1; \
+	elif [ -n "$$sw_on" ] && [ "$$sw_on" -ne 0 ]; then \
+	  echo "  FAIL: a function containing a switch still leaked $$sw_on bytes"; \
+	  echo "        the walk stopped reading switch again — row 17 is the unit-level canary."; fail=1; \
+	else \
+	  echo "  switch ON:   valgrind clean, 0 bytes leaked (was $$sw_off)"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 
