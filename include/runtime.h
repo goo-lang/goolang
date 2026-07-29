@@ -125,6 +125,34 @@ void goo_retain(void* ptr);
 // decrement, which is a double free — measured, not hypothetical.
 void goo_release(void* ptr);
 
+// A destructor for the CONTENTS of an object, run by goo_release_with at the
+// moment the count reaches 0 and immediately before the payload is freed.
+//
+// WHY THIS EXISTS. goo_release ends in goo_free(ptr) on ONE block, and the ARC
+// header carries no type tag (see `reserved` above), so nothing in the release
+// path can walk what an object CONTAINS. A map is the motivating case: freeing
+// GooMapSV leaves every GooMapEntrySV hanging off it unreachable. Measured on
+// bench/daemon -- 822,000 of the map's 902,000 bytes per 2,000 requests are
+// those entry nodes (docs/adr/0002-measurements/element_scan_spike.md).
+typedef void (*GooObjDtor)(void* obj);
+
+// goo_release, with a destructor. `dtor` runs ONLY on the release that takes the
+// count to 0, so an object someone else still holds keeps its contents. NULL is
+// permitted and means "free the block and nothing else" -- goo_release(p) is
+// exactly goo_release_with(p, NULL).
+//
+// The decrement is not duplicated here: goo_release delegates to this function,
+// so the read-modify-write whose three-step form caused a measured double free
+// exists in exactly one place.
+void goo_release_with(void* ptr, GooObjDtor dtor);
+
+// GooObjDtor for a map. Frees the entry nodes and NOT the keys or the values:
+// goo_map_set_sv stores both verbatim, so the map owns neither -- a key can be
+// a string literal's constant data. Wraps goo_map_clear_sv, which already
+// applies exactly that rule; an adapter rather than a cast, because calling
+// goo_map_clear_sv through GooObjDtor's type would be undefined behaviour.
+void goo_map_dtor(void* obj);
+
 // Bump/arena allocator: a growable block-list bump allocator that the
 // arena-region memory model routes allocations into. Opaque; see
 // src/runtime/arena.c for the block-list layout.

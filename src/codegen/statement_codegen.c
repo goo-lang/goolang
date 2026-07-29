@@ -2610,6 +2610,14 @@ static void emit_scope_releases(CodeGenerator* codegen) {
     if (!rel_fn) rel_fn = LLVMAddFunction(codegen->module, "goo_release", rel_ty);
     if (!rel_fn) return;
 
+    // goo_release_with(obj, dtor) for a site that names a destructor. Declared
+    // lazily and only when one is used, so a module with no such site emits an
+    // identical prototype set to before.
+    LLVMTypeRef dtor_ty = LLVMPointerType(LLVMFunctionType(LLVMVoidTypeInContext(ctx),
+                                                           &ptr_ty, 1, 0), 0);
+    LLVMTypeRef relw_params[] = { ptr_ty, dtor_ty };
+    LLVMTypeRef relw_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), relw_params, 2, 0);
+
     for (size_t i = 0; i < fi->arc_release_count; i++) {
         ArcReleaseSite* site = &fi->arc_release_slots[i];
         if (!site->slot) continue;
@@ -2626,6 +2634,27 @@ static void emit_scope_releases(CodeGenerator* codegen) {
         LLVMValueRef obj = LLVMBuildLoad2(codegen->builder, ptr_ty, addr, "arc.release.obj");
         // goo_release is a no-op on NULL, on goo_zerobase and on an immortal
         // header (include/runtime.h), so no guard is emitted for those here.
+        if (site->dtor) {
+            // The object owns CONTENTS that one goo_free cannot reach. The
+            // runtime runs the destructor only on the release that takes the
+            // count to zero, which is why this is not a clear-then-release pair
+            // emitted here -- that shape is correct only while every count is 1.
+            LLVMValueRef dfn = LLVMGetNamedFunction(codegen->module, site->dtor);
+            if (!dfn) {
+                LLVMTypeRef dfn_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_ty, 1, 0);
+                dfn = LLVMAddFunction(codegen->module, site->dtor, dfn_ty);
+            }
+            LLVMValueRef relw = LLVMGetNamedFunction(codegen->module, "goo_release_with");
+            if (!relw) relw = LLVMAddFunction(codegen->module, "goo_release_with", relw_ty);
+            if (dfn && relw) {
+                LLVMValueRef args[] = { obj, dfn };
+                LLVMBuildCall2(codegen->builder, relw_ty, relw, args, 2, "");
+                continue;
+            }
+            // Fail closed: no destructor call means no release at all, rather
+            // than a release that leaves the contents unreachable.
+            continue;
+        }
         LLVMBuildCall2(codegen->builder, rel_ty, rel_fn, &obj, 1, "");
     }
 #else
@@ -2780,14 +2809,26 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
         fi->arc_release_slots = grown;
         fi->arc_release_capacity = ncap;
     }
+    // WHICH CONTENTS DOES THIS OBJECT OWN? A map owns its entry chain, and one
+    // goo_free cannot reach it. Everything else here owns a single block: a
+    // `new(T)`/`&T{}` payload, a slice's data buffer, a string's bytes.
+    //
+    // A slice's or a string's ELEMENTS are deliberately NOT a destructor case.
+    // The map's rule is settled -- goo_map_set_sv stores keys verbatim, so the
+    // map owns no key -- while "does a slice own its elements" has no such
+    // answer yet, and append's elements genuinely escape.
+    const char* dtor = (info->goo_type && info->goo_type->kind == TYPE_MAP)
+                     ? "goo_map_dtor" : NULL;
+
     fi->arc_release_slots[fi->arc_release_count].slot = info->llvm_value;
     fi->arc_release_slots[fi->arc_release_count].slot_ty = slot_ty;
     fi->arc_release_slots[fi->arc_release_count].field = field;
+    fi->arc_release_slots[fi->arc_release_count].dtor = dtor;
     fi->arc_release_count++;
 
     if (getenv("GOO_ARC_DEBUG")) {
-        fprintf(stderr, "[arc] %s: will release %s at exit (field=%d)\n",
-                fi->name, info->name, field);
+        fprintf(stderr, "[arc] %s: will release %s at exit (field=%d, dtor=%s)\n",
+                fi->name, info->name, field, dtor ? dtor : "none");
     }
 #else
     (void)codegen; (void)info;

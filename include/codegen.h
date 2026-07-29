@@ -300,10 +300,19 @@ struct CodeGenerator {
 // TYPE_INTERFACE is `{ vtable*, data* }` — field 0 there is the VTABLE, and
 // free() on a vtable is catastrophic. Every type not named in
 // codegen_arc_note_local is refused.
+//
+// `dtor` NAMES A RUNTIME DESTRUCTOR for the object's CONTENTS, or is NULL.
+// goo_release frees ONE block, and the ARC header carries no type tag, so
+// nothing in the release path can walk what an object contains. A map is the
+// motivating case: freeing GooMapSV leaves every GooMapEntrySV unreachable —
+// measured as 822,000 of the map's 902,000 bytes per 2,000 daemon requests. A
+// site with a dtor is emitted as goo_release_with(obj, dtor) instead, and the
+// runtime runs it only on the release that reaches zero.
 typedef struct ArcReleaseSite {
     LLVMValueRef slot;      // the alloca
     LLVMTypeRef  slot_ty;   // its allocated type, needed to build the GEP
     int          field;     // -1 = the slot's contents; >= 0 = that field
+    const char*  dtor;      // runtime destructor symbol, or NULL for none
 } ArcReleaseSite;
 
 struct FunctionInfo {

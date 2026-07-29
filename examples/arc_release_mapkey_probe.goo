@@ -1,0 +1,44 @@
+// T4 map release, the NEGATIVE case: the destructor must NEVER free a key.
+//
+// goo_map_set_sv stores the caller's key pointer VERBATIM (`e->key = k;`) and
+// never duplicates it, so the map does not own key storage. A key can be a
+// string literal's constant data in .rodata, and freeing one would hand a
+// constant to free(). goo_map_delete_sv records this rule and goo_map_clear_sv
+// applies it to the whole entry chain; goo_map_dtor is the GooObjDtor adapter
+// over that same walk. This probe is what pins the rule at the release site.
+//
+// `key` IS A CONCATENATION AND NOT A LITERAL, and that is load-bearing. A
+// literal carries GOO_RC_IMMORTAL and goo_release returns early on one, so a
+// wrongly freed literal key would be a silent no-op and this probe would prove
+// nothing. A concat buffer is ordinary goo_alloc memory with a real header, so a
+// wrong free lands on the heap where valgrind can see it. The same trap is
+// recorded on examples/arc_release_substring_probe.goo.
+//
+// `use` DESTROYS ITS MAP A THOUSAND TIMES while main holds the one key they all
+// share. THEN main reads it. If goo_map_dtor ever freed keys, the first
+// destruction frees `key`, the remaining 999 map writes touch freed memory, and
+// the final println reads it — an invalid read and an invalid free, both of
+// which the arc-release-probe gate greps for.
+//
+// A single shared key across every iteration is deliberate. A fresh key per
+// iteration would still leak-check clean if keys were freed, because each key
+// would die with its own map.
+//
+// IMPORT-FREE, for the reason the other arc probes record.
+package main
+
+func use(k string) int {
+	counts := map[string]int{}
+	counts[k] = 1
+	return len(counts)
+}
+
+func main() {
+	key := "abc" + "def"
+	total := 0
+	for i := 0; i < 1000; i++ {
+		total = total + use(key)
+	}
+	println(key)
+	println(total)
+}
