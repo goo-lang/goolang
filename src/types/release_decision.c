@@ -1,5 +1,5 @@
 // T4: which locals may codegen release at function exit? See
-// include/release_decision.h for the five conditions and the measurement behind
+// include/release_decision.h for the four conditions and the measurement behind
 // each one.
 //
 // THE SOUNDNESS DIRECTION IS INVERTED relative to the three escape passes. There,
@@ -10,8 +10,8 @@
 //
 // WHY A SEPARATE WALK. This module needs three facts the escape passes do not
 // record: a local's BINDING SITE expression (condition 2), how many times it is
-// bound (condition 4), and the loop/arena/conditional nesting at its declaration
-// (conditions 3, 4 and 5). LocalEscapeResult is a name plus a boolean, so none of them survives
+// bound (condition 4), and the loop/arena nesting at its declaration (conditions
+// 3 and 4). LocalEscapeResult is a name plus a boolean, so none of them survives
 // there. The walk here is deliberately NOT another copy of escape_core's engine:
 // it propagates no taint and applies no sink. It only collects declarations and
 // assignments.
@@ -41,7 +41,6 @@ typedef struct {
     int       binding_count; // declarations plus assignments
     int       loop_depth;    // loop nesting at the DECLARATION
     int       arena_depth;   // arena nesting at the DECLARATION
-    int       cond_depth;    // conditional nesting at the DECLARATION
     bool      declared;      // a declaration was seen (not only an assignment)
 } LocalRecord;
 
@@ -56,7 +55,6 @@ typedef struct {
     Collected* out;
     int        loop_depth;
     int        arena_depth;
-    int        cond_depth;
 } WalkCtx;
 
 static LocalRecord* find_record(Collected* c, const char* name) {
@@ -84,7 +82,6 @@ static LocalRecord* intern_record(Collected* c, const char* name) {
     r->binding_count = 0;
     r->loop_depth = 0;
     r->arena_depth = 0;
-    r->cond_depth = 0;
     r->declared = false;
     c->count++;
     return r;
@@ -99,7 +96,6 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
         r->bound_value = value;
         r->loop_depth = ctx->loop_depth;
         r->arena_depth = ctx->arena_depth;
-        r->cond_depth = ctx->cond_depth;
     }
     r->binding_count++;
 }
@@ -248,10 +244,8 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // declared in EITHER branch has a slot on every path and a value
                 // only on the taken one. See decide() for the measurement.
                 IfStmtNode* n = (IfStmtNode*)stmt;
-                ctx->cond_depth++;
                 walk_stmts(ctx, n->then_stmt);
                 walk_stmts(ctx, n->else_stmt);
-                ctx->cond_depth--;
                 break;
             }
 
@@ -306,12 +300,10 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 SwitchStmtNode* n = (SwitchStmtNode*)stmt;
                 // `default:` is an AST_CASE_CLAUSE with NULL exprs -- the parser
                 // never builds AST_DEFAULT_CLAUSE -- so one test covers both.
-                ctx->cond_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_CASE_CLAUSE) { ctx->out->unreadable = true; continue; }
                     walk_stmts(ctx, ((CaseClauseNode*)c)->body);
                 }
-                ctx->cond_depth--;
                 break;
             }
 
@@ -325,18 +317,15 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 if (n->bind_name && n->bind_name->type == AST_IDENTIFIER) {
                     note_declaration(ctx, ((IdentifierNode*)n->bind_name)->name, NULL);
                 }
-                ctx->cond_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_TYPE_CASE) { ctx->out->unreadable = true; continue; }
                     walk_stmts(ctx, ((TypeCaseNode*)c)->body);
                 }
-                ctx->cond_depth--;
                 break;
             }
 
             case AST_SELECT_STMT: {
                 SelectStmtNode* n = (SelectStmtNode*)stmt;
-                ctx->cond_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_SELECT_CASE) { ctx->out->unreadable = true; continue; }
                     SelectCaseNode* sc = (SelectCaseNode*)c;
@@ -381,7 +370,6 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                     }
                     walk_stmts(ctx, sc->body);
                 }
-                ctx->cond_depth--;
                 break;
             }
 
@@ -391,10 +379,8 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // bind is: the unwrapped value aliases whatever the nullable held,
                 // so NOT_OWNED is the cause that will never stop being true.
                 note_declaration(ctx, n->var_name, NULL);
-                ctx->cond_depth++;
                 walk_stmts(ctx, n->then_stmt);
                 walk_stmts(ctx, n->else_stmt);
-                ctx->cond_depth--;
                 break;
             }
 
@@ -571,34 +557,22 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     // every iteration, so a release at exit frees one of N.
     if (r->loop_depth > 0)    return RELEASE_NO_LOOP_SCOPE;
 
-    // CONDITION 5: declared inside a conditional block.
+    // CONDITION 5 IS RETIRED. It used to refuse any local declared in a
+    // conditional block,
+    // because the slot is hoisted to the entry block while the initialising store
+    // stays at the declaration site -- so an unexecuted declaration left undef and
+    // goo_release read, and through __atomic_fetch_sub WROTE, through garbage.
     //
-    // This is a SOUNDNESS condition and it closed a LIVE BUG. Measured on
-    // `if c { a := new(int) }` called with c false:
+    // codegen_arc_zero_slot (src/codegen/statement_codegen.c) now stores NULL into
+    // every release candidate's slot immediately after its alloca, and goo_release
+    // is a no-op on NULL. The premise is gone, so the refusal is too, and a local
+    // declared inside an `if` or a `switch` case body reclaims like any other.
     //
-    //     Use of uninitialised value of size 8
-    //        at goo_release (runtime.c:203)     <- the immortal-count read
-    //        by f
-    //      Uninitialised value was created by a stack allocation at f
-    //
-    // and again at runtime.c:215, which is the __atomic_fetch_sub -- a WRITE
-    // through the garbage pointer, to an arbitrary address.
-    //
-    // WHY. codegen_alloc_local_promoted sends an ordinary local to
-    // codegen_create_entry_alloca, so the SLOT is hoisted to the entry block
-    // while the initialising store stays at the declaration site. The slot
-    // therefore exists on every path and holds a VALUE only on the taken one,
-    // and an LLVM alloca is undef rather than zero. goo_obj_headerless screens
-    // only NULL and goo_zerobase, so nothing downstream catches it.
-    //
-    // The program exited 0 -- the garbage happened to be benign. Only valgrind
-    // saw it, which is why this is a refusal and not a known limitation.
-    //
-    // AN ENTRY-BLOCK ZERO STORE WOULD RECOVER THE PRECISION, in the shape
-    // defer_entry_store_zero already uses for a defer placed in a branch that is
-    // never taken. Then an unexecuted declaration leaves NULL and goo_release
-    // no-ops. Deliberately a separate increment. Pinned by rows 26-28.
-    if (r->cond_depth > 0)    return RELEASE_NO_COND_SCOPE;
+    // THE GUARANTEE IS FAIL-CLOSED, not assumed: codegen does not record a release
+    // site at all unless that zero store was emitted. Rows 26, 27 and 29 pin the
+    // release, and examples/arc_release_cond_probe.goo pins that it is valgrind-
+    // clean -- removing the zero store makes that probe report 70,000 uninitialised
+    // reads, which is what the refusal used to prevent.
 
     // Condition 4, the re-assignment half.
     if (r->binding_count > 1) return RELEASE_NO_REBOUND;
@@ -647,7 +621,7 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         if (!name) continue;
 
         Collected c = { 0 };
-        WalkCtx ctx = { .out = &c, .loop_depth = 0, .arena_depth = 0, .cond_depth = 0 };
+        WalkCtx ctx = { .out = &c, .loop_depth = 0, .arena_depth = 0, };
         walk_stmts(&ctx, ((FuncDeclNode*)d)->body);
 
         ReleasePlanFunction* pf = &plan->functions[plan->count];
@@ -714,7 +688,6 @@ const char* release_verdict_name(ReleaseVerdict v) {
         case RELEASE_NO_ARENA:      return "RELEASE_NO_ARENA";
         case RELEASE_NO_LOOP_SCOPE: return "RELEASE_NO_LOOP_SCOPE";
         case RELEASE_NO_REBOUND:    return "RELEASE_NO_REBOUND";
-        case RELEASE_NO_COND_SCOPE: return "RELEASE_NO_COND_SCOPE";
         case RELEASE_NO_NO_BINDING: return "RELEASE_NO_NO_BINDING";
         case RELEASE_NO_UNKNOWN:    return "RELEASE_NO_UNKNOWN";
     }

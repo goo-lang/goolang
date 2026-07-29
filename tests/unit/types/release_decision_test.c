@@ -471,7 +471,7 @@ static TestRow rows[] = {
     // declaration leaves NULL and goo_release no-ops. That is the NEXT increment,
     // deliberately not this one.
     {
-        26, "declared inside an IF branch -> refuse, COND_SCOPE",
+        26, "declared inside an IF branch -> RELEASE (slot zeroed)",
         "package main\n"
         "var sink int\n"
         "func f(c bool) {\n"
@@ -481,13 +481,13 @@ static TestRow rows[] = {
         "        _ = a\n"
         "    }\n"
         "}\n",
-        "f", { { "a", RELEASE_NO_COND_SCOPE } }, 1
+        "f", { { "a", RELEASE_OK } }, 1
     },
     {
         // The ELSE branch is the same hazard. Written separately because the arm
         // raises the depth around then_stmt and else_stmt independently, so a fix
         // that covered only one would leave this green.
-        27, "declared inside an ELSE branch -> refuse, COND_SCOPE",
+        27, "declared inside an ELSE branch -> RELEASE (slot zeroed)",
         "package main\n"
         "var sink int\n"
         "func f(c bool) {\n"
@@ -498,7 +498,7 @@ static TestRow rows[] = {
         "        _ = b\n"
         "    }\n"
         "}\n",
-        "f", { { "b", RELEASE_NO_COND_SCOPE } }, 1
+        "f", { { "b", RELEASE_OK } }, 1
     },
     {
         // THE CONTRAST, and it is what keeps condition 5 about the DECLARATION
@@ -529,7 +529,7 @@ static TestRow rows[] = {
     // is a use-after-free rather than a lost optimisation. Rows 32 and 33 are the
     // two that carry that weight.
     {
-        29, "a local declared inside a SWITCH case body -> refuse, COND_SCOPE",
+        29, "a local declared inside a SWITCH case body -> RELEASE (slot zeroed)",
         "package main\n"
         "var sink int\n"
         "func f(n int) {\n"
@@ -540,7 +540,7 @@ static TestRow rows[] = {
         "        _ = c\n"
         "    }\n"
         "}\n",
-        "f", { { "c", RELEASE_NO_COND_SCOPE } }, 1
+        "f", { { "c", RELEASE_OK } }, 1
     },
     {
         // A TYPE SWITCH BIND IS A VIEW of the interface's data pointer, so no
