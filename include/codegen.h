@@ -34,6 +34,9 @@ typedef struct ValueInfo ValueInfo;
 // only needs a pointer-sized member, so a forward declaration avoids a
 // codegen.h -> block_escape.h -> ast.h/param_escape.h header dependency.
 struct BlockEscapeResult;
+// T4: release_decision.h owns the full definition; codegen.h needs only a
+// pointer-sized member.
+struct ReleasePlan;
 
 // Allocation routing (arena-regions groundwork): every heap-allocation call
 // site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
@@ -217,6 +220,13 @@ struct CodeGenerator {
     // / func_lit_counter's comment above) — the Makefile lacks header
     // dependencies, so inserting mid-struct would shift every later field.
     struct BlockEscapeResult* block_escape;
+    // T4: which locals may be released at function exit. Computed once per
+    // codegen_generate_program alongside block_escape, from the SAME `program`
+    // AST, so a verdict looked up by (function name, local name) during emission
+    // describes the code being emitted. NULL means "release nothing", which is
+    // the safe default and what an allocation failure leaves behind — see
+    // release_plan_should_release's conservative-on-miss contract.
+    struct ReleasePlan* release_plan;
 
     // Arena-regions early-exit free: arena_loop_depth[i] is
     // codegen->cfctx.loop_depth at the moment arena_stack[i] was pushed. A
@@ -291,6 +301,18 @@ struct FunctionInfo {
     ValueInfo** locals;
     size_t local_count;
     size_t local_capacity;
+
+    // T4: the object slots this function must release at exit.
+    //
+    // Captured at DECLARATION time, not read from the value table at exit. The
+    // function body is a block statement, so vscope_exit TRUNCATES its locals
+    // before any exit path runs -- measured: at `work`'s exit the table slice held
+    // only the parameter, and the local the plan had approved was already gone.
+    // Every local passes through vscope_add, which is the one choke point where a
+    // slot is still live and its name is still known.
+    LLVMValueRef* arc_release_slots;
+    size_t arc_release_count;
+    size_t arc_release_capacity;
 
     // Named return parameters (P3-5). When the function declares
     // `(x int, y int)` results, these hold the result names in field
@@ -528,6 +550,12 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 // Emit the current function's registered defers in LIFO order before a `ret`.
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker);
+
+// T4: record `info`'s slot for release at function exit, if the release plan
+// approves it. Called from vscope_add, the single point every local binding
+// passes through. A no-op when there is no plan (GOO_ARC_RELEASE=0), when the
+// slot is not a pointer-typed alloca, or when the plan refuses the name.
+void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info);
 int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 // Type assertions branch, Task 3: `switch [v :=] x.(type) { case … }`.

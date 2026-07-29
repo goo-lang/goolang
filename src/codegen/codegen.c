@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "block_escape.h"
+#include "release_decision.h"
 #include "param_escape.h"
 #include "value_scope.h"
 #include <stdlib.h>
@@ -132,6 +133,7 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // program runs param_escape_analyze/block_escape_analyze over the
     // program it's about to emit.
     codegen->block_escape = NULL;
+    codegen->release_plan = NULL;
 
     // Error reporting
     codegen->current_file = NULL;
@@ -258,6 +260,9 @@ void codegen_free(CodeGenerator* codegen) {
     if (codegen->block_escape) {
         block_escape_result_free(codegen->block_escape);
     }
+    if (codegen->release_plan) {
+        release_plan_free(codegen->release_plan);
+    }
 #else
     free(codegen->error_message);
     free(codegen->current_file);
@@ -355,6 +360,27 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     ParamEscapeResult* pe = param_escape_analyze(program);
     codegen->block_escape = block_escape_analyze(program, pe); // does NOT retain pe
     param_escape_result_free(pe);
+
+    // T4: the release plan, from the SAME `program`, for the same reason the two
+    // analyses above run here -- a verdict is looked up by (function name, local
+    // name) while that function is being emitted. release_plan_analyze runs
+    // param_escape and local_escape itself, so it takes no summaries.
+    //
+    // A KILL SWITCH, because this is the first feature in the compiler that frees
+    // memory: GOO_ARC_RELEASE=0 leaves the plan NULL and emits no release at all.
+    // release_plan_should_release is conservative on a NULL plan, so the whole
+    // feature turns off through one door. arc-release-probe uses it to measure the
+    // reclamation differentially, and it is the rollback if this misbehaves.
+    if (codegen->release_plan) {
+        release_plan_free(codegen->release_plan);
+        codegen->release_plan = NULL;
+    }
+    {
+        const char* arc_off = getenv("GOO_ARC_RELEASE");
+        if (!(arc_off && strcmp(arc_off, "0") == 0)) {
+            codegen->release_plan = release_plan_analyze(program);
+        }
+    }
 
     // Initialize target
     if (!codegen_initialize_target(codegen)) {
@@ -632,6 +658,12 @@ FunctionInfo* function_info_new(const char* name, LLVMValueRef function, Type* g
 }
 
 void function_info_free(FunctionInfo* info) {
+    if (info) {
+        free(info->arc_release_slots);   // T4: the array only; the slots are LLVM values
+        info->arc_release_slots = NULL;
+        info->arc_release_count = 0;
+        info->arc_release_capacity = 0;
+    }
     if (!info) return;
     
     free(info->name);
@@ -671,6 +703,11 @@ int codegen_enter_function(CodeGenerator* codegen, FunctionInfo* func_info) {
     // codegen_enter_function/codegen_exit_function pair — see
     // include/value_scope.h.
     codegen->value_table_function_start = vscope_enter(codegen);
+    // T4: each function collects its own release slots. FunctionInfo is per
+    // function, so a nested function literal cannot inherit its parent's list.
+    func_info->arc_release_slots = NULL;
+    func_info->arc_release_count = 0;
+    func_info->arc_release_capacity = 0;
 
     // gofmt-syntax-b Task 2: this function's goto-label table starts empty
     // — the previous function's labels/blocks must not leak in (blocks are

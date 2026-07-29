@@ -50,7 +50,11 @@ Neither has a Makefile target, because neither is a gate. Link them against the
 same objects the unit suites use:
 
 ```bash
-OBJS=$(ls build/**/*.o build/*.o 2>/dev/null | tr '\n' ' ')   # bash, not zsh
+# Take the object list from a unit-suite LINK, not from a glob over build/.
+# `ls build/**/*.o` pulls in objects the suites do not link (far_transport.o
+# wants -lnng) and the link fails with undefined references to nng_*.
+make release_decision_test > /tmp/link.log 2>&1
+OBJS=$(grep -oP 'build/\S+\.o' /tmp/link.log | sort -u | tr '\n' ' ')
 gcc -Wall -std=c23 -g -I. -Iinclude -D_GNU_SOURCE \
     -include include/xalloc.h -I/usr/lib64/llvm22/include -DLLVM_AVAILABLE=1 \
     -o dump_ownership docs/adr/0002-measurements/dump_ownership.c $OBJS \
@@ -67,7 +71,10 @@ was conservative for an unrelated reason: the imports had not resolved, and the
 tell was `i`, a plain int loop counter, reading as escaping. One cause per
 verdict needs a reproduction with nothing to resolve.
 
-Findings: `t4_condition2_findings.md`.
+`dump_release_plan.c` prints the T4 release plan for a `.goo` file, which is how
+you tell a plan that refused from an emission that missed.
+
+Findings: `t4_condition2_findings.md` and `t4_emission_findings.md`.
 
 ## The one number that matters
 

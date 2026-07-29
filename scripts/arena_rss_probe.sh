@@ -60,7 +60,19 @@ for name in $PROBES; do
     arena_exe="$WORKDIR/$name.arena"
     noarena_exe="$WORKDIR/$name.noarena"
     "$COMPILER" -o "$arena_exe"   "$src"          >"$WORKDIR/a.log" 2>&1 || { sed 's/^/    /' "$WORKDIR/a.log"; fail "$name: arena build failed"; }
-    "$COMPILER" -o "$noarena_exe" "$noarena_src"  >"$WORKDIR/n.log" 2>&1 || { sed 's/^/    /' "$WORKDIR/n.log"; fail "$name: no-arena build failed"; }
+    # THE CONTROL MUST ISOLATE THE ARENA, so ARC's release is disabled for it.
+    #
+    # T4 changed what "no arena" means. Turning `arena {` into `{` leaves a local
+    # bound once at function scope to a fresh &Big{} and not escaping, which is
+    # exactly what release_decision.c approves — so ARC now frees it and the
+    # no-arena variant stops leaking. Measured on arena_return_reclaim_probe:
+    # 407,636 KB with ARC off against 1,956 KB with it on, a 208x difference that
+    # has nothing to do with arenas.
+    #
+    # Without GOO_ARC_RELEASE=0 here this probe compares "arena" against "ARC",
+    # both of which reclaim, and the ratio collapses to ~1.0. That is not an arena
+    # regression, and reading it as one would be a false alarm.
+    GOO_ARC_RELEASE=0 "$COMPILER" -o "$noarena_exe" "$noarena_src"  >"$WORKDIR/n.log" 2>&1 || { sed 's/^/    /' "$WORKDIR/n.log"; fail "$name: no-arena build failed"; }
 
     [ "$("$arena_exe")"   = "done" ] || fail "$name: arena build did not print 'done'"
     [ "$("$noarena_exe")" = "done" ] || fail "$name: no-arena build did not print 'done'"

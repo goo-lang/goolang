@@ -24,7 +24,14 @@ void vscope_exit(CodeGenerator* codegen, size_t mark) {
 }
 
 int vscope_add(CodeGenerator* codegen, ValueInfo* info) {
-    return codegen_add_value(codegen, info);
+    int ok = codegen_add_value(codegen, info);
+    // T4: this is the ONE point every local binding passes through, and the only
+    // place where an approved local's slot is still live and its name still known.
+    // The function body is a block statement, so vscope_exit truncates the table
+    // before any exit path runs -- reading the table at exit found only the
+    // parameters. See codegen_arc_note_local (statement_codegen.c).
+    if (ok) codegen_arc_note_local(codegen, info);
+    return ok;
 }
 
 #endif // LLVM_AVAILABLE
