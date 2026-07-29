@@ -14,14 +14,28 @@ name: demos
 # pay for GitHub Actions". See tests.yml for the run history that disproves it:
 # the billing block cleared before 2026-07-05, and this repository is public, so
 # standard runners are free.
+# push is restricted to main so a PR commit gets ONE run, not two. See tests.yml
+# for the measurement, and for why a concurrency group cannot do this job.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+# See tests.yml for the full reasoning, including why main never cancels.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   demos:
     runs-on: ubuntu-24.04
+    # This workflow takes about 45s. GitHub's DEFAULT is 360 minutes, so a run
+    # that never gets a runner hangs for six hours and the PR shows a check
+    # that is neither green nor red. Measured on 2026-07-29: run 30435298482 sat
+    # in_progress with zero steps for 1h43m before it was cancelled by hand. 30
+    # minutes is ~40x the real cost and turns that state into a fast red.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

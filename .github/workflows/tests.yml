@@ -22,10 +22,41 @@ name: tests
 # standard GitHub-hosted runners are free for public repositories. Local git
 # hooks (.githooks/) stay as the pre-push gate; `git push --no-verify` bypasses
 # them, which is exactly the hole this closes.
+# ONE run per commit, and the trigger list is what achieves it — not the
+# concurrency group below.
+#
+# An unrestricted `push:` plus `pull_request:` fires BOTH for every commit on a
+# PR branch, so each commit started two identical runs here and two in demos —
+# four jobs for one commit. Measured on 2026-07-29: of the four on PR #272, the
+# `demos` push run never picked up a runner and sat in_progress with ZERO steps
+# for 1h43m, while its twin on the other event passed in 45s.
+#
+# A CONCURRENCY GROUP DOES NOT FIX THAT, and the first attempt at this change
+# assumed it would. `github.ref` is `refs/heads/<branch>` for push and
+# `refs/pull/<N>/merge` for pull_request, so the two events can never share a
+# key. Neither does the popular `github.head_ref || github.ref` idiom: it gives
+# the bare branch name for a PR and the full ref for a push. Measured — all four
+# runs coexisted with the group in place.
+#
+# So: push is restricted to main, which is the only branch whose commits are not
+# already covered by a pull request. Every merge still gets a verdict, which is
+# the whole point of #271, and every PR commit gets exactly one.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+# What the group IS for: superseding earlier commits on the SAME pull request.
+# Push three times in a minute and only the last one needs a verdict.
+#
+# cancel-in-progress is OFF for main, deliberately. Cancelling a superseded run
+# on a branch is free. On main it is not: two merges landing close together
+# would cancel the first one's run, and that commit is shipped history with no
+# verdict at all.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   verify-core:
