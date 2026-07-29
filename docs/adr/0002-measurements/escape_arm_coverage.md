@@ -479,6 +479,48 @@ The new rows are `param_escape_test` row 25, `block_escape_test` row 33 and
 `local_escape_test` row 28. Row 28 is the precision row and was measured to fail
 on the old arm (`y` escapes=1) and pass on the new one.
 
+## Re-measured after the self-store rule (PR B)
+
+`assign_to_lvalue` now subtracts the lvalue base's taint before marking, for a
+plain identifier base. It is shared by all three passes, so both expression
+matrices were re-run against the tables above.
+
+**NO CELL REGRESSED, in either matrix.** The soundness (`--under`) matrix came
+back BYTE-IDENTICAL to the baseline, which is the result that matters for a
+change to shared code — subtracting bits is the under-marking direction, and
+under-marking is the class that dangles a pointer.
+
+**Expression precision (`--over`), deltas only:**
+
+| Arm | param | block | local |
+|---|---|---|---|
+| `AST_INDEX_EXPR` | — | — | GAP -> **COVERED** |
+| `AST_PAREN_EXPR` | — | — | GAP -> **COVERED** |
+
+Both cells come from ONE fixture, local row 29 (`m[s] = m[s] + 1`). This closes
+the standing finding recorded above that `AST_INDEX_EXPR` had never been
+reached for precision by any fixture in any suite: the arm's verdict is now
+observable, because the self-store rule gives its result somewhere to matter.
+`AST_PAREN_EXPR` came with it, since the map literal `map[string]int{}` is a
+`MapLitNode` that runs through that arm.
+
+The pattern from the earlier session repeats: one row bought two cells, and
+neither was targeted. Measure after each addition rather than assuming one row
+buys one cell.
+
+### An instrument defect in this script — the header row lies
+
+`matrix()` prints `| Arm | param (23) | block (31) | local (16) |` from a
+HARDCODED string at `scripts/escape_arm_coverage.sh:460`. Those numbers are not
+computed from the suites, and they have been wrong since the rows moved past
+them — the real counts at the time of this run are param 25, block 33, local
+32. The tables recorded above therefore carry whatever count the script had
+baked in when they were pasted, which is why the parenthesised numbers disagree
+between sections of this file.
+
+The COVERED/GAP verdicts are unaffected: those come from real mutation runs.
+Only the header is decorative. Fix it by computing the counts, or drop them.
+
 ## Reproducing
 
 ```sh

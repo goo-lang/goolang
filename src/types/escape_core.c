@@ -207,11 +207,16 @@ static void mark_lvalue_subscripts(EscapeCtx* ctx, ASTNode* lhs) {
 // non-identifier lvalue marks the whole of rhs_taint.
 //
 // Measured at bench/daemon/daemon.goo:31 — this ONE shape was why the daemon's
-// `counts` map refused to release, worth 902,000 of 2,209,982 bytes per 2,000
-// requests (40.8%), of which 822,000 are the entry-chain nodes goo_map_dtor
-// already knows how to free. Narrowed by measurement: a plain write, a
-// parameter key, a write in a loop and a write with an import ALL released
-// before this rule existed. Only the compound update refused.
+// `counts` map refused to release. Narrowed first: a plain write, a parameter
+// key, a write in a loop and a write with an import ALL released before this
+// rule existed. Only the compound update refused.
+//
+// Worth 640,000 of 2,209,982 bytes per 2,000 requests (29.0%), MEASURED — not
+// the 822,000 .handoff.md projected. The map's record is 902,000, but 262,000
+// of it is KEY storage, and goo_map_set_sv stores keys verbatim so the map
+// owns none of it. goo_map_dtor correctly leaves keys alone, so they change
+// leak category (indirect -> definite) instead of going away. See
+// docs/adr/0002-measurements/t4_self_store_findings.md.
 //
 // Returns the base's LocalVar so the caller can subtract its taint, or NULL
 // when the rule does not apply. NULL for a non-index lvalue, for a compound
