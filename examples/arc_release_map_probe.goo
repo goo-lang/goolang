@@ -1,0 +1,46 @@
+// T4 map release, the POSITIVE case: a map local's ENTRY NODES are reclaimed.
+//
+// A map is a bare pointer at the slot (its LLVM form is an opaque pointer), so
+// codegen_arc_note_local records it with field == -1 and the release at exit
+// frees the GooMapSV struct. That is ONE block. Every GooMapEntrySV hanging off
+// `m->head` used to leak, because goo_release ends in goo_free(ptr) and the ARC
+// header carries no type tag -- nothing in the release path could walk what an
+// object CONTAINS.
+//
+// Measured on bench/daemon (docs/adr/0002-measurements/element_scan_spike.md):
+// the `counts` map is 40.8% of everything the daemon still loses, and 822,000 of
+// its 902,000 bytes per 2,000 requests are exactly these entry nodes.
+//
+// THE FIX IS A DESTRUCTOR, not a bigger free. goo_release_with(ptr, dtor) runs
+// `dtor` when -- and only when -- the release takes the count to 0, and
+// goo_map_dtor walks the entry chain. The entry walk itself is not new:
+// goo_map_clear_sv already does it, and already applies the key rule below.
+//
+// KEYS ARE NOT FREED, and that is the whole ownership story. goo_map_set_sv
+// stores the caller's key pointer VERBATIM, so the map never owns key storage --
+// a key can be a string literal's constant data. goo_map_delete_sv records this
+// rule and goo_map_clear_sv applies it. examples/arc_release_mapkey_probe.goo is
+// the negative case that pins it.
+//
+// TWO LITERAL KEYS, and a plain `counts["a"] = n`. NOT the daemon's
+// `counts[f] = counts[f] + 1`, which is REFUSED: the compound update marks the
+// map escaping on account of its own contents. That refusal is a separate
+// increment, and using its shape here would make this probe measure nothing.
+//
+// IMPORT-FREE, for the reason the other arc probes record.
+package main
+
+var sink int
+
+func tally(n int) {
+	counts := map[string]int{}
+	counts["a"] = n
+	counts["b"] = n + 1
+	sink = sink + len(counts)
+}
+
+func main() {
+	for i := 0; i < 10000; i++ {
+		tally(i)
+	}
+}

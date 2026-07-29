@@ -69,6 +69,10 @@ static void* release_once_worker(void* p) {
     return NULL;
 }
 
+// Counts destructor invocations for the goo_release_with rows below.
+static int dtor_calls = 0;
+static void counting_dtor(void* obj) { (void)obj; dtor_calls++; }
+
 int main(void) {
     printf("Running ARC object-header tests...\n");
 
@@ -308,6 +312,47 @@ int main(void) {
         // storage out from under this read.
         check(literal.bytes[0] == 'h' && literal.bytes[4] == 'o',
               "an immortal object's payload must survive the traffic above");
+    }
+
+    // ---------------------------------------------------------------------
+    // goo_release_with: the destructor runs ONCE, and only at zero.
+    //
+    // goo_release frees ONE block, and the header carries no type tag, so an
+    // object that owns CONTENTS (a map owns its entry chain) needs a hook. The
+    // hazard is running it early: a destructor that fires while someone still
+    // holds a reference destroys a live object's contents.
+    {
+        dtor_calls = 0;
+        void* p = goo_alloc(8);
+        check(goo_obj_refcount(p) == 1, "a fresh object starts at 1");
+
+        goo_retain(p);
+        check(goo_obj_refcount(p) == 2, "retain took it to 2");
+
+        // The release that does NOT reach zero must not run the destructor.
+        goo_release_with(p, counting_dtor);
+        check(goo_obj_refcount(p) == 1, "the first release took it back to 1");
+        check(dtor_calls == 0,
+              "the destructor must NOT run while a reference is still held");
+
+        // The release that reaches zero must run it exactly once.
+        goo_release_with(p, counting_dtor);
+        check(dtor_calls == 1,
+              "the destructor must run exactly once, on the release that hit 0");
+    }
+
+    // A destructor must never run for a pointer that has no header, or for an
+    // immortal one -- both return before the decrement.
+    {
+        dtor_calls = 0;
+        goo_release_with(NULL, counting_dtor);
+        check(dtor_calls == 0, "no destructor for NULL");
+
+        static struct {
+            uint64_t rc; uint64_t reserved; char bytes[8];
+        } __attribute__((aligned(16))) lit2 = { GOO_RC_IMMORTAL, 0, "hi" };
+        goo_release_with((void*)(uintptr_t)lit2.bytes, counting_dtor);
+        check(dtor_calls == 0, "no destructor for an immortal object");
     }
 
     printf("\n=================================================\n");

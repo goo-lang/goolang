@@ -5217,6 +5217,42 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  switch ON:   valgrind clean, 0 bytes leaked (was $$sw_off)"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_map_off examples/arc_release_map_probe.goo > build/arc_map_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, map probe, release off)"; cat build/arc_map_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_map_on examples/arc_release_map_probe.goo > build/arc_map_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, map probe, release on)"; cat build/arc_map_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_map_off > /dev/null 2> build/arc_map_off.vg; \
+	m_offd=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_map_off.vg | tr -d ,); \
+	m_offi=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_map_off.vg | tr -d ,); \
+	if [ -z "$$m_offd" ] || [ "$$m_offd" -eq 0 ]; then \
+	  echo "  FAIL: map probe with GOO_ARC_RELEASE=0 did not leak — it measures nothing"; fail=1; \
+	else \
+	  echo "  map OFF:  $$m_offd direct + $$m_offi indirect bytes leaked (expected)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_map_on > /dev/null 2> build/arc_map_on.vg; \
+	rc=$$?; \
+	m_ond=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_map_on.vg | tr -d ,); \
+	m_oni=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_map_on.vg | tr -d ,); \
+	if [ -z "$$m_ond" ]; then m_ond=0; fi; if [ -z "$$m_oni" ]; then m_oni=0; fi; \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_map_on.vg; then \
+	  echo "  FAIL: map release is not valgrind-clean (rc=$$rc)"; tail -30 build/arc_map_on.vg; fail=1; \
+	elif [ "$$m_ond" -ne 0 ] || [ "$$m_oni" -ne 0 ]; then \
+	  echo "  FAIL: map release left $$m_ond direct + $$m_oni indirect bytes"; \
+	  echo "        the INDIRECT figure is the entry chain — goo_map_dtor is what reaches it."; fail=1; \
+	else \
+	  echo "  map ON:   valgrind clean, 0 bytes (was $$m_offd + $$m_offi)"; \
+	fi; \
+	$(COMPILER) -o build/arc_mapkey examples/arc_release_mapkey_probe.goo > build/arc_mapkey.cerr 2>&1 \
+	  || { echo "  FAIL (compile, mapkey probe)"; cat build/arc_mapkey.cerr; exit 1; }; \
+	valgrind --leak-check=no --error-exitcode=99 ./build/arc_mapkey > /dev/null 2> build/arc_mapkey.vg; \
+	rc=$$?; \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_mapkey.vg; then \
+	  echo "  FAIL: the map destructor freed a KEY (rc=$$rc)"; \
+	  echo "        goo_map_set_sv stores keys verbatim — the map owns none of them."; \
+	  tail -30 build/arc_mapkey.vg; fail=1; \
+	else \
+	  echo "  map key:  clean — a shared key survived 1000 map destructions"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 

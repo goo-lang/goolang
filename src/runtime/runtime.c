@@ -190,7 +190,11 @@ void goo_retain(void* ptr) {
     __atomic_fetch_add(&goo_obj_header(ptr)->rc, 1, __ATOMIC_RELAXED);
 }
 
-void goo_release(void* ptr) {
+// The whole of goo_release's body lives here, and goo_release is the dtor-less
+// wrapper. ONE copy of the read-modify-write below, deliberately: a second copy
+// of that decrement for one object type would put the double free documented on
+// it back within reach.
+void goo_release_with(void* ptr, GooObjDtor dtor) {
     if (goo_obj_headerless(ptr)) {
         return;
     }
@@ -232,8 +236,21 @@ void goo_release(void* ptr) {
         // lives in exactly ONE place, and Goo-visible memory keeps leaving by
         // the single door alloc-doors-probe gates. (That probe caught this
         // line as a raw free() when it was first written.)
+        // The destructor runs BEFORE the payload is freed, and only on the
+        // release that reached zero -- so an object with a live reference keeps
+        // its contents. This is why the map's entry walk is here and not at the
+        // codegen call site: emitting `goo_map_clear_sv(m); goo_release(m);`
+        // there is correct only while every count is exactly 1, which holds
+        // today because codegen emits no goo_retain anywhere. It stops holding
+        // the moment ADR 0002's retains arrive, and it would fail silently.
+        if (dtor) dtor(ptr);
+
         goo_free(ptr);
     }
+}
+
+void goo_release(void* ptr) {
+    goo_release_with(ptr, NULL);
 }
 
 // Error handling
@@ -1049,6 +1066,11 @@ void goo_map_delete_sv(GooMapSV* m, int64_t k) {
 // goo_map_delete_sv above (frees only the entry nodes, never the key/value
 // payloads a caller's own storage still owns) — one linear pass instead of
 // clear's naive "delete every key" O(n^2) equivalent.
+// GooObjDtor adapter: see include/runtime.h. Frees entry nodes only.
+void goo_map_dtor(void* obj) {
+    goo_map_clear_sv((GooMapSV*)obj);
+}
+
 void goo_map_clear_sv(GooMapSV* m) {
     if (!m) return;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
