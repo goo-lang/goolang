@@ -27,6 +27,25 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A commit on a PR branch fires BOTH `push` and `pull_request`, so every commit
+# was starting two identical runs of this workflow and two of demos — four jobs
+# for one commit. Measured consequence on 2026-07-29: one of the four never
+# picked up a runner and sat in_progress with ZERO steps for 1h43m, while its
+# twin on the other event passed in 45s.
+#
+# The group key is workflow + ref, so the two events for one branch share it and
+# the second supersedes the first.
+#
+# cancel-in-progress is OFF for main, deliberately. On a branch, cancelling the
+# run for a commit you have already replaced is free. On main it is not: two
+# merges landing close together would cancel the first one's run, and that
+# commit — which is now shipped history — would carry no verdict at all. The
+# whole point of #271 was that every merge gets checked, so main waits its turn
+# instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   verify-core:
     runs-on: ubuntu-24.04
