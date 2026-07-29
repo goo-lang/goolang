@@ -199,6 +199,31 @@ static void mark_lvalue_subscripts(EscapeCtx* ctx, ASTNode* lhs) {
     }
 }
 
+// THE SELF-STORE RULE — is `lhs` an index of a plain local, and which one?
+//
+// `m[k] = m[k] + 1` stores m's OWN contents back into m. That says nothing
+// about whether m outlives the boundary, but the store sink below marked it
+// anyway: the right side carries m's bit out of the AST_INDEX_EXPR arm, and a
+// non-identifier lvalue marks the whole of rhs_taint.
+//
+// Measured at bench/daemon/daemon.goo:31 — this ONE shape was why the daemon's
+// `counts` map refused to release, worth 902,000 of 2,209,982 bytes per 2,000
+// requests (40.8%), of which 822,000 are the entry-chain nodes goo_map_dtor
+// already knows how to free. Narrowed by measurement: a plain write, a
+// parameter key, a write in a loop and a write with an import ALL released
+// before this rule existed. Only the compound update refused.
+//
+// Returns the base's LocalVar so the caller can subtract its taint, or NULL
+// when the rule does not apply. NULL for a non-index lvalue, for a compound
+// base (`obj.field[k]`), and for a base that is not a plain local — a package
+// global is absent from the environment, and marking stays conservative there.
+static LocalVar* self_store_base(EscapeCtx* ctx, ASTNode* lhs) {
+    if (!lhs || lhs->type != AST_INDEX_EXPR) return NULL;
+    ASTNode* base = ((IndexExprNode*)lhs)->expr;
+    if (!base || base->type != AST_IDENTIFIER) return NULL;
+    return escape_env_find(ctx->env, ((IdentifierNode*)base)->name);
+}
+
 static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_taint, bool* env_changed) {
     if (!lhs) {
         escape_mark(ctx, rhs_taint);
@@ -217,7 +242,41 @@ static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_t
         escape_mark(ctx, rhs_taint);
         return;
     }
-    escape_mark(ctx, rhs_taint);
+    // WHY SUBTRACTING THE BASE'S WHOLE TAINT IS SOUND, and not only its own
+    // bit: every bit in the base's taint is marked WHENEVER the base is
+    // marked, because marking the base marks that same set. So a bit removed
+    // here stays attached to the base's fate through every other sink. Local
+    // row 32 pins exactly that, with `g = m` after a self-store.
+    //
+    // It also needs no seventh EscapeHooks member. A "self-bit" is per-pass —
+    // local_escape finds one by name, block_escape matches an alloc site — but
+    // this function is shared by all three, and the base's taint is a thing
+    // every pass already has.
+    //
+    // `escapes[]` only ever goes true (see escape_core.h), so a subtraction can
+    // never RETRACT a mark an earlier fixpoint iterate made. That makes the
+    // rule safe against iteration order, and it also means the rule must hold
+    // on the FIRST walk to give anything back.
+    LocalVar* base_lv = self_store_base(ctx, lhs);
+    TaintSet reduced = { 0 };
+    bool use_reduced = false;
+    if (base_lv) {
+        reduced = escape_taint_copy(rhs_taint);
+        // Fail CLOSED. A failed copy leaves bits NULL with n non-zero, and
+        // marking that set would mark NOTHING — under-marking is the one bug
+        // class that dangles a pointer, so fall back to the unreduced set.
+        use_reduced = (reduced.n == 0) || (reduced.bits != NULL);
+        if (use_reduced) {
+            size_t n = reduced.n < base_lv->taint.n ? reduced.n : base_lv->taint.n;
+            if (!base_lv->taint.bits) n = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (base_lv->taint.bits[i]) reduced.bits[i] = false;
+            }
+        }
+    }
+    escape_mark(ctx, use_reduced ? &reduced : rhs_taint);
+    escape_taint_free(&reduced);
+
     // Sink #2b: a SUBSCRIPT of the target is a stored reference too.
     //
     // `m[k] = v` stores BOTH v and k. goo_map_set_sv keeps the key pointer
