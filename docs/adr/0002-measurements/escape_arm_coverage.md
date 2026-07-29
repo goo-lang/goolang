@@ -439,6 +439,46 @@ Recorded because each one produced a plausible-looking result.
    `tee`, and the file held 5 of 17 rows. The same pipeline family this project
    has already been bitten by twice.
 
+## Re-measured after the select-comm fix (PR follow-up to #266)
+
+`escape_core`'s `AST_SELECT_STMT` arm used to hand `sc->comm` to
+`escape_walk_stmt`. A select case's comm is an EXPRESSION, so it fell to the
+walk's `default:`, which calls `escape_mark_all`. Every local in every function
+containing a select therefore read as escaping. The fix routes comm through a
+shared `escape_walk_expr_stmt` helper, which carries the channel-send sink with
+it.
+
+NO CELL REGRESSED. Both matrices were re-run against the tables above.
+
+**Expression soundness (`--over`), deltas only:**
+
+| Arm | param | block | local |
+|---|---|---|---|
+| `AST_LITERAL` | GAP -> **COVERED** | — | — |
+| `AST_BINARY_EXPR` | GAP -> **COVERED** | GAP -> **COVERED** | — |
+| `AST_POSTFIX_EXPR` | GAP -> **COVERED** | GAP -> **COVERED** | — |
+
+Five cells gained coverage, and the cause is worth recording: `escape_mark_all`
+was MASKING arm coverage. While every site was marked regardless, mutating an
+expression arm could not change any verdict, so those cells read GAP. Once comm
+is walked as an expression, the arms inside it matter and the existing rows can
+see them. An over-conservative default does not merely cost precision — it hides
+how little the suites actually test.
+
+**Statement soundness (`--stmt-under`), deltas only:**
+
+| Arm | param | block | local |
+|---|---|---|---|
+| `AST_SELECT_STMT` | GAP -> **COVERED** | GAP -> **COVERED** | COVERED |
+
+This closes part of the standing ledger item "param_escape/block_escape lack the
+five statement rows": `select` is now covered in all three suites. `MULTI_ASSIGN`,
+`switch`, `type switch` and `if` remain GAP in param and block.
+
+The new rows are `param_escape_test` row 25, `block_escape_test` row 33 and
+`local_escape_test` row 28. Row 28 is the precision row and was measured to fail
+on the old arm (`y` escapes=1) and pass on the new one.
+
 ## Reproducing
 
 ```sh
