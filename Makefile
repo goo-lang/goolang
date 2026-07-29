@@ -5253,6 +5253,41 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  map key:  clean — a shared key survived 1000 map destructions"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_mko_off examples/arc_release_map_key_probe.goo > build/arc_mko_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, owned-key probe, release off)"; cat build/arc_mko_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_mko_on examples/arc_release_map_key_probe.goo > build/arc_mko_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, owned-key probe, release on)"; cat build/arc_mko_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_mko_off > build/arc_mko_off.out 2> build/arc_mko_off.vg; \
+	mko_d=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_mko_off.vg | tr -d , ); \
+	mko_i=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_mko_off.vg | tr -d , ); \
+	mko_off=$$(( $${mko_d:-0} + $${mko_i:-0} )); \
+	if [ "$$mko_off" -eq 0 ]; then \
+	  echo "  FAIL: owned-key probe leaked nothing with the release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  owned key OFF: $$mko_off bytes leaked ($${mko_d:-0} direct + $${mko_i:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_mko_on > build/arc_mko_on.out 2> build/arc_mko_on.vg; \
+	rc=$$?; \
+	mko_d2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_mko_on.vg | tr -d , ); \
+	mko_i2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_mko_on.vg | tr -d , ); \
+	mko_on=$$(( $${mko_d2:-0} + $${mko_i2:-0} )); \
+	: "ORDER MATTERS. --error-exitcode=99 fires on a LEAK as well as on an" ; \
+	: "invalid access, so testing rc first reported a plain leak as a double" ; \
+	: "free. Measured: the borrow-instead-of-own mutation printed 'the map" ; \
+	: "freed a key it did not own' when the keys had merely leaked. Grep for" ; \
+	: "the access first, then the leak, and leave rc as the catch-all." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_mko_on.vg; then \
+	  echo "  FAIL: the map freed a key it did not own"; tail -30 build/arc_mko_on.vg; fail=1; \
+	elif [ "$$mko_on" -ne 0 ]; then \
+	  echo "  FAIL: owned-key probe still leaked $$mko_on bytes — the keys were not reclaimed"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_mko_on.vg; fail=1; \
+	elif ! diff -q build/arc_mko_off.out build/arc_mko_on.out > /dev/null; then \
+	  echo "  FAIL: owned-key probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  owned key ON:  clean, 0 bytes, output matches the control (was $$mko_off)"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 

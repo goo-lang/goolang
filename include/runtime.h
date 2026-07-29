@@ -403,6 +403,23 @@ typedef struct GooMapSV {
 } GooMapSV;
 GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq);
 void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v);
+// goo_map_set_sv, and the map TAKES ownership of the key.
+//
+// Codegen emits this in place of goo_map_set_sv when release_decision proves
+// the key expression is a fresh temporary that no other name ever held. After
+// it returns, the map is the key's only owner: goo_map_clear_sv,
+// goo_map_delete_sv and therefore goo_map_dtor will release it, and nothing
+// else may.
+//
+// Ownership is recorded PER ENTRY, so one map can mix owned and borrowed keys.
+// That is the common case, not a corner: bench/daemon writes `counts[f]` with a
+// borrowed local and `counts[strings.ToUpper(f)]` with a fresh allocation.
+//
+// CALLER CONTRACT: do not free the key afterwards, and do not pass a key that
+// a live local also releases. A key slot that is not a pointer (an INLINE map)
+// must never reach here — codegen refuses that, and the runtime checks the key
+// kind as a second layer.
+void goo_map_set_sv_owning(GooMapSV* m, int64_t k, int64_t v);
 int64_t goo_map_get_sv(GooMapSV* m, int64_t k);
 // Presence-returning read: *found=1 and *out=value if k is present, else
 // *found=0 and *out=0. Backs comma-ok map reads (v, ok := m[k]).

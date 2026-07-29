@@ -648,6 +648,109 @@ static TestRow rows[] = {
     },
 };
 
+// =============================================================================
+// MAP KEY OWNERSHIP — a SECOND table, on purpose
+// =============================================================================
+//
+// The table above asserts one verdict per LOCAL. Key ownership is a property of
+// an assignment SITE, so it needs a different assertion shape. Extending
+// TestRow with another field would have silently asserted "0 owned keys" on all
+// 34 rows above, several of which contain map writes -- a row that starts
+// asserting something nobody chose is how a suite drifts.
+//
+// Counting is enough here and identity is not, because each source below has a
+// single key site of interest. `release_plan_key_is_owned` resolves by AST node
+// and is exercised end-to-end by examples/arc_release_map_key_probe.goo.
+typedef struct {
+    int         row;
+    const char* description;
+    const char* src;
+    const char* fn;
+    size_t      expect_owned_keys;
+} KeyRow;
+
+static KeyRow key_rows[] = {
+    {
+        // THE ROW THIS CHANGE EXISTS FOR. A fresh shim result as a key: nothing
+        // else ever held it, so the map may be its only owner. strings.ToUpper
+        // is non_retaining = 1 in shim_signatures.c, audited against
+        // goo_strings_map_case, which goo_allocs and writes per byte.
+        1, "a fresh non-retaining shim result as a key -> owned",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    m := map[string]int{}\n"
+        "    m[strings.ToUpper(s)] = 1\n"
+        "    return len(m)\n"
+        "}\n",
+        "f", 1
+    },
+    {
+        // SOUNDNESS, and the one that keeps the daemon honest. A bare local is
+        // NOT owned: `f` is a name someone else holds, and handing the map
+        // ownership of it would free it twice once the local is released too.
+        2, "a bare local as a key -> NOT owned",
+        "package main\n"
+        "func f(s string) int {\n"
+        "    m := map[string]int{}\n"
+        "    k := s + \"x\"\n"
+        "    m[k] = 1\n"
+        "    return len(m)\n"
+        "}\n",
+        "f", 0
+    },
+    {
+        // THE MIXED MAP, which is exactly bench/daemon/daemon.goo:31-33 and the
+        // reason ownership is recorded per ENTRY rather than per map. One write
+        // hands over a fresh allocation, the other passes a borrowed local. A
+        // per-map flag would have to refuse BOTH and reclaim nothing.
+        3, "one owned key and one borrowed key in the SAME map -> exactly 1 owned",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    m := map[string]int{}\n"
+        "    k := s + \"x\"\n"
+        "    m[k] = 1\n"
+        "    m[strings.ToUpper(k)] = 2\n"
+        "    return len(m)\n"
+        "}\n",
+        "f", 1
+    },
+    {
+        // A string LITERAL key is not owned. It is not in condition 2's table,
+        // and it does not need to be: a literal's data is immortal, so
+        // goo_release would no-op on it anyway. Refusing costs nothing and
+        // keeps the table's meaning single -- "a fresh allocation".
+        4, "a string literal as a key -> NOT owned",
+        "package main\n"
+        "func f() int {\n"
+        "    m := map[string]int{}\n"
+        "    m[\"alpha\"] = 1\n"
+        "    return len(m)\n"
+        "}\n",
+        "f", 0
+    },
+    {
+        // THE TWO-LAYER CONTRACT, pinned. This module holds no types, so it
+        // cannot tell a SLICE write from a map write and answers "owned" for
+        // the index of `arr[...] = v` just the same. That is not a defect and
+        // must not be "fixed" here: codegen_map_setter_name refuses every key
+        // whose slot is not a pointer, exactly as codegen_arc_note_local
+        // refuses a bare i64 slot for the integer `+` arm.
+        5, "a slice index is classified too -- codegen is the second half",
+        "package main\n"
+        "func mk() int {\n"
+        "    return 0\n"
+        "}\n"
+        "func f() int {\n"
+        "    arr := []int{1, 2}\n"
+        "    arr[mk()] = 7\n"
+        "    return arr[0]\n"
+        "}\n",
+        "f", 1
+    },
+};
+
 static int failures = 0;
 static int checks = 0;
 
@@ -710,6 +813,70 @@ int main(void) {
         }
 
         printf("  Row %d: %s\n", row->row, row_failed ? "FAIL" : "PASS");
+
+        release_plan_free(plan);
+        if (checker) type_checker_free(checker);
+        ast_node_free(ast_root);
+        ast_root = NULL;
+    }
+
+    // ---------------- map key ownership ----------------
+    size_t nkeys = sizeof(key_rows) / sizeof(key_rows[0]);
+    for (size_t i = 0; i < nkeys; i++) {
+        KeyRow* row = &key_rows[i];
+        printf("\n=== Key row %d: %s ===\n", row->row, row->description);
+
+        if (parse_input(row->src, "keyrow.goo") != 0 || !ast_root) {
+            printf("  FAIL: parse failed\n");
+            failures++;
+            continue;
+        }
+        TypeChecker* checker = type_checker_new();
+        if (checker) type_check_program(checker, ast_root);
+
+        ReleasePlan* plan = release_plan_analyze(ast_root);
+        if (!plan) {
+            printf("  FAIL: release_plan_analyze returned NULL\n");
+            failures++;
+            if (checker) type_checker_free(checker);
+            ast_node_free(ast_root);
+            ast_root = NULL;
+            continue;
+        }
+
+        size_t got = 0;
+        int found_fn = 0;
+        for (size_t j = 0; j < plan->count; j++) {
+            if (strcmp(plan->functions[j].function_name, row->fn) == 0) {
+                got = plan->functions[j].owned_key_count;
+                found_fn = 1;
+                break;
+            }
+        }
+
+        int row_failed = 0;
+        checks++;
+        if (!found_fn) {
+            printf("  FAIL: function '%s' absent from the plan\n", row->fn);
+            failures++;
+            row_failed = 1;
+        } else if (got != row->expect_owned_keys) {
+            printf("  FAIL: owned keys = %zu, expected %zu\n", got, row->expect_owned_keys);
+            failures++;
+            row_failed = 1;
+        }
+
+        // A miss must be conservative. Asserted on every row, because "returns
+        // false on an unknown function" is the property the whole two-layer
+        // guard leans on.
+        checks++;
+        if (release_plan_key_is_owned(plan, "__no_such_function__", (ASTNode*)plan)) {
+            printf("  FAIL: unknown function returned key_is_owned=true\n");
+            failures++;
+            row_failed = 1;
+        }
+
+        printf("  Key row %d: %s\n", row->row, row_failed ? "FAIL" : "PASS");
 
         release_plan_free(plan);
         if (checker) type_checker_free(checker);

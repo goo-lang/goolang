@@ -131,6 +131,15 @@ typedef struct ReleasePlanFunction {
     char*             function_name;  // owned
     ReleaseDecision*  decisions;      // owned, one per local of this function
     size_t            count;
+
+    // Key expressions of index assignments that are FRESH TEMPORARIES, so a map
+    // written through one may take ownership of the key. Borrowed AST pointers
+    // into the same tree codegen walks, never freed here.
+    //
+    // Condition 2's table, applied to a key instead of a binding. Nothing else
+    // ever held the value, so exactly one owner exists and the map may be it.
+    ASTNode**         owned_keys;     // owned array, borrowed elements
+    size_t            owned_key_count;
 } ReleasePlanFunction;
 
 typedef struct ReleasePlan {
@@ -156,5 +165,22 @@ ReleaseVerdict release_plan_verdict(const ReleasePlan* plan, const char* fn, con
 
 // Stable, human-readable name for a verdict. Never NULL.
 const char* release_verdict_name(ReleaseVerdict v);
+
+// May a map take ownership of the key written by this index assignment?
+//
+// `key_expr` is the INDEX node of an assignment target — the `k` of `m[k] = v`.
+// True only when that expression is a fresh temporary by condition 2's table,
+// so no other name ever held it and the map can be its single owner.
+//
+// HALF THE GUARD, exactly like condition 2 itself. This module holds no type
+// information, so it cannot tell a map write from a slice write, and it cannot
+// tell a pointer key from an inline one. The caller must confirm BOTH before it
+// emits goo_map_set_sv_owning. Codegen has the type and does that.
+//
+// Conservative on every miss: an unknown function or an unrecorded node returns
+// false, and false means the key stays borrowed, which is what every program
+// did before key ownership existed.
+bool release_plan_key_is_owned(const ReleasePlan* plan, const char* fn,
+                               const ASTNode* key_expr);
 
 #endif // RELEASE_DECISION_H

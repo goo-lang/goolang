@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "release_decision.h"   // release_plan_key_is_owned, for map key ownership
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -6,6 +7,42 @@
 // Expression code generation
 
 #if LLVM_AVAILABLE
+// Which map setter does this write use — the borrowing one or the owning one?
+//
+// Returns "goo_map_set_sv_owning" only when BOTH halves of the guard agree,
+// and "goo_map_set_sv" (today's behaviour) on every doubt:
+//
+//   1. release_decision proves the KEY EXPRESSION is a fresh temporary, so no
+//      other name ever held it and the map can be its single owner. That module
+//      is pure AST and cannot tell a map write from a slice write, which is why
+//      this second half exists.
+//   2. The key slot is a POINTER. An INLINE key slot holds the key's bits, so
+//      handing one to goo_release would pass an integer to free(). Only STRING
+//      and STRUCT keys are heap pointers — codegen_map_key_kind (codegen.c:831)
+//      is the same classifier the runtime's key_kind comes from.
+//
+// The IFACE kind is deliberately excluded: its slot is a boxed interface value,
+// and whether releasing the box is right is a separate question nobody has
+// costed. Conservative here costs a lost reclamation, never an unsafe free.
+static const char* codegen_map_setter_name(CodeGenerator* codegen, ASTNode* key_expr,
+                                           Type* key_type) {
+    if (!codegen || !codegen->release_plan || !key_expr) return "goo_map_set_sv";
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi || !fi->name) return "goo_map_set_sv";
+
+    int kind = codegen_map_key_kind(key_type);
+    if (kind != 0 /*GOO_MAPKEY_STRING*/ && kind != 2 /*GOO_MAPKEY_STRUCT*/) {
+        return "goo_map_set_sv";
+    }
+    if (!release_plan_key_is_owned(codegen->release_plan, fi->name, key_expr)) {
+        return "goo_map_set_sv";
+    }
+    if (getenv("GOO_ARC_DEBUG")) {
+        fprintf(stderr, "[arc] %s: map takes ownership of a key (kind=%d)\n",
+                fi->name, kind);
+    }
+    return "goo_map_set_sv_owning";
+}
 // Read-modify-write for a map-index target `m[k]`: read the old value via
 // goo_map_get_sv, compute old <op> rhs (or old +/- 1 for postfix, when
 // rhs_or_null is NULL), and write the result back via goo_map_set_sv.
@@ -1629,7 +1666,13 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             if (base_t && base_t->kind == TYPE_MAP) {
                 Type* key_type = base_t->data.map.key_type;
                 Type* val_type = base_t->data.map.value_type;
-                LLVMValueRef set_fn = LLVMGetNamedFunction(codegen->module, "goo_map_set_sv");
+                // The ONE site wired for key ownership in this increment, and
+                // deliberately so: `m[k] = v` is where the measured bytes are
+                // (bench/daemon:33, `counts[strings.ToUpper(f)] = 1`). The
+                // compound-assign path and the map-literal path keep the
+                // borrowing setter until each has rows of its own.
+                const char* setter = codegen_map_setter_name(codegen, idx->index, key_type);
+                LLVMValueRef set_fn = LLVMGetNamedFunction(codegen->module, setter);
                 if (!set_fn) {
                     codegen_error(codegen, expr->pos, "goo_map_set_sv missing");
                     return NULL;

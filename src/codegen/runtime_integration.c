@@ -499,6 +499,14 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
                                   LLVMInt64TypeInContext(codegen->context) };
         add_runtime_function(codegen, "goo_map_set_sv", void_type, params, 3);
     }
+    // void goo_map_set_sv_owning(GooMapSV*, int64_t k, int64_t v) — same shape,
+    // and the map takes the key. Emitted only where release_decision proves the
+    // key expression is a fresh temporary AND the key slot is a pointer.
+    {
+        LLVMTypeRef params[] = { ptr_type, LLVMInt64TypeInContext(codegen->context),
+                                  LLVMInt64TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_map_set_sv_owning", void_type, params, 3);
+    }
     // int64_t goo_map_get_sv(GooMapSV*, int64_t k) — returns the value slot;
     // codegen casts it back to the declared V.
     {
