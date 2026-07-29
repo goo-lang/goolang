@@ -1,59 +1,117 @@
 name: tests
 
-# Full unit-test suite: builds and runs the unified test_runner (`make test`),
-# which links all compiler objects and exercises the type-system / constraint /
-# concept / HKT tests. Complements the demos workflow (build+run smoke of the
-# example programs).
-
-# Auto-run DISABLED: this repo does not pay for GitHub Actions, so push/PR runs
-# only ever show a billing-block red (jobs abort in seconds with no logs). The
-# authoritative test gate is now local git hooks (.githooks/, installed via
-# `make hooks`): pre-commit runs `make test`, pre-push runs `make verify` +
-# `make test`. This workflow is kept for reference and can be triggered manually
-# from the Actions tab if paid CI is ever re-enabled.
+# THE authoritative gate, run on every push and every pull request.
+#
+# It calls ONE target: `make verify-core`. The Makefile defines that as the
+# full probe net minus the CompCert bootstrap pilot, and CLAUDE.md designates
+# it "the authoritative ccomp-free gate; safe for pre-push on any machine".
+#
+# WHY ONE TARGET AND NOT A LIST. This workflow used to name its probes by hand.
+# The gate set grew to 190 targets and the list still named 43, so 147 gates —
+# including every ARC/memory gate — were absent while the workflow reported
+# green. A hand-maintained list of a moving set rots silently. `verify-core` is
+# the set, so it cannot drift.
+#
+# HISTORY OF THE `on:` KEY, because it was disabled for a stated reason that no
+# longer holds. Between 2026-06-27 and 06-28, 52 push/PR runs failed, each
+# aborting in ~3s with no steps — the billing-block signature. Commit 413e121
+# then reduced this workflow to workflow_dispatch only, recorded as "this repo
+# does not pay for GitHub Actions". On 2026-07-05, 40 workflow_dispatch runs
+# on this same repo PASSED in 33-51s each, so the block had cleared and nobody
+# re-tested the push path. goo-lang/goolang is a PUBLIC repository, and
+# standard GitHub-hosted runners are free for public repositories. Local git
+# hooks (.githooks/) stay as the pre-push gate; `git push --no-verify` bypasses
+# them, which is exactly the hole this closes.
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  unit-tests:
+  verify-core:
     runs-on: ubuntu-24.04
+    # verify-core runs 493 golden fixtures twice (-O0 and -O2) plus valgrind and
+    # tsan gates. Generous, because a timeout that fires mid-suite is a red that
+    # says nothing. A public repo's job limit is 6h.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
       - name: Install toolchain
         # gcc-14: the Makefile uses -std=c23 (gcc-13, the distro default, rejects it).
-        # llvm-dev: the test runner links all objects incl. codegen, which needs
-        #   llvm-config (-DLLVM_AVAILABLE) to match the local build configuration.
+        # bison: src/parser/parser.tab.c is GENERATED and not committed.
+        # llvm-dev: codegen links against llvm-config (-DLLVM_AVAILABLE).
+        # clang + libblocksruntime-dev: three concurrency targets compile with
+        #   `clang -fblocks`; clang also carries the tsan/asan runtimes.
+        # valgrind: arena-valgrind-probe and arc-release-probe need it.
+        # cmake: builds nng from the vendored tarball in third_party/.
         # json-c / curl / zlib: LDFLAGS links -ljson-c -lcurl -lz.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            make gcc-14 llvm-dev \
+            make gcc-14 bison llvm-dev clang libblocksruntime-dev \
+            valgrind cmake \
             libjson-c-dev libcurl4-openssl-dev zlib1g-dev
 
       - name: Tool versions
         run: |
           gcc-14 --version | head -1
+          clang --version | head -1
+          bison --version | head -1
+          valgrind --version
+          cmake --version | head -1
           (ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 | xargs -r -I{} {} --version) || echo "no llvm-config"
 
-      - name: Build and run unit-test suite
-        # Pin LLVM_CONFIG to whatever versioned binary llvm-dev provides (e.g.
-        # llvm-config-18 on ubuntu-24.04), since the Makefile probes llvm-config-20
-        # / unversioned llvm-config first. A make-var assignment overrides the
-        # Makefile's `LLVM_CONFIG = ...`. The runner exits non-zero on any failure;
-        # skipped tests (documented, deferred) keep it green.
-        run: |
-          LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
-          echo "Using LLVM_CONFIG=${LLVMCFG:-llvm-config}"
-          make CC=gcc-14 LLVM_CONFIG="${LLVMCFG:-llvm-config}" test
-
-      - name: Language probes
-        # End-to-end .goo gates: compile and run real Goo programs through the
-        # actual compiler. Covers the baseline constructs plus the M1/M2/M3
-        # capabilities (lvalue assignment, file I/O, pointers, switch, methods).
-        # Excludes the CompCert-gated bootstrap probe from `make verify`.
+      - name: make verify-core
+        # Pin LLVM_CONFIG to whatever versioned binary llvm-dev provides, since
+        # the Makefile probes llvm-config-20 / unversioned llvm-config first. A
+        # make-var assignment overrides the Makefile's `LLVM_CONFIG = ...`.
+        #
+        # GOLDEN_JOBS is pinned to the runner's core count rather than left to
+        # nproc's default so the value is visible in the log.
         run: |
           export GOMAXPROCS=4
           LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
+          echo "Using LLVM_CONFIG=${LLVMCFG:-llvm-config}"
           make CC=gcc-14 LLVM_CONFIG="${LLVMCFG:-llvm-config}" \
-            baseline-probe lvalue-probe file-io-probe pointer-probe pointer-write-probe switch-probe methods-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe
+            GOLDEN_JOBS="$(nproc)" verify-core 2>&1 | tee verify-core.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Prove the skip-prone gates actually ran
+        # A GATE THAT SILENTLY SKIPS IS NOT A GATE. Three targets print SKIPPED
+        # and return SUCCESS when their tool is absent:
+        #   arc-release-probe     / arena-valgrind-probe  -> valgrind
+        #   obj-header-tsan                               -> clang
+        # They are exactly the gates guarding the ARC release path, so a runner
+        # missing a package would report green while testing none of it. The
+        # install step above is the fix; this step is the proof it worked, and
+        # it fails the build if any of them skipped.
+        if: always()
+        run: |
+          rc=0
+          # The two valgrind gates print a BARE "valgrind not found — SKIPPED"
+          # with no gate name, and they skip BEFORE their own === header, so no
+          # gate-named line appears at all. Name that cause explicitly.
+          if grep -q "valgrind not found" verify-core.log; then
+            echo "::error::valgrind is missing — arc-release-probe and arena-valgrind-probe proved nothing"
+            rc=1
+          fi
+          # Then require a positive PASS from each. Absence is a failure, so a
+          # skip for any other reason cannot read as green either.
+          for gate in arc-release-probe arena-valgrind-probe obj-header-tsan; do
+            if grep -q "^${gate}: PASS" verify-core.log; then
+              echo "ok: ${gate} ran and passed"
+            else
+              echo "::error::${gate} did not report PASS — it skipped or never ran"
+              rc=1
+            fi
+          done
+          exit $rc
+
+      - name: Upload the gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-core-log
+          path: verify-core.log
+          retention-days: 14

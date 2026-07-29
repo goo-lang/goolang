@@ -1,14 +1,22 @@
 name: demos
 
 # Minimal gate: build and run the demo targets so build/link/runtime bit-rot
-# is caught automatically. Intentionally scoped to the demos (fast, focused);
-# extend with the broader `make test` suite later if desired.
-
-# Auto-run DISABLED: this repo does not pay for GitHub Actions, so push/PR runs
-# only ever show a billing-block red. The authoritative test gate is now local
-# git hooks (.githooks/, installed via `make hooks`). Kept for reference; can be
-# triggered manually from the Actions tab if paid CI is ever re-enabled.
+# is caught automatically. Intentionally scoped to the demos (fast, focused).
+#
+# NOT redundant with tests.yml, which was the assumption when this was nearly
+# deleted. MEASURED against the Makefile: demo-work-stealing,
+# demo-structured-concurrency, demo-async-resource and demo-reactive-programming
+# are NONE of them in VERIFY_ALL_DEPS, so `make verify-core` does not build or
+# run any of them. The AddressSanitizer step below is likewise unique to this
+# workflow. Deleting this file would drop that coverage silently.
+#
+# The old comment here recorded auto-run as disabled because "this repo does not
+# pay for GitHub Actions". See tests.yml for the run history that disproves it:
+# the billing block cleared before 2026-07-05, and this repository is public, so
+# standard runners are free.
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
