@@ -14,8 +14,11 @@ name: demos
 # pay for GitHub Actions". See tests.yml for the run history that disproves it:
 # the billing block cleared before 2026-07-05, and this repository is public, so
 # standard runners are free.
+# push is restricted to main so a PR commit gets ONE run, not two. See tests.yml
+# for the measurement, and for why a concurrency group cannot do this job.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
