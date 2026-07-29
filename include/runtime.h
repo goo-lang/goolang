@@ -146,6 +146,21 @@ typedef void (*GooObjDtor)(void* obj);
 // exists in exactly one place.
 void goo_release_with(void* ptr, GooObjDtor dtor);
 
+// Release the first `len` elements of a slice buffer. The caller releases the
+// buffer itself afterwards.
+//
+// NOT a GooObjDtor, and it cannot be one: a destructor gets only the object
+// pointer, and this needs the LENGTH. The header carries no size, and a size
+// would be the wrong number anyway because it covers CAP -- the elements
+// between len and cap are uninitialised. Codegen reads len from field 1 of the
+// slice value and passes it in.
+//
+// `stride` is sizeof(element), and the releasable pointer must be at element
+// offset 0. True for a bare pointer (stride 8) and for a string, whose
+// {i8*, i64} puts the data pointer first (stride 16). Codegen refuses any
+// other element shape.
+void goo_slice_release_elems(void* buf, int64_t len, int64_t stride);
+
 // GooObjDtor for a map. Frees the entry nodes and NOT the keys or the values:
 // goo_map_set_sv stores both verbatim, so the map owns neither -- a key can be
 // a string literal's constant data. Wraps goo_map_clear_sv, which already

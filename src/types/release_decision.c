@@ -63,6 +63,21 @@ typedef struct {
     ASTNode**    key_sites;
     size_t       key_count;
     size_t       key_cap;
+
+    // Every expression STORED INTO a slice local, paired with that local's
+    // name. `p = append(p, X)` contributes (p, X), and a slice literal
+    // contributes one entry per element.
+    //
+    // Same question as a map key, one container along: an element is owned when
+    // the expression that produced it is a fresh temporary. Classified after
+    // the walk, for the same reason -- binding_is_owned needs the callee
+    // summaries.
+    //
+    // A local with NO entry here owns no elements, which is the safe answer and
+    // the behaviour every program had before this existed.
+    struct { const char* target; ASTNode* expr; } *elem_sites;
+    size_t       elem_count;
+    size_t       elem_cap;
 } Collected;
 
 typedef struct {
@@ -101,6 +116,9 @@ static LocalRecord* intern_record(Collected* c, const char* name) {
     return r;
 }
 
+// Defined below, next to the append collector it pairs with.
+static void note_literal_elems(WalkCtx* ctx, const char* target, ASTNode* value);
+
 static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
     if (!name || strcmp(name, "_") == 0) return;
     LocalRecord* r = intern_record(ctx->out, name);
@@ -110,6 +128,10 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
         r->bound_value = value;
         r->loop_depth = ctx->loop_depth;
         r->arena_depth = ctx->arena_depth;
+        // A slice literal's own elements count as stored values, exactly as
+        // appended ones do. `[]string{}` records nothing, which is the usual
+        // opening move and leaves the appends to decide.
+        note_literal_elems(ctx, r->name, value);
     }
     r->binding_count++;
 }
@@ -158,6 +180,43 @@ static void note_key_site(WalkCtx* ctx, ASTNode* lhs) {
     note_key_site(ctx, ie->expr);
 }
 
+// Record one expression stored into slice local `target`.
+static void note_elem_site(WalkCtx* ctx, const char* target, ASTNode* expr) {
+    if (!target || !expr) return;
+    Collected* c = ctx->out;
+    if (c->elem_count >= c->elem_cap) {
+        size_t ncap = c->elem_cap ? c->elem_cap * 2 : 4;
+        void* grown = realloc(c->elem_sites, ncap * sizeof(*c->elem_sites));
+        // Fail CLOSED: an unrecorded element leaves the slice owning nothing.
+        if (!grown) return;
+        c->elem_sites = grown;
+        c->elem_cap = ncap;
+    }
+    c->elem_sites[c->elem_count].target = target;
+    c->elem_sites[c->elem_count].expr = expr;
+    c->elem_count++;
+}
+
+// Every element expression of a slice literal, or nothing if `value` is not
+// one. An EMPTY literal records nothing and is the common opening move --
+// `parts := []string{}` -- which leaves ownership decided entirely by the
+// appends that follow.
+static void note_literal_elems(WalkCtx* ctx, const char* target, ASTNode* value) {
+    if (!value || value->type != AST_SLICE_EXPR) return;
+    for (ASTNode* e = ((SliceLitNode*)value)->elements; e; e = e->next) {
+        note_elem_site(ctx, target, e);
+    }
+}
+
+// The arguments a self-append adds, which are args 1..n of `append(L, ...)`.
+// Arg 0 is L itself and is not a new element.
+static void note_append_elems(WalkCtx* ctx, const char* target, ASTNode* rhs) {
+    CallExprNode* call = (CallExprNode*)rhs;
+    ASTNode* a = call->args;
+    if (!a) return;
+    for (a = a->next; a; a = a->next) note_elem_site(ctx, target, a);
+}
+
 // An ASSIGNMENT, not a declaration. The COUNT is what condition 4 reads, so the
 // assigned value needs classifying only far enough to spot a self-append.
 static void note_assignment(WalkCtx* ctx, ASTNode* lhs, ASTNode* rhs, bool plain_assign) {
@@ -172,7 +231,11 @@ static void note_assignment(WalkCtx* ctx, ASTNode* lhs, ASTNode* rhs, bool plain
     if (!r) { ctx->out->unreadable = true; return; }
     // A self-append grows the same object, so it is not a new binding. Only a
     // plain `=` qualifies; a compound operator is never an append.
-    if (plain_assign && is_self_append(name, rhs)) return;
+    if (plain_assign && is_self_append(name, rhs)) {
+        // ...and every argument after arg 0 is a NEW ELEMENT of that object.
+        note_append_elems(ctx, r->name, rhs);
+        return;
+    }
     r->binding_count++;
 }
 
@@ -571,10 +634,13 @@ static void collected_free(Collected* c) {
     free(c->items);
     c->items = NULL;
     c->count = c->cap = 0;
-    // The elements are borrowed AST nodes; only the array is ours.
+    // The elements are borrowed AST nodes; only the arrays are ours.
     free(c->key_sites);
     c->key_sites = NULL;
     c->key_count = c->key_cap = 0;
+    free(c->elem_sites);
+    c->elem_sites = NULL;
+    c->elem_count = c->elem_cap = 0;
 }
 
 static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
@@ -682,6 +748,28 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
             pf->count++;
         }
 
+        // Does this local's slice own its elements? True only when it HAS
+        // stored elements and EVERY one of them is a fresh temporary. One
+        // borrowed element poisons the local, because the release walks the
+        // whole buffer and cannot skip an entry.
+        //
+        // Unlike a map key, ownership here is not per entry: the release site
+        // is a single `for i < len` walk, so it is all of them or none.
+        for (size_t i = 0; i < pf->count; i++) {
+            const char* nm = pf->decisions[i].local_name;
+            if (!nm) continue;
+            bool any = false, all_owned = true;
+            for (size_t j = 0; j < c.elem_count; j++) {
+                if (strcmp(c.elem_sites[j].target, nm) != 0) continue;
+                any = true;
+                if (!binding_is_owned(&c, pe, c.elem_sites[j].expr)) {
+                    all_owned = false;
+                    break;
+                }
+            }
+            pf->decisions[i].owns_elems = any && all_owned;
+        }
+
         // Classify the key sites NOW, because binding_is_owned needs `pe` and
         // release_plan_analyze frees it below.
         if (c.key_count) {
@@ -735,6 +823,22 @@ ReleaseVerdict release_plan_verdict(const ReleasePlan* plan, const char* fn, con
 
 bool release_plan_should_release(const ReleasePlan* plan, const char* fn, const char* local) {
     return release_plan_verdict(plan, fn, local) == RELEASE_OK;
+}
+
+bool release_plan_slice_owns_elems(const ReleasePlan* plan, const char* fn,
+                                   const char* local) {
+    if (!plan || !fn || !local) return false;
+    for (size_t i = 0; i < plan->count; i++) {
+        if (strcmp(plan->functions[i].function_name, fn) != 0) continue;
+        const ReleasePlanFunction* pf = &plan->functions[i];
+        for (size_t j = 0; j < pf->count; j++) {
+            if (strcmp(pf->decisions[j].local_name, local) == 0) {
+                return pf->decisions[j].owns_elems;
+            }
+        }
+        return false;
+    }
+    return false;
 }
 
 bool release_plan_key_is_owned(const ReleasePlan* plan, const char* fn,

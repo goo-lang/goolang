@@ -313,6 +313,14 @@ typedef struct ArcReleaseSite {
     LLVMTypeRef  slot_ty;   // its allocated type, needed to build the GEP
     int          field;     // -1 = the slot's contents; >= 0 = that field
     const char*  dtor;      // runtime destructor symbol, or NULL for none
+
+    // sizeof(element) when this site's slice OWNS its elements, else 0.
+    //
+    // Non-zero makes the exit emit goo_slice_release_elems(buf, len, stride)
+    // before releasing the buffer, reading len from field 1 of the same slot.
+    // A DESTRUCTOR CANNOT DO THIS: GooObjDtor gets only the object pointer, and
+    // the element count lives in the slice value, not in the object header.
+    int64_t      elem_stride;
 } ArcReleaseSite;
 
 struct FunctionInfo {

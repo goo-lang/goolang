@@ -1,0 +1,52 @@
+// T4 gate: does a released slice free the ELEMENTS it owns?
+//
+// PR #262 made a slice release its BUFFER (field 0 of the fat value). The
+// elements inside that buffer stay, because "does a slice own its elements"
+// had no answer. PR #272 answered the same question for a map key, and this
+// applies that answer one container along: an element is owned when the
+// expression that produced it is a fresh temporary no other name ever held.
+//
+// strings.TrimSpace is non_retaining = 1 in src/types/shim_signatures.c,
+// audited against goo_strings_trim_space, which goo_allocs and memcpys -- the
+// table even notes it COPIES where Go's TrimSpace returns a slice of its
+// argument. So each element here is a fresh allocation with exactly one
+// reference, and the slice is the only thing that can free it.
+//
+// `parts` is release-eligible: bound once to a slice literal, grown by the
+// self-append idiom that PR #263 taught release_decision to read as ONE
+// binding, no arena, and strings.Join copies rather than retains, so nothing
+// derived from it leaves build.
+//
+// WHY A DESTRUCTOR CANNOT DO THIS, unlike the map in #269. GooObjDtor is
+// passed only the buffer pointer. Freeing elements needs the LENGTH, and the
+// object header is {rc, reserved} with no size field. Even a size would be the
+// wrong number: it covers CAP, and the elements between len and cap are
+// uninitialised, so walking them would release garbage. len lives in field 1
+// of the slice value and only codegen can read it at the release point.
+package main
+
+import "strings"
+
+var sink int
+
+// Two elements per call, both fresh. 10,000 calls, so the difference is
+// measurable rather than theoretical.
+func build(n int) int {
+	parts := []string{}
+	parts = append(parts, strings.TrimSpace("  alpha  "))
+	parts = append(parts, strings.TrimSpace("  beta  "))
+	return len(parts)
+}
+
+func main() {
+	total := 0
+	for i := 0; i < 10000; i++ {
+		total = total + build(i)
+	}
+	sink = total
+	// Printed so the gate can diff this against the GOO_ARC_RELEASE=0 control.
+	// PR #264 measured a release that valgrind called clean while it silently
+	// corrupted eight bytes of a live string, so a valgrind-only check has no
+	// teeth against a whole class of defect.
+	println(total)
+}

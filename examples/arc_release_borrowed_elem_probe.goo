@@ -1,0 +1,51 @@
+// T4 SOUNDNESS gate: a slice must NOT release an element it borrowed.
+//
+// The companion to arc_release_slice_elem_probe.goo, and the one that matters.
+// That probe proves owned elements ARE reclaimed. This one proves borrowed ones
+// are NOT, which is the direction that corrupts memory rather than wasting it.
+//
+// WHY THIS FILE EXISTS. The element-ownership rule was first shipped with unit
+// rows and the reclamation probe, and both looked convincing. Then the rule was
+// mutated to claim ownership UNCONDITIONALLY and `make arc-release-probe` still
+// passed, because nothing in the suite appended a value the CALLER owns. The
+// unit rows caught it; the end-to-end gate did not. A gate that cannot go red
+// for the defect it exists to catch is not a gate.
+//
+// THE SHAPE. `collect` appends its PARAMETER, which the caller still owns.
+// binding_is_owned refuses a bare identifier, so `p` must not own its elements
+// and the release must leave `s` alone. If it does not, `main` reads a freed
+// buffer on the next line and valgrind reports an Invalid read.
+//
+// `owned` is loop-scoped, so condition 4 refuses to release it and the ONLY
+// release that could touch that buffer is the unsound one inside collect. That
+// isolation is deliberate: it means a failure here has exactly one cause.
+//
+// THE FIRST DRAFT OF THIS PROBE WAS VACUOUS, and it read as convincing. It
+// checked `len(owned)` after the call, which loads the LENGTH out of field 1 of
+// the {i8*, i64} string and never dereferences the buffer at all -- so it
+// passed against the very mutant it was written to catch. The read must touch
+// the BYTES, which a concatenation does: goo_string_concat memcpys both
+// operands. Verified by re-running it against that mutant.
+package main
+
+var sink int
+
+func collect(s string) int {
+	p := []string{}
+	p = append(p, s)
+	return len(p)
+}
+
+func main() {
+	total := 0
+	for i := 0; i < 1000; i++ {
+		owned := "abc" + "def"
+		total = total + collect(owned)
+		// READ THE BYTES after the call. Under a too-permissive element rule
+		// the buffer behind `owned` is already free here, and the concat's
+		// memcpy walks it.
+		echoed := owned + "!"
+		sink = sink + len(echoed)
+	}
+	println(total + sink)
+}

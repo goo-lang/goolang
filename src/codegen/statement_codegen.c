@@ -2632,6 +2632,32 @@ static void emit_scope_releases(CodeGenerator* codegen) {
             if (!addr) continue;
         }
         LLVMValueRef obj = LLVMBuildLoad2(codegen->builder, ptr_ty, addr, "arc.release.obj");
+
+        // ELEMENTS FIRST, then the buffer that holds them. Reversing this would
+        // walk freed memory.
+        //
+        // The length is read HERE rather than baked in, because it is a runtime
+        // value: field 1 of the slice slot, holding whatever the last append
+        // left. Walking `cap` instead would touch uninitialised elements, which
+        // is why a GooObjDtor cannot do this job -- it never sees the length.
+        if (site->elem_stride > 0 && site->slot_ty) {
+            LLVMValueRef len_addr = LLVMBuildStructGEP2(codegen->builder, site->slot_ty,
+                                                        site->slot, 1, "arc.elems.len.addr");
+            LLVMValueRef relems = LLVMGetNamedFunction(codegen->module, "goo_slice_release_elems");
+            if (len_addr && relems) {
+                LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+                LLVMValueRef len = LLVMBuildLoad2(codegen->builder, i64, len_addr, "arc.elems.len");
+                LLVMTypeRef relems_ty = LLVMFunctionType(
+                    LLVMVoidTypeInContext(ctx),
+                    (LLVMTypeRef[]){ ptr_ty, i64, i64 }, 3, 0);
+                LLVMValueRef args[] = { obj, len,
+                                        LLVMConstInt(i64, (unsigned long long)site->elem_stride, 0) };
+                LLVMBuildCall2(codegen->builder, relems_ty, relems, args, 3, "");
+            }
+            // A missing symbol leaves the elements alone and still releases the
+            // buffer below: a leak, never a walk through a freed pointer.
+        }
+
         // goo_release is a no-op on NULL, on goo_zerobase and on an immortal
         // header (include/runtime.h), so no guard is emitted for those here.
         if (site->dtor) {
@@ -2813,17 +2839,57 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     // goo_free cannot reach it. Everything else here owns a single block: a
     // `new(T)`/`&T{}` payload, a slice's data buffer, a string's bytes.
     //
-    // A slice's or a string's ELEMENTS are deliberately NOT a destructor case.
-    // The map's rule is settled -- goo_map_set_sv stores keys verbatim, so the
-    // map owns no key -- while "does a slice own its elements" has no such
-    // answer yet, and append's elements genuinely escape.
+    // A slice's ELEMENTS are not a destructor case either, and cannot be one:
+    // GooObjDtor receives only the object pointer, while the element count
+    // lives in field 1 of the slice VALUE. The header is {rc, reserved} and has
+    // no size, and a size would be the wrong number regardless because it
+    // covers CAP -- the elements between len and cap are uninitialised. So
+    // elements go through elem_stride below, which the exit turns into a
+    // goo_slice_release_elems call with the length loaded at that point.
     const char* dtor = (info->goo_type && info->goo_type->kind == TYPE_MAP)
                      ? "goo_map_dtor" : NULL;
+
+    // DOES THIS SLICE OWN ITS ELEMENTS? Both halves must agree, as ever.
+    //
+    // release_decision proves every stored element was a fresh temporary. This
+    // half confirms the local really is a slice AND that its element shape puts
+    // a releasable pointer at offset 0 -- a bare pointer, or a string, whose
+    // {i8*, i64} leads with its data pointer. Everything else is refused: an
+    // interface element leads with a VTABLE, and a struct element has no
+    // pointer to release at all.
+    int64_t elem_stride = 0;
+    if (info->goo_type && info->goo_type->kind == TYPE_SLICE && field == 0 &&
+        release_plan_slice_owns_elems(codegen->release_plan, fi->name, info->name)) {
+        Type* et = info->goo_type->data.slice.element_type;
+        LLVMTypeRef ellvm = et ? codegen_type_to_llvm(codegen, et) : NULL;
+        if (ellvm && et) {
+            bool releasable =
+                (et->kind == TYPE_STRING &&
+                 LLVMGetTypeKind(ellvm) == LLVMStructTypeKind &&
+                 LLVMCountStructElementTypes(ellvm) == 2 &&
+                 LLVMGetTypeKind(LLVMStructGetTypeAtIndex(ellvm, 0)) == LLVMPointerTypeKind)
+                || ((et->kind == TYPE_POINTER || et->kind == TYPE_MAP) &&
+                    LLVMGetTypeKind(ellvm) == LLVMPointerTypeKind);
+            if (releasable) {
+                // The MODULE carries the layout (codegen.c sets it from the
+                // target machine); CodeGenerator keeps no target_data of its
+                // own. Asking the layout rather than hardcoding 8 and 16 keeps
+                // this correct if the pointer width ever changes.
+                LLVMTargetDataRef td = LLVMGetModuleDataLayout(codegen->module);
+                if (td) elem_stride = (int64_t)LLVMABISizeOfType(td, ellvm);
+            }
+        }
+        if (elem_stride && getenv("GOO_ARC_DEBUG")) {
+            fprintf(stderr, "[arc] %s: %s owns its elements (stride=%lld)\n",
+                    fi->name, info->name, (long long)elem_stride);
+        }
+    }
 
     fi->arc_release_slots[fi->arc_release_count].slot = info->llvm_value;
     fi->arc_release_slots[fi->arc_release_count].slot_ty = slot_ty;
     fi->arc_release_slots[fi->arc_release_count].field = field;
     fi->arc_release_slots[fi->arc_release_count].dtor = dtor;
+    fi->arc_release_slots[fi->arc_release_count].elem_stride = elem_stride;
     fi->arc_release_count++;
 
     if (getenv("GOO_ARC_DEBUG")) {

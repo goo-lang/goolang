@@ -5288,6 +5288,51 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  owned key ON:  clean, 0 bytes, output matches the control (was $$mko_off)"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_se_off examples/arc_release_slice_elem_probe.goo > build/arc_se_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, slice-elem probe, release off)"; cat build/arc_se_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_se_on examples/arc_release_slice_elem_probe.goo > build/arc_se_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, slice-elem probe, release on)"; cat build/arc_se_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_se_off > build/arc_se_off.out 2> build/arc_se_off.vg; \
+	se_d=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_se_off.vg | tr -d , ); \
+	se_i=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_se_off.vg | tr -d , ); \
+	se_off=$$(( $${se_d:-0} + $${se_i:-0} )); \
+	if [ "$$se_off" -eq 0 ]; then \
+	  echo "  FAIL: slice-elem probe leaked nothing with the release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  slice elem OFF: $$se_off bytes leaked ($${se_d:-0} direct + $${se_i:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_se_on > build/arc_se_on.out 2> build/arc_se_on.vg; \
+	rc=$$?; \
+	se_d2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_se_on.vg | tr -d , ); \
+	se_i2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_se_on.vg | tr -d , ); \
+	se_on=$$(( $${se_d2:-0} + $${se_i2:-0} )); \
+	: "Access first, then leak, then rc -- see the owned-key block above for why." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_se_on.vg; then \
+	  echo "  FAIL: the slice released an element it did not own"; tail -30 build/arc_se_on.vg; fail=1; \
+	elif [ "$$se_on" -ne 0 ]; then \
+	  echo "  FAIL: slice-elem probe still leaked $$se_on bytes — the elements were not reclaimed"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_se_on.vg; fail=1; \
+	elif ! diff -q build/arc_se_off.out build/arc_se_on.out > /dev/null; then \
+	  echo "  FAIL: slice-elem probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  slice elem ON:  clean, 0 bytes, output matches the control (was $$se_off)"; \
+	fi; \
+	$(COMPILER) -o build/arc_be examples/arc_release_borrowed_elem_probe.goo > build/arc_be.cerr 2>&1 \
+	  || { echo "  FAIL (compile, borrowed-elem probe)"; cat build/arc_be.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_be > /dev/null 2> build/arc_be.vg; \
+	: "LEAKS ARE EXPECTED HERE and must NOT be asserted on. The borrowed string" ; \
+	: "is loop-scoped in main, so condition 4 refuses it and nothing releases" ; \
+	: "it. What this probe asserts is that nothing releases it WRONGLY, which" ; \
+	: "shows up as an invalid access rather than as a leak count." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_be.vg; then \
+	  echo "  FAIL: a slice released an element it BORROWED — the caller's string was freed"; \
+	  grep -E "Invalid read|Invalid write|Invalid free|double free" build/arc_be.vg | head -3; \
+	  fail=1; \
+	else \
+	  echo "  borrowed elem: clean — a caller-owned string survived 1000 releases"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 
