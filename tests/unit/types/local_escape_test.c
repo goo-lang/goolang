@@ -475,6 +475,85 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "x", true }, { "y", false } }, 2
     },
+
+    // ---------------- THE SELF-STORE RULE (PR B) ----------------
+    //
+    // `m[k] = m[k] + 1` marked `m` escaping ON ACCOUNT OF ITS OWN CONTENTS.
+    // assign_to_lvalue marks rhs_taint for a non-identifier lvalue, and the
+    // right side carries m's OWN bit out of the AST_INDEX_EXPR arm. So the
+    // compound update was the ONE map shape that refused to release: a plain
+    // write, a parameter key, a write in a loop and a write with an import all
+    // released already.
+    //
+    // Measured cost of the refusal, at bench/daemon/daemon.goo:31 — 902,000 of
+    // 2,209,982 bytes per 2,000 requests (40.8%), of which 822,000 are the
+    // entry-chain nodes that goo_map_dtor (#269) already knows how to free.
+    {
+        // THE PRECISION ROW, and the only one here that failed before the rule
+        // existed. `m` never leaves f, so nothing may mark it. Its key is a
+        // PARAMETER, deliberately: that keeps the map-key sink out of the way
+        // so this row measures the self-store and nothing else.
+        29, "map updated from its OWN contents, never escapes -> false",
+        "package main\n"
+        "func f(s string) int {\n"
+        "    m := map[string]int{}\n"
+        "    m[s] = m[s] + 1\n"
+        "    return len(m)\n"
+        "}\n",
+        "f", { { "m", false } }, 1
+    },
+    {
+        // SOUNDNESS: the rule must not reach past the base's own taint. Here
+        // the stored value is a DIFFERENT local, so subtracting outer's taint
+        // leaves inner's bit in place and inner still escapes.
+        //
+        // This row passes BOTH before and after the change, by design. It is
+        // the guard that fails if the subtraction is written too wide — for
+        // example by skipping escape_mark for every index lvalue.
+        30, "a DIFFERENT local stored into a map that escapes -> true",
+        "package main\n"
+        "func f(s string) map[string]*int {\n"
+        "    inner := new(int)\n"
+        "    outer := map[string]*int{}\n"
+        "    outer[s] = inner\n"
+        "    return outer\n"
+        "}\n",
+        "f", { { "outer", true }, { "inner", true } }, 2
+    },
+    {
+        // SOUNDNESS: the KEY path must survive the subtraction. Row 15 records
+        // why this is the dangerous direction — goo_map_set_sv stores the key
+        // pointer verbatim and never frees it, so a released key dangles inside
+        // a live map.
+        //
+        // mark_lvalue_subscripts runs AFTER the subtraction and on its own
+        // path, so `k` is marked by the key sink and not by rhs_taint. A
+        // subtraction written over the whole assignment instead of over
+        // rhs_taint alone turns this row red.
+        31, "self-store with a LOCAL key: the key still escapes -> true",
+        "package main\n"
+        "func f(s string) map[string]int {\n"
+        "    m := map[string]int{}\n"
+        "    k := s + \"x\"\n"
+        "    m[k] = m[k] + 1\n"
+        "    return m\n"
+        "}\n",
+        "f", { { "m", true }, { "k", true } }, 2
+    },
+    {
+        // SOUNDNESS: the subtraction is local to ONE assignment and must not
+        // follow the map to another sink. `m` is self-stored and then given to
+        // a global, which is an identifier lvalue and a different code path.
+        32, "self-stored map later stored to a global -> true",
+        "package main\n"
+        "var g map[string]int\n"
+        "func f(s string) {\n"
+        "    m := map[string]int{}\n"
+        "    m[s] = m[s] + 1\n"
+        "    g = m\n"
+        "}\n",
+        "f", { { "m", true } }, 1
+    },
 };
 
 static int failures = 0;
