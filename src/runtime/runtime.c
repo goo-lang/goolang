@@ -946,7 +946,39 @@ typedef struct GooMapEntrySV {
     int64_t key;
     int64_t value;
     struct GooMapEntrySV* next;
+    // Does THIS entry own its key storage? Per-entry, not per-map, and that is
+    // the whole reason key ownership works at all: one map can be written from
+    // several sites, and only some of them hand over a fresh temporary. The
+    // daemon's `counts` is exactly that shape -- `counts[f]` passes a local
+    // (borrowed) while `counts[strings.ToUpper(f)]` passes a fresh allocation
+    // (owned). A per-MAP flag would have to refuse the whole map, and would
+    // reclaim nothing there.
+    //
+    // Set ONLY by goo_map_set_sv_owning. Every entry made by goo_map_set_sv
+    // leaves it 0, so an existing program's behaviour does not change by one
+    // byte.
+    //
+    // Costs no memory in practice: the node was 24 bytes plus a 16-byte object
+    // header, and malloc rounds 40 and 48 into the same bucket.
+    int64_t owns_key;
 } GooMapEntrySV;
+
+// Release an entry's key IF the entry owns it. Central, because three call
+// sites need it and a fourth copy of "should I free this key" is how the two
+// drift defects in the escape passes started.
+//
+// Guarded on the key KIND as well as the flag, and that is deliberate
+// belt-and-braces. An INLINE key slot holds the key's BITS, not a pointer, so
+// releasing one would hand an integer to free(). Codegen already refuses to
+// emit the owning setter for a non-pointer key, and this is the second layer.
+static void goo_map_entry_release_key(const GooMapSV* m, GooMapEntrySV* e) {
+    if (!e || !e->owns_key) return;
+    if (m->key_kind != GOO_MAPKEY_STRING && m->key_kind != GOO_MAPKEY_STRUCT) return;
+    // goo_release is a no-op on NULL, on a headerless pointer, and on an
+    // IMMORTAL one, so a string literal that reached here frees nothing.
+    goo_release((void*)(intptr_t)e->key);
+    e->owns_key = 0;
+}
 
 GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq) {
     GooMapSV* m = goo_alloc(sizeof(GooMapSV));
@@ -971,6 +1003,51 @@ void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v) {
     if (!e) return;
     e->key = k;
     e->value = v;
+    e->owns_key = 0;
+    e->next = (GooMapEntrySV*)m->head;
+    m->head = e;
+}
+
+// goo_map_set_sv, and the map TAKES the key.
+//
+// Codegen emits this instead of goo_map_set_sv when the key expression is a
+// fresh temporary that no other name ever held -- release_decision decides
+// that with the same rule it uses for a local's binding site. From here on the
+// map is the key's only owner, and nothing else may free it.
+//
+// THE DUPLICATE IS THE WHOLE REASON THIS FUNCTION EXISTS. goo_map_set_sv above
+// keeps the entry's existing key and DROPS the caller's `k` on the floor
+// (`{ e->value = v; return; }`). That is fine when the caller still owns k, and
+// it is a LEAK the moment the caller has handed ownership over. So on a
+// duplicate this releases the incoming key and keeps the entry's own -- the
+// entry's key is already equal by goo_map_key_eq, so the map holds an equal
+// value either way.
+//
+// Releasing the OTHER one instead would be equally correct and strictly worse:
+// it would have to rewrite e->key, and a concurrent reader holding the old
+// pointer would see it freed.
+void goo_map_set_sv_owning(GooMapSV* m, int64_t k, int64_t v) {
+    if (!m) goo_panic("assignment to entry in nil map");
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
+    while (e) {
+        if (goo_map_key_eq(m, e->key, k)) {
+            e->value = v;
+            // The map already holds an equal key. We were handed ownership of
+            // this one, so it is ours to free and nobody else will.
+            if (m->key_kind == GOO_MAPKEY_STRING || m->key_kind == GOO_MAPKEY_STRUCT) {
+                if ((void*)(intptr_t)k != (void*)(intptr_t)e->key) {
+                    goo_release((void*)(intptr_t)k);
+                }
+            }
+            return;
+        }
+        e = e->next;
+    }
+    e = goo_alloc(sizeof(GooMapEntrySV));
+    if (!e) return;
+    e->key = k;
+    e->value = v;
+    e->owns_key = 1;
     e->next = (GooMapEntrySV*)m->head;
     m->head = e;
 }
@@ -1053,6 +1130,10 @@ void goo_map_delete_sv(GooMapSV* m, int64_t k) {
             } else {
                 m->head = e->next;
             }
+            // An owned key dies with its entry. Without this, delete(m, k) on
+            // an owning map leaks the key -- a lost reclamation, never an
+            // unsafe free, but there is no reason to accept it.
+            goo_map_entry_release_key(m, e);
             goo_free(e);
             return;
         }
@@ -1062,11 +1143,20 @@ void goo_map_delete_sv(GooMapSV* m, int64_t k) {
 }
 
 // Unlinks and frees every entry (no-op if m is NULL or already empty).
-// Backs clear(m) (Go 1.21). Same key-ownership contract as
-// goo_map_delete_sv above (frees only the entry nodes, never the key/value
-// payloads a caller's own storage still owns) — one linear pass instead of
-// clear's naive "delete every key" O(n^2) equivalent.
-// GooObjDtor adapter: see include/runtime.h. Frees entry nodes only.
+// Backs clear(m) (Go 1.21) — one linear pass instead of clear's naive "delete
+// every key" O(n^2) equivalent.
+//
+// KEY OWNERSHIP IS PER ENTRY. An entry made by goo_map_set_sv does not own its
+// key and this frees only the node, which is the contract goo_map_delete_sv
+// documents and the behaviour every program had before key ownership existed.
+// An entry made by goo_map_set_sv_owning DOES own its key, and the key dies
+// with the entry.
+//
+// That split is also right for `clear(m)` and not merely convenient. Go's clear
+// drops every entry, and an unreferenced key becomes collectable; releasing a
+// key the map owns is the closest thing to that with no collector, while a
+// borrowed key stays untouched because someone else still holds it.
+// GooObjDtor adapter: see include/runtime.h.
 void goo_map_dtor(void* obj) {
     goo_map_clear_sv((GooMapSV*)obj);
 }
@@ -1076,6 +1166,7 @@ void goo_map_clear_sv(GooMapSV* m) {
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
         GooMapEntrySV* next = e->next;
+        goo_map_entry_release_key(m, e);
         goo_free(e);
         e = next;
     }

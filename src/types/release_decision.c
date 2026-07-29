@@ -49,6 +49,20 @@ typedef struct {
     size_t       count;
     size_t       cap;
     bool         unreadable;   // an unrecognised statement kind was met
+
+    // Every INDEX-expression assignment target's key expression, in source
+    // order. `m[k] = v` contributes k. Collected during the walk and CLASSIFIED
+    // afterwards, because binding_is_owned needs the callee summaries and those
+    // arrive after the walk has finished.
+    //
+    // This module is pure AST and holds no types, so it cannot tell `m[k] = v`
+    // from `arr[i] = v`. It does not try. It answers only "is this expression a
+    // fresh temporary", and codegen — which does have the type — decides
+    // whether the container is a map. Same two-layer split that lets the
+    // integer `+` arm stay approximate.
+    ASTNode**    key_sites;
+    size_t       key_count;
+    size_t       key_cap;
 } Collected;
 
 typedef struct {
@@ -125,10 +139,32 @@ static bool is_self_append(const char* target, ASTNode* rhs) {
     return strcmp(((IdentifierNode*)first)->name, target) == 0;
 }
 
+// Record an index-assignment's KEY expression for later classification.
+// `m[a][b] = v` records both a and b, because either container could be a map.
+static void note_key_site(WalkCtx* ctx, ASTNode* lhs) {
+    if (!lhs || lhs->type != AST_INDEX_EXPR) return;
+    IndexExprNode* ie = (IndexExprNode*)lhs;
+    Collected* c = ctx->out;
+    if (c->key_count >= c->key_cap) {
+        size_t ncap = c->key_cap ? c->key_cap * 2 : 4;
+        ASTNode** grown = realloc(c->key_sites, ncap * sizeof(ASTNode*));
+        // Fail CLOSED: an unrecorded site is simply never owned, so the map
+        // keeps today's borrow-everything behaviour.
+        if (!grown) return;
+        c->key_sites = grown;
+        c->key_cap = ncap;
+    }
+    c->key_sites[c->key_count++] = ie->index;
+    note_key_site(ctx, ie->expr);
+}
+
 // An ASSIGNMENT, not a declaration. The COUNT is what condition 4 reads, so the
 // assigned value needs classifying only far enough to spot a self-append.
 static void note_assignment(WalkCtx* ctx, ASTNode* lhs, ASTNode* rhs, bool plain_assign) {
     if (!lhs) return;
+    // Before the identifier test below returns: an index target is not a rebind
+    // of any local, but its KEY is a candidate for map ownership.
+    note_key_site(ctx, lhs);
     if (lhs->type != AST_IDENTIFIER) return;   // a field/index store is not a rebind of the local
     const char* name = ((IdentifierNode*)lhs)->name;
     if (!name || strcmp(name, "_") == 0) return;
@@ -535,6 +571,10 @@ static void collected_free(Collected* c) {
     free(c->items);
     c->items = NULL;
     c->count = c->cap = 0;
+    // The elements are borrowed AST nodes; only the array is ours.
+    free(c->key_sites);
+    c->key_sites = NULL;
+    c->key_count = c->key_cap = 0;
 }
 
 static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
@@ -641,6 +681,21 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
             pf->decisions[i].verdict = decide(&c, &c.items[i], pe, le, name);
             pf->count++;
         }
+
+        // Classify the key sites NOW, because binding_is_owned needs `pe` and
+        // release_plan_analyze frees it below.
+        if (c.key_count) {
+            pf->owned_keys = calloc(c.key_count, sizeof(ASTNode*));
+            if (pf->owned_keys) {
+                for (size_t i = 0; i < c.key_count; i++) {
+                    if (binding_is_owned(&c, pe, c.key_sites[i])) {
+                        pf->owned_keys[pf->owned_key_count++] = c.key_sites[i];
+                    }
+                }
+            }
+            // A NULL array means no key is owned, which is the safe answer.
+        }
+
         plan->count++;
         collected_free(&c);
     }
@@ -656,6 +711,8 @@ void release_plan_free(ReleasePlan* plan) {
         ReleasePlanFunction* pf = &plan->functions[i];
         for (size_t j = 0; j < pf->count; j++) free(pf->decisions[j].local_name);
         free(pf->decisions);
+        // The elements are borrowed AST nodes; only the array is ours.
+        free(pf->owned_keys);
         free(pf->function_name);
     }
     free(plan->functions);
@@ -678,6 +735,20 @@ ReleaseVerdict release_plan_verdict(const ReleasePlan* plan, const char* fn, con
 
 bool release_plan_should_release(const ReleasePlan* plan, const char* fn, const char* local) {
     return release_plan_verdict(plan, fn, local) == RELEASE_OK;
+}
+
+bool release_plan_key_is_owned(const ReleasePlan* plan, const char* fn,
+                               const ASTNode* key_expr) {
+    if (!plan || !fn || !key_expr) return false;
+    for (size_t i = 0; i < plan->count; i++) {
+        if (strcmp(plan->functions[i].function_name, fn) != 0) continue;
+        const ReleasePlanFunction* pf = &plan->functions[i];
+        for (size_t j = 0; j < pf->owned_key_count; j++) {
+            if (pf->owned_keys[j] == key_expr) return true;
+        }
+        return false;   // the function is known and this node is not owned
+    }
+    return false;       // unknown function
 }
 
 const char* release_verdict_name(ReleaseVerdict v) {
