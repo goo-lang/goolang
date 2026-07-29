@@ -1,0 +1,51 @@
+// T4, the switch precision cliff: a function containing a `switch` releases its
+// function-scope locals.
+//
+// BEFORE THE FOUR ARMS THIS RECLAIMED NOTHING. release_decision's walk met
+// `switch` at its `default:` arm, marked the WHOLE function unreadable, and every
+// local in it refused with RELEASE_NO_UNKNOWN -- including `p`, which is an
+// obvious candidate at function scope with a clean allocation. Ordinary Goo code
+// contains a switch frequently, so that was the widest precision limit T4 had
+// left. release_decision_test row 17 records the flip.
+//
+// `p` IS THE SUBJECT, not the switch. Condition 5 refuses anything declared
+// INSIDE a case body, because the slot is hoisted to the entry block while the
+// initialising store stays at the declaration site (see
+// examples/arc_release_cond_probe.goo). What this probe proves is narrower and
+// is the actual feature: the mere PRESENCE of a switch no longer poisons the
+// function.
+//
+// The switch has a `default:` clause on purpose. The parser builds that as an
+// AST_CASE_CLAUSE with NULL exprs rather than an AST_DEFAULT_CLAUSE, and the arm
+// refuses any case node of an unexpected kind, so a default clause exercises that
+// path rather than tripping it.
+//
+// NOTHING IS READ THROUGH `p` INTO A GLOBAL. escape_expr_taint's AST_UNARY_EXPR
+// arm returns the operand's taint for every unary operator, so `sink = sink + *p`
+// would mark `p` escaping and this probe would reclaim nothing while still
+// passing. examples/arc_release_probe.goo records the same arm as the reason it
+// increments a counter.
+//
+// IMPORT-FREE, for the reason the other arc probes record.
+package main
+
+var sink int
+
+func classify(n int) {
+	p := new(int)
+	*p = n
+	switch n % 3 {
+	case 0:
+		sink = sink + 1
+	case 1:
+		sink = sink + 2
+	default:
+		sink = sink + 3
+	}
+}
+
+func main() {
+	for i := 0; i < 10000; i++ {
+		classify(i)
+	}
+}

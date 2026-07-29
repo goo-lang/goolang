@@ -286,6 +286,118 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 walk_stmts(ctx, ((UnsafeStmtNode*)stmt)->body);
                 break;
 
+            // ---- THE PRECISION CLIFF: switch / type switch / select / if let --
+            //
+            // Before these four arms every one of them fell to `default:` and
+            // marked the WHOLE function unreadable, so each local in it refused
+            // with RELEASE_NO_UNKNOWN. Row 17 pinned that.
+            //
+            // A CASE LIST IS NOT A STATEMENT LIST. The cases hang off `next` the
+            // same way statements do, so handing them to walk_stmts would send
+            // each one to `default:` and undo the whole arm. Iterate here and
+            // walk only the BODIES, which is what escape_core.c does.
+            //
+            // A case node of an unexpected kind marks the function unreadable
+            // rather than being skipped. escape_core skips it, because there
+            // `escapes = true` is the safe answer; here the safe answer is the
+            // other way and an unwalked body can hide an assignment.
+
+            case AST_SWITCH_STMT: {
+                SwitchStmtNode* n = (SwitchStmtNode*)stmt;
+                // `default:` is an AST_CASE_CLAUSE with NULL exprs -- the parser
+                // never builds AST_DEFAULT_CLAUSE -- so one test covers both.
+                ctx->cond_depth++;
+                for (ASTNode* c = n->cases; c; c = c->next) {
+                    if (c->type != AST_CASE_CLAUSE) { ctx->out->unreadable = true; continue; }
+                    walk_stmts(ctx, ((CaseClauseNode*)c)->body);
+                }
+                ctx->cond_depth--;
+                break;
+            }
+
+            case AST_TYPE_SWITCH: {
+                TypeSwitchNode* n = (TypeSwitchNode*)stmt;
+                // The guard's bind is recorded BEFORE the depth rises, on purpose.
+                // `v := x.(type)` is a VIEW of the interface's data pointer, so a
+                // NULL binding value makes condition 2 refuse it with NOT_OWNED --
+                // the more fundamental cause, and one that no zero-store increment
+                // could ever lift. Pinned by row 30.
+                if (n->bind_name && n->bind_name->type == AST_IDENTIFIER) {
+                    note_declaration(ctx, ((IdentifierNode*)n->bind_name)->name, NULL);
+                }
+                ctx->cond_depth++;
+                for (ASTNode* c = n->cases; c; c = c->next) {
+                    if (c->type != AST_TYPE_CASE) { ctx->out->unreadable = true; continue; }
+                    walk_stmts(ctx, ((TypeCaseNode*)c)->body);
+                }
+                ctx->cond_depth--;
+                break;
+            }
+
+            case AST_SELECT_STMT: {
+                SelectStmtNode* n = (SelectStmtNode*)stmt;
+                ctx->cond_depth++;
+                for (ASTNode* c = n->cases; c; c = c->next) {
+                    if (c->type != AST_SELECT_CASE) { ctx->out->unreadable = true; continue; }
+                    SelectCaseNode* sc = (SelectCaseNode*)c;
+                    // `comm` IS AN EXPRESSION, NOT A STATEMENT. The grammar builds
+                    // every select case from `CASE ... expression COLON case_body`
+                    // (src/parser/parser.y), so it holds `<-ch` or `ch <- v`.
+                    // Handing it to walk_stmts sent it straight to `default:` and
+                    // marked the function unreadable -- measured: row 32 read
+                    // RELEASE_NO_UNKNOWN instead of RELEASE_NO_REBOUND with the
+                    // select arm otherwise complete. Classify it here instead.
+                    //
+                    // An assignment is a binary expression in this AST, so that is
+                    // the one shape that can rebind a local. Anything else -- a
+                    // receive, a send, a call -- binds nothing.
+                    if (sc->comm && sc->comm->type == AST_BINARY_EXPR) {
+                        BinaryExprNode* cb = (BinaryExprNode*)sc->comm;
+                        if (is_assign_operator(cb->operator)) {
+                            note_assignment(ctx, cb->left, cb->right,
+                                            cb->operator == TOKEN_ASSIGN);
+                        }
+                    }
+                    // is_declare IS THE SOUNDNESS-CRITICAL FIELD (include/ast.h):
+                    //   1  `case v := <-ch:` declares, scoped to the case body.
+                    //   0  `case v = <-ch:` ASSIGNS INTO AN OUTER LOCAL. Missing
+                    //      this leaves a rebound local at a count of 1, so it
+                    //      would be released while holding whatever the channel
+                    //      delivered -- the declaration site can be a clean
+                    //      allocation, so condition 2 alone does not catch it.
+                    //      Pinned by row 32.
+                    //  -1  `v, ok := <-ch`, which type_check_select_stmt ALWAYS
+                    //      rejects (close() is unsupported in v1), so it never
+                    //      reaches codegen and no release can be emitted for it.
+                    //      bind_name is NULL there, so the guard below covers it.
+                    if (sc->bind_name && strcmp(sc->bind_name, "_") != 0) {
+                        if (sc->is_declare == 1) {
+                            note_declaration(ctx, sc->bind_name, NULL);
+                        } else if (sc->is_declare == 0) {
+                            LocalRecord* r = intern_record(ctx->out, sc->bind_name);
+                            if (!r) ctx->out->unreadable = true;
+                            else    r->binding_count++;
+                        }
+                    }
+                    walk_stmts(ctx, sc->body);
+                }
+                ctx->cond_depth--;
+                break;
+            }
+
+            case AST_IF_LET_STMT: {
+                IfLetStmtNode* n = (IfLetStmtNode*)stmt;
+                // Recorded before the depth rises, for the reason the type-switch
+                // bind is: the unwrapped value aliases whatever the nullable held,
+                // so NOT_OWNED is the cause that will never stop being true.
+                note_declaration(ctx, n->var_name, NULL);
+                ctx->cond_depth++;
+                walk_stmts(ctx, n->then_stmt);
+                walk_stmts(ctx, n->else_stmt);
+                ctx->cond_depth--;
+                break;
+            }
+
             case AST_RETURN_STMT:
             case AST_BREAK_STMT:
             case AST_CONTINUE_STMT:
