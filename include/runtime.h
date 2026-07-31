@@ -146,6 +146,21 @@ typedef void (*GooObjDtor)(void* obj);
 // exists in exactly one place.
 void goo_release_with(void* ptr, GooObjDtor dtor);
 
+// Mark an object as never-to-be-freed. A PACKAGE-LEVEL GLOBAL is live for the
+// whole program, so nothing may ever free it -- and the escape analysis has
+// no way to say so, because ParamEscapeSummary.return_escapes tracks
+// parameters only: a function returning a global is indistinguishable from
+// one returning a fresh allocation. Called once, from the global initializer
+// function, on the heap part of each global's value right after it is
+// stored (codegen_generate_global_init_function).
+//
+// Same trick a string literal's header has carried since PR #264: goo_retain
+// and goo_release_with both check GOO_RC_IMMORTAL before touching the count,
+// so this makes every later retain and release on this object a no-op.
+// No-op on NULL and on goo_zerobase, exactly as goo_retain/goo_release_with
+// are.
+void goo_make_immortal(void* ptr);
+
 // Release the first `len` elements of a slice buffer. The caller releases the
 // buffer itself afterwards.
 //

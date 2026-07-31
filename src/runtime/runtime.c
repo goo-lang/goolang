@@ -253,6 +253,25 @@ void goo_release(void* ptr) {
     goo_release_with(ptr, NULL);
 }
 
+// Mark an object as never-to-be-freed. A PACKAGE-LEVEL GLOBAL is live for the
+// whole program, so nothing may free it -- and the escape analysis cannot say
+// so, because ParamEscapeSummary.return_escapes tracks parameters only and a
+// function returning a global is indistinguishable from one returning a fresh
+// allocation.
+//
+// Same sentinel string literals have carried since PR #264, and the same
+// reason: goo_retain and goo_release_with both check GOO_RC_IMMORTAL before
+// touching the count, so this makes every later retain and release a no-op.
+//
+// Headerless pointers (including NULL and goo_zerobase) are skipped, exactly as
+// the retain and release paths skip them.
+void goo_make_immortal(void* ptr) {
+    if (goo_obj_headerless(ptr)) {
+        return;
+    }
+    __atomic_store_n(&goo_obj_header(ptr)->rc, GOO_RC_IMMORTAL, __ATOMIC_RELAXED);
+}
+
 // Release the first `len` elements of a slice buffer, then leave the buffer to
 // the caller's own goo_release.
 //

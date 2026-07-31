@@ -2847,6 +2847,39 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
         }
 
         LLVMBuildStore(codegen->builder, init_value->llvm_value, d->global);
+
+        // A PACKAGE-LEVEL GLOBAL is live for the whole program, so nothing
+        // may ever free it -- and the escape analysis cannot say so, because
+        // ParamEscapeSummary.return_escapes tracks parameters only, so a
+        // function that returns this global is indistinguishable from one
+        // that returns a fresh allocation (Task 2b). Mark the heap part of
+        // the value just stored immortal, using the SAME shape test
+        // codegen_arc_note_local uses to decide what a local's slot
+        // releases, via the shared codegen_arc_classify_heap_field (Task
+        // 2b, statement_codegen.c) -- asking the identical question rather
+        // than a second, driftable copy of it. A shape it does not
+        // recognise emits nothing here too: refusing costs a leak, guessing
+        // frees the wrong address.
+        int heap_field;
+        if (codegen_arc_classify_heap_field(llvm_type, var_type, &heap_field)) {
+            LLVMValueRef heap_ptr = (heap_field == -1)
+                ? init_value->llvm_value
+                : LLVMBuildExtractValue(codegen->builder, init_value->llvm_value,
+                                        (unsigned)heap_field, "global.immortal.ptr");
+            if (heap_ptr) {
+                LLVMTypeRef immortal_ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+                LLVMTypeRef immortal_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context),
+                                                              &immortal_ptr_ty, 1, 0);
+                LLVMValueRef immortal_fn = LLVMGetNamedFunction(codegen->module, "goo_make_immortal");
+                if (!immortal_fn) {
+                    immortal_fn = LLVMAddFunction(codegen->module, "goo_make_immortal", immortal_fn_ty);
+                }
+                if (immortal_fn) {
+                    LLVMBuildCall2(codegen->builder, immortal_fn_ty, immortal_fn, &heap_ptr, 1, "");
+                }
+            }
+        }
+
         value_info_free(init_value);
     }
 

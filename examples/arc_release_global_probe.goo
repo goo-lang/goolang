@@ -1,0 +1,54 @@
+// T4 SOUNDNESS gate: a value reached through a PACKAGE-LEVEL GLOBAL must never
+// be released.
+//
+// `call_result_is_owned` approves a Goo call whose return_escapes is false, and
+// that summary tracks PARAMETERS ONLY. A function returning a global therefore
+// looks identical to one returning a fresh allocation, so the caller's local is
+// approved and the global's object is freed out from under every later use.
+//
+// Measured before the fix: exit 2, "panic: release of an object with reference
+// count 0", and two Invalid reads on the SECOND call.
+//
+// BOTH SHAPES, because the defect is not about errors. The error form is what
+// PR #275 made reachable; the bare-pointer form has been reachable since #261
+// and is the reason the fix belongs at the global, not in the error arm.
+package main
+
+import "errors"
+
+var ErrSentinel error = errors.New("sentinel failure")
+var GCounter *int = new(int)
+
+var sink int
+
+func getErr() error { return ErrSentinel }
+func getPtr() *int  { return GCounter }
+
+func useErr() int {
+    e := getErr()
+    if errors.Is(e, e) {
+        return 1
+    }
+    return 0
+}
+
+func usePtr() int {
+    p := getPtr()
+    if p == nil {
+        return 0
+    }
+    return 1
+}
+
+func main() {
+    total := 0
+    // MORE THAN ONE CALL IS THE WHOLE POINT. The first call frees the global;
+    // the second is the one that reads freed memory. A single-call probe
+    // reports clean against the exact defect it exists to catch.
+    for i := 0; i < 100; i++ {
+        total = total + useErr()
+        total = total + usePtr()
+    }
+    sink = total
+    println(total)
+}

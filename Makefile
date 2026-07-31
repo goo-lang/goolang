@@ -5432,6 +5432,24 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  unwrap:     clean — a borrowed inner error survived 1000 releases"; \
 	fi; \
+	$(COMPILER) -o build/arc_glob examples/arc_release_global_probe.goo > build/arc_glob.cerr 2>&1 \
+	  || { echo "  FAIL (compile, global probe)"; cat build/arc_glob.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_glob > /dev/null 2> build/arc_glob.vg; \
+	grc=$$?; \
+	: "LEAKS ARE EXPECTED HERE and must NOT be asserted on. A package-level" ; \
+	: "global is immortal BY DESIGN, so its object is never freed. What this" ; \
+	: "asserts is that nothing releases it WRONGLY. NO BACKTICKS in these." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_glob.vg; then \
+	  echo "  FAIL: a value reached through a package-level global was released"; \
+	  grep -E "Invalid read|Invalid write|Invalid free" build/arc_glob.vg | head -3; \
+	  fail=1; \
+	elif grep -q "reference count 0" build/arc_glob.vg; then \
+	  echo "  FAIL: a global's object was over-released (refcount hit 0)"; fail=1; \
+	elif [ $$grc -ne 0 ]; then \
+	  echo "  FAIL: global probe exited $$grc"; tail -20 build/arc_glob.vg; fail=1; \
+	else \
+	  echo "  global:     clean — a sentinel error and a global pointer survived 100 calls"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 

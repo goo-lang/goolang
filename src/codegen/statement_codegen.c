@@ -2741,6 +2741,101 @@ static bool codegen_arc_zero_slot(CodeGenerator* codegen, LLVMValueRef slot, LLV
     return st != NULL;
 }
 
+// WHICH PART OF A VALUE OF THIS SHAPE IS THE HEAP OBJECT? Answered by shape,
+// and for a fat value cross-checked against the Goo type. Anything not
+// matched here is refused, because the safe answer is "nothing here is a
+// releasable heap pointer" -- refusing costs a leak; guessing frees the wrong
+// address.
+//
+// Extracted (Task 2b) so codegen_arc_note_local (deciding what a LOCAL's slot
+// releases at function exit) and codegen_generate_global_init_function
+// (deciding what a GLOBAL's stored value must be marked immortal) ask this
+// EXACT question the same way. A second, hand-copied version of these four
+// arms would be exactly the drift include/block_escape.h warns about for its
+// own soundness sibling -- one arm updated and the other forgotten is a
+// silent divergence, not a compile error.
+//
+// On a match, returns true and sets *field_out to -1 (the value itself is the
+// pointer), 0, or 1 (that field of the struct is the pointer). Returns false,
+// *field_out untouched, otherwise.
+bool codegen_arc_classify_heap_field(LLVMTypeRef value_ty, Type* goo_type, int* field_out) {
+    if (!value_ty || !field_out) return false;
+
+    if (LLVMGetTypeKind(value_ty) == LLVMPointerTypeKind) {
+        // A bare pointer: new(T), &T{}, and a map (whose LLVM form is an opaque
+        // pointer). This is PR #261's behaviour, unchanged, and it is what the
+        // 493 goldens already cover.
+        *field_out = -1;
+        return true;
+    }
+    if (LLVMGetTypeKind(value_ty) == LLVMStructTypeKind &&
+        goo_type && goo_type->kind == TYPE_SLICE &&
+        LLVMCountStructElementTypes(value_ty) == 3 &&
+        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(value_ty, 0)) == LLVMPointerTypeKind) {
+        // A slice: `{ T*, i64, i64 }`, and the data buffer is field 0. BOTH the
+        // Goo kind and the LLVM shape must agree. If they disagree the type
+        // system and codegen have diverged, and a GEP on the wrong shape is
+        // precisely the defect this guard exists to stop.
+        *field_out = 0;
+        return true;
+    }
+    if (LLVMGetTypeKind(value_ty) == LLVMStructTypeKind &&
+        goo_type && goo_type->kind == TYPE_STRING &&
+        LLVMCountStructElementTypes(value_ty) == 2 &&
+        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(value_ty, 0)) == LLVMPointerTypeKind) {
+        // A string: `{ i8*, i64 }` (src/codegen/type_mapping.c), and the data
+        // buffer is field 0 -- the same position a slice's is, checked the same
+        // two ways. The ELEMENT COUNT is what separates them: 2 for a string, 3
+        // for a slice, so neither test can match the other's shape.
+        //
+        // Every runtime path that builds a string uses goo_alloc, so the buffer
+        // carries a header: goo_string_new_with_length, goo_string_concat, the
+        // scalar-to-string conversions, and every whitelisted `strings` shim
+        // (src/runtime/runtime.c). An empty result is {NULL, 0}, and goo_release
+        // is a no-op on NULL. A LITERAL carries a real header whose count is
+        // GOO_RC_IMMORTAL, so a release on one is a no-op rather than free() on
+        // .rodata -- that is what scripts/string_literal_header_probe.sh pins.
+        //
+        // A SUBSTRING IS THE DANGEROUS SHAPE, and nothing here can see it.
+        // codegen_generate_slice_index_expr builds `s[1:3]` as `data + low` with
+        // NO copy, so a release would hand an interior pointer to free() and no
+        // runtime check would notice. The refusal is entirely static: condition 2
+        // reads AST_SLICE_INDEX_EXPR as a view. Pinned by release_decision_test
+        // row 7 and by examples/arc_release_substring_probe.goo.
+        *field_out = 0;
+        return true;
+    }
+    if (LLVMGetTypeKind(value_ty) == LLVMStructTypeKind &&
+        goo_type && goo_type->kind == TYPE_NULLABLE &&
+        goo_type->data.nullable.base_type &&
+        goo_type->data.nullable.base_type->kind == TYPE_POINTER &&
+        LLVMCountStructElementTypes(value_ty) == 2 &&
+        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(value_ty, 0)) == LLVMIntegerTypeKind &&
+        LLVMGetIntTypeWidth(LLVMStructGetTypeAtIndex(value_ty, 0)) == 1 &&
+        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(value_ty, 1)) == LLVMPointerTypeKind) {
+        // A NULLABLE POINTER: `{ i1, ptr }` — field 0 is the nil FLAG and the
+        // object is FIELD 1. `error` is the shape that matters today
+        // (type_checker_error_type builds ?*int8 and renames it "error"), but
+        // the rule is stated over the TYPE, not over that name, so `?*T`
+        // behaves the same and no string comparison decides a free().
+        //
+        // THE FLAG IS WHY THIS IS FIELD 1 AND NOT FIELD 0. A string and a
+        // slice both LEAD with their buffer; this leads with an i1. Testing the
+        // leading field's kind and width is what keeps the three arms mutually
+        // exclusive — a 2-field string is `{ ptr, i64 }` and cannot match here.
+        *field_out = 1;
+        return true;
+    }
+
+    // Refused on purpose, TYPE_INTERFACE included: an interface is
+    // `{ vtable*, data* }`, so field 0 there is a VTABLE and must never be
+    // freed. That is why this is a per-site decision and not a rule.
+    //
+    // A NAMED string or slice type (`type Name string`) has kind TYPE_NAMED
+    // and lands here too. A lost reclamation, never an unsafe free.
+    return false;
+}
+
 void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
 #if LLVM_AVAILABLE
     if (!codegen || !codegen->release_plan || !info || !info->name || !info->llvm_value) return;
@@ -2770,9 +2865,10 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     LLVMTypeRef slot_ty = LLVMGetAllocatedType(info->llvm_value);
     if (!slot_ty) return;
 
-    // WHICH PART OF THIS SLOT IS THE HEAP OBJECT? Answered by shape, and for a
-    // fat value cross-checked against the Goo type. Anything not matched here is
-    // refused, because the safe answer is "release nothing".
+    // WHICH PART OF THIS SLOT IS THE HEAP OBJECT? codegen_arc_classify_heap_field
+    // answers by shape, and for a fat value cross-checks against the Goo type.
+    // Anything not matched there is refused, because the safe answer is
+    // "release nothing".
     //
     // THIS IS THE SECOND OF TWO INDEPENDENT GUARDS, and it carries weight on its
     // own. release_decision answers "does this local own its value"; this answers
@@ -2780,81 +2876,17 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     // increment was built: with the ownership arm added and this branch still
     // absent, `s := a + b` read RELEASE_OK and emitted NOTHING. Neither half is
     // decoration.
+    //
+    // NIL SAFETY on the nullable-pointer arm is already paid for here, even
+    // though the classifier itself is stateless: the error-union construction
+    // builds `{ i1 false, ptr undef }` and fills field 1 in, so an unwritten
+    // slot would hold UNDEF — the exact use-of-undef class PR #265 fixed.
+    // codegen_arc_zero_slot below stores LLVMConstNull(slot_ty), which for
+    // this shape is zeroinitializer and therefore `{ false, null }`, and
+    // goo_release is a no-op on NULL. The guarantee is FAIL-CLOSED: no
+    // release site is recorded unless that store was emitted.
     int field;
-    if (LLVMGetTypeKind(slot_ty) == LLVMPointerTypeKind) {
-        // A bare pointer: new(T), &T{}, and a map (whose LLVM form is an opaque
-        // pointer). This is PR #261's behaviour, unchanged, and it is what the
-        // 493 goldens already cover.
-        field = -1;
-    } else if (LLVMGetTypeKind(slot_ty) == LLVMStructTypeKind &&
-               info->goo_type && info->goo_type->kind == TYPE_SLICE &&
-               LLVMCountStructElementTypes(slot_ty) == 3 &&
-               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 0)) == LLVMPointerTypeKind) {
-        // A slice: `{ T*, i64, i64 }`, and the data buffer is field 0. BOTH the
-        // Goo kind and the LLVM shape must agree. If they disagree the type
-        // system and codegen have diverged, and a GEP on the wrong shape is
-        // precisely the defect this guard exists to stop.
-        field = 0;
-    } else if (LLVMGetTypeKind(slot_ty) == LLVMStructTypeKind &&
-               info->goo_type && info->goo_type->kind == TYPE_STRING &&
-               LLVMCountStructElementTypes(slot_ty) == 2 &&
-               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 0)) == LLVMPointerTypeKind) {
-        // A string: `{ i8*, i64 }` (src/codegen/type_mapping.c), and the data
-        // buffer is field 0 -- the same position a slice's is, checked the same
-        // two ways. The ELEMENT COUNT is what separates them: 2 for a string, 3
-        // for a slice, so neither test can match the other's shape.
-        //
-        // Every runtime path that builds a string uses goo_alloc, so the buffer
-        // carries a header: goo_string_new_with_length, goo_string_concat, the
-        // scalar-to-string conversions, and every whitelisted `strings` shim
-        // (src/runtime/runtime.c). An empty result is {NULL, 0}, and goo_release
-        // is a no-op on NULL. A LITERAL carries a real header whose count is
-        // GOO_RC_IMMORTAL, so a release on one is a no-op rather than free() on
-        // .rodata -- that is what scripts/string_literal_header_probe.sh pins.
-        //
-        // A SUBSTRING IS THE DANGEROUS SHAPE, and nothing here can see it.
-        // codegen_generate_slice_index_expr builds `s[1:3]` as `data + low` with
-        // NO copy, so a release would hand an interior pointer to free() and no
-        // runtime check would notice. The refusal is entirely static: condition 2
-        // reads AST_SLICE_INDEX_EXPR as a view. Pinned by release_decision_test
-        // row 7 and by examples/arc_release_substring_probe.goo.
-        field = 0;
-    } else if (LLVMGetTypeKind(slot_ty) == LLVMStructTypeKind &&
-               info->goo_type && info->goo_type->kind == TYPE_NULLABLE &&
-               info->goo_type->data.nullable.base_type &&
-               info->goo_type->data.nullable.base_type->kind == TYPE_POINTER &&
-               LLVMCountStructElementTypes(slot_ty) == 2 &&
-               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 0)) == LLVMIntegerTypeKind &&
-               LLVMGetIntTypeWidth(LLVMStructGetTypeAtIndex(slot_ty, 0)) == 1 &&
-               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 1)) == LLVMPointerTypeKind) {
-        // A NULLABLE POINTER: `{ i1, ptr }` — field 0 is the nil FLAG and the
-        // object is FIELD 1. `error` is the shape that matters today
-        // (type_checker_error_type builds ?*int8 and renames it "error"), but
-        // the rule is stated over the TYPE, not over that name, so `?*T`
-        // behaves the same and no string comparison decides a free().
-        //
-        // THE FLAG IS WHY THIS IS FIELD 1 AND NOT FIELD 0. A string and a
-        // slice both LEAD with their buffer; this leads with an i1. Testing the
-        // leading field's kind and width is what keeps the three arms mutually
-        // exclusive — a 2-field string is `{ ptr, i64 }` and cannot match here.
-        //
-        // NIL SAFETY IS ALREADY PAID FOR. The error-union construction builds
-        // `{ i1 false, ptr undef }` and fills field 1 in, so an unwritten slot
-        // would hold UNDEF — the exact use-of-undef class PR #265 fixed.
-        // codegen_arc_zero_slot below stores LLVMConstNull(slot_ty), which for
-        // this shape is zeroinitializer and therefore `{ false, null }`, and
-        // goo_release is a no-op on NULL. The guarantee is FAIL-CLOSED: no
-        // release site is recorded unless that store was emitted.
-        field = 1;
-    } else {
-        // Refused on purpose, TYPE_INTERFACE included: an interface is
-        // `{ vtable*, data* }`, so field 0 there is a VTABLE and must never be
-        // freed. That is why this is a per-site decision and not a rule.
-        //
-        // A NAMED string or slice type (`type Name string`) has kind TYPE_NAMED
-        // and lands here too. A lost reclamation, never an unsafe free.
-        return;
-    }
+    if (!codegen_arc_classify_heap_field(slot_ty, info->goo_type, &field)) return;
 
     // The same name can be bound twice in sibling blocks. The plan already
     // refuses such a name (RELEASE_NO_REBOUND, because it counts bindings), so a

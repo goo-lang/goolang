@@ -598,6 +598,16 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker);
 // passes through. A no-op when there is no plan (GOO_ARC_RELEASE=0), when the
 // slot is not a pointer-typed alloca, or when the plan refuses the name.
 void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info);
+#if LLVM_AVAILABLE
+// The shape test codegen_arc_note_local uses to answer "which part of this
+// value is the heap object", pulled out so codegen_generate_global_init_function
+// (Task 2b) can ask the IDENTICAL question when marking a package-level
+// global's value immortal, rather than carry a second, driftable copy of the
+// same four arms. On a match returns true and sets *field_out to -1 (the
+// value itself is the pointer), 0, or 1 (that field of the struct is the
+// pointer); returns false, *field_out untouched, for any other shape.
+bool codegen_arc_classify_heap_field(LLVMTypeRef value_ty, Type* goo_type, int* field_out);
+#endif
 int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 // Type assertions branch, Task 3: `switch [v :=] x.(type) { case … }`.
