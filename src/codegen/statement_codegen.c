@@ -2819,6 +2819,33 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
         // reads AST_SLICE_INDEX_EXPR as a view. Pinned by release_decision_test
         // row 7 and by examples/arc_release_substring_probe.goo.
         field = 0;
+    } else if (LLVMGetTypeKind(slot_ty) == LLVMStructTypeKind &&
+               info->goo_type && info->goo_type->kind == TYPE_NULLABLE &&
+               info->goo_type->data.nullable.base_type &&
+               info->goo_type->data.nullable.base_type->kind == TYPE_POINTER &&
+               LLVMCountStructElementTypes(slot_ty) == 2 &&
+               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 0)) == LLVMIntegerTypeKind &&
+               LLVMGetIntTypeWidth(LLVMStructGetTypeAtIndex(slot_ty, 0)) == 1 &&
+               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 1)) == LLVMPointerTypeKind) {
+        // A NULLABLE POINTER: `{ i1, ptr }` — field 0 is the nil FLAG and the
+        // object is FIELD 1. `error` is the shape that matters today
+        // (type_checker_error_type builds ?*int8 and renames it "error"), but
+        // the rule is stated over the TYPE, not over that name, so `?*T`
+        // behaves the same and no string comparison decides a free().
+        //
+        // THE FLAG IS WHY THIS IS FIELD 1 AND NOT FIELD 0. A string and a
+        // slice both LEAD with their buffer; this leads with an i1. Testing the
+        // leading field's kind and width is what keeps the three arms mutually
+        // exclusive — a 2-field string is `{ ptr, i64 }` and cannot match here.
+        //
+        // NIL SAFETY IS ALREADY PAID FOR. The error-union construction builds
+        // `{ i1 false, ptr undef }` and fills field 1 in, so an unwritten slot
+        // would hold UNDEF — the exact use-of-undef class PR #265 fixed.
+        // codegen_arc_zero_slot below stores LLVMConstNull(slot_ty), which for
+        // this shape is zeroinitializer and therefore `{ false, null }`, and
+        // goo_release is a no-op on NULL. The guarantee is FAIL-CLOSED: no
+        // release site is recorded unless that store was emitted.
+        field = 1;
     } else {
         // Refused on purpose, TYPE_INTERFACE included: an interface is
         // `{ vtable*, data* }`, so field 0 there is a VTABLE and must never be
@@ -2862,8 +2889,21 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     // covers CAP -- the elements between len and cap are uninitialised. So
     // elements go through elem_stride below, which the exit turns into a
     // goo_slice_release_elems call with the length loaded at that point.
+    // THE DTOR MUST BE NARROWER THAN THE RELEASE ARM ABOVE, and that is
+    // deliberate, not an oversight to "simplify" into one test. The
+    // `field = 1` arm fires for ANY nullable-of-pointer shape, and that is
+    // safe: releasing a pointer never depends on what it points at. A
+    // destructor is different -- it reads through the pointer at a
+    // hardcoded C struct offset, so it must know the pointee's real layout.
+    // A `?*int` is not an error and has no `message` field; running
+    // goo_error_dtor on one would goo_release whatever bytes happen to sit
+    // at that offset. type_is_error is the codebase's one central "is this
+    // really an error" predicate (types.c), the same one .Error() dispatch
+    // and fmt's error-printing use, so this stays in lockstep with them
+    // rather than drifting on a second, private definition.
     const char* dtor = (info->goo_type && info->goo_type->kind == TYPE_MAP)
-                     ? "goo_map_dtor" : NULL;
+                     ? "goo_map_dtor"
+                     : (type_is_error(info->goo_type) ? "goo_error_dtor" : NULL);
 
     // DOES THIS SLICE OWN ITS ELEMENTS? Both halves must agree, as ever.
     //

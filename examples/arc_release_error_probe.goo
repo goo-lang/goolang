@@ -1,0 +1,42 @@
+// T4 gate: does an owned `error` local release?
+//
+// An error is TYPE_NULLABLE of *int8 (type_checker_error_type), lowering to
+// { i1, ptr } -- field 0 is the nil flag and THE OBJECT IS FIELD 1. Before
+// this arm the shape test accepted a bare pointer, a 3-field slice and a
+// 2-field string, so an error read RELEASE_OK and emitted NOTHING.
+//
+// errors.New is non_retaining = 1, audited against goo_error_from_string ->
+// goo_error_wrap, which goo_allocs and memcpys the message. So the returned
+// error owns a COPY and no other name holds it.
+//
+// The read is errors.Is(e, e), not e.Error() and not a nil test. A nil test
+// loads field 0, the FLAG, and never dereferences the object -- it would
+// pass against a compiler that released the error too early. A METHOD CALL
+// on a local marks that local escaping unconditionally (escape_core.c's
+// call_taint, the non-identifier-callee arm), so e.Error() makes e read
+// RELEASE_NO_ESCAPES no matter what the method does -- verified separately.
+// errors.Is walks the %w chain comparing pointer identity, so it genuinely
+// DEREFERENCES the object, and it is non_retaining = 1, so unlike a method
+// call it does not mark its receiver escaping.
+package main
+
+import "errors"
+
+var sink int
+
+func build(i int) int {
+	e := errors.New("a failure happened here")
+	if errors.Is(e, e) {
+		return 1
+	}
+	return 0
+}
+
+func main() {
+	total := 0
+	for i := 0; i < 10000; i++ {
+		total = total + build(i)
+	}
+	sink = total
+	println(total)
+}

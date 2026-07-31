@@ -1,0 +1,65 @@
+// T4 SOUNDNESS gate: an error obtained by UNWRAPPING another must not release.
+//
+// errors.Unwrap returns e->cause (src/runtime/runtime.c), a pointer INTO its
+// argument's own structure. Its shim row carries non_retaining = 0 for exactly
+// that reason, so condition 2 refuses it.
+//
+// Before the nullable-pointer arm that refusal was INERT -- codegen would not
+// have emitted a release for an error whatever the verdict said. After it, a
+// wrong answer here frees memory the caller still owns. This probe is the
+// difference between those two states.
+//
+// `base` is a PARAMETER, so the CALLER owns it and it outlives the call.
+// That is the whole point: a release inside step() then frees a value main
+// still holds, and main can read it afterwards. A base created INSIDE
+// step() could never catch a wrong release, because the exit-time release
+// runs after every read in that same function, and each loop iteration
+// would allocate a fresh object anyway -- nothing would ever alias across
+// iterations to expose the corruption.
+//
+// LEAKS ARE EXPECTED and must NOT be asserted on: `base` is passed to
+// fmt.Errorf, which is non_retaining = 0, so base escapes and leaks. What
+// this asserts is that nothing releases the BORROWED `inner` wrongly, which
+// shows up as an invalid access rather than as a leak count.
+package main
+
+import "errors"
+import "fmt"
+
+var sink int
+
+// `base` is a PARAMETER, so the CALLER owns it and it outlives this call.
+// That is the whole point: a release inside step() then frees a value main
+// still holds, and main can read it afterwards. A base created HERE could
+// never catch it, because the exit-time release runs after every read in
+// this function and each iteration allocates fresh objects.
+func step(base error) int {
+	wrapped := fmt.Errorf("ctx: %w", base)
+	// inner IS base's pointer -- errors.Unwrap returns wrapped->cause,
+	// which goo_error_wrap stored verbatim. non_retaining = 0 for exactly
+	// that reason, so condition 2 must refuse it. Function-scoped and
+	// bound once, so condition 4 is NOT what refuses it and the mutant
+	// is reachable.
+	inner := errors.Unwrap(wrapped)
+	n := 0
+	if inner == nil {
+		n = n + 1
+	}
+	return n
+}
+
+func main() {
+	base := errors.New("base failure")
+	total := 0
+	for i := 0; i < 1000; i++ {
+		total = total + step(base)
+	}
+	// Read base's BYTES after 1000 chances to release it wrongly.
+	// errors.Is walks the chain and dereferences; a nil test would load
+	// the flag and miss it entirely.
+	if errors.Is(base, base) {
+		total = total + 1
+	}
+	sink = total
+	println(total)
+}

@@ -646,6 +646,45 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "a", RELEASE_NO_UNKNOWN } }, 1
     },
+    {
+        // THE ROW THE NULLABLE-POINTER ARM EXISTS FOR. errors.New is
+        // non_retaining = 1, so condition 2 approves. Before the codegen arm
+        // this verdict was correct and emitted nothing.
+        //
+        // The read is errors.Is(e, e), not e.Error(): a method call on a
+        // local marks it escaping unconditionally (escape_core.c's
+        // call_taint), so e.Error() would read RELEASE_NO_ESCAPES here
+        // regardless of the codegen arm. errors.Is is non_retaining = 1, so
+        // it does not trip that rule, and it dereferences e for real.
+        35, "an owned error binding -> RELEASE_OK",
+        "package main\n"
+        "import \"errors\"\n"
+        "func f() int {\n"
+        "    e := errors.New(\"boom\")\n"
+        "    if errors.Is(e, e) {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", {{"e", RELEASE_OK}}, 1
+    },
+    {
+        // SOUNDNESS. errors.Unwrap returns a pointer INTO its argument, so its
+        // row is non_retaining = 0 and condition 2 must refuse. Inert before
+        // the nullable-pointer arm; load-bearing after it.
+        36, "an unwrapped error is BORROWED -> refused",
+        "package main\n"
+        "import \"errors\"\n"
+        "func f() int {\n"
+        "    outer := errors.New(\"boom\")\n"
+        "    inner := errors.Unwrap(outer)\n"
+        "    if inner == nil {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", {{"inner", RELEASE_NO_NOT_OWNED}}, 1
+    },
 };
 
 // =============================================================================

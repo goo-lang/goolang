@@ -427,16 +427,36 @@ goo_string_t goo_error_message(goo_error_t* e) {
 
 void goo_error_free(goo_error_t* error) {
     if (!error) return;
-    
+
     if (error->message) {
         goo_free((void*)error->message);
     }
-    
+
     if (error->cause) {
         goo_error_free(error->cause);
     }
-    
+
     goo_free(error);
+}
+
+// An error OWNS its message and nothing else. goo_error_wrap goo_allocs the
+// struct AND a copy of the message, so one goo_free reaches only the struct
+// -- the same shape goo_map_dtor exists for.
+//
+// THE CAUSE IS NOT OURS. goo_error_wrap stores `cause` VERBATIM and the
+// caller's own local still names it, so releasing it here would free a
+// value with another owner. Exactly why goo_map_dtor leaves keys and
+// values alone. Whoever built the chain owns its links.
+//
+// GooObjDtor adapter: see include/runtime.h.
+void goo_error_dtor(void* obj) {
+    goo_error_t* e = (goo_error_t*)obj;
+    if (!e) return;
+    // goo_release, not goo_free: the message came from goo_alloc, so it
+    // carries an ARC header (goo_map_entry_release_key follows the same
+    // convention for a map's owned key). goo_release is a no-op on NULL.
+    goo_release((void*)e->message);
+    e->message = NULL;
 }
 
 // I/O functions

@@ -5389,6 +5389,49 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  split escape:  clean — condition 1 refused a local whose elements leave"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_err_off examples/arc_release_error_probe.goo > build/arc_err_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, error probe, release off)"; cat build/arc_err_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_err_on examples/arc_release_error_probe.goo > build/arc_err_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, error probe, release on)"; cat build/arc_err_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_err_off > build/arc_err_off.out 2> build/arc_err_off.vg; \
+	ed=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_err_off.vg | tr -d , ); \
+	ei=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_err_off.vg | tr -d , ); \
+	e_off=$$(( $${ed:-0} + $${ei:-0} )); \
+	if [ "$$e_off" -eq 0 ]; then \
+	  echo "  FAIL: error probe leaked nothing with the release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  error OFF: $$e_off bytes leaked ($${ed:-0} direct + $${ei:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_err_on > build/arc_err_on.out 2> build/arc_err_on.vg; \
+	rc=$$?; \
+	ed2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_err_on.vg | tr -d , ); \
+	ei2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_err_on.vg | tr -d , ); \
+	e_on=$$(( $${ed2:-0} + $${ei2:-0} )); \
+	: "Access first, then leak, then rc -- see the owned-key block above for why." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_err_on.vg; then \
+	  echo "  FAIL: an error local was released while still live"; tail -30 build/arc_err_on.vg; fail=1; \
+	elif [ "$$e_on" -ne 0 ]; then \
+	  echo "  FAIL: error probe still leaked $$e_on bytes"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_err_on.vg; fail=1; \
+	elif ! diff -q build/arc_err_off.out build/arc_err_on.out > /dev/null; then \
+	  echo "  FAIL: error probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  error ON:   clean, 0 bytes, output matches the control (was $$e_off)"; \
+	fi; \
+	$(COMPILER) -o build/arc_unw examples/arc_release_unwrap_probe.goo > build/arc_unw.cerr 2>&1 \
+	  || { echo "  FAIL (compile, unwrap probe)"; cat build/arc_unw.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_unw > /dev/null 2> build/arc_unw.vg; \
+	: "LEAKS ARE EXPECTED HERE and must NOT be asserted on -- the outer error is" ; \
+	: "loop-scoped, so condition 4 refuses it. NO BACKTICKS in these strings." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_unw.vg; then \
+	  echo "  FAIL: an UNWRAPPED error was released — it points into its parent"; \
+	  grep -E "Invalid read|Invalid write|Invalid free|double free" build/arc_unw.vg | head -3; \
+	  fail=1; \
+	else \
+	  echo "  unwrap:     clean — a borrowed inner error survived 1000 releases"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 

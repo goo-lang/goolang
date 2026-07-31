@@ -228,6 +228,13 @@ goo_error_t* goo_error_unwrap(goo_error_t* e);
 int goo_error_is(goo_error_t* err, goo_error_t* target);
 void goo_error_free(goo_error_t* error);
 
+// GooObjDtor for an error. goo_error_wrap goo_allocs the struct AND a copy of
+// the message, so one goo_free from goo_release_with reaches only the struct
+// -- the same shape goo_map_dtor exists for. Leaves `cause` alone: it is
+// stored verbatim and the caller's own local may still name it, so freeing it
+// here would free a value with another owner.
+void goo_error_dtor(void* obj);
+
 // I/O functions
 void goo_print(const char* message);
 void goo_println(const char* message);
