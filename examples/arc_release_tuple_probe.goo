@@ -1,0 +1,66 @@
+// T4 gate: does a tuple destructure's error target release?
+//
+// `n, err := strconv.Atoi(s)` has TWO targets and ONE value. Before this,
+// seed_names and the AST_MULTI_ASSIGN arm both recorded NULL when the counts
+// differed, so condition 2 refused EVERY target. Row 37 of
+// release_decision_test.c pins the decision; this file pins the bytes.
+//
+// strconv.Atoi is non_retaining = 1, and that bit is defined over the whole
+// result list, so neither result aliases the argument. `n` is an i64 slot and
+// the codegen shape test refuses it; `err` is { i1, ptr } and releases field 1
+// with goo_error_dtor. That split is the two-layer design working, not a
+// special case.
+//
+// WHY NOT err.Error(), WHICH THE ORIGINAL PLAN CALLED FOR. A method call on a
+// local marks that local escaping unconditionally (escape_core.c call_taint:
+// for `x.m()` the callee is `x.m`, whose taint is `x`). MEASURED on this exact
+// shape: with `return len(err.Error())` the verdict is RELEASE_NO_ESCAPES and
+// NOTHING is emitted, so the probe would report no release and read as though
+// the tuple change had failed. That marking is deliberate and load-bearing --
+// see examples/arena_go_method_probe.goo -- so the probe works around it
+// rather than the other way round. A nil test loads field 0, the FLAG, and
+// never dereferences the object, so it leaves the local releasable.
+//
+// TWO LEGS, because reclamation alone is only half the claim:
+//   parse()  -- err is dead at function exit. It MUST be freed.
+//   borrow() -- err is RETURNED, so it outlives the frame. It must NOT be
+//               freed, and main reads it afterwards, so a wrong release shows
+//               up as an Invalid read rather than as a silent pass.
+package main
+
+import "strconv"
+
+var sink int
+
+// The reclamation leg. `err` is dead at exit, so ARC must free it.
+func parse(s string) int {
+	n, err := strconv.Atoi(s)
+	if err == nil {
+		return n
+	}
+	return 1
+}
+
+// The soundness leg. The SAME destructure shape, but the error escapes through
+// the return, so condition 1 must refuse it. If it were freed anyway, main's
+// nil test below would read freed memory.
+func borrow(s string) error {
+	_, err := strconv.Atoi(s)
+	return err
+}
+
+func main() {
+	total := 0
+	// MORE THAN ONE ITERATION IS THE POINT. A single pass cannot distinguish
+	// "freed once, correctly" from "freed something still live" -- the second
+	// iteration is the one that reads a wrongly-freed object.
+	for i := 0; i < 10000; i++ {
+		total = total + parse("not a number")
+	}
+	held := borrow("also not a number")
+	if held == nil {
+		total = total + 1000000
+	}
+	sink = total
+	println(total)
+}

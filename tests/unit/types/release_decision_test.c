@@ -689,6 +689,49 @@ static TestRow rows[] = {
         "}\n",
         "f", {{"inner", RELEASE_NO_NOT_OWNED}}, 1
     },
+    {
+        // THE ROW THIS CHANGE EXISTS FOR. Two targets, ONE value. Before this,
+        // both recorded NULL and condition 2 refused. strconv.Atoi is
+        // non_retaining = 1, which is defined over the WHOLE result list, so
+        // no result aliases the argument and every result is owned.
+        37, "a tuple destructure from a non-retaining shim -> owned",
+        "package main\n"
+        "import \"strconv\"\n"
+        "func f(s string) int {\n"
+        "    n, err := strconv.Atoi(s)\n"
+        "    if err == nil {\n"
+        "        return n\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", {{"err", RELEASE_OK}}, 1
+    },
+    {
+        // SOUNDNESS. A Goo callee whose return_escapes is TRUE returns a value
+        // derived from a parameter, so NO target of its destructure is owned.
+        38, "a tuple destructure from a borrowing callee -> refused",
+        "package main\n"
+        "func two(s string) (string, int) {\n"
+        "    return s[1:], 1\n"
+        "}\n"
+        "func f(s string) int {\n"
+        "    a, b := two(s)\n"
+        "    return len(a) + b\n"
+        "}\n",
+        "f", {{"a", RELEASE_NO_NOT_OWNED}}, 1
+    },
+    {
+        // UNCHANGED BEHAVIOUR, pinned. Counts MATCH here, so each target keeps
+        // its own value and this change must not touch it.
+        39, "two targets, two values -> each keeps its own binding",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    a, b := strings.TrimSpace(s), s\n"
+        "    return len(a) + len(b)\n"
+        "}\n",
+        "f", {{"a", RELEASE_OK}, {"b", RELEASE_NO_NOT_OWNED}}, 2
+    },
 };
 
 // =============================================================================

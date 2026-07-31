@@ -5487,6 +5487,48 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  nptr ON:    clean, 0 bytes, no dtor misfire, output matches the control (was $$np_off)"; \
 	fi; \
+	: "TUPLE DESTRUCTURE. n, err := strconv.Atoi(s) is TWO targets and ONE" ; \
+	: "value. seed_names and the AST_MULTI_ASSIGN arm both recorded NULL when" ; \
+	: "the counts differed, so condition 2 refused EVERY target. Row 37 pins" ; \
+	: "the decision; this leg pins the bytes. The probe also carries a" ; \
+	: "borrow leg whose error ESCAPES through the return -- freeing that" ; \
+	: "one shows up as an Invalid read in main, not as a leak-count change." ; \
+	: "NO BACKTICKS OR PARENS IN THESE : LINES. sh expands a backtick inside" ; \
+	: "a double-quoted word, so a code snippet here runs as a command and" ; \
+	: "prints a syntax error into a gate log people then learn to ignore." ; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_tup_off examples/arc_release_tuple_probe.goo > build/arc_tup_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, tuple probe, release off)"; cat build/arc_tup_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_tup_on examples/arc_release_tuple_probe.goo > build/arc_tup_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, tuple probe, release on)"; cat build/arc_tup_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_tup_off > build/arc_tup_off.out 2> build/arc_tup_off.vg; \
+	tud=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_tup_off.vg | tr -d , ); \
+	tui=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_tup_off.vg | tr -d , ); \
+	tu_off=$$(( $${tud:-0} + $${tui:-0} )); \
+	if [ "$$tu_off" -eq 0 ]; then \
+	  echo "  FAIL: tuple probe leaked nothing with the release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  tuple OFF:  $$tu_off bytes leaked ($${tud:-0} direct + $${tui:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_tup_on > build/arc_tup_on.out 2> build/arc_tup_on.vg; \
+	rc=$$?; \
+	tud2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_tup_on.vg | tr -d , ); \
+	tui2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_tup_on.vg | tr -d , ); \
+	tu_on=$$(( $${tud2:-0} + $${tui2:-0} )); \
+	: "Access first, then leak, then rc -- see the owned-key block above." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_tup_on.vg; then \
+	  echo "  FAIL: a tuple-destructured local was released while still live"; tail -30 build/arc_tup_on.vg; fail=1; \
+	elif grep -q "reference count 0" build/arc_tup_on.vg; then \
+	  echo "  FAIL: a tuple-destructured local was over-released (refcount hit 0)"; fail=1; \
+	elif [ "$$tu_on" -ne 0 ]; then \
+	  echo "  FAIL: tuple probe still leaked $$tu_on bytes"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_tup_on.vg; fail=1; \
+	elif ! diff -q build/arc_tup_off.out build/arc_tup_on.out > /dev/null; then \
+	  echo "  FAIL: tuple probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  tuple ON:   clean, 0 bytes, escaping target untouched, output matches the control (was $$tu_off)"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 
