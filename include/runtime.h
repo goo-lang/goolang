@@ -159,6 +159,12 @@ void goo_release_with(void* ptr, GooObjDtor dtor);
 // so this makes every later retain and release on this object a no-op.
 // No-op on NULL and on goo_zerobase, exactly as goo_retain/goo_release_with
 // are.
+//
+// READS the count before it writes: a string literal's header is ALREADY
+// GOO_RC_IMMORTAL and lives in a constant .rodata global, so an unconditional
+// store there is a write to read-only memory (see the fix-round-1 comment on
+// the definition in runtime.c for the crash this caused and the invariant the
+// guard relies on).
 void goo_make_immortal(void* ptr);
 
 // Release the first `len` elements of a slice buffer. The caller releases the

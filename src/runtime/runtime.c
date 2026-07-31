@@ -265,8 +265,30 @@ void goo_release(void* ptr) {
 //
 // Headerless pointers (including NULL and goo_zerobase) are skipped, exactly as
 // the retain and release paths skip them.
+//
+// READ BEFORE WRITE (fix round 1, Task 2b Critical): a STRING LITERAL already
+// carries a real header, and codegen_const_string_value (expression_codegen.c)
+// emits that header as a CONSTANT PRIVATE GLOBAL whose rc field is baked in as
+// GOO_RC_IMMORTAL at compile time -- it lands in .rodata. A global initialized
+// straight from a literal (`var a = "hello"; var b = a`) reaches this function
+// with `ptr` pointing at that read-only header, and the unconditional store
+// used to fault: `Bad permissions for mapped region` (SIGSEGV), measured on
+// `var a = "hello"; var b = a; func main() { println(b) }`.
+//
+// THE LOAD-BEARING INVARIANT this guard depends on: every read-only object
+// header this compiler ever emits ALREADY carries GOO_RC_IMMORTAL (the literal
+// case today; nothing else currently emits a constant header). So checking the
+// count first is not just an optimisation that skips redundant work -- it IS
+// the writability check, because "already immortal" and "backed by a constant
+// global" are the same fact under this invariant. If a future change ever
+// emits a read-only header with any OTHER sentinel, or a non-immortal constant
+// header, this guard stops being sufficient and this function needs a real
+// writability test, not just an equality check.
 void goo_make_immortal(void* ptr) {
     if (goo_obj_headerless(ptr)) {
+        return;
+    }
+    if (__atomic_load_n(&goo_obj_header(ptr)->rc, __ATOMIC_RELAXED) == GOO_RC_IMMORTAL) {
         return;
     }
     __atomic_store_n(&goo_obj_header(ptr)->rc, GOO_RC_IMMORTAL, __ATOMIC_RELAXED);

@@ -2860,22 +2860,34 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
         // than a second, driftable copy of it. A shape it does not
         // recognise emits nothing here too: refusing costs a leak, guessing
         // frees the wrong address.
-        int heap_field;
-        if (codegen_arc_classify_heap_field(llvm_type, var_type, &heap_field)) {
-            LLVMValueRef heap_ptr = (heap_field == -1)
-                ? init_value->llvm_value
-                : LLVMBuildExtractValue(codegen->builder, init_value->llvm_value,
-                                        (unsigned)heap_field, "global.immortal.ptr");
-            if (heap_ptr) {
-                LLVMTypeRef immortal_ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
-                LLVMTypeRef immortal_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context),
-                                                              &immortal_ptr_ty, 1, 0);
-                LLVMValueRef immortal_fn = LLVMGetNamedFunction(codegen->module, "goo_make_immortal");
-                if (!immortal_fn) {
-                    immortal_fn = LLVMAddFunction(codegen->module, "goo_make_immortal", immortal_fn_ty);
-                }
-                if (immortal_fn) {
-                    LLVMBuildCall2(codegen->builder, immortal_fn_ty, immortal_fn, &heap_ptr, 1, "");
+        //
+        // GATED ON `codegen->release_plan` (fix round 1, Task 2b Critical):
+        // every other part of this arc treats GOO_ARC_RELEASE=0 as a real
+        // escape hatch that leaves the plan NULL and emits nothing at all
+        // -- codegen_arc_note_local's own first check is `!codegen->release_plan`
+        // above. arena_rss_probe.sh and every differential probe leg depend
+        // on that being a true off switch. Before this guard, the
+        // goo_make_immortal call was unconditional, so GOO_ARC_RELEASE=0 did
+        // NOT suppress it -- the reviewer confirmed the string-literal-alias
+        // crash reproduced with the kill switch on.
+        if (codegen->release_plan) {
+            int heap_field;
+            if (codegen_arc_classify_heap_field(llvm_type, var_type, &heap_field)) {
+                LLVMValueRef heap_ptr = (heap_field == -1)
+                    ? init_value->llvm_value
+                    : LLVMBuildExtractValue(codegen->builder, init_value->llvm_value,
+                                            (unsigned)heap_field, "global.immortal.ptr");
+                if (heap_ptr) {
+                    LLVMTypeRef immortal_ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+                    LLVMTypeRef immortal_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context),
+                                                                  &immortal_ptr_ty, 1, 0);
+                    LLVMValueRef immortal_fn = LLVMGetNamedFunction(codegen->module, "goo_make_immortal");
+                    if (!immortal_fn) {
+                        immortal_fn = LLVMAddFunction(codegen->module, "goo_make_immortal", immortal_fn_ty);
+                    }
+                    if (immortal_fn) {
+                        LLVMBuildCall2(codegen->builder, immortal_fn_ty, immortal_fn, &heap_ptr, 1, "");
+                    }
                 }
             }
         }

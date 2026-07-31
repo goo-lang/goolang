@@ -12,12 +12,25 @@
 // BOTH SHAPES, because the defect is not about errors. The error form is what
 // PR #275 made reachable; the bare-pointer form has been reachable since #261
 // and is the reason the fix belongs at the global, not in the error arm.
+//
+// A THIRD SHAPE (fix round 1, Task 2b Critical): a global initialized from a
+// STRING LITERAL, then aliased into a second global (`msgA` / `msgB` below).
+// codegen_const_string_value emits a literal's header as a CONSTANT PRIVATE
+// GLOBAL whose rc field is ALREADY GOO_RC_IMMORTAL at compile time, so it
+// lands in .rodata. Before the fix-round-1 read-before-write guard,
+// goo_make_immortal stored into that read-only memory unconditionally and
+// crashed with SIGSEGV -- measured on the four-line reproduction
+// `var a = "hello"; var b = a; func main() { println(b) }`, exit 139. Unlike
+// the other two shapes, this one fails at PROGRAM INIT, before main ever
+// runs, so it needs no loop to reach.
 package main
 
 import "errors"
 
 var ErrSentinel error = errors.New("sentinel failure")
 var GCounter *int = new(int)
+var msgA = "hello from a global"
+var msgB = msgA
 
 var sink int
 
@@ -51,4 +64,5 @@ func main() {
     }
     sink = total
     println(total)
+    println(msgB)
 }
