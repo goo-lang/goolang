@@ -105,4 +105,21 @@ int shim_signature_is_known_call(const char* package, const char* name);
 // (nonretaining.h), which is the single predicate they both consult.
 int shim_signature_is_non_retaining(const char* package, const char* name);
 
+// True iff (package, name) is a shim that returns a SLICE whose element slots
+// hold values it allocated freshly, so the returned slice is their single
+// owner and releasing it should release each of them first.
+//
+// SEPARATE FROM shim_signature_is_non_retaining, which is about the returned
+// slice VALUE aliasing an argument. This is about what is inside it. A shim can
+// be non-retaining and still return borrowed elements.
+//
+// 0 for an unknown pair, 0 for a row that does not spell the bit, and 0 for any
+// row whose return kind is not a slice — see the `returns_owned_elems` field's
+// comment in shim_signatures.c for the soundness rule and Split's proof.
+//
+// HALF THE GUARD, as ever: this answers only what the RUNTIME BODY does. The
+// caller must still confirm the local really is a slice whose element shape
+// puts a releasable pointer at offset 0. codegen_arc_note_local does that.
+int shim_signature_returns_owned_elems(const char* package, const char* name);
+
 #endif // SHIM_SIGNATURES_H

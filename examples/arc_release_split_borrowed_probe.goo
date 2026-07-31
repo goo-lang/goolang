@@ -1,0 +1,51 @@
+// T4 SOUNDNESS gate: a Split result that later takes a BORROWED element must
+// refuse element ownership for the WHOLE local.
+//
+// This is the shape the `all_owned` factor exists for. Split's own parts are
+// owned, the appended parameter is not, and the release site is a single
+// `for i < len` walk of the buffer with nowhere to record an exception. So the
+// only safe answer is to refuse all of them.
+//
+// THE MUTANT THIS CATCHES: change release_decision.c's
+//     owns_elems = all_owned && (any || from_binding)
+// to
+//     owns_elems = (any || from_binding)
+// and `parts` claims every slot, including the caller's string.
+//
+// WHY `keep` IS NOT A STRING LITERAL. Literals are immortal since PR #264 and
+// goo_release is a no-op on them, so a probe built on one passes against the
+// mutant while measuring nothing. strings.TrimSpace returns a fresh heap
+// allocation with exactly one owner, which is what makes a wrong release
+// observable as an Invalid read.
+//
+// LEAKS ARE EXPECTED HERE and must NOT be asserted on. `keep` is passed to a
+// function that appends it, so param_escape marks it escaping and nothing
+// releases it. What this probe asserts is that nothing releases it WRONGLY,
+// which shows up as an invalid access, not as a leak count.
+package main
+
+import "strings"
+
+var sink int
+
+// `parts` arrives from Split, whose elements it owns, and then takes one the
+// CALLER owns. Mixed provenance must refuse the whole local.
+func build(borrowed string) int {
+	parts := strings.Split("alpha,beta", ",")
+	parts = append(parts, borrowed)
+	return len(parts)
+}
+
+func main() {
+	keep := strings.TrimSpace("  caller owns this  ")
+	total := 0
+	for i := 0; i < 1000; i++ {
+		total = total + build(keep)
+	}
+	// Read `keep`'s BYTES after 1000 chances to release it wrongly. The concat
+	// memcpys out of its buffer, so a freed string reads as Invalid read here
+	// rather than passing silently the way a len() check would.
+	echo := keep + "!"
+	sink = total
+	println(len(echo))
+}

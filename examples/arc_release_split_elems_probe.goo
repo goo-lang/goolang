@@ -1,0 +1,55 @@
+// T4 gate: does a slice that ARRIVED from a shim free the elements it owns?
+//
+// PR #274 gave a slice its elements, but only the ones the program STORED --
+// a literal's elements, or an append's arguments. A slice that arrives fully
+// populated from a call stores nothing, so it owned nothing and its parts
+// leaked. `fields := strings.Split(req, ",")` is that shape, and it is the
+// daemon's first statement.
+//
+// The proof lives in the table, not here: strings.Split carries
+// returns_owned_elems = 1 in src/types/shim_signatures.c, audited against
+// goo_strings_split, which goo_allocs the goo_string_t array and then builds
+// every part with goo_string_new_with_length / goo_string_new -- both COPY.
+// So no element points into the argument, and the returned slice is their
+// single owner.
+//
+// Measured on bench/daemon/daemon.goo at 2,000 requests: 1,225,982 bytes lost
+// before, 952,000 after. 273,982 bytes, the largest single item left after
+// #274, and exactly the figure .handoff.md projected.
+//
+// WHY THE BYTES ARE READ AND NOT len(). The first draft of #274's probe
+// checked len(owned), which loads field 1 of the {i8*, i64} string and never
+// dereferences the buffer -- it passed against the exact mutant it existed to
+// catch. The concatenation below memcpys out of both element buffers, so a
+// premature release shows up as an Invalid read.
+//
+// TWO ELEMENTS AND ONE CONCAT, deliberately. `a + b + c` would build an
+// unbound intermediate, and nothing releases a temporary no local names, so
+// the probe would leak in BOTH builds and the ON assertion could not be
+// "0 bytes".
+package main
+
+import "strings"
+
+var sink int
+
+func build() int {
+	fields := strings.Split("alpha,beta", ",")
+	// Reads the BYTES of both elements: goo_string_concat memcpys out of each
+	// buffer. `joined` is bound once to a `+`, so it is released too.
+	joined := fields[0] + fields[1]
+	return len(joined)
+}
+
+func main() {
+	total := 0
+	for i := 0; i < 10000; i++ {
+		total = total + build()
+	}
+	sink = total
+	// Printed so the gate can diff this against the GOO_ARC_RELEASE=0 control.
+	// PR #264 measured a release that valgrind called clean while it silently
+	// corrupted eight bytes of a live string, so a valgrind-only check has no
+	// teeth against a whole class of defect.
+	println(total)
+}

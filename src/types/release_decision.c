@@ -565,6 +565,51 @@ static bool call_result_is_owned(Collected* c, const ParamEscapeResult* pe, ASTN
     return false;
 }
 
+// Does local `name`'s DECLARATION hand it a slice whose elements it owns?
+//
+// The element sites collected during the walk cover the two ways a program
+// STORES into a slice it already has -- a literal's elements, and an append.
+// They cannot cover the third way a slice gets its contents, which is arriving
+// fully populated from a call. `fields := strings.Split(req, ",")` records no
+// element site at all, so before this the slice owned nothing and its parts
+// leaked. Measured on bench/daemon/daemon.goo: 273,982 bytes per 2,000
+// requests, the largest single item left after PR #274.
+//
+// Only a SHIM can answer, and only from a table. A Goo callee would need a
+// summary saying "the slice I return owns its elements", which param_escape
+// does not compute -- return_escapes is about the slice VALUE, not its
+// contents. So a Goo call reaches the final `return false` here, and row 10
+// pins that.
+//
+// BOUND ONCE IS REQUIRED, not inherited. The verdict's condition 4 already
+// refuses a rebound local, and codegen emits no element release without a
+// buffer release to hang it on -- but owns_elems is documented as INDEPENDENT
+// of the verdict, so it must answer honestly on its own. A local rebound away
+// from its Split result no longer holds those elements.
+static bool binding_returns_owned_elems(Collected* c, const char* name) {
+    if (!c || !name) return false;
+
+    LocalRecord* r = find_record(c, name);
+    if (!r || !r->declared) return false;
+    if (r->binding_count != 1) return false;   // see the comment above
+
+    ASTNode* v = r->bound_value;
+    if (!v || v->type != AST_CALL_EXPR) return false;
+
+    ASTNode* fn = ((CallExprNode*)v)->function;
+    if (!fn || fn->type != AST_SELECTOR_EXPR) return false;
+
+    // A method call on a LOCAL is not a package call, and the table is keyed by
+    // package. Same guard call_result_is_owned makes, for the same reason.
+    if (selector_base_is_local(c, fn)) return false;
+
+    SelectorExprNode* sel = (SelectorExprNode*)fn;
+    if (!sel->expr || sel->expr->type != AST_IDENTIFIER || !sel->selector) return false;
+
+    const char* pkg = ((IdentifierNode*)sel->expr)->name;
+    return shim_signature_returns_owned_elems(pkg, sel->selector) != 0;
+}
+
 static bool binding_is_owned(Collected* c, const ParamEscapeResult* pe, ASTNode* value) {
     if (!value) return false;
 
@@ -748,13 +793,25 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
             pf->count++;
         }
 
-        // Does this local's slice own its elements? True only when it HAS
-        // stored elements and EVERY one of them is a fresh temporary. One
-        // borrowed element poisons the local, because the release walks the
-        // whole buffer and cannot skip an entry.
+        // Does this local's slice own its elements? True only when EVERY value
+        // that reached its slots is a fresh temporary. One borrowed element
+        // poisons the local, because the release walks the whole buffer and
+        // cannot skip an entry.
         //
         // Unlike a map key, ownership here is not per entry: the release site
         // is a single `for i < len` walk, so it is all of them or none.
+        //
+        // TWO WAYS TO OWN, and they are not symmetric:
+        //   `any`         -- the program STORED into the slice, by literal or
+        //                    by append, and every stored value was fresh.
+        //   `from_binding`-- the slice ARRIVED populated, from a shim whose
+        //                    table row proves it allocated each element.
+        //
+        // `all_owned` gates BOTH. A Split result that later takes a borrowed
+        // element by append must read false: the elements Split made are owned,
+        // the appended one is not, and one walk cannot tell them apart at
+        // runtime. Refusing the whole local is the only safe answer, and elem
+        // row 8 pins it.
         for (size_t i = 0; i < pf->count; i++) {
             const char* nm = pf->decisions[i].local_name;
             if (!nm) continue;
@@ -767,7 +824,8 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
                     break;
                 }
             }
-            pf->decisions[i].owns_elems = any && all_owned;
+            bool from_binding = binding_returns_owned_elems(&c, nm);
+            pf->decisions[i].owns_elems = all_owned && (any || from_binding);
         }
 
         // Classify the key sites NOW, because binding_is_owned needs `pe` and
