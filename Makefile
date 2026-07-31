@@ -5333,6 +5333,62 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  borrowed elem: clean — a caller-owned string survived 1000 releases"; \
 	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_spl_off examples/arc_release_split_elems_probe.goo > build/arc_spl_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, split-elem probe, release off)"; cat build/arc_spl_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_spl_on examples/arc_release_split_elems_probe.goo > build/arc_spl_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, split-elem probe, release on)"; cat build/arc_spl_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_spl_off > build/arc_spl_off.out 2> build/arc_spl_off.vg; \
+	spl_d=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_spl_off.vg | tr -d , ); \
+	spl_i=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_spl_off.vg | tr -d , ); \
+	spl_off=$$(( $${spl_d:-0} + $${spl_i:-0} )); \
+	if [ "$$spl_off" -eq 0 ]; then \
+	  echo "  FAIL: split-elem probe leaked nothing with the release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  split elem OFF: $$spl_off bytes leaked ($${spl_d:-0} direct + $${spl_i:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_spl_on > build/arc_spl_on.out 2> build/arc_spl_on.vg; \
+	rc=$$?; \
+	spl_d2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_spl_on.vg | tr -d , ); \
+	spl_i2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_spl_on.vg | tr -d , ); \
+	spl_on=$$(( $${spl_d2:-0} + $${spl_i2:-0} )); \
+	: "Access first, then leak, then rc -- see the owned-key block above for why." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_spl_on.vg; then \
+	  echo "  FAIL: the Split result released an element it did not own"; tail -30 build/arc_spl_on.vg; fail=1; \
+	elif [ "$$spl_on" -ne 0 ]; then \
+	  echo "  FAIL: split-elem probe still leaked $$spl_on bytes — the elements were not reclaimed"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_spl_on.vg; fail=1; \
+	elif ! diff -q build/arc_spl_off.out build/arc_spl_on.out > /dev/null; then \
+	  echo "  FAIL: split-elem probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  split elem ON:  clean, 0 bytes, output matches the control (was $$spl_off)"; \
+	fi; \
+	$(COMPILER) -o build/arc_splb examples/arc_release_split_borrowed_probe.goo > build/arc_splb.cerr 2>&1 \
+	  || { echo "  FAIL (compile, split-borrowed probe)"; cat build/arc_splb.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_splb > /dev/null 2> build/arc_splb.vg; \
+	: "LEAKS ARE EXPECTED HERE and must NOT be asserted on. The local correctly" ; \
+	: "REFUSES element ownership because one element is borrowed, so Split's own" ; \
+	: "parts leak. A wrong claim shows up as an invalid access, not a leak count." ; \
+	: "NO BACKTICKS in these comment strings -- the shell runs them." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_splb.vg; then \
+	  echo "  FAIL: a Split result released a BORROWED element — the caller's string was freed"; \
+	  grep -E "Invalid read|Invalid write|Invalid free|double free" build/arc_splb.vg | head -3; \
+	  fail=1; \
+	else \
+	  echo "  split borrowed: clean — mixed provenance refused the whole local"; \
+	fi; \
+	$(COMPILER) -o build/arc_sple examples/arc_release_split_escape_probe.goo > build/arc_sple.cerr 2>&1 \
+	  || { echo "  FAIL (compile, split-escape probe)"; cat build/arc_sple.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_sple > /dev/null 2> build/arc_sple.vg; \
+	: "Same rule: the returned elements leak because nothing here is eligible." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_sple.vg; then \
+	  echo "  FAIL: a Split result released elements that ESCAPED into the return value"; \
+	  grep -E "Invalid read|Invalid write|Invalid free|double free" build/arc_sple.vg | head -3; \
+	  fail=1; \
+	else \
+	  echo "  split escape:  clean — condition 1 refused a local whose elements leave"; \
+	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"
 

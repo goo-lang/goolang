@@ -126,10 +126,23 @@ typedef struct ReleaseDecision {
     char*           local_name;  // owned
     ReleaseVerdict  verdict;
 
-    // Does this local's slice own the values stored in it? True only when it
-    // HAS stored elements and every one was a fresh temporary by condition 2's
+    // Does this local's slice own the values stored in it? True only when every
+    // value that reached its slots was a fresh temporary by condition 2's
     // table. One borrowed element makes it false, because the release is a
     // single walk of the whole buffer and cannot skip an entry.
+    //
+    // TWO SOURCES, both gated by that all-or-nothing rule:
+    //   STORED   -- a slice literal's elements, or an append's arguments.
+    //   ARRIVED  -- the declaration bound the local to a SHIM CALL whose table
+    //               row carries returns_owned_elems, meaning the runtime body
+    //               allocated every element. `fields := strings.Split(s, ",")`
+    //               stores nothing, so before this it owned nothing and its
+    //               parts leaked -- 273,982 bytes per 2,000 requests on
+    //               bench/daemon/daemon.goo, the largest item left after #274.
+    //
+    // A Goo callee cannot supply the ARRIVED half. param_escape's
+    // return_escapes describes the returned VALUE, not its contents, so there
+    // is no summary to read and the answer stays false.
     //
     // Independent of `verdict`. A local that refuses to release still gets a
     // meaningful answer here, and the caller must check BOTH -- there is no

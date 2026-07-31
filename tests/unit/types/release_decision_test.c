@@ -853,6 +853,75 @@ static ElemRow elem_rows[] = {
         "}\n",
         "f", "p", true
     },
+    {
+        // THE ROW THE SHIM COLUMN EXISTS FOR. Nothing is ever STORED into this
+        // slice -- it arrives fully populated from strings.Split, whose runtime
+        // body goo_allocs and memcpys every part. Rows 1 to 5 all miss it,
+        // because they only see a literal or an append.
+        //
+        // Worth 273,982 bytes per 2,000 requests on bench/daemon/daemon.goo,
+        // measured before and after: 1,225,982 -> 952,000 total lost.
+        6, "bound to strings.Split -> owns its elements",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    p := strings.Split(s, \",\")\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", true
+    },
+    {
+        // SOUNDNESS, and the shape mutant 1 of the end-to-end gate attacks.
+        // Split's own parts are owned, the appended PARAMETER is not, and one
+        // walk of the buffer cannot tell them apart at runtime. `all_owned`
+        // therefore gates the shim source exactly as it gates the stored one.
+        //
+        // Drop `all_owned` from the expression in release_decision.c and THIS
+        // row goes red, before valgrind is ever involved.
+        7, "Split, then appending a PARAMETER -> does NOT own its elements",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    p := strings.Split(s, \",\")\n"
+        "    p = append(p, s)\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", false
+    },
+    {
+        // THE BIT BELONGS TO A ROW, NOT TO A PACKAGE. strings.Join sits beside
+        // Split in the same table and is non_retaining too, but it returns a
+        // STRING. shim_signature_returns_owned_elems refuses it on the return
+        // kind, so a stray 1 on that row stays inert.
+        //
+        // Mutant 2 of the gate puts a 1 on Join. This row is where that shows.
+        8, "bound to strings.Join -> does NOT own elements (returns a string)",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    p := strings.Split(s, \",\")\n"
+        "    q := strings.Join(p, \"-\")\n"
+        "    return len(q)\n"
+        "}\n",
+        "f", "q", false
+    },
+    {
+        // A GOO CALLEE CANNOT SUPPLY THE ARRIVED HALF. param_escape computes
+        // return_escapes, which describes the returned slice VALUE and says
+        // nothing about its contents. There is no summary to read, so the
+        // answer stays false -- lost reclamation, never an unsafe free.
+        9, "bound to a Goo function returning a slice -> does NOT own its elements",
+        "package main\n"
+        "import \"strings\"\n"
+        "func mk(s string) []string {\n"
+        "    return strings.Split(s, \",\")\n"
+        "}\n"
+        "func f(s string) int {\n"
+        "    p := mk(s)\n"
+        "    return len(p)\n"
+        "}\n",
+        "f", "p", false
+    },
 };
 
 static int failures = 0;

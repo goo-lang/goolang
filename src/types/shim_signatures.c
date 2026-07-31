@@ -30,6 +30,32 @@ typedef struct {
     // Every 1 below is justified against the runtime C body that implements
     // it, named in the row's comment. Adding a 1 needs the same proof.
     int non_retaining;
+
+    // ARC element ownership: does the SLICE this shim returns own the values
+    // sitting in its element slots? True only when the runtime body allocates
+    // every element freshly, so nothing outside the returned slice points at
+    // one and the slice is their single owner.
+    //
+    // SEPARATE FROM non_retaining, and neither implies the other. non_retaining
+    // is about the slice VALUE — does the result alias an argument. This is
+    // about what is INSIDE it. strings.Split is 1 for both; a hypothetical shim
+    // returning a fresh slice of borrowed strings would be 1 and 0.
+    //
+    // SOUNDNESS: 1 is a TRUST assertion, exactly as non_retaining is. A wrong 1
+    // makes goo_slice_release_elems free memory another owner still holds. 0 is
+    // always safe.
+    //
+    // EVERY ROW SPELLS IT, and that is deliberate rather than stylistic. C
+    // would zero-fill a short initializer, which is the safe answer, but the
+    // build runs -Wextra and -Wmissing-field-initializers turns each omission
+    // into a warning. Spelling the column keeps the build clean AND forces the
+    // author of a new row to type an answer rather than inherit one.
+    //
+    // The RETURN KIND IS THE BOUNDARY, enforced in the accessor rather than
+    // trusted here: shim_signature_returns_owned_elems refuses any row whose
+    // ret is not SHIM_RET_STRING_SLICE, so a 1 on a row that returns no slice
+    // is inert rather than dangerous.
+    int returns_owned_elems;
 } ShimSignature;
 
 static const ShimParamKind PARAMS_STRING[]              = { SHIM_PARAM_STRING };
@@ -60,13 +86,13 @@ static const ShimSignature SHIM_TABLE[] = {
     // skip_variadic_builtin path already leaves fully unchecked (no new
     // hook needed for these four). Printf/Sprintf/Errorf require a real
     // first string param, checked, then an unchecked "any" tail.
-    { "fmt", "Println",  SHIM_RET_VOID,   NULL,          0, 1, 1 },
-    { "fmt", "Print",    SHIM_RET_VOID,   NULL,          0, 1, 1 },
-    { "fmt", "Sprint",   SHIM_RET_STRING, NULL,          0, 1, 1 },
-    { "fmt", "Sprintln", SHIM_RET_STRING, NULL,          0, 1, 1 },
-    { "fmt", "Printf",   SHIM_RET_VOID,   PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 1 },
-    { "fmt", "Sprintf",  SHIM_RET_STRING, PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 1 },
-    { "fmt", "Errorf",   SHIM_RET_ERROR,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 0 },
+    { "fmt", "Println",  SHIM_RET_VOID,   NULL,          0, 1, 1, 0 },
+    { "fmt", "Print",    SHIM_RET_VOID,   NULL,          0, 1, 1, 0 },
+    { "fmt", "Sprint",   SHIM_RET_STRING, NULL,          0, 1, 1, 0 },
+    { "fmt", "Sprintln", SHIM_RET_STRING, NULL,          0, 1, 1, 0 },
+    { "fmt", "Printf",   SHIM_RET_VOID,   PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 1, 0 },
+    { "fmt", "Sprintf",  SHIM_RET_STRING, PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 1, 0 },
+    { "fmt", "Errorf",   SHIM_RET_ERROR,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 1, 0, 0 },
     // The Fprint family: the same formatting as their unprefixed siblings,
     // written to a chosen stream. The writer is an io.Writer, so ANY value
     // implementing Write is accepted — this used to be an int64 file
@@ -80,33 +106,33 @@ static const ShimSignature SHIM_TABLE[] = {
     // real io.Writer satisfaction test rather than a syntactic name match.
     // Fprintf's format string is checked there too, since dropping the fixed
     // params drops the generic check that used to cover it.
-    { "fmt", "Fprint",   SHIM_RET_VOID,   NULL, 0, 1, 0 },
-    { "fmt", "Fprintln", SHIM_RET_VOID,   NULL, 0, 1, 0 },
-    { "fmt", "Fprintf",  SHIM_RET_VOID,   NULL, 0, 1, 0 },
+    { "fmt", "Fprint",   SHIM_RET_VOID,   NULL, 0, 1, 0, 0 },
+    { "fmt", "Fprintln", SHIM_RET_VOID,   NULL, 0, 1, 0, 0 },
+    { "fmt", "Fprintf",  SHIM_RET_VOID,   NULL, 0, 1, 0, 0 },
     // os. Args is a value member (skip, per doc comment above).
     //
     // NON-RETAINING: Exit only. It takes an int64 and does not return, so no
     // pointer argument exists to retain. Every other os row stays 0: their
     // runtime bodies were not audited for retention in this cut, and 0 is the
     // safe answer.
-    { "os", "Exit",      SHIM_RET_VOID,  PARAMS_INT64,        NPARAMS(PARAMS_INT64), 0, 1 },
-    { "os", "Getenv",    SHIM_RET_STRING, PARAMS_STRING,      NPARAMS(PARAMS_STRING), 0, 0 },
-    { "os", "WriteFile", SHIM_RET_INT32, PARAMS_STRING_STRING, NPARAMS(PARAMS_STRING_STRING), 0, 0 },
-    { "os", "ReadByte",  SHIM_RET_INT32, PARAMS_STRING_INT64, NPARAMS(PARAMS_STRING_INT64), 0, 0 },
-    { "os", "FileSize",  SHIM_RET_INT32, PARAMS_STRING,       NPARAMS(PARAMS_STRING), 0, 0 },
+    { "os", "Exit",      SHIM_RET_VOID,  PARAMS_INT64,        NPARAMS(PARAMS_INT64), 0, 1, 0 },
+    { "os", "Getenv",    SHIM_RET_STRING, PARAMS_STRING,      NPARAMS(PARAMS_STRING), 0, 0, 0 },
+    { "os", "WriteFile", SHIM_RET_INT32, PARAMS_STRING_STRING, NPARAMS(PARAMS_STRING_STRING), 0, 0, 0 },
+    { "os", "ReadByte",  SHIM_RET_INT32, PARAMS_STRING_INT64, NPARAMS(PARAMS_STRING_INT64), 0, 0, 0 },
+    { "os", "FileSize",  SHIM_RET_INT32, PARAMS_STRING,       NPARAMS(PARAMS_STRING), 0, 0, 0 },
     // P4.8: os.ReadFile(string) !string, os.ReadLine() !string — see
     // SHIM_RET_STRING_RESULT's doc comment in shim_signatures.h.
-    { "os", "ReadFile",  SHIM_RET_STRING_RESULT, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 0 },
-    { "os", "ReadLine",  SHIM_RET_STRING_RESULT, NULL,          0, 0, 0 },
+    { "os", "ReadFile",  SHIM_RET_STRING_RESULT, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 0, 0 },
+    { "os", "ReadLine",  SHIM_RET_STRING_RESULT, NULL,          0, 0, 0, 0 },
     // math. Pi is a value member (skip, per doc comment above).
     //
     // NON-RETAINING, all five, trivially: every parameter and every result is
     // a float64. There is no pointer for the callee to keep.
-    { "math", "Sqrt", SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0, 1 },
-    { "math", "Pow",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1 },
-    { "math", "Abs",  SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0, 1 },
-    { "math", "Min",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1 },
-    { "math", "Max",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1 },
+    { "math", "Sqrt", SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0, 1, 0 },
+    { "math", "Pow",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1, 0 },
+    { "math", "Abs",  SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0, 1, 0 },
+    { "math", "Min",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1, 0 },
+    { "math", "Max",  SHIM_RET_FLOAT64, PARAMS_FLOAT64_FLOAT64, NPARAMS(PARAMS_FLOAT64_FLOAT64), 0, 1, 0 },
     // strings: Contains/ToUpper/ToLower/Split/Join stay in this table as
     // the FALLBACK below source exports (goostd/strings) — see
     // is_stdlib_shim_import's doc comment in goo.c for why `strings` walks
@@ -125,12 +151,30 @@ static const ShimSignature SHIM_TABLE[] = {
     //                then goo_string_new_with_length per part, which copies
     //   Join      -> goo_strings_join: goo_alloc + memcpy. Reads the parts
     //                slice, stores neither it nor its elements.
-    { "strings", "Contains",   SHIM_RET_BOOL,        PARAMS_STRING_STRING,       NPARAMS(PARAMS_STRING_STRING), 0, 1 },
-    { "strings", "ToUpper",    SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1 },
-    { "strings", "ToLower",    SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1 },
-    { "strings", "TrimSpace",  SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1 },
-    { "strings", "Split",      SHIM_RET_STRING_SLICE, PARAMS_STRING_STRING,      NPARAMS(PARAMS_STRING_STRING), 0, 1 },
-    { "strings", "Join",       SHIM_RET_STRING,       PARAMS_STRING_SLICE_STRING, NPARAMS(PARAMS_STRING_SLICE_STRING), 0, 1 },
+    //
+    // RETURNS_OWNED_ELEMS: Split only, and it is the only row that CAN hold it
+    // — every other row here returns a bool or a string, and the accessor
+    // refuses anything that is not SHIM_RET_STRING_SLICE.
+    //
+    // The proof, against goo_strings_split (src/runtime/runtime.c:788):
+    //   - the goo_string_t array itself is one goo_alloc (line 807), which is
+    //     the BUFFER and is already released today via non_retaining;
+    //   - each interior part is goo_string_new_with_length(start, len) at line
+    //     811, which goo_allocs and memcpys — it does not point into `s`;
+    //   - the final part is goo_string_new(start) at line 814, same COPY;
+    //   - the empty-separator early return (lines 797-802) allocates one
+    //     element the same way.
+    // So every element slot holds memory this call created, and no other name
+    // holds it. Measured on bench/daemon/daemon.goo at 2,000 requests: 235,982
+    // bytes at line 811 plus 38,000 at line 814 = 273,982, and the line-807
+    // buffer appears in NO leak record, which is what "already released" looks
+    // like from the outside.
+    { "strings", "Contains",   SHIM_RET_BOOL,        PARAMS_STRING_STRING,       NPARAMS(PARAMS_STRING_STRING), 0, 1, 0 },
+    { "strings", "ToUpper",    SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1, 0 },
+    { "strings", "ToLower",    SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1, 0 },
+    { "strings", "TrimSpace",  SHIM_RET_STRING,       PARAMS_STRING,             NPARAMS(PARAMS_STRING), 0, 1, 0 },
+    { "strings", "Split",      SHIM_RET_STRING_SLICE, PARAMS_STRING_STRING,      NPARAMS(PARAMS_STRING_STRING), 0, 1, 1 },
+    { "strings", "Join",       SHIM_RET_STRING,       PARAMS_STRING_SLICE_STRING, NPARAMS(PARAMS_STRING_SLICE_STRING), 0, 1, 0 },
     // NON-RETAINING, both:
     //   Itoa -> goo_int_to_string: goo_alloc + memcpy of a stack buffer. The
     //           argument is an int64 anyway.
@@ -138,8 +182,8 @@ static const ShimSignature SHIM_TABLE[] = {
     //           branch builds the COMPILE-TIME literal "strconv.Atoi: invalid
     //           syntax" (call_codegen.c, LLVMBuildGlobalStringPtr), so the
     //           returned error does not alias the argument.
-    { "strconv", "Itoa", SHIM_RET_STRING,       PARAMS_INT64,  NPARAMS(PARAMS_INT64), 0, 1 },
-    { "strconv", "Atoi", SHIM_RET_ATOI_RESULT,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 1 },
+    { "strconv", "Itoa", SHIM_RET_STRING,       PARAMS_INT64,  NPARAMS(PARAMS_INT64), 0, 1, 0 },
+    { "strconv", "Atoi", SHIM_RET_ATOI_RESULT,  PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 1, 0 },
     // NON-RETAINING: New and Is only.
     //   New -> goo_error_from_string -> goo_error_wrap, which does
     //          goo_alloc(len+1) + memcpy of the message. The returned error
@@ -149,22 +193,22 @@ static const ShimSignature SHIM_TABLE[] = {
     // Unwrap is 0 and MUST stay 0: goo_error_unwrap returns `e->cause`
     // (runtime.c), a pointer INTO the argument's own structure. Its result
     // aliases its argument, which is exactly what this bit must not claim.
-    { "errors", "New",    SHIM_RET_ERROR, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 1 },
-    { "errors", "Unwrap", SHIM_RET_ERROR, PARAMS_ERROR,  NPARAMS(PARAMS_ERROR), 0, 0 },
+    { "errors", "New",    SHIM_RET_ERROR, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0, 1, 0 },
+    { "errors", "Unwrap", SHIM_RET_ERROR, PARAMS_ERROR,  NPARAMS(PARAMS_ERROR), 0, 0, 0 },
     // errors.Is walks the %w chain comparing identity. errors.As is
     // deliberately absent and is VACUOUS rather than merely hard: `error` is a
     // concrete type in v1 (pinned by custom_error_type_reject), so there are
     // no distinct concrete error types for it to recover.
-    { "errors", "Is",     SHIM_RET_BOOL,  PARAMS_ERROR_ERROR, NPARAMS(PARAMS_ERROR_ERROR), 0, 1 },
+    { "errors", "Is",     SHIM_RET_BOOL,  PARAMS_ERROR_ERROR, NPARAMS(PARAMS_ERROR_ERROR), 0, 1, 0 },
     // far (M2-B1): far-transport shims, runtime side src/runtime/far_transport.c.
     // Listen/Dial reuse the !int construction ATOI_RESULT already builds;
     // RecvF64 needs the new !float64 tag. Error spellings are API (see
     // far_transport.h).
-    { "far", "Listen",  SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0, 0 },
-    { "far", "Dial",    SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0, 0 },
-    { "far", "SendF64", SHIM_RET_VOID,        PARAMS_INT64_FLOAT64, NPARAMS(PARAMS_INT64_FLOAT64), 0, 0 },
-    { "far", "RecvF64", SHIM_RET_F64_RESULT,  PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0, 0 },
-    { "far", "Close",   SHIM_RET_VOID,        PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0, 0 },
+    { "far", "Listen",  SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0, 0, 0 },
+    { "far", "Dial",    SHIM_RET_ATOI_RESULT, PARAMS_STRING,        NPARAMS(PARAMS_STRING), 0, 0, 0 },
+    { "far", "SendF64", SHIM_RET_VOID,        PARAMS_INT64_FLOAT64, NPARAMS(PARAMS_INT64_FLOAT64), 0, 0, 0 },
+    { "far", "RecvF64", SHIM_RET_F64_RESULT,  PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0, 0, 0 },
+    { "far", "Close",   SHIM_RET_VOID,        PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0, 0, 0 },
 };
 #define SHIM_TABLE_COUNT (sizeof(SHIM_TABLE) / sizeof(SHIM_TABLE[0]))
 
@@ -187,6 +231,24 @@ int shim_signature_is_non_retaining(const char* package, const char* name) {
     // An unknown pair is not a shim at all, so it gets the conservative answer
     // — the same answer every unaudited row carries.
     return row ? row->non_retaining : 0;
+}
+
+int shim_signature_returns_owned_elems(const char* package, const char* name) {
+    const ShimSignature* row = shim_signature_find(package, name);
+    if (!row) return 0;   // unknown pair: conservative, as above
+
+    // THE RETURN KIND IS A GUARD, NOT A COMMENT. A caller acts on this bit by
+    // walking the returned slice's buffer and releasing each element, so a 1 on
+    // a row that returns a string would make it walk a `{i8*, i64}` as if it
+    // were a slice. Refusing here makes such a row INERT: the only way to get a
+    // true is to be a slice-returning row that also spells the bit.
+    //
+    // SHIM_RET_STRING_SLICE is the only slice-returning kind in the enum today.
+    // If another one is added, it must be listed here deliberately, with its
+    // own proof — an omission costs reclamation and never safety.
+    if (row->ret != SHIM_RET_STRING_SLICE) return 0;
+
+    return row->returns_owned_elems;
 }
 
 // Fresh "any" = the empty interface (Go 1.18+ predeclared `any`). Mirrors

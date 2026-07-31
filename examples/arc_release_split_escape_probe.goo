@@ -1,0 +1,50 @@
+// T4 SOUNDNESS gate: a Split result whose elements ESCAPE must not release.
+//
+// The buffer release is guarded by condition 1 (local_escape), and the element
+// release hangs off it -- there is no element release without a buffer release
+// to attach it to. So the question this probe answers is whether condition 1
+// actually fires for the shape that matters: an element handed to a slice the
+// function RETURNS.
+//
+// .handoff.md records that append marks a pointer element escaping, because the
+// buffer keeps a copy and the element genuinely outlives the call. That makes
+// `fields` escape through the AST_INDEX_EXPR read, so nothing releases it and
+// the returned strings stay alive for the caller.
+//
+// THAT REASONING IS NOT THE GATE. The handoff also records four instruments
+// that reported plausible output while measuring nothing, so this probe reads
+// the returned bytes in main and lets valgrind answer. If `fields` ever did
+// release, every string in `out` would be freed before the caller touched it.
+//
+// LEAKS ARE EXPECTED HERE and must NOT be asserted on: `out` is returned, so
+// nothing in this program is release-eligible. The assertion is the absence of
+// an invalid access.
+package main
+
+import "strings"
+
+var sink int
+
+// Every element of `out` is one of `fields`'s elements, and `out` leaves the
+// function. `fields` must therefore refuse to release.
+func build(req string) []string {
+	fields := strings.Split(req, ",")
+	out := []string{}
+	for i := 0; i < len(fields); i++ {
+		out = append(out, fields[i])
+	}
+	return out
+}
+
+func main() {
+	total := 0
+	for i := 0; i < 1000; i++ {
+		got := build("alpha,beta,gamma")
+		// Read the BYTES the callee's slice produced. A released element reads
+		// as Invalid read here; a len() check would load field 1 and miss it.
+		joined := got[0] + got[2]
+		total = total + len(joined)
+	}
+	sink = total
+	println(total)
+}
