@@ -2747,6 +2747,22 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     FunctionInfo* fi = codegen->current_function_info;
     if (!fi || !fi->name) return;
 
+    // WHY THIS PRINTS BEFORE THE BAIL. Two different modules can refuse the
+    // same local, and until this line they were indistinguishable from the
+    // outside: release_decision answering "not owned" looked exactly like this
+    // function answering "I do not recognise that slot shape". They are defects
+    // in different files with different fixes.
+    //
+    // Measured worth: this line is what identified BOTH guards refusing `err`
+    // in seconds, after .handoff.md had attributed the refusal to condition 4
+    // (loop scope), which `err` never reaches. See
+    // docs/superpowers/specs/2026-07-31-arc-loop-scoped-release-design.md.
+    if (getenv("GOO_ARC_DEBUG")) {
+        fprintf(stderr, "[arc?] %s: %s -> %s\n", fi->name, info->name,
+                release_verdict_name(release_plan_verdict(codegen->release_plan,
+                                                          fi->name, info->name)));
+    }
+
     if (!release_plan_should_release(codegen->release_plan, fi->name, info->name)) return;
 
     if (LLVMGetValueKind(info->llvm_value) != LLVMInstructionValueKind) return;
