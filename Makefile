@@ -5423,8 +5423,9 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	$(COMPILER) -o build/arc_unw examples/arc_release_unwrap_probe.goo > build/arc_unw.cerr 2>&1 \
 	  || { echo "  FAIL (compile, unwrap probe)"; cat build/arc_unw.cerr; exit 1; }; \
 	valgrind --leak-check=full ./build/arc_unw > /dev/null 2> build/arc_unw.vg; \
-	: "LEAKS ARE EXPECTED HERE and must NOT be asserted on -- the outer error is" ; \
-	: "loop-scoped, so condition 4 refuses it. NO BACKTICKS in these strings." ; \
+	: "LEAKS ARE EXPECTED HERE and must NOT be asserted on -- base is passed to" ; \
+	: "fmt.Errorf, which is non_retaining = 0, so base escapes and condition 2" ; \
+	: "refuses it. NO BACKTICKS in these strings." ; \
 	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_unw.vg; then \
 	  echo "  FAIL: an UNWRAPPED error was released — it points into its parent"; \
 	  grep -E "Invalid read|Invalid write|Invalid free|double free" build/arc_unw.vg | head -3; \
@@ -5449,6 +5450,42 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "  FAIL: global probe exited $$grc"; tail -20 build/arc_glob.vg; fail=1; \
 	else \
 	  echo "  global:     clean — a sentinel error and a global pointer survived 100 calls"; \
+	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_np_off examples/arc_release_nullable_ptr_probe.goo > build/arc_np_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, nullable-ptr probe, release off)"; cat build/arc_np_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_np_on examples/arc_release_nullable_ptr_probe.goo > build/arc_np_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, nullable-ptr probe, release on)"; cat build/arc_np_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_np_off > build/arc_np_off.out 2> build/arc_np_off.vg; \
+	npd=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_np_off.vg | tr -d , ); \
+	npi=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_np_off.vg | tr -d , ); \
+	np_off=$$(( $${npd:-0} + $${npi:-0} )); \
+	if [ "$$np_off" -eq 0 ]; then \
+	  echo "  FAIL: nullable-ptr probe leaked nothing with release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  nptr OFF:   $$np_off bytes leaked ($${npd:-0} direct + $${npi:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_np_on > build/arc_np_on.out 2> build/arc_np_on.vg; \
+	rc=$$?; \
+	npd2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_np_on.vg | tr -d , ); \
+	npi2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_np_on.vg | tr -d , ); \
+	np_on=$$(( $${npd2:-0} + $${npi2:-0} )); \
+	: "I5 belt-and-braces gate. A non-error ?*int must NOT get goo_error_dtor" ; \
+	: "-- it has no message field, so that dtor reads garbage bytes as a" ; \
+	: "pointer. Widening the dtor test past type_is_error shows up here as" ; \
+	: "an invalid access or a refcount-0 panic, not as a leak-count change." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_np_on.vg; then \
+	  echo "  FAIL: a non-error ?*T local was released unsafely (wrong dtor?)"; tail -30 build/arc_np_on.vg; fail=1; \
+	elif grep -q "reference count 0" build/arc_np_on.vg; then \
+	  echo "  FAIL: a non-error ?*T local was over-released (refcount hit 0)"; fail=1; \
+	elif [ "$$np_on" -ne 0 ]; then \
+	  echo "  FAIL: nullable-ptr probe still leaked $$np_on bytes"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_np_on.vg; fail=1; \
+	elif ! diff -q build/arc_np_off.out build/arc_np_on.out > /dev/null; then \
+	  echo "  FAIL: nullable-ptr probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  nptr ON:    clean, 0 bytes, no dtor misfire, output matches the control (was $$np_off)"; \
 	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"

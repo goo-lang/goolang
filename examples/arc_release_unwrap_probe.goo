@@ -54,9 +54,18 @@ func main() {
 	for i := 0; i < 1000; i++ {
 		total = total + step(base)
 	}
-	// Read base's BYTES after 1000 chances to release it wrongly.
-	// errors.Is walks the chain and dereferences; a nil test would load
-	// the flag and miss it entirely.
+	// This errors.Is(base, base) call is NOT the probe's detector. It does
+	// not dereference base: goo_error_is (runtime.c) compares err == target
+	// on the first loop iteration and returns immediately for identical
+	// arguments, without reading err->cause. It is kept only as a normal
+	// use of base after the loop, so the local is not optimised away.
+	//
+	// The REAL detector runs earlier, inside the loop: if step() wrongly
+	// released `inner` (which aliases base) on some iteration, the NEXT
+	// call's `wrapped := fmt.Errorf("ctx: %w", base)` reads base's message
+	// through goo_error_message (runtime.c) to build the wrapped string,
+	// and that read lands on freed memory. Valgrind's Invalid-read check on
+	// build/arc_unw.vg is what the Makefile leg inspects.
 	if errors.Is(base, base) {
 		total = total + 1
 	}

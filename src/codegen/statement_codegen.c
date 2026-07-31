@@ -2933,9 +2933,19 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     // really an error" predicate (types.c), the same one .Error() dispatch
     // and fmt's error-printing use, so this stays in lockstep with them
     // rather than drifting on a second, private definition.
+    //
+    // `field == 1 &&` is belt and braces, deliberately redundant with
+    // type_is_error: the name test says WHAT the type is, and the field
+    // test says the slot has the SHAPE that name implies (the nullable-of-
+    // pointer struct, not a bare pointer, a slice, or a string). Either
+    // test alone is enough today, because only the nullable-of-pointer arm
+    // ever sets field to 1. Together they survive a change to the other --
+    // a future arm that reused field 1 for something else, or a future
+    // widening of type_is_error, would each still be caught by the
+    // remaining check.
     const char* dtor = (info->goo_type && info->goo_type->kind == TYPE_MAP)
                      ? "goo_map_dtor"
-                     : (type_is_error(info->goo_type) ? "goo_error_dtor" : NULL);
+                     : ((field == 1 && type_is_error(info->goo_type)) ? "goo_error_dtor" : NULL);
 
     // DOES THIS SLICE OWN ITS ELEMENTS? Both halves must agree, as ever.
     //

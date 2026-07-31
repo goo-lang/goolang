@@ -9,15 +9,22 @@
 // goo_error_wrap, which goo_allocs and memcpys the message. So the returned
 // error owns a COPY and no other name holds it.
 //
-// The read is errors.Is(e, e), not e.Error() and not a nil test. A nil test
-// loads field 0, the FLAG, and never dereferences the object -- it would
-// pass against a compiler that released the error too early. A METHOD CALL
-// on a local marks that local escaping unconditionally (escape_core.c's
-// call_taint, the non-identifier-callee arm), so e.Error() makes e read
-// RELEASE_NO_ESCAPES no matter what the method does -- verified separately.
-// errors.Is walks the %w chain comparing pointer identity, so it genuinely
-// DEREFERENCES the object, and it is non_retaining = 1, so unlike a method
-// call it does not mark its receiver escaping.
+// The read is errors.Is(e, e), not e.Error(). A METHOD CALL on a local marks
+// that local escaping unconditionally (escape_core.c's call_taint, the
+// non-identifier-callee arm), so e.Error() makes e read RELEASE_NO_ESCAPES no
+// matter what the method does -- verified separately. errors.Is is
+// non_retaining = 1, so unlike a method call it does not mark its receiver
+// escaping, which is the ONLY reason it is used here.
+//
+// errors.Is(e, e) does NOT dereference the error object. goo_error_is
+// (runtime.c) compares err == target on the FIRST iteration of its loop and
+// returns immediately -- for identical arguments it never reads err->cause
+// and never touches the object's bytes. This probe does not catch an early
+// release by reading freed memory. Its real signal is the LEAK DELTA between
+// GOO_ARC_RELEASE=0 and the default build, checked by the arc-release-probe
+// Makefile leg below: mutant 1 (field=0 instead of field=1) is caught
+// because the RELEASE mechanism itself reads garbage through the wrong
+// field offset, not because this probe's own code dereferences anything.
 package main
 
 import "errors"

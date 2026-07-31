@@ -655,7 +655,11 @@ static TestRow rows[] = {
         // local marks it escaping unconditionally (escape_core.c's
         // call_taint), so e.Error() would read RELEASE_NO_ESCAPES here
         // regardless of the codegen arm. errors.Is is non_retaining = 1, so
-        // it does not trip that rule, and it dereferences e for real.
+        // it does not trip that rule -- which is the only reason it is used
+        // here. It does NOT dereference e: goo_error_is (runtime.c) compares
+        // err == target on the first loop iteration and returns immediately
+        // for identical arguments, without reading err->cause. This row
+        // exercises the RELEASE_OK verdict, not a read of freed memory.
         35, "an owned error binding -> RELEASE_OK",
         "package main\n"
         "import \"errors\"\n"

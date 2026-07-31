@@ -1,0 +1,41 @@
+// T4 belt-and-braces gate (I5): an ordinary `?*T` local releases cleanly,
+// with NO destructor call.
+//
+// `?*int` and `error` share ONE lowering: TYPE_NULLABLE of a pointer lowers
+// to `{ i1, ptr }` (field 0 the nil flag, field 1 the object), so the SAME
+// shape test in codegen_arc_classify_heap_field accepts both and sets
+// field = 1 for both. Telling them apart is the DTOR SELECTION's job, not
+// the release arm's: codegen_arc_note_local gates goo_error_dtor behind
+// type_is_error (plus, since M9, a redundant `field == 1` structural
+// check), so the destructor attaches ONLY to a real error. A `?*int` has
+// no `message` field, so running goo_error_dtor on one would goo_release
+// whatever garbage bytes sit at that struct offset.
+//
+// This is not a theoretical worry. The nullable-pointer arm's own commit
+// message names it as load-bearing, and a manual, throwaway fixture proved
+// it during that change's review (task-2-report.md, "Mutant 3"): widening
+// the dtor test past type_is_error made THIS SAME SHAPE crash under
+// valgrind with "Conditional jump or move depends on uninitialised
+// value(s)". This file promotes that fixture to a permanent probe, wired
+// into the arc-release-probe Makefile gate, so a future widening of the
+// dtor condition is caught by `make verify-core` and not just by a
+// reviewer who happens to remember to check by hand.
+//
+// Called in a loop so a leak is measurable rather than theoretical.
+package main
+
+var count int
+
+func work() {
+	var p ?*int = new(int)
+	if p != nil {
+		count = count + 1
+	}
+}
+
+func main() {
+	for i := 0; i < 10000; i++ {
+		work()
+	}
+	println(count)
+}
