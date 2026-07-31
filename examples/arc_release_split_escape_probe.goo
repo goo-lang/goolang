@@ -19,6 +19,30 @@
 // LEAKS ARE EXPECTED HERE and must NOT be asserted on: `out` is returned, so
 // nothing in this program is release-eligible. The assertion is the absence of
 // an invalid access.
+//
+// HONEST LIMIT OF THIS PROBE, measured rather than assumed. TWO INDEPENDENT
+// mechanisms keep `fields` from releasing, and removing EITHER ONE alone leaves
+// this probe green:
+//
+//   1. the append arg-marking -- `out = append(out, fields[i])` marks the
+//      appended element escaping (escape_core.c, the `is_append && i == 0`
+//      arm marks every OTHER argument);
+//   2. the append RESULT taint -- `out` inherits fields's taint through the
+//      call result, and returning `out` marks it.
+//
+// Mutating (1) to `else if (is_append)` still yields NO release site for
+// `fields`, and `make arc-release-probe` still PASSES. So this probe pins the
+// property but has NOT been shown to have teeth against a single-point defect.
+//
+// The path is REACHABLE, not dead code, which is the part that could be
+// proven: with (1) mutated AND `out` changed to not leave the function, the
+// compiler emits `fields owns its elements (stride=16)` plus a release site.
+// So the shape does reach the decision, and only the escape guards stop it.
+//
+// What is still uncovered: nothing in arc-release-probe turns red when the
+// append element-marking is removed on its own. That is a pre-existing gap in
+// the suite rather than one this probe introduced, and it is recorded here so
+// the next reader does not mistake this file for a guard against it.
 package main
 
 import "strings"
