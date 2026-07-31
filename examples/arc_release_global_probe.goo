@@ -23,6 +23,20 @@
 // `var a = "hello"; var b = a; func main() { println(b) }`, exit 139. Unlike
 // the other two shapes, this one fails at PROGRAM INIT, before main ever
 // runs, so it needs no loop to reach.
+//
+// A FOURTH SHAPE (fix round 2): the same .rodata write, reached through a
+// SLICE literal instead of a string one (`numsA` / `numsB` below). The
+// read-before-write guard added in fix round 1 does NOT cover this, because a
+// constant slice backing global had NO ARC HEADER AT ALL -- the string path
+// bakes in GOO_RC_IMMORTAL, the slice path emitted a bare LLVMConstArray. So
+// `goo_obj_header(ptr)` landed on whatever .rodata symbol happened to precede
+// the backing array (measured: `_IO_stdin_used`), the count check read an
+// unrelated value that was not GOO_RC_IMMORTAL, fell through, and stored.
+// Measured before the fix: exit 139, SIGSEGV at runtime.c:294 in
+// goo_make_immortal, backtrace main -> goo.global_init -> goo_make_immortal.
+// This is why the fix gives the backing array a real header rather than
+// widening the guard: it makes the stated invariant TRUE instead of adding a
+// second special case to the runtime.
 package main
 
 import "errors"
@@ -31,6 +45,8 @@ var ErrSentinel error = errors.New("sentinel failure")
 var GCounter *int = new(int)
 var msgA = "hello from a global"
 var msgB = msgA
+var numsA = []int{11, 22, 33}
+var numsB = numsA
 
 var sink int
 
@@ -65,4 +81,6 @@ func main() {
     sink = total
     println(total)
     println(msgB)
+    println(len(numsB))
+    println(numsB[2])
 }
