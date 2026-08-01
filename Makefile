@@ -5031,8 +5031,32 @@ $(eval $(call ESCAPE_TEETH_RULES,param,PARAM))
 $(eval $(call ESCAPE_TEETH_RULES,block,BLOCK))
 $(eval $(call ESCAPE_TEETH_RULES,local,LOCAL))
 
+# ADR 0005: the REASON axis mutates the SHARED engine, not a pass's own source,
+# so it cannot use the rules above — those swap src/types/<pass>_escape.c. This
+# swaps src/types/escape_core.c instead and links it in place of the ordinary
+# object, so the suite sees a mutated engine and its own unmodified pass.
+#
+# Only `local` gets a rule. It is the only suite with rows that assert a reason
+# SET, so it is the only one a renamed reason can move. param and block would
+# report UNGUARDED for all eleven entries, which is true and says nothing.
+CORE_ESCAPE_SRC ?= $(SRCDIR)/types/escape_core.c
+
+# No DEPFLAGS, same reason as the pass rule above: a .d file would record the
+# scratch source path and the next build would die once that path is gone.
+$(BUILDDIR)/teeth/escape_core.o: $(CORE_ESCAPE_SRC) | $(BUILDDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
+
+# DELIBERATELY not local_escape_test, for the reason the pass rule gives: under
+# `make -j` the ordinary suite can run at the same time and must never find a
+# mutant behind its own name.
+local_core_teeth_test: $(TEST_UNIT_DIR)/types/local_escape_test.c \
+                       $(BUILDDIR)/teeth/escape_core.o \
+                       $(filter-out $(BUILDDIR)/types/escape_core.o,$(SRC_OBJS))
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+
 escape-teeth:
-	@echo "Running escape-pass mutation teeth (param, block, local)..."
+	@echo "Running escape-pass mutation teeth (param, block, local, reasons)..."
 	./scripts/escape_teeth.sh
 
 block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(SRC_OBJS)
