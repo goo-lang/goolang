@@ -105,6 +105,29 @@ MUTATIONS=(
 # rather than `if (false)` keeps every name referenced, so the mutant compiles
 # without an unused-function warning that could mask the result.
 "self-append	    if (plain_assign && is_self_append(name, rhs)) {	    if (plain_assign && is_self_append(name, rhs) && false) {"
+
+# ADR 0005: the three conditions of identifier_key_is_owned, which decide
+# whether a map may take ownership of a key that is a bare identifier. Each
+# guards a DIFFERENT refusal, and each refusal is a buffer somebody else still
+# reads -- key rows 7, 8 and 9 are the fixtures, one per entry.
+#
+# NOT `&& false` FOR THE FIRST TWO. Both name a condition whose body is a bare
+# `return false`, so deleting the line is the honest mutation: the rule stops
+# being asked rather than being asked and ignored.
+#
+# key row 9 -- viewKey. Without this, `v := s[1:]` qualifies and the map frees
+# a window into a buffer this function never allocated.
+"key-ident-owned	        if (!binding_is_owned(c, pe, r->values[i])) return false;"
+# key row 7 -- escapesByReturn. THE CONDITION ADR 0005 EXISTS FOR. Without it a
+# local that is both a map key and a return value is handed to the map, and the
+# caller reads freed bytes -- measured through the probe as an invalid read in
+# goo_strings_map_case.
+"key-ident-reason	    if (local_escape_local_reasons(le, fn, name) != ESCAPE_REASON_SUBSCRIPT_STORE) {	    if (false) {"
+# key row 8 -- twoMaps. THE CONDITION ADR 0005 DOES NOT NAME. Both writes mark
+# the local SUBSCRIPT_STORE, so the reason set is right and still cannot refuse
+# it; only the count does. Relaxed rather than deleted, because the line is the
+# function's return.
+"key-ident-count	    return sites == 1;	    return sites >= 1;"
 )
 
 # The table size is PINNED, in the shape of scripts/grammar-tripwire.sh's
@@ -113,7 +136,7 @@ MUTATIONS=(
 # them run. A gate whose work can shrink to nothing while its verdict holds
 # still is not a gate. Change this number in the same commit that adds or
 # removes a mutation, and give the reason in the message.
-EXPECTED_MUTATIONS=9
+EXPECTED_MUTATIONS=12
 [ "${#MUTATIONS[@]}" -eq "$EXPECTED_MUTATIONS" ] \
     || die "mutation table holds ${#MUTATIONS[@]} entries, expected $EXPECTED_MUTATIONS"
 
@@ -175,7 +198,10 @@ PY
         continue
     fi
     failed=$(grep -oP "summary: [0-9]+ assertions passed, \K[0-9]+" "$WORK/run_$label.log")
-    rows=$(grep -c "^  Row .*: FAIL" "$WORK/run_$label.log")
+    # THREE row populations, not one. The suite prints "Row", "Key row" and
+    # "Elem row", and counting only the first reported "0 rows" for a caught
+    # key-row mutation -- a detail line that reads like a fault in the gate.
+    rows=$(grep -cE "^  (Key row|Elem row|Row) .*: FAIL" "$WORK/run_$label.log")
     if [ "${failed:-0}" -gt 0 ]; then
         printf '%-18s CAUGHT   (%s assertions, %s rows)\n' "$label" "$failed" "$rows"
         caught=$((caught + 1))
