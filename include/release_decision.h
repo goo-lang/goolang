@@ -171,6 +171,7 @@ typedef enum {
     RELEASE_NO_ARENA,           // condition 3: declared inside `arena { }`
     RELEASE_NO_LOOP_SCOPE,      // condition 4: declared inside a loop body
     RELEASE_NO_REBOUND,         // condition 4: assigned again after declaration
+    RELEASE_NO_ALIASED,         // condition 7: another local names this one's value
     RELEASE_NO_BLOCK_ESCAPE,    // condition 6: stored into something outliving the iteration
     RELEASE_NO_NO_BINDING,      // no binding site found for the name
     RELEASE_NO_UNKNOWN,         // a statement kind this module cannot read
