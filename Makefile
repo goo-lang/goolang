@@ -5487,6 +5487,23 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  nptr ON:    clean, 0 bytes, no dtor misfire, output matches the control (was $$np_off)"; \
 	fi; \
+	: "ADDRESS-OF-A-GLOBAL IS NOT AN ARC OBJECT. goo_make_immortal writes the" ; \
+	: "sentinel at ptr-16, which for a plain module address is somebody" ; \
+	: "else's memory. .data is writable so this is SILENT -- measured with" ; \
+	: "gdb, a live libc pointer overwritten at base-16, program exit 0." ; \
+	: "AN IR CHECK, NOT A RUN: whether the corruption damages anything" ; \
+	: "depends on what the linker placed before base, so a runtime assert" ; \
+	: "would pass or fail by layout luck. NO BACKTICKS in these strings." ; \
+	$(COMPILER) --emit-llvm -o build/arc_gaddr.ll examples/arc_global_addressof_probe.goo > build/arc_gaddr.cerr 2>&1 \
+	  || { echo "  FAIL (compile, address-of-global probe)"; cat build/arc_gaddr.cerr; exit 1; }; \
+	ga=$$(grep -cE "call void @goo_make_immortal" build/arc_gaddr.ll); \
+	if [ "$$ga" -ne 0 ]; then \
+	  echo "  FAIL: goo_make_immortal emitted $$ga time(s) on the address of a global — it has no header"; \
+	  grep -nE "call void @goo_make_immortal" build/arc_gaddr.ll | head -3; \
+	  fail=1; \
+	else \
+	  echo "  gaddr:      clean — no immortal call on a headerless global address (init and store)"; \
+	fi; \
 	: "METHOD RESULT ALIASES RECEIVER. goo_error_message returns e->message" ; \
 	: "verbatim, so the string from e.Error is the error's own buffer. A" ; \
 	: "receiver is not a member of call->args, so call_taint's result union" ; \

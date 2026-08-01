@@ -2800,6 +2800,31 @@ void codegen_arc_make_global_immortal(CodeGenerator* codegen, LLVMValueRef targe
                                 (unsigned)heap_field, "global.store.immortal.ptr");
     if (!heap_ptr) return;
 
+    // THE ADDRESS OF A GLOBAL IS NOT AN ARC OBJECT, so it has no header and
+    // `heap_ptr - 16` is somebody else's memory.
+    //
+    // codegen_arc_classify_heap_field's first arm answers true for ANY pointer,
+    // with no check that the pointee was ever allocated by goo_alloc -- it was
+    // written to classify a LOCAL's slot, where that holds. `var p *T = &base`
+    // and `p = &base` both hand this function a bare `@base`.
+    //
+    // MEASURED, and it is silent: .data is writable, so there is no fault. gdb
+    // on `var base T; var p *T; func setp() { p = &base }` read
+    // 0x7ffff7e6f4a0 at `&base - 16` before the call and 0xffffffffffffffff
+    // after it -- a live libc pointer overwritten with the IMMORTAL sentinel.
+    //
+    // LLVMIsAGlobalVariable is the exact discriminator and nothing wider. A
+    // constant GEP into a headered object -- which is what the string-literal
+    // and slice-literal backings are -- is a ConstantExpr, NOT a global
+    // variable, so those keep their immortal call and stay correct.
+    //
+    // RESIDUAL, recorded rather than papered over: this cannot see through a
+    // load. `q = &base; p = q` still reaches here with an instruction operand,
+    // and codegen cannot prove what it points at. Closing that needs a real
+    // "is this pointer ARC-allocated" fact, which is an ADR 0002 phase-2
+    // question, not a guard.
+    if (LLVMIsAGlobalVariable(heap_ptr)) return;
+
     LLVMTypeRef ip_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
     LLVMTypeRef ifn_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), &ip_ty, 1, 0);
     LLVMValueRef ifn = LLVMGetNamedFunction(codegen->module, "goo_make_immortal");

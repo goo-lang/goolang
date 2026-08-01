@@ -2870,27 +2870,18 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
         // goo_make_immortal call was unconditional, so GOO_ARC_RELEASE=0 did
         // NOT suppress it -- the reviewer confirmed the string-literal-alias
         // crash reproduced with the kill switch on.
-        if (codegen->release_plan) {
-            int heap_field;
-            if (codegen_arc_classify_heap_field(llvm_type, var_type, &heap_field)) {
-                LLVMValueRef heap_ptr = (heap_field == -1)
-                    ? init_value->llvm_value
-                    : LLVMBuildExtractValue(codegen->builder, init_value->llvm_value,
-                                            (unsigned)heap_field, "global.immortal.ptr");
-                if (heap_ptr) {
-                    LLVMTypeRef immortal_ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
-                    LLVMTypeRef immortal_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context),
-                                                                  &immortal_ptr_ty, 1, 0);
-                    LLVMValueRef immortal_fn = LLVMGetNamedFunction(codegen->module, "goo_make_immortal");
-                    if (!immortal_fn) {
-                        immortal_fn = LLVMAddFunction(codegen->module, "goo_make_immortal", immortal_fn_ty);
-                    }
-                    if (immortal_fn) {
-                        LLVMBuildCall2(codegen->builder, immortal_fn_ty, immortal_fn, &heap_ptr, 1, "");
-                    }
-                }
-            }
-        }
+        // ONE RULE, ONE PLACE. This used to be a hand-inlined copy of the
+        // store-site logic, and the two then disagreed: the store site grew a
+        // guard against `&someGlobal` (which has no ARC header, so making it
+        // "immortal" writes 8 bytes into whatever precedes it) and this copy
+        // did not, so `var p *T = &base` still corrupted at init while
+        // `p = &base` had been fixed. Both now call the same helper.
+        //
+        // `d->global` is the LLVM global this initializer stores into, which is
+        // what makes the helper's LLVMIsAGlobalVariable TARGET test true here --
+        // the init path is a store to a global like any other.
+        codegen_arc_make_global_immortal(codegen, d->global,
+                                         init_value->llvm_value, var_type);
 
         value_info_free(init_value);
     }
