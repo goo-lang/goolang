@@ -1072,10 +1072,19 @@ static KeyRow key_rows[] = {
         "f", 1
     },
     {
-        // SOUNDNESS, and the one that keeps the daemon honest. A bare local is
-        // NOT owned: `f` is a name someone else holds, and handing the map
-        // ownership of it would free it twice once the local is released too.
-        2, "a bare local as a key -> NOT owned",
+        // FLIPPED FROM 0 TO 1 on 2026-08-01 by ADR 0005, and the old comment's
+        // reasoning is what changed rather than being found wrong.
+        //
+        // It read: "handing the map ownership of it would free it twice once
+        // the local is released too". The local is NOT released, and cannot be
+        // while this rule applies. `k` reads RELEASE_NO_ESCAPES, because
+        // escaping as a subscript is still escaping, and the rule only fires
+        // when the reason set is exactly SUBSCRIPT_STORE -- a non-empty set, so
+        // condition 1 always refuses the local. One owner, not two.
+        //
+        // The two facts are COUPLED and must move together. See
+        // identifier_key_is_owned's comment and key row 6.
+        2, "a bare local as a key -> owned (ADR 0005: one owner, and it is the map)",
         "package main\n"
         "func f(s string) int {\n"
         "    m := map[string]int{}\n"
@@ -1083,14 +1092,21 @@ static KeyRow key_rows[] = {
         "    m[k] = 1\n"
         "    return len(m)\n"
         "}\n",
-        "f", 0
+        "f", 1
     },
     {
-        // THE MIXED MAP, which is exactly bench/daemon/daemon.goo:31-33 and the
-        // reason ownership is recorded per ENTRY rather than per map. One write
-        // hands over a fresh allocation, the other passes a borrowed local. A
-        // per-map flag would have to refuse BOTH and reclaim nothing.
-        3, "one owned key and one borrowed key in the SAME map -> exactly 1 owned",
+        // FLIPPED FROM 1 TO 2 on 2026-08-01 by ADR 0005, and this row no longer
+        // demonstrates a MIXED map -- key row 10 was added to keep that
+        // demonstration, because it is the thing per-entry ownership exists for.
+        //
+        // Both entries are now owned, and both are safe: they are two DIFFERENT
+        // buffers. `k`'s is freed by the m[k] entry, ToUpper(k)'s by the other,
+        // and `k` itself is never released. ToUpper is non-retaining, so it adds
+        // no reason to k and the set stays exactly SUBSCRIPT_STORE.
+        //
+        // ONE KEY SITE NAMES `k`, not two. The second write's key is a CALL, so
+        // the count condition sees a single identifier site and does not refuse.
+        3, "a local and a shim result over it -> BOTH owned (two buffers)",
         "package main\n"
         "import \"strings\"\n"
         "func f(s string) int {\n"
@@ -1100,7 +1116,7 @@ static KeyRow key_rows[] = {
         "    m[strings.ToUpper(k)] = 2\n"
         "    return len(m)\n"
         "}\n",
-        "f", 1
+        "f", 2
     },
     {
         // A string LITERAL key is not owned. It is not in condition 2's table,
@@ -1231,6 +1247,27 @@ static KeyRow key_rows[] = {
         "    return len(m) + len(strings.ToUpper(s))\n"
         "}\n",
         "viewKey", 0
+    },
+    {
+        // THE MIXED MAP, which key row 3 used to demonstrate before ADR 0005
+        // made both of its entries owned. Per-ENTRY ownership is the whole
+        // reason owned_keys is a list of sites rather than a flag on the map,
+        // so the demonstration is worth keeping.
+        //
+        // A PARAMETER KEY IS THE REFUSAL NOW, and it is the arm of
+        // identifier_key_is_owned that nothing else reaches: `s` is not a name
+        // this walk bound, so find_record misses and the key is not ours to
+        // give away. The caller owns that buffer.
+        10, "one owned key and one PARAMETER key in the same map -> exactly 1",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    m := map[string]int{}\n"
+        "    m[s] = 1\n"
+        "    m[strings.ToUpper(s)] = 2\n"
+        "    return len(m)\n"
+        "}\n",
+        "f", 1
     },
 };
 

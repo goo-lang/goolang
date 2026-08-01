@@ -1323,6 +1323,81 @@ static bool has_alias(Collected* c, const ParamEscapeResult* pe, const char* nam
 }
 
 // ---------------------------------------------------------------------------
+// ADR 0005: may a map own a key that is a bare IDENTIFIER?
+// ---------------------------------------------------------------------------
+//
+// binding_is_owned answers FALSE for every AST_IDENTIFIER, and it is right to:
+// an identifier means another NAME holds the buffer, and only one owner may
+// free it. That refusal costs bench/daemon/daemon.goo 180,000 bytes per 2,000
+// requests, because `counts[f] = counts[f] + 1` differs from the accepted
+// `counts[strings.ToUpper(f)] = 1` only in SPELLING.
+//
+// The question the refusal was standing in for is "could anything else free
+// this buffer, or read it after the map does". THREE conditions answer it, and
+// all three are required. Dropping any one frees memory somebody still reads,
+// and examples/arc_map_key_local_probe.goo has a function for each.
+//
+//   OWNERSHIP  every value ever bound to the name is FRESH. Asked of the
+//              BOUND VALUE rather than of the identifier, which is the whole
+//              trick -- and asked of EVERY value, not the first, because a
+//              rebind means the release site cannot tell them apart. Refuses
+//              `v := s[1:]`, a view into a buffer this function never made.
+//
+//   THE REASON SET  exactly SUBSCRIPT_STORE. Any other reason means some other
+//              sink can reach the buffer. Refuses `m[s] = 1; return s`, where
+//              the caller still holds it. This is the condition ADR 0005 was
+//              written for, and NOTHING ELSE PROVIDES IT: before the reason
+//              set, that local and the daemon's were one indistinguishable
+//              `escapes = true`.
+//
+//   THE COUNT  exactly one key site names it. ADR 0005 does NOT name this
+//              condition and the reason set cannot supply it: in
+//              `a[s] = 1; b[s] = 2` both marks say SUBSCRIPT_STORE, so
+//              "escapes only as a subscript" is TRUE and two maps would each
+//              free the one buffer.
+//
+// WHY NO ALIAS CONDITION, unlike the rebound path's has_alias. An alias that
+// goes nowhere cannot dangle: `p := f` binds a value binding_is_owned calls
+// borrowed, so p is never released, and p dies with the frame the map does. An
+// alias that goes ANYWHERE adds a reason to `f` -- `return p` gives it RETURN,
+// `append(parts, f)` gives it CALL_RETAIN -- and the reason condition refuses
+// it. The reason set is doing has_alias's work here, and doing it wider.
+//
+// THE COUPLING TO WATCH. The map is safe as sole owner only because the LOCAL
+// is never released: it reads RELEASE_NO_ESCAPES, since escaping as a subscript
+// is still escaping. If condition 1 ever learns to consult the reason set, this
+// function and key row 6 must change in the same commit or both owners free.
+static bool identifier_key_is_owned(Collected* c, const ParamEscapeResult* pe,
+                                    const LocalEscapeResult* le, const char* fn,
+                                    ASTNode* key) {
+    if (!key || key->type != AST_IDENTIFIER || !fn) return false;
+    const char* name = ((IdentifierNode*)key)->name;
+    if (!name) return false;
+
+    // A name this walk never bound is a parameter, a global, or something the
+    // walk could not read. None of them is ours to give away.
+    LocalRecord* r = find_record(c, name);
+    if (!r || r->has_unsafe_value || r->value_count == 0) return false;
+
+    for (size_t i = 0; i < r->value_count; i++) {
+        if (!binding_is_owned(c, pe, r->values[i])) return false;
+    }
+
+    if (local_escape_local_reasons(le, fn, name) != ESCAPE_REASON_SUBSCRIPT_STORE) {
+        return false;
+    }
+
+    size_t sites = 0;
+    for (size_t i = 0; i < c->key_count; i++) {
+        ASTNode* k = c->key_sites[i];
+        if (!k || k->type != AST_IDENTIFIER) continue;
+        const char* other = ((IdentifierNode*)k)->name;
+        if (other && strcmp(other, name) == 0) sites++;
+    }
+    return sites == 1;
+}
+
+// ---------------------------------------------------------------------------
 // Plan construction
 // ---------------------------------------------------------------------------
 
@@ -1539,7 +1614,13 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
             pf->owned_keys = calloc(c.key_count, sizeof(ASTNode*));
             if (pf->owned_keys) {
                 for (size_t i = 0; i < c.key_count; i++) {
-                    if (binding_is_owned(&c, pe, c.key_sites[i])) {
+                    // Two ways to own a key, and they ask DIFFERENT questions.
+                    // binding_is_owned asks whether the key EXPRESSION is a
+                    // fresh temporary, which is every row 1-5. The second asks
+                    // whether an IDENTIFIER's local is one nobody else can
+                    // reach -- see its own comment for the three conditions.
+                    if (binding_is_owned(&c, pe, c.key_sites[i])
+                        || identifier_key_is_owned(&c, pe, le, name, c.key_sites[i])) {
                         pf->owned_keys[pf->owned_key_count++] = c.key_sites[i];
                     }
                 }
