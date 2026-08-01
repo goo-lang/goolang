@@ -5487,6 +5487,24 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  nptr ON:    clean, 0 bytes, no dtor misfire, output matches the control (was $$np_off)"; \
 	fi; \
+	: "METHOD RESULT ALIASES RECEIVER. goo_error_message returns e->message" ; \
+	: "verbatim, so the string from e.Error is the error's own buffer. A" ; \
+	: "receiver is not a member of call->args, so call_taint's result union" ; \
+	: "was blind to it and a Goo helper returning e.Error looked owned." ; \
+	: "LEAKS ARE EXPECTED -- every refused local here is one the fix must" ; \
+	: "refuse. The signal is an invalid access. NO BACKTICKS in these strings." ; \
+	$(COMPILER) -o build/arc_mres examples/arc_release_method_result_probe.goo > build/arc_mres.cerr 2>&1 \
+	  || { echo "  FAIL (compile, method-result probe)"; cat build/arc_mres.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_mres > build/arc_mres.out 2> build/arc_mres.vg; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_mres.vg; then \
+	  echo "  FAIL: a method RESULT was released — it may alias the receiver"; \
+	  grep -E "Invalid read|Invalid write|Invalid free|double free" build/arc_mres.vg | head -3; \
+	  fail=1; \
+	elif grep -q "reference count 0" build/arc_mres.vg; then \
+	  echo "  FAIL: a method result was over-released (refcount hit 0)"; fail=1; \
+	else \
+	  echo "  mresult:    clean — a method result survived 1000 releases"; \
+	fi; \
 	: "TUPLE DESTRUCTURE. n, err := strconv.Atoi(s) is TWO targets and ONE" ; \
 	: "value. seed_names and the AST_MULTI_ASSIGN arm both recorded NULL when" ; \
 	: "the counts differed, so condition 2 refused EVERY target. Row 37 pins" ; \

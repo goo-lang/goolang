@@ -1,0 +1,62 @@
+// T4 SOUNDNESS gate: a method's RESULT may alias its RECEIVER, so it is not
+// owned.
+//
+// goo_error_message returns `e->message` VERBATIM as the string's data pointer
+// (runtime.c) -- no copy. So the string from e.Error() IS the error's message
+// buffer. Releasing that string frees a live error's message, and the block it
+// frees is header-plus-message, so the error's own ARC header goes with it.
+//
+// WHY THE ARGUMENT UNION COULD NOT SEE IT. A receiver is NOT a member of
+// call->args. call_taint built its result taint from the ARGUMENT taints only,
+// and e.Error() has ZERO arguments, so the result taint came out empty and
+// return_escapes(msgOf) read false. The caller then approved `m := msgOf(e)`
+// as owned.
+//
+// Measured before the fix, on 100 iterations: exit 2, 55 valgrind errors from
+// 4 contexts, "Invalid read of size 1" in strlen at runtime.c:461, address
+// "16 bytes inside a block of size 67 free'd".
+//
+// THE DIRECT SHAPE WAS NEVER THE BUG, which is why no probe caught this.
+// `m := e.Error()` in the SAME function as the binding is refused by
+// release_decision's selector_base_is_local. The hole only opened through a
+// Goo helper, where the aliasing crosses a function boundary and only the
+// param-escape summary can see it. leaked() below pins the direct shape so it
+// cannot silently start releasing.
+//
+// LEAKS ARE EXPECTED HERE and must NOT be asserted on. Every local this probe
+// refuses is a local the fix is supposed to refuse. The signal is an invalid
+// access, not a byte count.
+package main
+
+import "errors"
+
+var sink int
+
+// THE HOLE. The receiver is not an argument, so nothing in the argument union
+// reaches it. This must NOT be treated as returning an owned value.
+func msgOf(e error) string { return e.Error() }
+
+func viaHelper(e error) int {
+	m := msgOf(e)
+	return len(m)
+}
+
+// The direct shape, already safe before the fix. Pinned so it stays safe.
+func direct(e error) int {
+	m := e.Error()
+	return len(m)
+}
+
+func main() {
+	e := errors.New("a message long enough to be a real heap allocation")
+	total := 0
+	// MORE THAN ONE ITERATION IS THE WHOLE POINT. The first call would free the
+	// message; the second is the one that reads it back. A single-pass probe
+	// reports clean against the exact defect it exists to catch.
+	for i := 0; i < 1000; i++ {
+		total = total + viaHelper(e)
+		total = total + direct(e)
+	}
+	sink = total
+	println(total)
+}
