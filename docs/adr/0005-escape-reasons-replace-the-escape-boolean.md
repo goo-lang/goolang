@@ -4,6 +4,11 @@ Date: 2026-08-01
 Status: accepted as a DIRECTION. Nothing here is implemented, and this ADR
 changes no code.
 
+Measurements: `docs/adr/0005-measurements/baseline-before.md` holds the numbers
+this decision is judged against, each with the command that produced it. Every
+figure quoted below without a command beside it is either from there or is a
+PREDICTION from the reverted spike — the 180,000 and the 82,000 are predictions.
+
 Supersedes nothing. Refines ADR 0002's elision pass and ADR 0004's formulation.
 
 ## Context
@@ -63,7 +68,37 @@ Reasons follow the sinks the engine already enumerates: RETURN, GLOBAL_STORE,
 CALL_RETAIN, GO_ARG, DEFER_ARG, CHAN_SEND, MAP_KEY, and the conservative
 catch-all a default arm raises.
 
-`escape_core.c` has 21 `escape_mark` call sites. Each names its reason.
+THAT LIST IS SHORT BY THREE, and for the same cause as the count below — it was
+written from the sinks this ADR needed rather than from the sites that exist.
+Walking all 15 finds three marks it cannot name:
+
+| Site | The cause | No name in the list above |
+|---|---|---|
+| 282, 872 | a store into a container or a non-identifier target | CONTAINER_STORE |
+| 359, 501 | the CALLEE expression's own taint, for `x.m()` and a closure | CALLEE_VALUE |
+| 609 | a func literal's captured cells | CLOSURE_CAPTURE |
+
+`CALLEE_VALUE` is the one to look at twice. It is the mark that makes any local
+with a method set unreleasable, `.handoff.md` records it as a deliberate
+CEILING on ARC rather than a defect, and naming it is what would let a later
+change measure that ceiling. None of the three is needed for the map-key
+consumer, so the names are settled where they are assigned, not here.
+
+`escape_core.c` has **15** mark sites, and each names its reason:
+
+```bash
+grep -nE 'escape_mark(_all)?\(ctx' src/types/escape_core.c    # 15 lines
+```
+
+14 `escape_mark` (lines 186, 234, 247, 282, 359, 414, 468, 501, 507, 609, 689,
+749, 821, 872) and one `escape_mark_all` (970). No file outside
+`src/types/escape_core.c` calls either function, so those 15 are the whole
+surface.
+
+CORRECTED 2026-08-01, from 21. The 21 was written from memory and never run.
+Nothing downstream depended on it, but the number was about to size a task, and
+a plan built on 21 sites would have looked incomplete at 15. Re-run the grep
+rather than quoting this paragraph.
 
 ## Alternatives, and why they lost
 
