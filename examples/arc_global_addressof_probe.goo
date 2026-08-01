@@ -1,0 +1,45 @@
+// T4 SOUNDNESS gate: the ADDRESS OF A GLOBAL is not an ARC object, so nothing
+// may make it "immortal".
+//
+// goo_make_immortal reads the 16 bytes at `ptr - 16` and writes the IMMORTAL
+// sentinel there. That is correct for a goo_alloc'd object and wrong for
+// everything else. `&base` is a plain module-level address with no header, so
+// those 16 bytes belong to whatever the linker placed before it.
+//
+// MEASURED, and it is SILENT: .data is writable, so there is no fault and the
+// program exits 0. gdb on this exact shape read 0x7ffff7e6f4a0 at `&base - 16`
+// before the call and 0xffffffffffffffff after it -- a live libc pointer
+// overwritten with the sentinel.
+//
+// THE GATE IS AN IR CHECK, NOT A RUN. Whether the corruption damages anything
+// depends on what the linker happened to place before `base`, so a runtime
+// assertion here would pass or fail by layout luck. The emission either happens
+// or it does not, so grep the IR for it and the answer is deterministic.
+//
+// BOTH PATHS, because they were separate copies of the same logic and the fix
+// for one did not reach the other: `p = &base` is the STORE path
+// (expression/statement/nullable codegen) and `q = &base` on a package-level
+// var is the INIT path (codegen_generate_global_init_function). Both now call
+// codegen_arc_make_global_immortal.
+package main
+
+type T struct{ x int }
+
+var guard int = 424242
+var base T
+
+// INIT path: initialized from the address of a global.
+var q *T = &base
+
+// STORE path: assigned the address of a global after init.
+var p *T
+
+func setp() { p = &base }
+
+func main() {
+	base.x = 7
+	setp()
+	println(p.x)
+	println(q.x)
+	println(guard)
+}

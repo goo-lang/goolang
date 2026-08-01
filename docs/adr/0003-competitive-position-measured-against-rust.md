@@ -142,6 +142,43 @@ Goo at all.
    cost that was never there.
 4. **No scalar work is needed.** Parity is established and can be claimed.
 
+## Addendum, 2026-08-01 — work-order item 2 rested on a stale cause
+
+The decision and the measurements above stand. **Item 2 of "What this changes
+in the work order" does not, and it is recorded here rather than edited above.**
+
+It reads: "`noalias` from the lane-ownership proof comes before vector types.
+Rust wins pre-SIMD, so per-lane scalar throughput is the first problem." The
+premise is right and the conclusion points at the wrong file.
+
+- **`lane_ownership.c` proves the wrong disjointness for this.** It proves
+  CROSS-lane disjointness of user slices. The hot loop lives inside
+  `goo_pkg__lanes__StencilStep__n2`, which never sees two lanes at once; its
+  alias question is INTRA-lane (does the store into `ctx.scratch` alias the
+  loads from `ctx.own` and `coeffs`). That pass never computes it. It also
+  frees its binding list at the end of every function walk and returns only an
+  `int`, so no fact of any kind reaches codegen today.
+- **The pre-SIMD deficit is memory traffic and reloaded slice headers**, not a
+  missing alias attribute. `ctx.scratch` reloads its pointer and length every
+  iteration because nothing binds it to a local, which defeats SCEV and keeps a
+  bounds check alive — while `own := ctx.own` in the same loop has already had
+  every check removed. And `StencilStep` copies back into `ctx.own` each round
+  where Rust swaps two pointers, so it moves about twice the bytes.
+- **Both are library changes in `goostd/lanes/lanes.go`.** So "this is not one
+  missing feature" remains true, but the work is not a compiler feature at all.
+
+`noalias` may still pay AFTER those land, by removing the loop vectorizer's
+runtime alias check — a smaller win on top of a larger one, not the thing that
+unlocks it. A slice passes as `{ ptr, i64, i64 }`, and the LLVM `noalias`
+PARAMETER attribute applies to pointer parameters only, so expressing it needs
+`llvm.experimental.noalias.scope.decl` with `!alias.scope` metadata rather than
+the obvious approach.
+
+Separately, `docs/lanes.md` blamed a `goo_bounds_check` call for blocking
+vectorization. Commit `f3c98c9` removed that call on 2026-07-23, five days
+before the measurements in this ADR. That section is corrected, and
+`lanes-kernel-ir-pin` now asserts the module holds 0 such call sites.
+
 ## Open, and deliberately not decided here
 
 - Whether to keep pursuing parallel-throughput parity, or to concede throughput

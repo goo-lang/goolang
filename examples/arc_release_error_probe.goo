@@ -1,0 +1,49 @@
+// T4 gate: does an owned `error` local release?
+//
+// An error is TYPE_NULLABLE of *int8 (type_checker_error_type), lowering to
+// { i1, ptr } -- field 0 is the nil flag and THE OBJECT IS FIELD 1. Before
+// this arm the shape test accepted a bare pointer, a 3-field slice and a
+// 2-field string, so an error read RELEASE_OK and emitted NOTHING.
+//
+// errors.New is non_retaining = 1, audited against goo_error_from_string ->
+// goo_error_wrap, which goo_allocs and memcpys the message. So the returned
+// error owns a COPY and no other name holds it.
+//
+// The read is errors.Is(e, e), not e.Error(). A METHOD CALL on a local marks
+// that local escaping unconditionally (escape_core.c's call_taint, the
+// non-identifier-callee arm), so e.Error() makes e read RELEASE_NO_ESCAPES no
+// matter what the method does -- verified separately. errors.Is is
+// non_retaining = 1, so unlike a method call it does not mark its receiver
+// escaping, which is the ONLY reason it is used here.
+//
+// errors.Is(e, e) does NOT dereference the error object. goo_error_is
+// (runtime.c) compares err == target on the FIRST iteration of its loop and
+// returns immediately -- for identical arguments it never reads err->cause
+// and never touches the object's bytes. This probe does not catch an early
+// release by reading freed memory. Its real signal is the LEAK DELTA between
+// GOO_ARC_RELEASE=0 and the default build, checked by the arc-release-probe
+// Makefile leg below: mutant 1 (field=0 instead of field=1) is caught
+// because the RELEASE mechanism itself reads garbage through the wrong
+// field offset, not because this probe's own code dereferences anything.
+package main
+
+import "errors"
+
+var sink int
+
+func build(i int) int {
+	e := errors.New("a failure happened here")
+	if errors.Is(e, e) {
+		return 1
+	}
+	return 0
+}
+
+func main() {
+	total := 0
+	for i := 0; i < 10000; i++ {
+		total = total + build(i)
+	}
+	sink = total
+	println(total)
+}

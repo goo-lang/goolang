@@ -302,6 +302,7 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             // Do NOT free `target`: for an identifier it aliases the live
             // value-table entry (freeing it would undefine the variable).
             LLVMBuildStore(codegen->builder, sval, target->llvm_value);
+            codegen_arc_make_global_immortal(codegen, target->llvm_value, sval, target->goo_type);
         }
     }
     return 1;
@@ -2741,48 +2742,121 @@ static bool codegen_arc_zero_slot(CodeGenerator* codegen, LLVMValueRef slot, LLV
     return st != NULL;
 }
 
-void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
-#if LLVM_AVAILABLE
-    if (!codegen || !codegen->release_plan || !info || !info->name || !info->llvm_value) return;
-    FunctionInfo* fi = codegen->current_function_info;
-    if (!fi || !fi->name) return;
+// WHICH PART OF A VALUE OF THIS SHAPE IS THE HEAP OBJECT? Answered by shape,
+// and for a fat value cross-checked against the Goo type. Anything not
+// matched here is refused, because the safe answer is "nothing here is a
+// releasable heap pointer" -- refusing costs a leak; guessing frees the wrong
+// address.
+//
+// Extracted (Task 2b) so codegen_arc_note_local (deciding what a LOCAL's slot
+// releases at function exit) and codegen_generate_global_init_function
+// (deciding what a GLOBAL's stored value must be marked immortal) ask this
+// EXACT question the same way. A second, hand-copied version of these four
+// arms would be exactly the drift include/block_escape.h warns about for its
+// own soundness sibling -- one arm updated and the other forgotten is a
+// silent divergence, not a compile error.
+//
+// On a match, returns true and sets *field_out to -1 (the value itself is the
+// pointer), 0, or 1 (that field of the struct is the pointer). Returns false,
+// *field_out untouched, otherwise.
+// A PACKAGE-LEVEL GLOBAL IS IMMORTAL AT EVERY STORE, NOT ONLY AT INIT.
+//
+// codegen_generate_global_init_function makes a global's INITIAL value
+// immortal, which is what stops a local that aliases it from being freed:
+// return_escapes tracks PARAMETERS only, so a function returning a global looks
+// exactly like one returning a fresh allocation. A value assigned LATER got
+// none of that protection.
+//
+// MEASURED. With `var G error = errors.New(..)` and a reset() doing
+// `G = errors.New(..)`, the existing global-probe shape (getErr/useErr over 100
+// iterations) gave "panic: release of an object with reference count 0", exit 2,
+// 4 valgrind errors from 2 contexts. The reviewer who deferred this recorded
+// that the shape "exits 0 today"; it does not.
+//
+// THIS IS A HELPER BECAUSE A STORE TO A GLOBAL HAS THREE CODEGEN PATHS, and the
+// first attempt at this fix patched only one of them and measured no change.
+// The paths are the general TOKEN_ASSIGN arm (expression_codegen.c), the
+// multi-assign arm (codegen_generate_multi_assign above), and the NULLABLE arm
+// (codegen_generate_nullable_assignment) -- an `error` is a nullable, so it
+// takes the third. Anything that stores to a global must call this, and a
+// fourth path added later must call it too.
+//
+// LLVMIsAGlobalVariable is the whole test. A local's address is an alloca and a
+// field is a GEP, so neither answers true; no symbol-table lookup is needed.
+//
+// Gated on release_plan for the same reason the init path is (549d0bb):
+// GOO_ARC_RELEASE=0 must emit nothing at all.
+void codegen_arc_make_global_immortal(CodeGenerator* codegen, LLVMValueRef target_ptr,
+                                      LLVMValueRef stored_val, Type* goo_type) {
+    if (!codegen || !codegen->release_plan || !target_ptr || !stored_val) return;
+    if (!LLVMIsAGlobalVariable(target_ptr)) return;
 
-    if (!release_plan_should_release(codegen->release_plan, fi->name, info->name)) return;
+    int heap_field;
+    if (!codegen_arc_classify_heap_field(LLVMTypeOf(stored_val), goo_type, &heap_field)) return;
 
-    if (LLVMGetValueKind(info->llvm_value) != LLVMInstructionValueKind) return;
-    if (LLVMGetInstructionOpcode(info->llvm_value) != LLVMAlloca) return;
-    LLVMTypeRef slot_ty = LLVMGetAllocatedType(info->llvm_value);
-    if (!slot_ty) return;
+    LLVMValueRef heap_ptr = (heap_field == -1)
+        ? stored_val
+        : LLVMBuildExtractValue(codegen->builder, stored_val,
+                                (unsigned)heap_field, "global.store.immortal.ptr");
+    if (!heap_ptr) return;
 
-    // WHICH PART OF THIS SLOT IS THE HEAP OBJECT? Answered by shape, and for a
-    // fat value cross-checked against the Goo type. Anything not matched here is
-    // refused, because the safe answer is "release nothing".
+    // THE ADDRESS OF A GLOBAL IS NOT AN ARC OBJECT, so it has no header and
+    // `heap_ptr - 16` is somebody else's memory.
     //
-    // THIS IS THE SECOND OF TWO INDEPENDENT GUARDS, and it carries weight on its
-    // own. release_decision answers "does this local own its value"; this answers
-    // "which part of this slot is the heap object". Measured while the string
-    // increment was built: with the ownership arm added and this branch still
-    // absent, `s := a + b` read RELEASE_OK and emitted NOTHING. Neither half is
-    // decoration.
-    int field;
-    if (LLVMGetTypeKind(slot_ty) == LLVMPointerTypeKind) {
+    // codegen_arc_classify_heap_field's first arm answers true for ANY pointer,
+    // with no check that the pointee was ever allocated by goo_alloc -- it was
+    // written to classify a LOCAL's slot, where that holds. `var p *T = &base`
+    // and `p = &base` both hand this function a bare `@base`.
+    //
+    // MEASURED, and it is silent: .data is writable, so there is no fault. gdb
+    // on `var base T; var p *T; func setp() { p = &base }` read
+    // 0x7ffff7e6f4a0 at `&base - 16` before the call and 0xffffffffffffffff
+    // after it -- a live libc pointer overwritten with the IMMORTAL sentinel.
+    //
+    // LLVMIsAGlobalVariable is the exact discriminator and nothing wider. A
+    // constant GEP into a headered object -- which is what the string-literal
+    // and slice-literal backings are -- is a ConstantExpr, NOT a global
+    // variable, so those keep their immortal call and stay correct.
+    //
+    // RESIDUAL, recorded rather than papered over: this cannot see through a
+    // load. `q = &base; p = q` still reaches here with an instruction operand,
+    // and codegen cannot prove what it points at. Closing that needs a real
+    // "is this pointer ARC-allocated" fact, which is an ADR 0002 phase-2
+    // question, not a guard.
+    if (LLVMIsAGlobalVariable(heap_ptr)) return;
+
+    LLVMTypeRef ip_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+    LLVMTypeRef ifn_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), &ip_ty, 1, 0);
+    LLVMValueRef ifn = LLVMGetNamedFunction(codegen->module, "goo_make_immortal");
+    if (!ifn) ifn = LLVMAddFunction(codegen->module, "goo_make_immortal", ifn_ty);
+    if (ifn) LLVMBuildCall2(codegen->builder, ifn_ty, ifn, &heap_ptr, 1, "");
+}
+
+bool codegen_arc_classify_heap_field(LLVMTypeRef value_ty, Type* goo_type, int* field_out) {
+    if (!value_ty || !field_out) return false;
+
+    if (LLVMGetTypeKind(value_ty) == LLVMPointerTypeKind) {
         // A bare pointer: new(T), &T{}, and a map (whose LLVM form is an opaque
         // pointer). This is PR #261's behaviour, unchanged, and it is what the
         // 493 goldens already cover.
-        field = -1;
-    } else if (LLVMGetTypeKind(slot_ty) == LLVMStructTypeKind &&
-               info->goo_type && info->goo_type->kind == TYPE_SLICE &&
-               LLVMCountStructElementTypes(slot_ty) == 3 &&
-               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 0)) == LLVMPointerTypeKind) {
+        *field_out = -1;
+        return true;
+    }
+    if (LLVMGetTypeKind(value_ty) == LLVMStructTypeKind &&
+        goo_type && goo_type->kind == TYPE_SLICE &&
+        LLVMCountStructElementTypes(value_ty) == 3 &&
+        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(value_ty, 0)) == LLVMPointerTypeKind) {
         // A slice: `{ T*, i64, i64 }`, and the data buffer is field 0. BOTH the
         // Goo kind and the LLVM shape must agree. If they disagree the type
         // system and codegen have diverged, and a GEP on the wrong shape is
         // precisely the defect this guard exists to stop.
-        field = 0;
-    } else if (LLVMGetTypeKind(slot_ty) == LLVMStructTypeKind &&
-               info->goo_type && info->goo_type->kind == TYPE_STRING &&
-               LLVMCountStructElementTypes(slot_ty) == 2 &&
-               LLVMGetTypeKind(LLVMStructGetTypeAtIndex(slot_ty, 0)) == LLVMPointerTypeKind) {
+        *field_out = 0;
+        return true;
+    }
+    if (LLVMGetTypeKind(value_ty) == LLVMStructTypeKind &&
+        goo_type && goo_type->kind == TYPE_STRING &&
+        LLVMCountStructElementTypes(value_ty) == 2 &&
+        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(value_ty, 0)) == LLVMPointerTypeKind) {
         // A string: `{ i8*, i64 }` (src/codegen/type_mapping.c), and the data
         // buffer is field 0 -- the same position a slice's is, checked the same
         // two ways. The ELEMENT COUNT is what separates them: 2 for a string, 3
@@ -2802,16 +2876,91 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
         // runtime check would notice. The refusal is entirely static: condition 2
         // reads AST_SLICE_INDEX_EXPR as a view. Pinned by release_decision_test
         // row 7 and by examples/arc_release_substring_probe.goo.
-        field = 0;
-    } else {
-        // Refused on purpose, TYPE_INTERFACE included: an interface is
-        // `{ vtable*, data* }`, so field 0 there is a VTABLE and must never be
-        // freed. That is why this is a per-site decision and not a rule.
-        //
-        // A NAMED string or slice type (`type Name string`) has kind TYPE_NAMED
-        // and lands here too. A lost reclamation, never an unsafe free.
-        return;
+        *field_out = 0;
+        return true;
     }
+    if (LLVMGetTypeKind(value_ty) == LLVMStructTypeKind &&
+        goo_type && goo_type->kind == TYPE_NULLABLE &&
+        goo_type->data.nullable.base_type &&
+        goo_type->data.nullable.base_type->kind == TYPE_POINTER &&
+        LLVMCountStructElementTypes(value_ty) == 2 &&
+        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(value_ty, 0)) == LLVMIntegerTypeKind &&
+        LLVMGetIntTypeWidth(LLVMStructGetTypeAtIndex(value_ty, 0)) == 1 &&
+        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(value_ty, 1)) == LLVMPointerTypeKind) {
+        // A NULLABLE POINTER: `{ i1, ptr }` — field 0 is the nil FLAG and the
+        // object is FIELD 1. `error` is the shape that matters today
+        // (type_checker_error_type builds ?*int8 and renames it "error"), but
+        // the rule is stated over the TYPE, not over that name, so `?*T`
+        // behaves the same and no string comparison decides a free().
+        //
+        // THE FLAG IS WHY THIS IS FIELD 1 AND NOT FIELD 0. A string and a
+        // slice both LEAD with their buffer; this leads with an i1. Testing the
+        // leading field's kind and width is what keeps the three arms mutually
+        // exclusive — a 2-field string is `{ ptr, i64 }` and cannot match here.
+        *field_out = 1;
+        return true;
+    }
+
+    // Refused on purpose, TYPE_INTERFACE included: an interface is
+    // `{ vtable*, data* }`, so field 0 there is a VTABLE and must never be
+    // freed. That is why this is a per-site decision and not a rule.
+    //
+    // A NAMED string or slice type (`type Name string`) has kind TYPE_NAMED
+    // and lands here too. A lost reclamation, never an unsafe free.
+    return false;
+}
+
+void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
+#if LLVM_AVAILABLE
+    if (!codegen || !codegen->release_plan || !info || !info->name || !info->llvm_value) return;
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi || !fi->name) return;
+
+    // WHY THIS PRINTS BEFORE THE BAIL. Two different modules can refuse the
+    // same local, and until this line they were indistinguishable from the
+    // outside: release_decision answering "not owned" looked exactly like this
+    // function answering "I do not recognise that slot shape". They are defects
+    // in different files with different fixes.
+    //
+    // Measured worth: this line is what identified BOTH guards refusing `err`
+    // in seconds, after .handoff.md had attributed the refusal to condition 4
+    // (loop scope), which `err` never reaches. See
+    // docs/superpowers/specs/2026-07-31-arc-loop-scoped-release-design.md.
+    if (getenv("GOO_ARC_DEBUG")) {
+        fprintf(stderr, "[arc?] %s: %s -> %s\n", fi->name, info->name,
+                release_verdict_name(release_plan_verdict(codegen->release_plan,
+                                                          fi->name, info->name)));
+    }
+
+    if (!release_plan_should_release(codegen->release_plan, fi->name, info->name)) return;
+
+    if (LLVMGetValueKind(info->llvm_value) != LLVMInstructionValueKind) return;
+    if (LLVMGetInstructionOpcode(info->llvm_value) != LLVMAlloca) return;
+    LLVMTypeRef slot_ty = LLVMGetAllocatedType(info->llvm_value);
+    if (!slot_ty) return;
+
+    // WHICH PART OF THIS SLOT IS THE HEAP OBJECT? codegen_arc_classify_heap_field
+    // answers by shape, and for a fat value cross-checks against the Goo type.
+    // Anything not matched there is refused, because the safe answer is
+    // "release nothing".
+    //
+    // THIS IS THE SECOND OF TWO INDEPENDENT GUARDS, and it carries weight on its
+    // own. release_decision answers "does this local own its value"; this answers
+    // "which part of this slot is the heap object". Measured while the string
+    // increment was built: with the ownership arm added and this branch still
+    // absent, `s := a + b` read RELEASE_OK and emitted NOTHING. Neither half is
+    // decoration.
+    //
+    // NIL SAFETY on the nullable-pointer arm is already paid for here, even
+    // though the classifier itself is stateless: the error-union construction
+    // builds `{ i1 false, ptr undef }` and fills field 1 in, so an unwritten
+    // slot would hold UNDEF — the exact use-of-undef class PR #265 fixed.
+    // codegen_arc_zero_slot below stores LLVMConstNull(slot_ty), which for
+    // this shape is zeroinitializer and therefore `{ false, null }`, and
+    // goo_release is a no-op on NULL. The guarantee is FAIL-CLOSED: no
+    // release site is recorded unless that store was emitted.
+    int field;
+    if (!codegen_arc_classify_heap_field(slot_ty, info->goo_type, &field)) return;
 
     // The same name can be bound twice in sibling blocks. The plan already
     // refuses such a name (RELEASE_NO_REBOUND, because it counts bindings), so a
@@ -2846,8 +2995,31 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     // covers CAP -- the elements between len and cap are uninitialised. So
     // elements go through elem_stride below, which the exit turns into a
     // goo_slice_release_elems call with the length loaded at that point.
+    // THE DTOR MUST BE NARROWER THAN THE RELEASE ARM ABOVE, and that is
+    // deliberate, not an oversight to "simplify" into one test. The
+    // `field = 1` arm fires for ANY nullable-of-pointer shape, and that is
+    // safe: releasing a pointer never depends on what it points at. A
+    // destructor is different -- it reads through the pointer at a
+    // hardcoded C struct offset, so it must know the pointee's real layout.
+    // A `?*int` is not an error and has no `message` field; running
+    // goo_error_dtor on one would goo_release whatever bytes happen to sit
+    // at that offset. type_is_error is the codebase's one central "is this
+    // really an error" predicate (types.c), the same one .Error() dispatch
+    // and fmt's error-printing use, so this stays in lockstep with them
+    // rather than drifting on a second, private definition.
+    //
+    // `field == 1 &&` is belt and braces, deliberately redundant with
+    // type_is_error: the name test says WHAT the type is, and the field
+    // test says the slot has the SHAPE that name implies (the nullable-of-
+    // pointer struct, not a bare pointer, a slice, or a string). Either
+    // test alone is enough today, because only the nullable-of-pointer arm
+    // ever sets field to 1. Together they survive a change to the other --
+    // a future arm that reused field 1 for something else, or a future
+    // widening of type_is_error, would each still be caught by the
+    // remaining check.
     const char* dtor = (info->goo_type && info->goo_type->kind == TYPE_MAP)
-                     ? "goo_map_dtor" : NULL;
+                     ? "goo_map_dtor"
+                     : ((field == 1 && type_is_error(info->goo_type)) ? "goo_error_dtor" : NULL);
 
     // DOES THIS SLICE OWN ITS ELEMENTS? Both halves must agree, as ever.
     //

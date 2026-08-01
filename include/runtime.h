@@ -146,6 +146,27 @@ typedef void (*GooObjDtor)(void* obj);
 // exists in exactly one place.
 void goo_release_with(void* ptr, GooObjDtor dtor);
 
+// Mark an object as never-to-be-freed. A PACKAGE-LEVEL GLOBAL is live for the
+// whole program, so nothing may ever free it -- and the escape analysis has
+// no way to say so, because ParamEscapeSummary.return_escapes tracks
+// parameters only: a function returning a global is indistinguishable from
+// one returning a fresh allocation. Called once, from the global initializer
+// function, on the heap part of each global's value right after it is
+// stored (codegen_generate_global_init_function).
+//
+// Same trick a string literal's header has carried since PR #264: goo_retain
+// and goo_release_with both check GOO_RC_IMMORTAL before touching the count,
+// so this makes every later retain and release on this object a no-op.
+// No-op on NULL and on goo_zerobase, exactly as goo_retain/goo_release_with
+// are.
+//
+// READS the count before it writes: a string literal's header is ALREADY
+// GOO_RC_IMMORTAL and lives in a constant .rodata global, so an unconditional
+// store there is a write to read-only memory (see the fix-round-1 comment on
+// the definition in runtime.c for the crash this caused and the invariant the
+// guard relies on).
+void goo_make_immortal(void* ptr);
+
 // Release the first `len` elements of a slice buffer. The caller releases the
 // buffer itself afterwards.
 //
@@ -227,6 +248,13 @@ goo_error_t* goo_error_unwrap(goo_error_t* e);
 // entries, which predate any stdbool dependency in this header.
 int goo_error_is(goo_error_t* err, goo_error_t* target);
 void goo_error_free(goo_error_t* error);
+
+// GooObjDtor for an error. goo_error_wrap goo_allocs the struct AND a copy of
+// the message, so one goo_free from goo_release_with reaches only the struct
+// -- the same shape goo_map_dtor exists for. Leaves `cause` alone: it is
+// stored verbatim and the caller's own local may still name it, so freeing it
+// here would free a value with another owner.
+void goo_error_dtor(void* obj);
 
 // I/O functions
 void goo_print(const char* message);

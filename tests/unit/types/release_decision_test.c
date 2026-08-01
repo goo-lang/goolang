@@ -646,6 +646,92 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "a", RELEASE_NO_UNKNOWN } }, 1
     },
+    {
+        // THE ROW THE NULLABLE-POINTER ARM EXISTS FOR. errors.New is
+        // non_retaining = 1, so condition 2 approves. Before the codegen arm
+        // this verdict was correct and emitted nothing.
+        //
+        // The read is errors.Is(e, e), not e.Error(): a method call on a
+        // local marks it escaping unconditionally (escape_core.c's
+        // call_taint), so e.Error() would read RELEASE_NO_ESCAPES here
+        // regardless of the codegen arm. errors.Is is non_retaining = 1, so
+        // it does not trip that rule -- which is the only reason it is used
+        // here. It does NOT dereference e: goo_error_is (runtime.c) compares
+        // err == target on the first loop iteration and returns immediately
+        // for identical arguments, without reading err->cause. This row
+        // exercises the RELEASE_OK verdict, not a read of freed memory.
+        35, "an owned error binding -> RELEASE_OK",
+        "package main\n"
+        "import \"errors\"\n"
+        "func f() int {\n"
+        "    e := errors.New(\"boom\")\n"
+        "    if errors.Is(e, e) {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", {{"e", RELEASE_OK}}, 1
+    },
+    {
+        // SOUNDNESS. errors.Unwrap returns a pointer INTO its argument, so its
+        // row is non_retaining = 0 and condition 2 must refuse. Inert before
+        // the nullable-pointer arm; load-bearing after it.
+        36, "an unwrapped error is BORROWED -> refused",
+        "package main\n"
+        "import \"errors\"\n"
+        "func f() int {\n"
+        "    outer := errors.New(\"boom\")\n"
+        "    inner := errors.Unwrap(outer)\n"
+        "    if inner == nil {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", {{"inner", RELEASE_NO_NOT_OWNED}}, 1
+    },
+    {
+        // THE ROW THIS CHANGE EXISTS FOR. Two targets, ONE value. Before this,
+        // both recorded NULL and condition 2 refused. strconv.Atoi is
+        // non_retaining = 1, which is defined over the WHOLE result list, so
+        // no result aliases the argument and every result is owned.
+        37, "a tuple destructure from a non-retaining shim -> owned",
+        "package main\n"
+        "import \"strconv\"\n"
+        "func f(s string) int {\n"
+        "    n, err := strconv.Atoi(s)\n"
+        "    if err == nil {\n"
+        "        return n\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", {{"err", RELEASE_OK}}, 1
+    },
+    {
+        // SOUNDNESS. A Goo callee whose return_escapes is TRUE returns a value
+        // derived from a parameter, so NO target of its destructure is owned.
+        38, "a tuple destructure from a borrowing callee -> refused",
+        "package main\n"
+        "func two(s string) (string, int) {\n"
+        "    return s[1:], 1\n"
+        "}\n"
+        "func f(s string) int {\n"
+        "    a, b := two(s)\n"
+        "    return len(a) + b\n"
+        "}\n",
+        "f", {{"a", RELEASE_NO_NOT_OWNED}}, 1
+    },
+    {
+        // UNCHANGED BEHAVIOUR, pinned. Counts MATCH here, so each target keeps
+        // its own value and this change must not touch it.
+        39, "two targets, two values -> each keeps its own binding",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(s string) int {\n"
+        "    a, b := strings.TrimSpace(s), s\n"
+        "    return len(a) + len(b)\n"
+        "}\n",
+        "f", {{"a", RELEASE_OK}, {"b", RELEASE_NO_NOT_OWNED}}, 2
+    },
 };
 
 // =============================================================================

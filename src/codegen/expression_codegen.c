@@ -1904,6 +1904,8 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         // Store the value into the target's address.
         LLVMBuildStore(codegen->builder, sval, target->llvm_value);
 
+        codegen_arc_make_global_immortal(codegen, target->llvm_value, sval, target->goo_type);
+
         // Return the stored value
         return value;
     }

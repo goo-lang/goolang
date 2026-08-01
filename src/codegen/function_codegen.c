@@ -2847,6 +2847,42 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
         }
 
         LLVMBuildStore(codegen->builder, init_value->llvm_value, d->global);
+
+        // A PACKAGE-LEVEL GLOBAL is live for the whole program, so nothing
+        // may ever free it -- and the escape analysis cannot say so, because
+        // ParamEscapeSummary.return_escapes tracks parameters only, so a
+        // function that returns this global is indistinguishable from one
+        // that returns a fresh allocation (Task 2b). Mark the heap part of
+        // the value just stored immortal, using the SAME shape test
+        // codegen_arc_note_local uses to decide what a local's slot
+        // releases, via the shared codegen_arc_classify_heap_field (Task
+        // 2b, statement_codegen.c) -- asking the identical question rather
+        // than a second, driftable copy of it. A shape it does not
+        // recognise emits nothing here too: refusing costs a leak, guessing
+        // frees the wrong address.
+        //
+        // GATED ON `codegen->release_plan` (fix round 1, Task 2b Critical):
+        // every other part of this arc treats GOO_ARC_RELEASE=0 as a real
+        // escape hatch that leaves the plan NULL and emits nothing at all
+        // -- codegen_arc_note_local's own first check is `!codegen->release_plan`
+        // above. arena_rss_probe.sh and every differential probe leg depend
+        // on that being a true off switch. Before this guard, the
+        // goo_make_immortal call was unconditional, so GOO_ARC_RELEASE=0 did
+        // NOT suppress it -- the reviewer confirmed the string-literal-alias
+        // crash reproduced with the kill switch on.
+        // ONE RULE, ONE PLACE. This used to be a hand-inlined copy of the
+        // store-site logic, and the two then disagreed: the store site grew a
+        // guard against `&someGlobal` (which has no ARC header, so making it
+        // "immortal" writes 8 bytes into whatever precedes it) and this copy
+        // did not, so `var p *T = &base` still corrupted at init while
+        // `p = &base` had been fixed. Both now call the same helper.
+        //
+        // `d->global` is the LLVM global this initializer stores into, which is
+        // what makes the helper's LLVMIsAGlobalVariable TARGET test true here --
+        // the init path is a store to a global like any other.
+        codegen_arc_make_global_immortal(codegen, d->global,
+                                         init_value->llvm_value, var_type);
+
         value_info_free(init_value);
     }
 

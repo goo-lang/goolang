@@ -261,11 +261,10 @@ static bool is_assign_operator(TokenType op) {
 static void walk_stmts(WalkCtx* ctx, ASTNode* stmt);
 
 // Seed `names` from a parallel `values` list. The shape `a, b := f(), g()` and
-// `var a, b = x, y` share it. When the counts differ -- `a, b := f()` returning
-// two results -- there is no single value per name, so each name is recorded with
-// a NULL value and condition 2 then refuses it. That is the safe reading, and it
-// is why the daemon's `n, err := strconv.Atoi(f)` would refuse on ownership even
-// if it were not already refused on loop scope.
+// `var a, b = x, y` share it. When ONE value feeds several names -- the daemon's
+// `n, err := strconv.Atoi(f)` shape -- that value is attributed to every target.
+// Any OTHER count mismatch is a shape this module does not understand, and the
+// safe answer there is still NULL, which condition 2 refuses.
 static void seed_names(WalkCtx* ctx, char** names, size_t name_count, ASTNode* values) {
     size_t value_count = 0;
     for (ASTNode* v = values; v; v = v->next) value_count++;
@@ -278,7 +277,21 @@ static void seed_names(WalkCtx* ctx, char** names, size_t name_count, ASTNode* v
         }
         return;
     }
-    for (size_t i = 0; i < name_count; i++) note_declaration(ctx, names[i], NULL);
+    // COUNTS DIFFER: `a, b := f()`, one call feeding several names. Attribute
+    // the SINGLE value to every target rather than recording NULL.
+    //
+    // SOUNDNESS COMES FROM AN EXISTING DEFINITION, not a new one. Both
+    // ownership sources are already stated over the WHOLE result list:
+    // shim_signature_is_non_retaining is "does not retain a pointer argument
+    // AND does not return a value that aliases one", and
+    // ParamEscapeSummary.return_escapes is "does F return a value derived from
+    // one of its own params?". Neither is per-result and neither needs to be:
+    // if NO result aliases an argument, then EVERY result is owned.
+    //
+    // Only the one-value case qualifies. Any other mismatch is a shape this
+    // module does not understand, and the safe answer there is still NULL.
+    ASTNode* single = (value_count == 1) ? values : NULL;
+    for (size_t i = 0; i < name_count; i++) note_declaration(ctx, names[i], single);
 }
 
 static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
@@ -316,10 +329,11 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 MultiAssignNode* n = (MultiAssignNode*)stmt;
                 // `targets` is a NODE LIST, not a name array. `a, b := f()`
                 // declares, `a, b = x, y` assigns; either way condition 4 only
-                // needs the count. When the list lengths differ -- `a, b := f()`
-                // with one two-result call -- there is no single value per name,
-                // so the value is recorded NULL and condition 2 refuses. That is
-                // the daemon's `n, err := strconv.Atoi(f)` shape.
+                // needs the count. When ONE value feeds several names -- the
+                // daemon's `n, err := strconv.Atoi(f)` shape -- that value is
+                // attributed to every target, because non_retaining and
+                // return_escapes are both defined over the whole result list.
+                // Any other count mismatch stays NULL, which refuses.
                 size_t tcount = 0, vcount = 0;
                 for (ASTNode* t = n->targets; t; t = t->next) tcount++;
                 for (ASTNode* v = n->values; v; v = v->next) vcount++;
@@ -328,7 +342,8 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                     if (n->is_short_decl) {
                         if (t->type == AST_IDENTIFIER) {
                             note_declaration(ctx, ((IdentifierNode*)t)->name,
-                                             (tcount == vcount) ? v : NULL);
+                                             (tcount == vcount) ? v
+                                                 : ((vcount == 1) ? n->values : NULL));
                         }
                     } else {
                         note_assignment(ctx, t, v, !n->is_short_decl);

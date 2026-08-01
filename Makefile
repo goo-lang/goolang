@@ -2126,7 +2126,7 @@ lanes-monomorphize-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 #      unscoped.
 lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== lanes-kernel-ir-pin: specialized instance, vectorization + unroll evidence, no fast-math ==="
+	@echo "=== lanes-kernel-ir-pin: specialized instance, SLP + unroll evidence, inline bounds checks, no fast-math ==="
 	@"$(COMPILER)" --emit-llvm -O2 examples/lanes_stencilstep_r2_probe.goo -o build/lk_ir.ll >build/lk_ir.err 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "lanes-kernel-ir-pin: FAIL (compile failed)"; cat build/lk_ir.err; exit 1; fi
 	@n=$$(grep -cE '^define[^{]*@"?goo_pkg__lanes__StencilStep__n2(\.[0-9]+)?"?\(' build/lk_ir.ll); \
@@ -2135,10 +2135,33 @@ lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@awk '/^define void @"?goo_pkg__lanes__StencilStep__n2"?\(/,/^}/' build/lk_ir.ll > build/lk_n2_body.ll; \
 	  vec=$$(grep -c "x double>" build/lk_n2_body.ll); \
 	  if [ "$$vec" -lt 1 ]; then \
-	    echo "lanes-kernel-ir-pin: FAIL (vectorization evidence: expected >=1 '<N x double>' vector type in the specialized instance body, found $$vec — see the arc-17 comment above; inline bounds checks may have regressed back to blocking SLP vectorization)"; \
+	    echo "lanes-kernel-ir-pin: FAIL (SLP evidence: expected >=1 '<N x double>' vector type in the specialized instance body, found $$vec)"; \
 	    cat build/lk_n2_body.ll; exit 1; \
 	  fi; \
-	  echo "  PASS >=1 '<N x double>' vector type in the specialized instance body ($$vec occurrences found — genuine SLP vectorization, unlocked by arc-17's inline bounds checks)"
+	  echo "  PASS >=1 '<N x double>' vector type in the body ($$vec found — STRAIGHT-LINE SLP only, see the vector.body line below for what this does NOT claim)"
+	@: "WHAT THIS GATE DOES NOT CLAIM. The check above passes on SLP, which" ; \
+	 : "here does two 2-wide multiplies and then extracts both lanes back to" ; \
+	 : "scalars for a sequential fadd chain -- no throughput. LOOP" ; \
+	 : "vectorization is what would move the benchmark, and its witness is a" ; \
+	 : "vector.body block. There are currently ZERO in the whole module, so" ; \
+	 : "this is REPORTED and not asserted: making it a hard check would pin" ; \
+	 : "the gate red today. ADR 0003 names parallel throughput a parity" ; \
+	 : "target, and docs/lanes.md records the real blocker." ; \
+	 vb=$$(grep -c "vector.body" build/lk_ir.ll); \
+	 echo "  INFO vector.body blocks in the module: $$vb (0 = no LOOP vectorization; SLP above is not the same thing)"
+	@: "REGRESSION GUARD for arc-17. Codegen lowers a bounds check to an" ; \
+	 : "inline icmp plus a cold goo_bounds_fail edge. It used to emit a call" ; \
+	 : "to the opaque goo_bounds_check, which LLVM had to treat as possibly" ; \
+	 : "side-effecting on every iteration. Re-introducing that call would" ; \
+	 : "block SLP again, and docs/lanes.md blamed it for years after it was" ; \
+	 : "already gone. Commit a861829 returns 53 here, which is how to see" ; \
+	 : "this check fail. NO BACKTICKS in these strings." ; \
+	 bc=$$(grep -cE "call .*@goo_bounds_check" build/lk_ir.ll); \
+	 if [ "$$bc" -ne 0 ]; then \
+	   echo "lanes-kernel-ir-pin: FAIL (goo_bounds_check call sites: expected 0 in the module, found $$bc — the inline bounds-check lowering from arc-17 has regressed)"; \
+	   exit 1; \
+	 fi; \
+	 echo "  PASS 0 goo_bounds_check call sites in the module (inline lowering intact)"
 	@fmul=$$(grep -c "fmul double" build/lk_n2_body.ll); \
 	  if [ "$$fmul" -lt 5 ]; then \
 	    echo "lanes-kernel-ir-pin: FAIL (unroll evidence: expected >=5 'fmul double' in the specialized instance body, found $$fmul — the comptime-fold specialization payoff is not real for this kernel shape)"; \
@@ -5388,6 +5411,181 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fail=1; \
 	else \
 	  echo "  split escape:  clean — condition 1 refused a local whose elements leave"; \
+	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_err_off examples/arc_release_error_probe.goo > build/arc_err_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, error probe, release off)"; cat build/arc_err_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_err_on examples/arc_release_error_probe.goo > build/arc_err_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, error probe, release on)"; cat build/arc_err_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_err_off > build/arc_err_off.out 2> build/arc_err_off.vg; \
+	ed=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_err_off.vg | tr -d , ); \
+	ei=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_err_off.vg | tr -d , ); \
+	e_off=$$(( $${ed:-0} + $${ei:-0} )); \
+	if [ "$$e_off" -eq 0 ]; then \
+	  echo "  FAIL: error probe leaked nothing with the release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  error OFF: $$e_off bytes leaked ($${ed:-0} direct + $${ei:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_err_on > build/arc_err_on.out 2> build/arc_err_on.vg; \
+	rc=$$?; \
+	ed2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_err_on.vg | tr -d , ); \
+	ei2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_err_on.vg | tr -d , ); \
+	e_on=$$(( $${ed2:-0} + $${ei2:-0} )); \
+	: "Access first, then leak, then rc -- see the owned-key block above for why." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_err_on.vg; then \
+	  echo "  FAIL: an error local was released while still live"; tail -30 build/arc_err_on.vg; fail=1; \
+	elif [ "$$e_on" -ne 0 ]; then \
+	  echo "  FAIL: error probe still leaked $$e_on bytes"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_err_on.vg; fail=1; \
+	elif ! diff -q build/arc_err_off.out build/arc_err_on.out > /dev/null; then \
+	  echo "  FAIL: error probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  error ON:   clean, 0 bytes, output matches the control (was $$e_off)"; \
+	fi; \
+	$(COMPILER) -o build/arc_unw examples/arc_release_unwrap_probe.goo > build/arc_unw.cerr 2>&1 \
+	  || { echo "  FAIL (compile, unwrap probe)"; cat build/arc_unw.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_unw > /dev/null 2> build/arc_unw.vg; \
+	: "LEAKS ARE EXPECTED HERE and must NOT be asserted on -- base is passed to" ; \
+	: "fmt.Errorf, which is non_retaining = 0, so base escapes and condition 2" ; \
+	: "refuses it. NO BACKTICKS in these strings." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_unw.vg; then \
+	  echo "  FAIL: an UNWRAPPED error was released — it points into its parent"; \
+	  grep -E "Invalid read|Invalid write|Invalid free|double free" build/arc_unw.vg | head -3; \
+	  fail=1; \
+	else \
+	  echo "  unwrap:     clean — a borrowed inner error survived 1000 releases"; \
+	fi; \
+	$(COMPILER) -o build/arc_glob examples/arc_release_global_probe.goo > build/arc_glob.cerr 2>&1 \
+	  || { echo "  FAIL (compile, global probe)"; cat build/arc_glob.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_glob > /dev/null 2> build/arc_glob.vg; \
+	grc=$$?; \
+	: "LEAKS ARE EXPECTED HERE and must NOT be asserted on. A package-level" ; \
+	: "global is immortal BY DESIGN, so its object is never freed. What this" ; \
+	: "asserts is that nothing releases it WRONGLY. NO BACKTICKS in these." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_glob.vg; then \
+	  echo "  FAIL: a value reached through a package-level global was released"; \
+	  grep -E "Invalid read|Invalid write|Invalid free" build/arc_glob.vg | head -3; \
+	  fail=1; \
+	elif grep -q "reference count 0" build/arc_glob.vg; then \
+	  echo "  FAIL: a global's object was over-released (refcount hit 0)"; fail=1; \
+	elif [ $$grc -ne 0 ]; then \
+	  echo "  FAIL: global probe exited $$grc"; tail -20 build/arc_glob.vg; fail=1; \
+	else \
+	  echo "  global:     clean — a sentinel error and a global pointer survived 100 calls"; \
+	fi; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_np_off examples/arc_release_nullable_ptr_probe.goo > build/arc_np_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, nullable-ptr probe, release off)"; cat build/arc_np_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_np_on examples/arc_release_nullable_ptr_probe.goo > build/arc_np_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, nullable-ptr probe, release on)"; cat build/arc_np_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_np_off > build/arc_np_off.out 2> build/arc_np_off.vg; \
+	npd=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_np_off.vg | tr -d , ); \
+	npi=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_np_off.vg | tr -d , ); \
+	np_off=$$(( $${npd:-0} + $${npi:-0} )); \
+	if [ "$$np_off" -eq 0 ]; then \
+	  echo "  FAIL: nullable-ptr probe leaked nothing with release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  nptr OFF:   $$np_off bytes leaked ($${npd:-0} direct + $${npi:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_np_on > build/arc_np_on.out 2> build/arc_np_on.vg; \
+	rc=$$?; \
+	npd2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_np_on.vg | tr -d , ); \
+	npi2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_np_on.vg | tr -d , ); \
+	np_on=$$(( $${npd2:-0} + $${npi2:-0} )); \
+	: "I5 belt-and-braces gate. A non-error ?*int must NOT get goo_error_dtor" ; \
+	: "-- it has no message field, so that dtor reads garbage bytes as a" ; \
+	: "pointer. Widening the dtor test past type_is_error shows up here as" ; \
+	: "an invalid access or a refcount-0 panic, not as a leak-count change." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_np_on.vg; then \
+	  echo "  FAIL: a non-error ?*T local was released unsafely (wrong dtor?)"; tail -30 build/arc_np_on.vg; fail=1; \
+	elif grep -q "reference count 0" build/arc_np_on.vg; then \
+	  echo "  FAIL: a non-error ?*T local was over-released (refcount hit 0)"; fail=1; \
+	elif [ "$$np_on" -ne 0 ]; then \
+	  echo "  FAIL: nullable-ptr probe still leaked $$np_on bytes"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_np_on.vg; fail=1; \
+	elif ! diff -q build/arc_np_off.out build/arc_np_on.out > /dev/null; then \
+	  echo "  FAIL: nullable-ptr probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  nptr ON:    clean, 0 bytes, no dtor misfire, output matches the control (was $$np_off)"; \
+	fi; \
+	: "ADDRESS-OF-A-GLOBAL IS NOT AN ARC OBJECT. goo_make_immortal writes the" ; \
+	: "sentinel at ptr-16, which for a plain module address is somebody" ; \
+	: "else's memory. .data is writable so this is SILENT -- measured with" ; \
+	: "gdb, a live libc pointer overwritten at base-16, program exit 0." ; \
+	: "AN IR CHECK, NOT A RUN: whether the corruption damages anything" ; \
+	: "depends on what the linker placed before base, so a runtime assert" ; \
+	: "would pass or fail by layout luck. NO BACKTICKS in these strings." ; \
+	$(COMPILER) --emit-llvm -o build/arc_gaddr.ll examples/arc_global_addressof_probe.goo > build/arc_gaddr.cerr 2>&1 \
+	  || { echo "  FAIL (compile, address-of-global probe)"; cat build/arc_gaddr.cerr; exit 1; }; \
+	ga=$$(grep -cE "call void @goo_make_immortal" build/arc_gaddr.ll); \
+	if [ "$$ga" -ne 0 ]; then \
+	  echo "  FAIL: goo_make_immortal emitted $$ga time(s) on the address of a global — it has no header"; \
+	  grep -nE "call void @goo_make_immortal" build/arc_gaddr.ll | head -3; \
+	  fail=1; \
+	else \
+	  echo "  gaddr:      clean — no immortal call on a headerless global address (init and store)"; \
+	fi; \
+	: "METHOD RESULT ALIASES RECEIVER. goo_error_message returns e->message" ; \
+	: "verbatim, so the string from e.Error is the error's own buffer. A" ; \
+	: "receiver is not a member of call->args, so call_taint's result union" ; \
+	: "was blind to it and a Goo helper returning e.Error looked owned." ; \
+	: "LEAKS ARE EXPECTED -- every refused local here is one the fix must" ; \
+	: "refuse. The signal is an invalid access. NO BACKTICKS in these strings." ; \
+	$(COMPILER) -o build/arc_mres examples/arc_release_method_result_probe.goo > build/arc_mres.cerr 2>&1 \
+	  || { echo "  FAIL (compile, method-result probe)"; cat build/arc_mres.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_mres > build/arc_mres.out 2> build/arc_mres.vg; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_mres.vg; then \
+	  echo "  FAIL: a method RESULT was released — it may alias the receiver"; \
+	  grep -E "Invalid read|Invalid write|Invalid free|double free" build/arc_mres.vg | head -3; \
+	  fail=1; \
+	elif grep -q "reference count 0" build/arc_mres.vg; then \
+	  echo "  FAIL: a method result was over-released (refcount hit 0)"; fail=1; \
+	else \
+	  echo "  mresult:    clean — a method result survived 1000 releases"; \
+	fi; \
+	: "TUPLE DESTRUCTURE. n, err := strconv.Atoi(s) is TWO targets and ONE" ; \
+	: "value. seed_names and the AST_MULTI_ASSIGN arm both recorded NULL when" ; \
+	: "the counts differed, so condition 2 refused EVERY target. Row 37 pins" ; \
+	: "the decision; this leg pins the bytes. The probe also carries a" ; \
+	: "borrow leg whose error ESCAPES through the return -- freeing that" ; \
+	: "one shows up as an Invalid read in main, not as a leak-count change." ; \
+	: "NO BACKTICKS OR PARENS IN THESE : LINES. sh expands a backtick inside" ; \
+	: "a double-quoted word, so a code snippet here runs as a command and" ; \
+	: "prints a syntax error into a gate log people then learn to ignore." ; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_tup_off examples/arc_release_tuple_probe.goo > build/arc_tup_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, tuple probe, release off)"; cat build/arc_tup_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_tup_on examples/arc_release_tuple_probe.goo > build/arc_tup_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, tuple probe, release on)"; cat build/arc_tup_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_tup_off > build/arc_tup_off.out 2> build/arc_tup_off.vg; \
+	tud=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_tup_off.vg | tr -d , ); \
+	tui=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_tup_off.vg | tr -d , ); \
+	tu_off=$$(( $${tud:-0} + $${tui:-0} )); \
+	if [ "$$tu_off" -eq 0 ]; then \
+	  echo "  FAIL: tuple probe leaked nothing with the release OFF — it measures nothing"; fail=1; \
+	else \
+	  echo "  tuple OFF:  $$tu_off bytes leaked ($${tud:-0} direct + $${tui:-0} indirect)"; \
+	fi; \
+	valgrind --leak-check=full --error-exitcode=99 ./build/arc_tup_on > build/arc_tup_on.out 2> build/arc_tup_on.vg; \
+	rc=$$?; \
+	tud2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_tup_on.vg | tr -d , ); \
+	tui2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_tup_on.vg | tr -d , ); \
+	tu_on=$$(( $${tud2:-0} + $${tui2:-0} )); \
+	: "Access first, then leak, then rc -- see the owned-key block above." ; \
+	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_tup_on.vg; then \
+	  echo "  FAIL: a tuple-destructured local was released while still live"; tail -30 build/arc_tup_on.vg; fail=1; \
+	elif grep -q "reference count 0" build/arc_tup_on.vg; then \
+	  echo "  FAIL: a tuple-destructured local was over-released (refcount hit 0)"; fail=1; \
+	elif [ "$$tu_on" -ne 0 ]; then \
+	  echo "  FAIL: tuple probe still leaked $$tu_on bytes"; fail=1; \
+	elif [ $$rc -ne 0 ]; then \
+	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
+	  tail -30 build/arc_tup_on.vg; fail=1; \
+	elif ! diff -q build/arc_tup_off.out build/arc_tup_on.out > /dev/null; then \
+	  echo "  FAIL: tuple probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
+	else \
+	  echo "  tuple ON:   clean, 0 bytes, escaping target untouched, output matches the control (was $$tu_off)"; \
 	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-release-probe: FAIL"; exit 1; fi; \
 	echo "arc-release-probe: PASS"

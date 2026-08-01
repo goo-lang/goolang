@@ -1,0 +1,114 @@
+// T4 SOUNDNESS gate: a value reached through a PACKAGE-LEVEL GLOBAL must never
+// be released.
+//
+// `call_result_is_owned` approves a Goo call whose return_escapes is false, and
+// that summary tracks PARAMETERS ONLY. A function returning a global therefore
+// looks identical to one returning a fresh allocation, so the caller's local is
+// approved and the global's object is freed out from under every later use.
+//
+// Measured before the fix: exit 2, "panic: release of an object with reference
+// count 0", and two Invalid reads on the SECOND call.
+//
+// BOTH SHAPES, because the defect is not about errors. The error form is what
+// PR #275 made reachable; the bare-pointer form has been reachable since #261
+// and is the reason the fix belongs at the global, not in the error arm.
+//
+// A THIRD SHAPE (fix round 1, Task 2b Critical): a global initialized from a
+// STRING LITERAL, then aliased into a second global (`msgA` / `msgB` below).
+// codegen_const_string_value emits a literal's header as a CONSTANT PRIVATE
+// GLOBAL whose rc field is ALREADY GOO_RC_IMMORTAL at compile time, so it
+// lands in .rodata. Before the fix-round-1 read-before-write guard,
+// goo_make_immortal stored into that read-only memory unconditionally and
+// crashed with SIGSEGV -- measured on the four-line reproduction
+// `var a = "hello"; var b = a; func main() { println(b) }`, exit 139. Unlike
+// the other two shapes, this one fails at PROGRAM INIT, before main ever
+// runs, so it needs no loop to reach.
+//
+// A FOURTH SHAPE (fix round 2): the same .rodata write, reached through a
+// SLICE literal instead of a string one (`numsA` / `numsB` below). The
+// read-before-write guard added in fix round 1 does NOT cover this, because a
+// constant slice backing global had NO ARC HEADER AT ALL -- the string path
+// bakes in GOO_RC_IMMORTAL, the slice path emitted a bare LLVMConstArray. So
+// `goo_obj_header(ptr)` landed on whatever .rodata symbol happened to precede
+// the backing array (measured: `_IO_stdin_used`), the count check read an
+// unrelated value that was not GOO_RC_IMMORTAL, fell through, and stored.
+// Measured before the fix: exit 139, SIGSEGV at runtime.c:294 in
+// goo_make_immortal, backtrace main -> goo.global_init -> goo_make_immortal.
+// This is why the fix gives the backing array a real header rather than
+// widening the guard: it makes the stated invariant TRUE instead of adding a
+// second special case to the runtime.
+// A FIFTH SHAPE (fix round 3): a global REASSIGNED after init. Immortality was
+// applied by codegen_generate_global_init_function only, so a value stored into
+// a global LATER got none of it, and the getErr/useErr shape below then freed
+// it. Measured before the fix: "panic: release of an object with reference
+// count 0", exit 2, 4 valgrind errors from 2 contexts. A reviewer had deferred
+// this as "exits 0 today" -- it does not, and this leg is why that cannot be
+// recorded from memory again.
+//
+// It also pins the THREE-PATH property. A store to a global has three codegen
+// paths (general TOKEN_ASSIGN, multi-assign, and NULLABLE); an `error` takes
+// the nullable one, and the first attempt at the fix patched only the general
+// one and measured no change at all.
+package main
+
+import "errors"
+
+var ErrSentinel error = errors.New("sentinel failure")
+var ErrLate error = errors.New("initial value, replaced before use")
+var GCounter *int = new(int)
+var msgA = "hello from a global"
+var msgB = msgA
+var numsA = []int{11, 22, 33}
+var numsB = numsA
+
+var sink int
+
+func getErr() error { return ErrSentinel }
+func getPtr() *int  { return GCounter }
+
+// The replacement is built AFTER global init, so goo_make_immortal never saw it
+// until the store site itself started calling it.
+func resetLate()     { ErrLate = errors.New("replacement value, set after init") }
+func getLate() error { return ErrLate }
+
+func useLate() int {
+    e := getLate()
+    if errors.Is(e, e) {
+        return 1
+    }
+    return 0
+}
+
+func useErr() int {
+    e := getErr()
+    if errors.Is(e, e) {
+        return 1
+    }
+    return 0
+}
+
+func usePtr() int {
+    p := getPtr()
+    if p == nil {
+        return 0
+    }
+    return 1
+}
+
+func main() {
+    total := 0
+    // MORE THAN ONE CALL IS THE WHOLE POINT. The first call frees the global;
+    // the second is the one that reads freed memory. A single-call probe
+    // reports clean against the exact defect it exists to catch.
+    resetLate()
+    for i := 0; i < 100; i++ {
+        total = total + useErr()
+        total = total + usePtr()
+        total = total + useLate()
+    }
+    sink = total
+    println(total)
+    println(msgB)
+    println(len(numsB))
+    println(numsB[2])
+}

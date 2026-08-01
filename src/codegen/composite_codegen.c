@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "value_scope.h"
+#include "runtime.h"   // GOO_RC_IMMORTAL / GOO_OBJ_HEADER_SIZE, for the headered slice backing
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1516,6 +1517,58 @@ static LLVMValueRef slice_coerce_elem(CodeGenerator* codegen, LLVMValueRef v, LL
     return codegen_coerce_to_type(codegen, v, src_signed, to);
 }
 
+// Emit a private constant global holding an ARC-HEADERED copy of `arr_const`,
+// and return a constant pointer to its PAYLOAD, so the header sits at
+// `payload - GOO_OBJ_HEADER_SIZE` exactly as goo_alloc gives every heap object.
+//
+// THE HEADER IS WHY THIS IS NOT JUST LLVMAddGlobal(arr_type). goo_retain,
+// goo_release_with and goo_make_immortal all read the 16 bytes at `ptr - 16`.
+// A bare constant array in .rodata has no such bytes, so those reads land on
+// whatever symbol the linker happened to place before it. Measured on
+// `var a = []int{1,2,3}; var b = a`: goo_make_immortal was handed the backing
+// array, computed its "header" as `_IO_stdin_used`, read a value that was not
+// GOO_RC_IMMORTAL so the read-before-write guard fell through, and stored into
+// read-only memory — SIGSEGV at runtime.c:294, backtrace
+// main -> goo.global_init -> goo_make_immortal.
+//
+// codegen_const_string_value already solves this identical problem this
+// identical way for a string literal. Doing the same here keeps the runtime's
+// rule single: EVERY pointer it is handed is either headerless-by-sentinel
+// (NULL, goo_zerobase), arena-excluded by static proof, or carries a real
+// header. The alternative — widening the runtime guard — would trade that one
+// rule for a per-pointer-kind special case, and would still be reading
+// unrelated memory to make the decision.
+static LLVMValueRef slice_lit_const_backing(CodeGenerator* codegen,
+                                            LLVMTypeRef arr_type,
+                                            LLVMValueRef arr_const) {
+    LLVMTypeRef i64_type = LLVMInt64TypeInContext(codegen->context);
+    LLVMTypeRef hdr_type = LLVMArrayType(i64_type, 2);   // matches GooObjHeader
+    LLVMValueRef hdr_words[2] = {
+        LLVMConstInt(i64_type, GOO_RC_IMMORTAL, 0),      // rc
+        LLVMConstInt(i64_type, 0, 0),                    // reserved
+    };
+    LLVMValueRef hdr = LLVMConstArray(i64_type, hdr_words, 2);
+
+    LLVMTypeRef obj_fields[2] = { hdr_type, arr_type };
+    LLVMTypeRef obj_type = LLVMStructTypeInContext(codegen->context, obj_fields, 2,
+                                                   /*packed=*/0);
+    LLVMValueRef obj_init_fields[2] = { hdr, arr_const };
+    LLVMValueRef obj_init = LLVMConstStructInContext(codegen->context, obj_init_fields,
+                                                     2, /*packed=*/0);
+
+    LLVMValueRef obj = LLVMAddGlobal(codegen->module, obj_type, "slice_lit");
+    LLVMSetInitializer(obj, obj_init);
+    LLVMSetLinkage(obj, LLVMPrivateLinkage);
+    LLVMSetGlobalConstant(obj, 1);
+    // The payload must keep the alignment goo_alloc's does, and `payload - 16`
+    // must be an aligned 8-byte read for the atomic load of rc.
+    LLVMSetAlignment(obj, (unsigned)GOO_OBJ_HEADER_SIZE);
+
+    LLVMTypeRef i32ty = LLVMInt32TypeInContext(codegen->context);
+    LLVMValueRef idx[2] = { LLVMConstInt(i32ty, 0, 0), LLVMConstInt(i32ty, 1, 0) };
+    return LLVMConstInBoundsGEP2(obj_type, obj, idx, 2);
+}
+
 // Shared core: build a slice struct { ptr, i64 len, i64 cap } from a
 // next-chained ASTNode* element list and a resolved TYPE_SLICE type.
 // Called by both codegen_generate_slice_lit (with SliceLitNode->elements)
@@ -1716,10 +1769,7 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
         LLVMValueRef backing;
         if (count > 0) {
             LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
-            backing = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
-            LLVMSetInitializer(backing, arr_const);
-            LLVMSetLinkage(backing, LLVMPrivateLinkage);
-            LLVMSetGlobalConstant(backing, 1);
+            backing = slice_lit_const_backing(codegen, arr_type, arr_const);
         } else {
             // Empty slice literal: Go's `[]T{}` is empty-but-non-nil (len 0,
             // but the backing pointer must NOT compare == nil — see the
@@ -1771,11 +1821,7 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
         }
         if (all_const && count > 0) {
             LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
-            LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
-            LLVMSetInitializer(global, arr_const);
-            LLVMSetLinkage(global, LLVMPrivateLinkage);
-            LLVMSetGlobalConstant(global, 1);
-            data_ptr = global;
+            data_ptr = slice_lit_const_backing(codegen, arr_type, arr_const);
         } else {
             free(elem_vals);
             free(elem_signed);

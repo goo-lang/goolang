@@ -294,6 +294,9 @@ int codegen_generate_nullable_assignment(CodeGenerator* codegen, TypeChecker* ch
     
     // Store the nullable value
     LLVMBuildStore(codegen->builder, nullable_value, nullable_target);
+    // An `error` IS a nullable, so this is the path a reassigned global error
+    // takes -- and the one the first attempt at the immortality fix missed.
+    codegen_arc_make_global_immortal(codegen, nullable_target, nullable_value, target_type);
     return 1;
 }
 

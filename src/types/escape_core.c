@@ -331,6 +331,9 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     }
 
     const char* callee_name = NULL;
+    // KEPT ALIVE TO THE RESULT CONSTRUCTION BELOW. An identifier callee leaves
+    // this empty, so the union there is a no-op for an ordinary function call.
+    TaintSet callee_taint = escape_taint_new(n);
     if (call->function && call->function->type == AST_IDENTIFIER) {
         callee_name = ((IdentifierNode*)call->function)->name;
     } else {
@@ -351,9 +354,9 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
         // itself, which is what row 29 pins.
         //
         // param_escape.c carries the identical fix — soundness sibling.
-        TaintSet ft = escape_expr_taint(ctx, call->function);
-        escape_mark(ctx, &ft);
-        escape_taint_free(&ft);
+        escape_taint_free(&callee_taint);   // discard the empty set before rebinding
+        callee_taint = escape_expr_taint(ctx, call->function);
+        escape_mark(ctx, &callee_taint);
     }
     // Two passes answer this from different tables — param_escape from its own
     // in-progress Registry (it is COMPUTING these summaries and must see the
@@ -423,6 +426,35 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     } else {
         for (i = 0; i < argc; i++) escape_taint_union_into(&result, &arg_taints[i]);
     }
+
+    // A METHOD CAN RETURN A VALUE DERIVED FROM ITS RECEIVER, and the receiver is
+    // NOT a member of call->args, so every union above is blind to it. That was
+    // a use-after-free, not just lost precision.
+    //
+    // MEASURED. goo_error_message returns `e->message` VERBATIM as the string's
+    // data pointer -- no copy. So for
+    //     func msgOf(e error) string { return e.Error() }
+    // the returned string ALIASES the error's message buffer. `e.Error()` has a
+    // non-identifier callee and ZERO arguments, so the result taint came out
+    // empty, return_escapes(msgOf) read false, and the caller's `m := msgOf(e)`
+    // was approved as owned. Releasing `m` freed the live error's message.
+    // valgrind on 100 iterations: 55 errors from 4 contexts, "Invalid read of
+    // size 1" in strlen at runtime.c:461, address "16 bytes inside a block of
+    // size 67 free'd" -- header plus message, so the error's own header went
+    // with it. The direct shape `m := e.Error()` was already safe, because
+    // release_decision's selector_base_is_local refuses it; the hole only
+    // opened through a Goo helper, which is why no probe had caught it.
+    //
+    // Unioned for EVERY non-identifier callee rather than only for errors: the
+    // engine cannot prove a method does not return part of its receiver, and
+    // method summaries resolve by BARE NAME today, so there is no reliable
+    // per-method answer to consult. Over-marking costs reclamation on a
+    // method-call result; under-marking dangles a pointer. An identifier callee
+    // leaves callee_taint empty, so an ordinary function call is unaffected,
+    // and a PACKAGE-qualified call resolves its base to nothing in ctx->env,
+    // which is why strings.Split and friends are also unaffected.
+    escape_taint_union_into(&result, &callee_taint);
+    escape_taint_free(&callee_taint);
 
     for (i = 0; i < argc; i++) escape_taint_free(&arg_taints[i]);
     free(arg_taints);
