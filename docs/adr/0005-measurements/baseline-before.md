@@ -15,7 +15,7 @@ Toolchain: LLVM 22.1.8, valgrind-3.27.1, 32 cores.
 ## 1. The daemon retains 262,205 bytes
 
 ```bash
-./bin/goo -O2 -o /tmp/daemon bench/daemon/daemon.goo
+./bin/goo -O2 -o /tmp/daemon bench/daemon/daemon.goo    # THE PATH IS PART OF THE NUMBER
 valgrind /tmp/daemon 2000
 ```
 
@@ -24,6 +24,23 @@ in use at exit: 262,205 bytes in 14,003 blocks
 total heap usage: 94,004 allocs, 80,001 frees, 3,190,301 bytes allocated
 ERROR SUMMARY: 0 errors from 0 contexts
 ```
+
+**THE OUTPUT PATH CHANGES THE BYTE TOTAL, and it caught me in task 3.** `main`
+reads `os.Args`, the runtime copies `argv[0]` to the heap, and nothing frees
+it. A binary at a path three characters longer reports 262,208 rather than
+262,205. Measured by copying ONE binary to two paths:
+
+```
+.../baseline/daemon      -> 262,205 bytes in 14,003 blocks
+.../baseline/daemonXYZ   -> 262,208 bytes in 14,003 blocks
+```
+
+So compare against this file only from the SAME path, and read the BLOCK COUNT
+first. 14,003 blocks is what a behaviour change moves. A byte total that drifts
+while the block count holds is the path, not the compiler. The figures above
+were taken at
+`/tmp/claude-1000/-mnt-ssd2-Workspace-github-com-goolang/821b17b3-97f4-4672-bf13-8de782415627/scratchpad/baseline/daemon`,
+which is why the snippet's `/tmp/daemon` will not reproduce them to the byte.
 
 262,205 is item 1's recorded figure to three significant digits, so the ledger
 in `.handoff.md` reconciles. **0 errors is half the baseline**: task 8 frees a

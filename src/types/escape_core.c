@@ -116,15 +116,25 @@ bool escape_env_add_or_union(LocalEnv* env, const char* name, const TaintSet* va
 // Accumulator
 // =============================================================================
 
-void escape_mark(EscapeCtx* ctx, const TaintSet* t) {
+// An empty reason set is raised to UNCLASSIFIED rather than dropped. A mark
+// that records no reason would leave the slot reading "does not escape", and a
+// release consumer frees on that answer. Losing precision is the safe failure;
+// losing the mark is the one that dangles a pointer.
+static inline EscapeReasons reason_or_unclassified(EscapeReasons why) {
+    return why ? why : ESCAPE_REASON_UNCLASSIFIED;
+}
+
+void escape_mark(EscapeCtx* ctx, const TaintSet* t, EscapeReasons why) {
+    why = reason_or_unclassified(why);
     size_t n = t->n < ctx->slot_count ? t->n : ctx->slot_count;
     for (size_t i = 0; i < n; i++) {
-        if (t->bits[i]) ctx->escapes[i] = true;
+        if (t->bits[i]) ctx->reasons[i] |= why;
     }
 }
 
-void escape_mark_all(EscapeCtx* ctx) {
-    for (size_t i = 0; i < ctx->slot_count; i++) ctx->escapes[i] = true;
+void escape_mark_all(EscapeCtx* ctx, EscapeReasons why) {
+    why = reason_or_unclassified(why);
+    for (size_t i = 0; i < ctx->slot_count; i++) ctx->reasons[i] |= why;
 }
 
 // Slot of an expression that is ITSELF a source, or ESCAPE_NO_SLOT.
@@ -183,7 +193,7 @@ static void mark_lvalue_subscripts(EscapeCtx* ctx, ASTNode* lhs) {
         case AST_INDEX_EXPR: {
             IndexExprNode* ie = (IndexExprNode*)lhs;
             TaintSet idx = escape_expr_taint(ctx, ie->index);
-            escape_mark(ctx, &idx);
+            escape_mark(ctx, &idx, ESCAPE_REASON_UNCLASSIFIED);
             escape_taint_free(&idx);
             mark_lvalue_subscripts(ctx, ie->expr);
             break;
@@ -231,7 +241,7 @@ static LocalVar* self_store_base(EscapeCtx* ctx, ASTNode* lhs) {
 
 static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_taint, bool* env_changed) {
     if (!lhs) {
-        escape_mark(ctx, rhs_taint);
+        escape_mark(ctx, rhs_taint, ESCAPE_REASON_UNCLASSIFIED);
         return;
     }
     if (lhs->type == AST_IDENTIFIER) {
@@ -244,7 +254,7 @@ static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_t
             if (escape_taint_union_into(&lv->taint, rhs_taint)) *env_changed = true;
             return;
         }
-        escape_mark(ctx, rhs_taint);
+        escape_mark(ctx, rhs_taint, ESCAPE_REASON_UNCLASSIFIED);
         return;
     }
     // WHY SUBTRACTING THE BASE'S WHOLE TAINT IS SOUND, and not only its own
@@ -279,7 +289,7 @@ static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_t
             }
         }
     }
-    escape_mark(ctx, use_reduced ? &reduced : rhs_taint);
+    escape_mark(ctx, use_reduced ? &reduced : rhs_taint, ESCAPE_REASON_UNCLASSIFIED);
     escape_taint_free(&reduced);
 
     // Sink #2b: a SUBSCRIPT of the target is a stored reference too.
@@ -356,7 +366,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
         // param_escape.c carries the identical fix — soundness sibling.
         escape_taint_free(&callee_taint);   // discard the empty set before rebinding
         callee_taint = escape_expr_taint(ctx, call->function);
-        escape_mark(ctx, &callee_taint);
+        escape_mark(ctx, &callee_taint, ESCAPE_REASON_UNCLASSIFIED);
     }
     // Two passes answer this from different tables — param_escape from its own
     // in-progress Registry (it is COMPUTING these summaries and must see the
@@ -411,7 +421,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
         } else {
             retains = true; // external/unregistered/no-summaries: pure-conservative
         }
-        if (retains) escape_mark(ctx, &arg_taints[i]);
+        if (retains) escape_mark(ctx, &arg_taints[i], ESCAPE_REASON_UNCLASSIFIED);
     }
 
     TaintSet result = escape_taint_new(n);
@@ -465,7 +475,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
 static void handle_go_call(EscapeCtx* ctx, ASTNode* call_node) {
     if (!call_node || call_node->type != AST_CALL_EXPR) {
         TaintSet t = escape_expr_taint(ctx, call_node);
-        escape_mark(ctx, &t);
+        escape_mark(ctx, &t, ESCAPE_REASON_UNCLASSIFIED);
         escape_taint_free(&t);
         return;
     }
@@ -498,13 +508,13 @@ static void handle_go_call(EscapeCtx* ctx, ASTNode* call_node) {
     // under-marking is what dangles a pointer.
     {
         TaintSet ft = escape_expr_taint(ctx, call->function);
-        escape_mark(ctx, &ft);
+        escape_mark(ctx, &ft, ESCAPE_REASON_UNCLASSIFIED);
         escape_taint_free(&ft);
     }
 
     for (ASTNode* a = call->args; a; a = a->next) {
         TaintSet t = escape_expr_taint(ctx, a);
-        escape_mark(ctx, &t);
+        escape_mark(ctx, &t, ESCAPE_REASON_UNCLASSIFIED);
         escape_taint_free(&t);
     }
 }
@@ -606,7 +616,7 @@ TaintSet escape_expr_taint(EscapeCtx* ctx, ASTNode* expr) {
                 LocalVar* lv = escape_env_find(ctx->env, lit->captured_names[i]);
                 if (lv) escape_taint_union_into(&t, &lv->taint);
             }
-            escape_mark(ctx, &t);
+            escape_mark(ctx, &t, ESCAPE_REASON_UNCLASSIFIED);
 
             // Phase 1a: this literal's own environment is a site (registered
             // by discover_expr above, iff it captures anything). Its self-bit
@@ -686,7 +696,7 @@ TaintSet escape_expr_taint(EscapeCtx* ctx, ASTNode* expr) {
             // every site — same rationale as param_escape.c's default arm.
             {
                 TaintSet t = escape_taint_all(n);
-                escape_mark(ctx, &t);
+                escape_mark(ctx, &t, ESCAPE_REASON_UNCLASSIFIED);
                 return t;
             }
     }
@@ -746,7 +756,7 @@ static void escape_walk_expr_stmt(EscapeCtx* ctx, ASTNode* e, bool* env_changed)
             TaintSet lt = escape_expr_taint(ctx, b->left);
             escape_taint_free(&lt);
             TaintSet rhs = escape_expr_taint(ctx, b->right);
-            escape_mark(ctx, &rhs);
+            escape_mark(ctx, &rhs, ESCAPE_REASON_UNCLASSIFIED);
             escape_taint_free(&rhs);
             return;
         }
@@ -818,7 +828,7 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
                 ReturnStmtNode* n = (ReturnStmtNode*)stmt;
                 for (ASTNode* v = n->values; v; v = v->next) {
                     TaintSet t = escape_expr_taint(ctx, v);
-                    escape_mark(ctx, &t);
+                    escape_mark(ctx, &t, ESCAPE_REASON_UNCLASSIFIED);
                     // param_escape records `return_escapes` here — its
                     // interprocedural signal for "F gives back a value made
                     // from one of its own parameters". The other two passes
@@ -869,7 +879,7 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
                                 if (ctx->hooks->bind(ctx, nm, &combined)) *env_changed = true;
                             }
                         } else {
-                            escape_mark(ctx, &combined);
+                            escape_mark(ctx, &combined, ESCAPE_REASON_UNCLASSIFIED);
                         }
                     }
                 } else {
@@ -967,7 +977,7 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
             default:
                 // Genuinely unhandled statement kind: conservative escape
                 // of every site in this unit.
-                escape_mark_all(ctx);
+                escape_mark_all(ctx, ESCAPE_REASON_UNCLASSIFIED);
                 break;
         }
     }

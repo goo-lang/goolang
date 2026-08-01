@@ -142,7 +142,7 @@ if mode == "over":
     guard = (
         "    if (expr && (int)expr->type == (int)" + arm + ") {\n"
         "        TaintSet t_mut = escape_taint_all(n);\n"
-        "        escape_mark(ctx, &t_mut);\n"
+        "        escape_mark(ctx, &t_mut, ESCAPE_REASON_UNCLASSIFIED);\n"
         "        return t_mut;\n"
         "    }\n")
 elif mode == "under":
@@ -155,7 +155,7 @@ elif mode == "stmt-over":
     # "this statement kind falls to the default arm".
     guard = (
         "        if (stmt && (int)stmt->type == (int)" + arm + ") {\n"
-        "            escape_mark_all(ctx);\n"
+        "            escape_mark_all(ctx, ESCAPE_REASON_UNCLASSIFIED);\n"
         "            continue;\n"
         "        }\n")
 elif mode == "stmt-under":

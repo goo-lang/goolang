@@ -267,7 +267,7 @@ static const EscapeHooks LOCAL_HOOKS = {
 // EMPTY here — unlike a function's params, an arena block has no
 // pre-existing "parameters" to seed; every local comes from a var/:=/etc.
 // encountered during the walk itself.
-static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, bool* escapes) {
+static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReasons* reasons) {
     // PASS A — discovery. Zero-width taint sets, so every sink marks nothing
     // and the walk exists only to drive seed_local, which registers each
     // declared name on the unit. This is why discovery cannot drift away from
@@ -279,7 +279,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, bool* esca
         EscapeCtx ctx = {
             .env = &env,
             .slot_count = 0,
-            .escapes = NULL,
+            .reasons = NULL,
             .hooks = &LOCAL_HOOKS,
             .owner = &own,
         };
@@ -297,7 +297,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, bool* esca
     EscapeCtx ctx = {
         .env = &env,
         .slot_count = u->local_count,
-        .escapes = escapes,
+        .reasons = reasons,
         .hooks = &LOCAL_HOOKS,
         .owner = &own,
     };
@@ -313,7 +313,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, bool* esca
         changed = false;
         pass++;
         if (pass > MAX_LOCAL_PASSES) {
-            for (size_t i = 0; i < u->local_count; i++) escapes[i] = true;
+            for (size_t i = 0; i < u->local_count; i++) reasons[i] = ESCAPE_REASON_UNCLASSIFIED;
             break;
         }
         escape_walk_stmt(&ctx, u->body, &changed);
@@ -357,7 +357,7 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
 
     for (size_t i = 0; i < units.count; i++) {
         Unit* u = &units.items[i];
-        bool* escapes = NULL;
+        EscapeReasons* reasons = NULL;
 
         // Pass A runs inside analyze_unit and fills u->local_names, so the
         // accumulator cannot be sized until after it. analyze_unit therefore
@@ -366,15 +366,15 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
             LocalEnv env = {0};
             LocalOwner own = { .summaries = summaries, .local_names = NULL,
                                .local_count = 0, .unit = u };
-            EscapeCtx ctx = { .env = &env, .slot_count = 0, .escapes = NULL,
+            EscapeCtx ctx = { .env = &env, .slot_count = 0, .reasons = NULL,
                               .hooks = &LOCAL_HOOKS, .owner = &own };
             bool ignored = false;
             escape_walk_stmt(&ctx, u->body, &ignored);
             escape_env_free(&env);
         }
         if (u->local_count > 0) {
-            escapes = calloc(u->local_count, sizeof(bool));
-            if (!escapes) {
+            reasons = calloc(u->local_count, sizeof(EscapeReasons));
+            if (!reasons) {
                 local_escape_result_free(result);
                 unit_list_free(&units);
                 return NULL;
@@ -383,7 +383,7 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
 
         // analyze_unit re-runs pass A harmlessly (unit_add_local is idempotent
         // by name) and then runs the fixpoint.
-        analyze_unit(summaries, u, escapes);
+        analyze_unit(summaries, u, reasons);
 
         LocalEscapeSummary* s = &result->summaries[result->count];
         s->function_name = u->fn_name;   // ownership MOVES out of the unit
@@ -392,7 +392,7 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
         s->local_count = u->local_count;
         u->local_names = NULL;
         u->local_count = 0;
-        s->escapes = escapes;
+        s->reasons = reasons;
         result->count++;
     }
 
@@ -407,7 +407,7 @@ void local_escape_result_free(LocalEscapeResult* result) {
         free(s->function_name);
         for (size_t j = 0; j < s->local_count; j++) free(s->local_names[j]);
         free(s->local_names);
-        free(s->escapes);
+        free(s->reasons);
     }
     free(result->summaries);
     free(result);
@@ -424,7 +424,7 @@ bool local_escape_local_escapes(const LocalEscapeResult* result,
         if (!s->function_name || strcmp(s->function_name, fn) != 0) continue;
         for (size_t j = 0; j < s->local_count; j++) {
             if (s->local_names[j] && strcmp(s->local_names[j], local) == 0) {
-                return s->escapes[j];
+                return s->reasons[j] != ESCAPE_REASON_NONE;
             }
         }
         return true;  // known function, unknown local -> conservative

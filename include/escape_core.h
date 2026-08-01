@@ -52,9 +52,43 @@
 #include "ast.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 // "No slot for this node/name." Every pass treats a miss as conservative.
 #define ESCAPE_NO_SLOT ((size_t)-1)
+
+// =============================================================================
+// EscapeReasons — WHY a slot escaped, not merely THAT it did
+// =============================================================================
+// ADR 0005. The accumulator held one bit per slot, and two separate pieces of
+// work stalled because that bit conflates causes needing opposite actions:
+// `m[s] = 1` and `return s` both set it, but a map may own the first buffer and
+// must never own the second.
+//
+// THE BOOLEAN IS NOT GONE, IT IS DERIVED. `escapes` is `reasons != 0`, so a
+// consumer that only wants "did it escape at all" is unchanged. Every public
+// lookup in the three passes still returns a bool and still fails CLOSED.
+//
+// THE SOUNDNESS INVARIANT IS UNCHANGED AND STILL ASYMMETRIC, with one addition
+// that is easy to get wrong. Setting MORE reasons is always safe. Setting NO
+// reason is an under-mark, and under-marking is the only bug class that dangles
+// a pointer — so a mark with an empty set is treated as UNCLASSIFIED rather
+// than as "did not escape". A caller that forgets a reason therefore loses
+// precision instead of freeing live memory.
+//
+// The dangerous edit is a reason DROPPED, not a reason renamed. Renaming moves
+// a slot between causes and the consumer's test simply stops matching.
+// Dropping removes the mark, and the value is then freed while it is live.
+typedef uint32_t EscapeReasons;
+
+#define ESCAPE_REASON_NONE          ((EscapeReasons)0)
+
+// The conservative catch-all. Today EVERY mark site raises exactly this, so
+// the set carries no more information than the boolean it replaced. Naming the
+// individual causes is a separate change, on purpose: this one must move no
+// measured number, and a number that moves here means the widening itself is
+// wrong. See docs/adr/0005-measurements/baseline-before.md.
+#define ESCAPE_REASON_UNCLASSIFIED  ((EscapeReasons)1u << 0)
 
 // =============================================================================
 // TaintSet — "which of this unit's slots may this value alias"
@@ -167,18 +201,23 @@ typedef struct EscapeHooks {
 struct EscapeCtx {
     LocalEnv* env;
     size_t    slot_count;  // params / alloc sites / locals, per pass
-    bool*     escapes;     // accumulator, length slot_count, only ever set true
+    // Accumulator, length slot_count. Bits are only ever ADDED, which is what
+    // makes the fixpoint loops monotone and therefore terminating.
+    EscapeReasons* reasons;
 
     const EscapeHooks* hooks;
     void* owner;           // the pass's own context; hooks cast this back
 };
 
-// Mark every slot in `t` as escaping. Bounded by slot_count, because a taint
-// set may be wider than the accumulator in the pass that built it.
-void escape_mark(EscapeCtx* ctx, const TaintSet* t);
+// Mark every slot in `t` as escaping FOR REASON `why`. Bounded by slot_count,
+// because a taint set may be wider than the accumulator in the pass that built
+// it. An empty `why` is raised to ESCAPE_REASON_UNCLASSIFIED — a mark that
+// records nothing would read as "does not escape", which is the one direction
+// that dangles a pointer.
+void escape_mark(EscapeCtx* ctx, const TaintSet* t, EscapeReasons why);
 
 // Mark EVERY slot escaping. The default arm of an unrecognised construct.
-void escape_mark_all(EscapeCtx* ctx);
+void escape_mark_all(EscapeCtx* ctx, EscapeReasons why);
 
 // =============================================================================
 // The walk

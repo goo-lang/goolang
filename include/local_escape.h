@@ -62,6 +62,7 @@
 // consumer needs BOTH.
 
 #include "ast.h"
+#include "escape_core.h"
 #include "param_escape.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -69,7 +70,11 @@
 typedef struct LocalEscapeSummary {
     char*  function_name;  // owned
     char** local_names;    // owned array of owned strings, length local_count
-    bool*  escapes;        // length local_count; true = may outlive F
+    // Length local_count. Non-zero = may outlive F, and the SET says why.
+    // ADR 0005: this was a bool array. `escapes` is now `reasons != 0`, which
+    // is what local_escape_local_escapes returns, so a consumer that only
+    // wants the boolean is unchanged.
+    EscapeReasons* reasons;
     size_t local_count;
 } LocalEscapeSummary;
 

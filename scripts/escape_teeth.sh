@@ -103,7 +103,7 @@ PARAM_MUTATIONS=(
 "retention-return	    *out_return_escapes = callee->return_escapes;	    *out_return_escapes = false;"
 # The outer fixpoint's propagation into the registry. Suppressed, a param that
 # escapes is computed correctly and then never published to its callers.
-"escapes-propagate	                if (local_escapes[i] && !f->escapes[i]) {	                if (local_escapes[i] && !f->escapes[i] && false) {"
+"escapes-propagate	                if (local_reasons[i] != ESCAPE_REASON_NONE && !f->escapes[i]) {	                if (local_reasons[i] != ESCAPE_REASON_NONE && !f->escapes[i] && false) {"
 # PRECISION. At FUNCTION granularity a defer runs inside the frame, so `false`
 # is the precise answer and `true` is merely conservative. Only a row that
 # expects a deferred argument NOT to escape can notice.

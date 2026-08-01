@@ -450,7 +450,7 @@ static bool discover_stmt(ASTNode* stmt, UnitList* units, size_t unit_idx) {
 // Carried through EscapeCtx.owner.
 typedef struct {
     const ParamEscapeResult* summaries; // may be NULL; borrowed
-    ASTNode** site_nodes;  // this unit's OWN sites, borrowed, same order as escapes[]
+    ASTNode** site_nodes;  // this unit's OWN sites, borrowed, same order as reasons[]
     size_t    site_count;
 } BlockOwner;
 
@@ -558,7 +558,7 @@ static const EscapeHooks BLOCK_HOOKS = {
 // EMPTY here — unlike a function's params, an arena block has no
 // pre-existing "parameters" to seed; every local comes from a var/:=/etc.
 // encountered during the walk itself.
-static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, bool* escapes) {
+static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReasons* reasons) {
     LocalEnv env = {0};
     BlockOwner own = {
         .summaries = summaries,
@@ -568,7 +568,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, bool* esca
     EscapeCtx ctx = {
         .env = &env,
         .slot_count = u->site_count,
-        .escapes = escapes,
+        .reasons = reasons,
         .hooks = &BLOCK_HOOKS,
         .owner = &own,
     };
@@ -584,7 +584,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, bool* esca
         changed = false;
         pass++;
         if (pass > MAX_LOCAL_PASSES) {
-            for (size_t i = 0; i < u->site_count; i++) escapes[i] = true;
+            for (size_t i = 0; i < u->site_count; i++) reasons[i] = ESCAPE_REASON_UNCLASSIFIED;
             break;
         }
         escape_walk_stmt(&ctx, u->body, &changed);
@@ -635,22 +635,22 @@ BlockEscapeResult* block_escape_analyze(ASTNode* program, const ParamEscapeResul
     size_t out_idx = 0;
     for (size_t i = 0; i < units.count; i++) {
         Unit* u = &units.items[i];
-        bool* escapes = u->site_count ? calloc(u->site_count, sizeof(bool)) : NULL;
-        if (u->site_count && !escapes) {
+        EscapeReasons* reasons = u->site_count ? calloc(u->site_count, sizeof(EscapeReasons)) : NULL;
+        if (u->site_count && !reasons) {
             free(result->decisions);
             free(result);
             unit_list_free(&units);
             return NULL;
         }
 
-        analyze_unit(summaries, u, escapes);
+        analyze_unit(summaries, u, reasons);
 
         for (size_t s = 0; s < u->site_count; s++) {
             result->decisions[out_idx].site = u->site_nodes[s];
-            result->decisions[out_idx].escapes_block = escapes[s];
+            result->decisions[out_idx].escapes_block = reasons[s] != ESCAPE_REASON_NONE;
             out_idx++;
         }
-        free(escapes);
+        free(reasons);
     }
 
     unit_list_free(&units);
