@@ -556,6 +556,20 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 		ctx.haloBufR = make([]float64, radius)
 	}
 	own := ctx.own
+	// BIND THE Lane SLICE FIELDS TO LOCALS. `own := ctx.own` above already
+	// does this, and the payoff is visible in the IR: LLVM removed EVERY
+	// own[] bounds check in the interior loop, because a local gives a
+	// loop-invariant pointer and length that SCEV can reason about. Reaching
+	// ctx.scratch through the struct on every iteration reloaded both fields,
+	// so the range could not be proven and the bounds check on scratch[i]
+	// survived. Same mechanism, same fix -- see docs/lanes.md.
+	//
+	// AFTER the haloBufL/haloBufR grow checks above, never before: a slice
+	// local copies the header, so binding ahead of the lazy make would
+	// capture the OLD, too-short backing array.
+	sc := ctx.scratch
+	hl := ctx.haloBufL
+	hr := ctx.haloBufR
 	w := len(own)
 
 	for k := 0; k < radius; k++ {
@@ -566,14 +580,14 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 			ctx.sendL <- own[k]
 		}
 		if ctx.edgeL {
-			ctx.haloBufL[k] = ctx.boundary
+			hl[k] = ctx.boundary
 		} else {
-			ctx.haloBufL[k] = <-ctx.recvL
+			hl[k] = <-ctx.recvL
 		}
 		if ctx.edgeR {
-			ctx.haloBufR[k] = ctx.boundary
+			hr[k] = ctx.boundary
 		} else {
-			ctx.haloBufR[k] = <-ctx.recvR
+			hr[k] = <-ctx.recvR
 		}
 	}
 
@@ -585,17 +599,17 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 			idx := i + k - radius
 			v := 0.0
 			if idx < 0 {
-				v = ctx.haloBufL[(0-idx)-1]
+				v = hl[(0-idx)-1]
 			} else {
 				if idx >= w {
-					v = ctx.haloBufR[idx-w]
+					v = hr[idx-w]
 				} else {
 					v = own[idx]
 				}
 			}
 			acc = acc + coeffs[k]*v
 		}
-		ctx.scratch[i] = acc
+		sc[i] = acc
 	}
 	// Interior: branch-free by construction. i-radius >= 0 and
 	// i+radius <= w-1 hold for every i in [radius, w-radius), so idx is
@@ -606,7 +620,7 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 		for k := 0; k <= 2*radius; k++ {
 			acc = acc + coeffs[k]*own[i+k-radius]
 		}
-		ctx.scratch[i] = acc
+		sc[i] = acc
 	}
 	// Right boundary: same full dispatch body as the left loop. Start is
 	// clamped to max(radius, w-radius) — not always w-radius — so that when
@@ -623,20 +637,20 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 			idx := i + k - radius
 			v := 0.0
 			if idx < 0 {
-				v = ctx.haloBufL[(0-idx)-1]
+				v = hl[(0-idx)-1]
 			} else {
 				if idx >= w {
-					v = ctx.haloBufR[idx-w]
+					v = hr[idx-w]
 				} else {
 					v = own[idx]
 				}
 			}
 			acc = acc + coeffs[k]*v
 		}
-		ctx.scratch[i] = acc
+		sc[i] = acc
 	}
 	for i := 0; i < w; i++ {
-		own[i] = ctx.scratch[i]
+		own[i] = sc[i]
 	}
 }
 
