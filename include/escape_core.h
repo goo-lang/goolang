@@ -83,12 +83,81 @@ typedef uint32_t EscapeReasons;
 
 #define ESCAPE_REASON_NONE          ((EscapeReasons)0)
 
-// The conservative catch-all. Today EVERY mark site raises exactly this, so
-// the set carries no more information than the boolean it replaced. Naming the
-// individual causes is a separate change, on purpose: this one must move no
-// measured number, and a number that moves here means the widening itself is
-// wrong. See docs/adr/0005-measurements/baseline-before.md.
-#define ESCAPE_REASON_UNCLASSIFIED  ((EscapeReasons)1u << 0)
+// THE CONSERVATIVE CATCH-ALL, and it must never stop being raised. Three kinds
+// of site use it, and only the first is a "we do not know" answer:
+//
+//   the two DEFAULT arms   an unrecognised expression or statement kind. The
+//                          engine cannot see what happens to the value, so
+//                          everything escapes.
+//   assign_to_lvalue's     a store with no target node at all, and a
+//   two defensive arms     non-identifier target of a SHORT declaration, which
+//                          Go's grammar does not produce.
+//
+// A new sink added without a reason lands here by way of escape_mark's empty-set
+// guard, which costs precision and never safety.
+#define ESCAPE_REASON_UNCLASSIFIED    ((EscapeReasons)1u << 0)
+
+// `return x` — the value leaves the FUNCTION. The reason the map-key consumer
+// exists to exclude: a map may own a key, but never one the caller still holds.
+#define ESCAPE_REASON_RETURN          ((EscapeReasons)1u << 1)
+
+// A store to a name this unit does not own. Membership of LocalEnv IS the
+// engine's definition of "a plain local here", so an absent name is a package
+// global OR a name from an enclosing scope, and the two are not told apart.
+#define ESCAPE_REASON_GLOBAL_STORE    ((EscapeReasons)1u << 2)
+
+// The VALUE side of a store through a non-identifier lvalue: `m[k] = v`,
+// `obj.f = v`, `*p = v`. The container decides how long v lives, and the
+// container's own fate is decided elsewhere.
+#define ESCAPE_REASON_CONTAINER_STORE ((EscapeReasons)1u << 3)
+
+// The KEY side of the same store — the subscript, not the value. `m[k] = v`
+// stores k as well, because goo_map_set_sv keeps the key pointer verbatim.
+//
+// THIS IS THE REASON ADR 0005 WAS WRITTEN FOR. A local reaching this sink and
+// NO OTHER is a local the map may take ownership of, worth a measured 180,000
+// bytes on bench/daemon. Note the name says SUBSCRIPT and not MAP_KEY: this
+// engine is purely syntactic and cannot tell a map index from a slice index.
+// A consumer that acts on it must supply the type knowledge itself.
+#define ESCAPE_REASON_SUBSCRIPT_STORE ((EscapeReasons)1u << 4)
+
+// An argument to a call whose callee RETAINS it, per the callee summary. An
+// unresolved or external callee retains everything, which is the conservative
+// pair the hook contract already specifies.
+#define ESCAPE_REASON_CALL_RETAIN     ((EscapeReasons)1u << 5)
+
+// The CALLEE EXPRESSION's own taint, for a non-identifier callee. `p.m()`
+// marks `p`, because a method's receiver is not a member of call->args and
+// nothing else would reach it.
+//
+// THIS IS A MEASURED CEILING ON ARC RATHER THAN A DEFECT. It makes every local
+// with a method set unreleasable — sync.Mutex, bytes.Buffer, os.File, any user
+// struct with methods. It is load-bearing: discarding this taint left `p.m()`
+// inside an arena block arena-eligible and a method storing its receiver then
+// dangled. Naming it does not lift the ceiling. It makes the ceiling
+// measurable, which is the first thing a fix would need.
+#define ESCAPE_REASON_CALLEE_VALUE    ((EscapeReasons)1u << 6)
+
+// `go f(x)` — the goroutine outlives every boundary the three passes have.
+#define ESCAPE_REASON_GO_ARG          ((EscapeReasons)1u << 7)
+
+// `defer f(x)`, and ONLY where the pass sets defer_is_like_go. At FUNCTION
+// granularity a defer runs inside the frame and is an ordinary call, so
+// param_escape never raises this. block_escape and local_escape do.
+#define ESCAPE_REASON_DEFER_ARG       ((EscapeReasons)1u << 8)
+
+// `ch <- x` — the value is handed to whoever receives it. A `<-ch` RECEIVE is
+// not a sink and does not appear here.
+#define ESCAPE_REASON_CHAN_SEND       ((EscapeReasons)1u << 9)
+
+// A cell captured by a function literal. The literal may outlive the boundary,
+// so everything it closes over may too.
+#define ESCAPE_REASON_CLOSURE_CAPTURE ((EscapeReasons)1u << 10)
+
+// Every reason. The value a lookup returns when it cannot answer — see
+// local_escape.h's fail-closed contract. Returning this rather than zero is
+// what stops a future "escapes ONLY via X" test passing on a miss.
+#define ESCAPE_REASON_ALL             ((EscapeReasons)((1u << 11) - 1u))
 
 // =============================================================================
 // TaintSet — "which of this unit's slots may this value alias"
