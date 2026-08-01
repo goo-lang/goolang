@@ -568,10 +568,36 @@ TaintSet escape_expr_taint(EscapeCtx* ctx, ASTNode* expr) {
         case AST_POSTFIX_EXPR:
             return escape_expr_taint(ctx, ((PostfixExprNode*)expr)->operand);
         case AST_INDEX_EXPR: {
+            // READING `m[k]` YIELDS THE STORED VALUE, WHICH CANNOT ALIAS `k`.
+            //
+            // The index's taint used to be unioned into the result, so a local
+            // used as a read key rode the result into whatever sink consumed
+            // it. That is over-approximation and not soundness: goo_map_get
+            // stores nothing, and a slice index is an integer.
+            //
+            // THE INDEX IS STILL WALKED, and that is the load-bearing half of
+            // this arm. escape_expr_taint applies sinks as it goes -- a call in
+            // key position still marks its retained arguments, and an
+            // unrecognised node still hits the default arm. Only the RESULT
+            // drops the index's bits.
+            //
+            // A KEY USED IN A **WRITE** IS UNAFFECTED. mark_lvalue_subscripts
+            // marks it SUBSCRIPT_STORE from the lvalue side, which is why local
+            // row 15 stays green and `m[k] = k` still marks k twice over.
+            //
+            // MEASURED: bench/daemon/daemon.goo's `f` goes from
+            // SUBSCRIPT_STORE|CONTAINER_STORE to SUBSCRIPT_STORE alone. The
+            // CONTAINER_STORE came from the read half of
+            // `counts[f] = counts[f] + 1` and named a flow that does not exist:
+            // the value stored is an int.
+            //
+            // .handoff.md records tightening this as worth "~0%", and that was
+            // TRUE while one bit conflated the causes -- the write marked `f`
+            // anyway, so no verdict moved. Under a reason set the same edit is
+            // what makes the map-key consumer reachable at all.
             IndexExprNode* ie = (IndexExprNode*)expr;
             TaintSet base = escape_expr_taint(ctx, ie->expr);
             TaintSet idx = escape_expr_taint(ctx, ie->index);
-            escape_taint_union_into(&base, &idx);
             escape_taint_free(&idx);
             return base;
         }

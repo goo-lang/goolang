@@ -332,34 +332,39 @@ static TestRow rows[] = {
         "f", { { "xs", true } }, 1
     },
     {
-        // PRECISION COST of the arm above, pinned deliberately rather than left
-        // to drift -- the same treatment block-escape row 31 gets.
+        // FLIPPED FROM `true` TO `false` on 2026-08-01, and the previous
+        // version of this comment asked for an argument rather than an
+        // accident. Here it is.
         //
-        // AST_INDEX_EXPR unions the taint of the BASE and of the INDEX. On a
-        // WRITE that is required (sink #2b: goo_map_set_sv keeps the key
-        // pointer verbatim). On a READ it is over-conservative, because
-        // goo_map_get stores nothing -- yet `k` still reads as escaping here,
-        // and a local used only as a lookup key can therefore never be
-        // released.
+        // WHAT CHANGED. escape_expr_taint's AST_INDEX_EXPR arm no longer unions
+        // the INDEX's taint into a READ's result. On a WRITE the key is still
+        // marked, from the lvalue side, by mark_lvalue_subscripts -- so row 15
+        // is untouched and goo_map_set_sv's verbatim key is still covered.
         //
-        // MEASURED before deciding to keep it: the daemon's string local stays
-        // escaping because the map holds it as a key in a WRITE, not a read
-        // (docs/superpowers/specs/
-        // 2026-07-28-daemon-alloc-attribution-findings.md). So tightening this
-        // to mark only the base would reclaim ~0% of the daemon, and it would
-        // be a soundness-relevant change to the shared engine. Not worth it
-        // until a measurement says otherwise.
+        // WHY IT IS SOUND. `m[k]` yields the STORED VALUE. No expression makes
+        // that value alias the key: goo_map_get stores nothing, and a slice
+        // index is an integer. The one shape that looks dangerous, `m[k] = k`,
+        // is a WRITE and marks k twice over -- CONTAINER_STORE from the
+        // right-hand side and SUBSCRIPT_STORE from the subscript.
         //
-        // If T4 ever does tighten it, this row is the one that must change, and
-        // changing it should be an argument, not an accident.
-        22, "local used only as a map READ key -> true (conservative, see comment)",
+        // WHY THE OLD "~0%" WAS RIGHT AND IS NOW WRONG. Under one boolean the
+        // WRITE marked the daemon's key anyway, so tightening the READ moved no
+        // verdict and the measurement said ~0%. Under ADR 0005's reason set the
+        // same edit is what makes the map-key consumer reachable: the daemon's
+        // `f` goes from SUBSCRIPT_STORE|CONTAINER_STORE to SUBSCRIPT_STORE
+        // alone, and "escapes ONLY as a subscript" is the safety question a map
+        // must answer before it may own a key. Measured, and row 40 pins it.
+        //
+        // WHAT THIS ROW GUARDS NOW. Restoring the union makes it FAIL, so the
+        // precision is pinned in the same way the conservatism was.
+        22, "local used only as a map READ key -> false (a read retains nothing)",
         "package main\n"
         "var g *int\n"
         "func f(m map[string]*int) {\n"
         "    k := \"a\"\n"
         "    g = m[k]\n"
         "}\n",
-        "f", { { "k", true } }, 1
+        "f", { { "k", false } }, 1
     },
 
     // ---------------- SOUNDNESS: the STATEMENT arms, which are the sinks ----
@@ -701,16 +706,20 @@ static TestRow rows[] = {
                  .expected_reasons = ESCAPE_REASON_SUBSCRIPT_STORE, .check_reasons = true } }, 1
     },
     {
-        // THE DAEMON'S ACTUAL SHAPE, and it is NOT row 39's. Reading
-        // `m[k]` on the right carries k's taint into the store sink, so the
-        // compound update adds CONTAINER_STORE. Measured on
-        // bench/daemon/daemon.goo while naming the sites, and it is why a
-        // "SUBSCRIPT_STORE only" consumer reclaims nothing there.
+        // THE DAEMON'S ACTUAL SHAPE. It read SUBSCRIPT_STORE|CONTAINER_STORE
+        // when the reasons were first named, and the extra bit came from the
+        // READ half: `m[k]` on the right carried k's taint into the store sink,
+        // naming a flow that does not exist -- the value stored is an int.
         //
-        // The extra reason is IMPRECISION, not escape: `m[k]` yields the
-        // stored value and cannot alias the key. This row pins the imprecision
-        // so that removing it is a deliberate, visible change.
-        40, "ADR 0005: compound map update -> SUBSCRIPT_STORE and CONTAINER_STORE",
+        // The AST_INDEX_EXPR arm no longer propagates a read's index, so this
+        // is now SUBSCRIPT_STORE alone and the shape is one a map may own. Row
+        // 22 carries the soundness argument for that change.
+        //
+        // KEEP THIS ROW SEPARATE FROM ROW 39. Row 39's key appears once, in a
+        // plain write. This one appears three times -- twice reading, once
+        // writing -- and reaching the same verdict by a longer path is exactly
+        // what a consumer needs proved.
+        40, "ADR 0005: compound map update -> SUBSCRIPT_STORE alone",
         "package main\n"
         "import \"strings\"\n"
         "func f(m map[string]int, s string) {\n"
@@ -718,8 +727,7 @@ static TestRow rows[] = {
         "    m[k] = m[k] + 1\n"
         "}\n",
         "f", { { .name = "k", .expected_escapes = true,
-                 .expected_reasons = ESCAPE_REASON_SUBSCRIPT_STORE
-                                   | ESCAPE_REASON_CONTAINER_STORE,
+                 .expected_reasons = ESCAPE_REASON_SUBSCRIPT_STORE,
                  .check_reasons = true } }, 1
     },
     {
