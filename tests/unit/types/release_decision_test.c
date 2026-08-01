@@ -333,6 +333,33 @@ static TestRow rows[] = {
         "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
     },
     {
+        // THE MULTI-ASSIGN COUNT MISMATCH. `x, keep = pass(s)` hands the ONE
+        // value to the FIRST target and NULL to the rest, so a per-pair scan
+        // compares the call with x's depth and never with keep's.
+        //
+        // `pass` returns a value derived from its argument, so condition 1
+        // ALSO refuses `s` here -- this row would pass without condition 6 at
+        // all. It is kept because it pins the SHALLOWEST-TARGET rule, which is
+        // what stops the verdict depending on which rule happens to fire first.
+        47, "multi-assign, one call feeding two targets -> refuse `s`",
+        "package main\n"
+        "func pass(a *int) (int, *int) {\n"
+        "    return 1, a\n"
+        "}\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    keep := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        inner := 0\n"
+        "        inner, keep = pass(s)\n"
+        "        _ = inner\n"
+        "    }\n"
+        "    _ = keep\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_ESCAPES } }, 1
+    },
+    {
         // A GOTO MAKES THE WHOLE FUNCTION UNREADABLE, and that is load-bearing
         // rather than incidental. The `goto` arm in codegen releases the
         // current scope's locals before it branches, which would be wrong for a

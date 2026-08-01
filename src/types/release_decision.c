@@ -531,6 +531,36 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 size_t tcount = 0, vcount = 0;
                 for (ASTNode* t = n->targets; t; t = t->next) tcount++;
                 for (ASTNode* v = n->values; v; v = v->next) vcount++;
+
+                // CONDITION 6 ON THE COUNT-MISMATCH PATH, where the per-pair
+                // scan below cannot reach. `x, keep = f(s)` hands the ONE value
+                // to the FIRST target and NULL to the rest, so a scan against
+                // each pair compares `f(s)` with x's depth only -- and never
+                // with keep's, which may be shallower and outlive the iteration.
+                //
+                // Scan once against the SHALLOWEST target instead, because the
+                // value reaches all of them and the longest-lived one decides.
+                //
+                // MEASURED AS NOT-YET-A-DEFECT, and fixed anyway. A mismatch
+                // needs a CALL, and a call that propagates an argument into a
+                // result is what param_escape's return_escapes reports, so
+                // condition 1 refuses such an `s` today -- verified: the shape
+                // reads RELEASE_NO_ESCAPES. That makes this guard safe because
+                // ANOTHER rule fires first, which is the arrangement that
+                // already cost this branch one use-after-free on the switch
+                // scope. return_escapes precision is live work; this does not
+                // wait for it.
+                if (!n->is_short_decl && tcount != vcount) {
+                    int min_depth = INT_MAX;
+                    for (ASTNode* t = n->targets; t; t = t->next) {
+                        int d = target_lifetime_depth(ctx->out, t);
+                        if (d < min_depth) min_depth = d;
+                    }
+                    for (ASTNode* val = n->values; val; val = val->next) {
+                        mark_mentions(ctx, val, min_depth);
+                    }
+                }
+
                 ASTNode* v = n->values;
                 for (ASTNode* t = n->targets; t; t = t->next) {
                     if (n->is_short_decl) {
@@ -540,7 +570,12 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                                                  : ((vcount == 1) ? n->values : NULL));
                         }
                     } else {
-                        note_assignment(ctx, t, v, !n->is_short_decl);
+                        // The mismatch path pre-scanned above, so hand the rhs
+                        // over only when the pairing is real. Everything else
+                        // note_assignment does -- the binding count, the key
+                        // sites -- still runs.
+                        note_assignment(ctx, t, (tcount == vcount) ? v : NULL,
+                                        !n->is_short_decl);
                     }
                     if (v) v = v->next;
                 }
