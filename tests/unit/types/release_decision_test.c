@@ -1135,6 +1135,103 @@ static KeyRow key_rows[] = {
         "}\n",
         "f", 1
     },
+
+    // ================== ADR 0005: an IDENTIFIER key ======================
+    //
+    // Rows 1-5 all answer the question "was the key expression itself fresh".
+    // An identifier is never fresh, so row 2 refuses one and the daemon's
+    // `counts[f] = counts[f] + 1` -- 180,000 bytes -- goes unreclaimed.
+    //
+    // The four rows below are the four functions of
+    // examples/arc_map_key_local_probe.goo, one for one, so the unit table and
+    // the end-to-end probe cannot drift into disagreeing. ONE says owned and
+    // THREE say refused, and the three are the load-bearing ones: each frees a
+    // buffer somebody else still reads, and each fails for a DIFFERENT cause.
+    //
+    // Row 6 IS RED IN THE COMMIT THAT ADDS IT. That is the point of adding it
+    // first: rows 7-9 pass today for a reason that has nothing to do with the
+    // new rule -- no identifier key is ever owned -- so a table where all four
+    // were green would prove nothing about the rule at all. Row 6 failing is
+    // the only evidence that these rows test what they claim.
+    {
+        // THE WIN, and bench/daemon/daemon.goo's exact shape. `f` is fresh from
+        // a non-retaining shim, it names one key site, and ADR 0005's reason set
+        // now says it escapes ONLY as a subscript.
+        //
+        // THE LOCAL IS NEVER RELEASED, and that is what makes the map safe as
+        // sole owner rather than a double free. It reads RELEASE_NO_ESCAPES,
+        // because escaping as a subscript is still escaping. The two facts are
+        // COUPLED: any future change that lets condition 1 consult the reason
+        // set must revisit this row in the same commit, or the map and the
+        // local both free the same buffer.
+        6, "ADR 0005: an identifier key that escapes ONLY as a subscript -> owned",
+        "package main\n"
+        "import \"strings\"\n"
+        "func counted(reqs []string) int {\n"
+        "    counts := map[string]int{}\n"
+        "    for i := 0; i < len(reqs); i++ {\n"
+        "        f := strings.TrimSpace(reqs[i])\n"
+        "        counts[f] = counts[f] + 1\n"
+        "    }\n"
+        "    return len(counts)\n"
+        "}\n",
+        "counted", 1
+    },
+    {
+        // REFUSAL 1 -- the REASON SET. `s` escapes as a subscript AND by
+        // RETURN, so the caller still holds the buffer after the map dies.
+        // This is the shape that made the rule doubtful, and the only one of
+        // the three that the reason set alone refuses.
+        7, "ADR 0005: an identifier key that also RETURNS -> refused",
+        "package main\n"
+        "import \"strings\"\n"
+        "func escapesByReturn(x string) string {\n"
+        "    m := map[string]int{}\n"
+        "    s := strings.TrimSpace(x)\n"
+        "    m[s] = 1\n"
+        "    return s\n"
+        "}\n",
+        "escapesByReturn", 0
+    },
+    {
+        // REFUSAL 2 -- THE COUNT, and ADR 0005 does not name this condition.
+        // Both writes mark `s` with SUBSCRIPT_STORE and nothing else, so the
+        // reason set says "escapes only as a subscript" and is RIGHT. Two maps
+        // would then each free the one buffer. Only counting the key sites
+        // refuses it.
+        8, "ADR 0005: an identifier key handed to TWO maps -> refused",
+        "package main\n"
+        "import \"strings\"\n"
+        "func twoMaps(x string) int {\n"
+        "    a := map[string]int{}\n"
+        "    b := map[string]int{}\n"
+        "    s := strings.TrimSpace(x)\n"
+        "    a[s] = 1\n"
+        "    b[s] = 2\n"
+        "    return len(a) + len(b)\n"
+        "}\n",
+        "twoMaps", 0
+    },
+    {
+        // REFUSAL 3 -- OWNERSHIP, which the reason set says nothing about.
+        // `v := s[1:]` is a VIEW into a buffer this function never allocated.
+        // It escapes only as a subscript, and freeing it would free somebody
+        // else's memory. binding_is_owned is the predicate that refuses it, and
+        // it must be asked of what the identifier is BOUND TO, not of the
+        // identifier -- an identifier is never fresh, which is where rows 1-5
+        // stop.
+        9, "ADR 0005: an identifier key bound to a VIEW -> refused",
+        "package main\n"
+        "import \"strings\"\n"
+        "func viewKey(x string) int {\n"
+        "    m := map[string]int{}\n"
+        "    s := strings.TrimSpace(x)\n"
+        "    v := s[1:]\n"
+        "    m[v] = 1\n"
+        "    return len(m) + len(strings.ToUpper(s))\n"
+        "}\n",
+        "viewKey", 0
+    },
 };
 
 // =============================================================================
