@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth arc-concat-operand-probe arc-map-key-local-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth arc-concat-operand-probe arc-map-key-local-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -4389,6 +4389,29 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
+
+# The same 493 fixtures with POISON ON FREE (GOO_ARC_POISON=1, see goo_free in
+# src/runtime/runtime.c). A freed payload becomes 0xDE bytes, so a read after
+# free yields visible garbage or a segfault on a non-canonical pointer instead
+# of stale-but-plausible data.
+#
+# WHY A SECOND RUN RATHER THAN REPLACING THE FIRST. The plain run is the
+# behaviour users get; this one is a stronger instrument on the same corpus, and
+# a difference between the two IS the finding. Replacing the plain run would
+# make an ordinary regression and a use-after-free indistinguishable.
+#
+# MEASURED: 493/493 pass, 4.3s -- poison is INERT on correct programs, which is
+# the property that lets it run over the whole corpus. A correct program never
+# reads freed memory, so overwriting it changes no defined behaviour.
+#
+# HONEST LIMIT, recorded so nobody overstates this gate: poison is proven to
+# AMPLIFY a real use-after-free (with condition 7 disabled,
+# examples/arc_reassign_probe.goo goes 27 -> 28 without poison and 27 -> 39
+# with it), but it has NOT been shown to catch a defect this corpus misses
+# without it. An attempt to construct one produced no use-after-free at all.
+test-golden-poison: $(COMPILER) $(RUNTIME_LIB)
+	@echo "=== test-golden-poison: the golden suite with poison on free ==="
+	@GOO_ARC_POISON=1 COMPILER="$(COMPILER)" bash scripts/run_golden.sh
 
 # Phase 3 exit gate (P3.10): the ENTIRE golden suite must also be green
 # with real optimization passes on — a fixture that passes at -O0 but
