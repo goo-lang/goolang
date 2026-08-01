@@ -1,7 +1,28 @@
 # 2. Memory model: automatic reference counting, elided by the existing escape analysis
 
 Date: 2026-07-28
-Status: accepted (2026-07-28)
+Status: accepted (2026-07-28). **LARGELY IMPLEMENTED** — ARC 1 shipped in PRs
+#258–#286 and is ON by default (`GOO_ARC_RELEASE=0` is the kill switch).
+Refined by ADR 0004 (alias-based escape formulation) and ADR 0005 (an escape
+is a SET OF REASONS, not a boolean).
+
+**Re-measured 2026-08-02, three builds in one sitting**
+(`docs/adr/0005-measurements/scale-400k.md`): the daemon peaks at 26,276 KB at
+400,000 requests, against a 793,248 KB control and Go's 8,232 KB — 96.7% of
+peak reclaimed, and 3.19x Go rather than the 81x this document opens with.
+Retention fell from 1,433 to 41 bytes for each request.
+
+**THE CONTEXT SECTION BELOW IS THE PRE-ARC MEASUREMENT AND IS KEPT VERBATIM.**
+Its 1.63 KB per request and 651 MB at 400,000 requests are the baseline this
+work is judged against, not a current claim. Do not quote them as today's
+figures.
+
+Still open, each named rather than minimised: reference cycles leak; the
+CALLEE_VALUE ceiling makes every local with a method set unreleasable and its
+corpus-wide reach is UNMEASURED; a multi-assign target gets no store release
+(a leak, untested rather than proven absent); an unbound temporary has no
+release site; and `arena` is NOT yet re-specified as a proven region, which
+the "two questions this choice forces" section below requires.
 
 ## Context
 
