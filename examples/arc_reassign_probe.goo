@@ -1,0 +1,90 @@
+// Releasing the OLD value when a local is reassigned, and the shapes that must
+// refuse it.
+//
+// `last = handle(req)` in a loop drops the previous string on every iteration
+// and nothing frees it. Measured on bench/daemon/daemon.goo: 80,000 bytes per
+// 2,000 client messages, the last record of that program's return line.
+//
+// Condition 4 refuses a rebound local outright today (`binding_count > 1` ->
+// RELEASE_NO_REBOUND), because a second binding means the first value has no
+// release site. Releasing at the STORE is that missing site: the assignment
+// frees what the slot held, and scope exit frees whatever it holds last.
+//
+// NOT WHAT #276 DID. That work made a reassigned package-level GLOBAL immortal
+// (commits 3b4757a, 0f25db9, 9068675) so that nothing frees it — the opposite
+// direction. There is no existing machinery to copy here.
+//
+// THE DANGEROUS DIRECTION IS AN ALIAS, and it is NOT an escape. `p := last`
+// keeps a second pointer to the buffer without making it outlive the function,
+// so condition 1 does not see it and a release at the next store leaves `p`
+// dangling. That is the shape `aliased` below carries.
+//
+// EVERY READ IS OF THE BYTES. A string is a fat value, so `len(x)` touches no
+// heap memory and a probe built on len() alone stays green over a freed buffer.
+// ToUpper reads the bytes, which is what makes valgrind see a wrong release.
+package main
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// A fresh string for each call, so every value the loop drops is owned.
+func make1(i int) string {
+	return "req-" + strconv.Itoa(i) + "-payload"
+}
+
+// THE WIN — the daemon's `last = handle(req)`. Every value assigned is a fresh
+// temporary, nothing else names any of them, and only the final one is read.
+func reassigned(n int) int {
+	last := ""
+	for i := 0; i < n; i++ {
+		last = make1(i)
+	}
+	return len(strings.ToUpper(last))
+}
+
+// REFUSAL 1 — an ALIAS. `p` still points at the value `last` held, so freeing
+// it at the next store is a use-after-free that no escape rule reports.
+func aliased(n int) int {
+	last := make1(0)
+	p := last
+	for i := 1; i < n; i++ {
+		last = make1(i)
+	}
+	// Reads the BYTES of the value `last` held FIRST, after later stores.
+	return len(strings.ToUpper(p)) + len(strings.ToUpper(last))
+}
+
+// A callee whose result IS its argument, so the value is borrowed.
+func borrow(s string) string {
+	return s
+}
+
+// REFUSAL 2 — a BORROWED value reaches the slot. Releasing it at the next store
+// frees a buffer this function never owned.
+func borrowedReassign(x string, n int) int {
+	keep := strings.ToUpper(x)
+	last := make1(0)
+	for i := 1; i < n; i++ {
+		last = borrow(keep)
+	}
+	return len(strings.ToUpper(keep)) + len(last)
+}
+
+// REFUSAL 3 — the local LEAVES the function, so its final value must survive.
+func escapes(n int) string {
+	last := ""
+	for i := 0; i < n; i++ {
+		last = make1(i)
+	}
+	return last
+}
+
+func main() {
+	fmt.Println(reassigned(500))
+	fmt.Println(aliased(50))
+	fmt.Println(borrowedReassign("  zz  ", 50))
+	fmt.Println(len(strings.ToUpper(escapes(50))))
+}
