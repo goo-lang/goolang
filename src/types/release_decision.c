@@ -635,12 +635,15 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // NULL binding value makes condition 2 refuse it with NOT_OWNED --
                 // the more fundamental cause, and one that no zero-store increment
                 // could ever lift. Pinned by row 30.
+                // A BREAK SCOPE, and the rise comes BEFORE the bind because
+                // codegen_generate_type_switch_stmt pushes its break scope
+                // before it generates any case body, and the bind is created
+                // inside one. The two counters must agree at every point, which
+                // is the invariant the switch defect broke.
+                ctx->block_depth++;
                 if (n->bind_name && n->bind_name->type == AST_IDENTIFIER) {
                     note_declaration(ctx, ((IdentifierNode*)n->bind_name)->name, NULL);
                 }
-                // A BREAK SCOPE. The bind above is recorded BEFORE this rise,
-                // which keeps its existing NOT_OWNED cause (row 30).
-                ctx->block_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_TYPE_CASE) { ctx->out->unreadable = true; continue; }
                     walk_stmts(ctx, ((TypeCaseNode*)c)->body);
