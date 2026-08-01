@@ -2,32 +2,17 @@
 # Does a reassigned local release the value it is dropping?
 #
 # ============================================================================
-# THIS PROBE IS KNOWN-RED, AND IT IS DELIBERATELY IN NO GATE. Do not add it to
-# VERIFY_ALL_DEPS to "fix" the red — the red is the point, and it records work
-# nobody has done. Run it by hand with `make arc-reassign-probe`.
+# THIS PROBE IS GREEN AND IN verify-core AS OF THE REBOUND RELEASE. It landed
+# KNOWN-RED with a five-step plan in its header; all five steps are done and the
+# plan text is gone with them. Measured on bench/daemon/daemon.goo: 342,000 ->
+# 262,000 bytes per 2,000 requests, the 80,000 this probe was written for.
 #
-# THE PLAN IT IS WAITING FOR, five steps:
-#
-#   1. LocalRecord keeps EVERY value assigned, not just the first. It holds
-#      `bound_value` and a count today, and condition 4 only ever needed the
-#      count.
-#   2. note_declaration and note_assignment append to that list.
-#   3. all_values_owned — every recorded value passes binding_is_owned. One
-#      borrowed value poisons the local, because the release site is the store
-#      and it cannot tell the values apart at run time.
-#   4. has_alias — scan every local's recorded values for an AST_IDENTIFIER
-#      naming this one. THIS IS THE CONDITION NOTHING ELSE PROVIDES: `p := last`
-#      keeps a second pointer WITHOUT making the value outlive the function, so
-#      local_escape reports nothing and condition 1 passes. Complete by
-#      construction — every binding flows through those two functions, and an
-#      unhandled statement sets `unreadable`.
-#   5. decide() lets condition 4's `binding_count > 1` refusal through when 3
-#      and 4 hold, plus a codegen hook that releases the old slot value before
-#      each store.
-#
-# STEP 5 CHANGES CONDITION 4, which release_decision_teeth.sh pins with six
-# rows. Re-prove the `cond4-rebound` mutation and move EXPECTED_MUTATIONS if the
-# table changes. That is a deliberate step, not a tail-end one.
+# SELF-APPEND IS A REFUSAL HERE BECAUSE IT WAS MISSED. Every assertion below
+# passed while the daemon printed NOTHING and reported 7 invalid reads:
+# `parts = append(parts, x)` is not a rebind, and goo_slice_append's realloc
+# frees the old base itself, so a release at that store reads a freed pointer.
+# `selfAppend` was added for it, and the guard was mutation-tested -- disabling
+# codegen's is_self_append check makes this probe FAIL on differing output.
 # ============================================================================
 #
 # `last = handle(req)` in a loop replaces the string in the slot on every

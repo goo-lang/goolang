@@ -3272,6 +3272,7 @@ VERIFY_ALL_DEPS := \
     release-decision-test \
     release-decision-teeth \
     escape-teeth \
+    arc-reassign-probe \
     obj-header-test \
     obj-header-tsan \
     arena-routing-test \

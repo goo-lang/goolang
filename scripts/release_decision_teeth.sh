@@ -80,7 +80,20 @@ MUTATIONS=(
 # refusal is not what keeps the module sound. The unsafe direction moved to the
 # two rules that decide WHICH loop locals qualify, which is what these mutate.
 "loop-header	        if (r->loop_header) return RELEASE_NO_LOOP_SCOPE;"
-"cond4-rebound	    if (r->binding_count > 1) return RELEASE_NO_REBOUND;"
+# CONDITION 4'S REBOUND HALF IS GONE, replaced by the two rules below. It read
+# `if (r->binding_count > 1) return RELEASE_NO_REBOUND;` and refused EVERY
+# rebound local. Deleting that line is no longer an unsafe mutation: codegen
+# releases at the STORE now, so the blanket refusal is not what keeps the module
+# sound. The unsafe direction moved to the two rules that decide WHICH rebound
+# locals qualify, exactly as it did for the loop half before it.
+#
+# CONDITION 2'. One borrowed value among the recorded ones must refuse the whole
+# local, because the store cannot tell the values apart at run time. Row 42.
+"values-release-safe	        if (!all_values_release_safe((Collected*)c, pe, r)) return RELEASE_NO_NOT_OWNED;	        if (!all_values_release_safe((Collected*)c, pe, r) && false) return RELEASE_NO_NOT_OWNED;"
+# CONDITION 7, the one nothing else provides. `p := last` holds a second pointer
+# without making the value outlive the function, so local_escape reports nothing
+# and condition 1 passes. Row 41.
+"alias-refusal	        if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;	        if (has_alias((Collected*)c, pe, r->name) && false) return RELEASE_NO_ALIASED;"
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
 # Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
 # `L = append(L, x)` counts as a rebind and row 18 must fail.
@@ -100,7 +113,7 @@ MUTATIONS=(
 # them run. A gate whose work can shrink to nothing while its verdict holds
 # still is not a gate. Change this number in the same commit that adds or
 # removes a mutation, and give the reason in the message.
-EXPECTED_MUTATIONS=8
+EXPECTED_MUTATIONS=9
 [ "${#MUTATIONS[@]}" -eq "$EXPECTED_MUTATIONS" ] \
     || die "mutation table holds ${#MUTATIONS[@]} entries, expected $EXPECTED_MUTATIONS"
 

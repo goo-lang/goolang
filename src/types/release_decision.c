@@ -81,6 +81,31 @@ typedef struct {
     // exactly the "safe by accident" shape the measurement that motivated
     // condition 6 recorded as finding 2.
     bool      loop_header;
+
+    // EVERY value ever bound to this name, in source order, borrowed AST nodes.
+    //
+    // A NULL ENTRY IS REFUSED, NOT TRUSTED. It is tempting to read NULL as "no
+    // initialiser, so the slot is zeroed and a release is a no-op", and for
+    // `var s string` that is true. But note_declaration ALSO takes NULL for a
+    // select/type-switch bind (`v := <-ch`), where the slot holds a real value
+    // this walk simply did not describe. The two are indistinguishable here, so
+    // the rebound path treats NULL as unsafe and `var s string` + reassign waits
+    // for a row that separates them.
+    //
+    // `bound_value` above is the FIRST of these and stays, because conditions 2
+    // and owns_elems ask about the declaration specifically. This list is what
+    // the REBOUND path needs instead: the release site is the store, and at run
+    // time that store cannot tell which value the slot happens to hold, so
+    // every value has to be safe to release or none of them is.
+    ASTNode** values;
+    size_t    value_count;
+    size_t    value_cap;
+
+    // A value reached this slot that `values` cannot describe -- today only a
+    // COMPOUND assignment, whose stored result is `lhs op rhs` and has no AST
+    // node of its own. Poisons the rebound path on its own, because a list that
+    // silently omits a value would let that value be freed unexamined.
+    bool      has_unsafe_value;
 } LocalRecord;
 
 typedef struct {
@@ -187,8 +212,31 @@ static LocalRecord* intern_record(Collected* c, const char* name) {
     r->declared = false;
     r->block_escapes = false;
     r->loop_header = false;
+    r->values = NULL;
+    r->value_count = 0;
+    r->value_cap = 0;
+    r->has_unsafe_value = false;
     c->count++;
     return r;
+}
+
+// Appends one bound value. A NULL `value` is recorded deliberately: `var s
+// string` leaves the slot zeroed, and goo_release is a no-op on NULL, so it is
+// a SAFE entry rather than a missing one.
+//
+// Returns false on allocation failure only. The caller sets `unreadable`, which
+// refuses every local in the function -- losing the record silently would let a
+// borrowed value go unseen, and this list decides whether a store may free.
+static bool record_value(LocalRecord* r, ASTNode* value) {
+    if (r->value_count >= r->value_cap) {
+        size_t ncap = r->value_cap ? r->value_cap * 2 : 4;
+        ASTNode** grown = realloc(r->values, ncap * sizeof(ASTNode*));
+        if (!grown) return false;
+        r->values = grown;
+        r->value_cap = ncap;
+    }
+    r->values[r->value_count++] = value;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +503,7 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
         // opening move and leaves the appends to decide.
         note_literal_elems(ctx, r->name, value);
     }
+    if (!record_value(r, value)) { ctx->out->unreadable = true; return; }
     r->binding_count++;
 }
 
@@ -473,6 +522,19 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
 //
 // The arg-0 identifier must match the assignment target by NAME. `a = append(b,
 // x)` is a rebind of `a` to b's buffer, not a self-append.
+// Exported for codegen, which must NOT emit a release-before-store at a
+// self-append. goo_slice_append reallocs, and goo_realloc frees the old base
+// itself, so by the time the store runs the old pointer in the slot is already
+// dangling -- measured on bench/daemon/daemon.goo as 7 invalid reads through
+// goo_slice_release_elems and goo_release_with, with the program printing
+// nothing at all. ONE implementation rather than a second copy in codegen: the
+// two must agree, and this is the same predicate the rebind rule uses.
+static bool is_self_append(const char* target, ASTNode* rhs);
+
+bool release_decision_is_self_append(const char* target, ASTNode* rhs) {
+    return is_self_append(target, rhs);
+}
+
 static bool is_self_append(const char* target, ASTNode* rhs) {
     if (!target || !rhs || rhs->type != AST_CALL_EXPR) return false;
     CallExprNode* call = (CallExprNode*)rhs;
@@ -561,6 +623,22 @@ static void note_assignment(WalkCtx* ctx, ASTNode* lhs, ASTNode* rhs, bool plain
     if (plain_assign && is_self_append(name, rhs)) {
         // ...and every argument after arg 0 is a NEW ELEMENT of that object.
         note_append_elems(ctx, r->name, rhs);
+        return;
+    }
+    // A COMPOUND assignment (`s += x`) stores the result of `lhs op rhs`, NOT
+    // `rhs`. There is no AST node for that result to record, and recording NULL
+    // would be read as "no initialiser, slot is zeroed, safe" -- which is a lie
+    // about a slot that holds a real value.
+    //
+    // So it is refused by its own flag rather than described badly. `s += x` on
+    // strings does store a fresh goo_string_concat buffer and IS releasable in
+    // principle; relaxing this needs a row that proves it, not an inference
+    // here, because this module holds no types and cannot tell that `+=` from an
+    // integer one.
+    if (!plain_assign) {
+        r->has_unsafe_value = true;
+    } else if (!record_value(r, rhs)) {
+        ctx->out->unreadable = true;
         return;
     }
     r->binding_count++;
@@ -867,7 +945,11 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                         } else if (sc->is_declare == 0) {
                             LocalRecord* r = intern_record(ctx->out, sc->bind_name);
                             if (!r) ctx->out->unreadable = true;
-                            else    r->binding_count++;
+                            // A value reaches the slot and NO node is recorded
+                            // for it, so the values list is incomplete here. The
+                            // rebound path must not read that silence as "no
+                            // values, nothing unsafe".
+                            else    { r->has_unsafe_value = true; r->binding_count++; }
                         }
                     }
                     walk_stmts(ctx, sc->body);
@@ -1081,11 +1163,175 @@ static bool binding_is_owned(Collected* c, const ParamEscapeResult* pe, ASTNode*
 }
 
 // ---------------------------------------------------------------------------
+// The REBOUND path: releasing at the store instead of refusing outright
+// ---------------------------------------------------------------------------
+
+// Is this one value safe for a store to release?
+//
+// binding_is_owned answers "does this local OWN the value", which is the right
+// question for the single release at scope exit. The store site asks a WIDER
+// one, because at run time it frees whatever the slot holds and cannot tell the
+// values apart: "would releasing this value ever free memory somebody else
+// owns?" Two shapes answer no without being owned:
+//
+//   A LITERAL. Not owned, and not borrowed either. A string literal's global
+//   carries a real header whose count is GOO_RC_IMMORTAL, and goo_release_with
+//   checks that sentinel BEFORE the fetch_sub and returns (src/runtime/
+//   runtime.c). So the release is a proven no-op, not a gamble.
+//   include/runtime.h names `last := ""` in bench/daemon as the exact shape that
+//   work was done for -- without this arm the daemon's local is refused by its
+//   own initialiser and this whole path reclaims nothing.
+//
+//   NULL is NOT such a shape -- see LocalRecord.values for why it is refused.
+static bool value_is_release_safe(Collected* c, const ParamEscapeResult* pe,
+                                  ASTNode* value) {
+    if (!value) return false;
+    if (value->type == AST_LITERAL) return true;
+    return binding_is_owned(c, pe, value);
+}
+
+// Every value that ever reached this slot is safe to release.
+//
+// ALL OR NOTHING, and that is forced rather than chosen: the release site is the
+// store, one instruction with no idea which of the values the slot is holding on
+// this iteration. One borrowed value therefore poisons the local.
+static bool all_values_release_safe(Collected* c, const ParamEscapeResult* pe,
+                                    const LocalRecord* r) {
+    if (r->has_unsafe_value) return false;
+    if (r->value_count == 0) return false;   // nothing recorded: fail closed
+    for (size_t i = 0; i < r->value_count; i++) {
+        if (!value_is_release_safe(c, pe, r->values[i])) return false;
+    }
+    return true;
+}
+
+// Does any expression under `e` name `target`?
+//
+// Sets *unknown on a node kind it cannot descend, which the caller reads as
+// "assume an alias". Same fail-closed shape as mark_mentions' handling of an
+// unrecognised expression, and for the same reason: an alias this scanner
+// cannot see is a use-after-free, not lost precision.
+static bool expr_names_local(ASTNode* e, const char* target, bool* unknown) {
+    if (!e) return false;
+
+    switch (e->type) {
+        case AST_IDENTIFIER: {
+            const char* n = ((IdentifierNode*)e)->name;
+            return n && strcmp(n, target) == 0;
+        }
+        case AST_LITERAL:
+            return false;
+        case AST_BINARY_EXPR:
+            return expr_names_local(((BinaryExprNode*)e)->left, target, unknown)
+                || expr_names_local(((BinaryExprNode*)e)->right, target, unknown);
+        case AST_UNARY_EXPR:
+            return expr_names_local(((UnaryExprNode*)e)->operand, target, unknown);
+        case AST_POSTFIX_EXPR:
+            return expr_names_local(((PostfixExprNode*)e)->operand, target, unknown);
+        case AST_CALL_EXPR: {
+            CallExprNode* call = (CallExprNode*)e;
+            if (expr_names_local(call->function, target, unknown)) return true;
+            for (ASTNode* a = call->args; a; a = a->next) {
+                if (expr_names_local(a, target, unknown)) return true;
+            }
+            return false;
+        }
+        case AST_INDEX_EXPR:
+            return expr_names_local(((IndexExprNode*)e)->expr, target, unknown)
+                || expr_names_local(((IndexExprNode*)e)->index, target, unknown);
+        case AST_SELECTOR_EXPR:
+            return expr_names_local(((SelectorExprNode*)e)->expr, target, unknown);
+        case AST_SLICE_INDEX_EXPR: {
+            SliceIndexExprNode* s = (SliceIndexExprNode*)e;
+            return expr_names_local(s->expr, target, unknown)
+                || expr_names_local(s->low, target, unknown)
+                || expr_names_local(s->high, target, unknown);
+        }
+        case AST_SLICE_EXPR:
+            for (ASTNode* x = ((SliceLitNode*)e)->elements; x; x = x->next) {
+                if (expr_names_local(x, target, unknown)) return true;
+            }
+            return false;
+        case AST_ARRAY_LITERAL:
+            for (ASTNode* x = ((ArrayLitNode*)e)->elements; x; x = x->next) {
+                if (expr_names_local(x, target, unknown)) return true;
+            }
+            return false;
+        // A map literal is tagged AST_PAREN_EXPR -- see mark_mentions.
+        case AST_PAREN_EXPR: {
+            MapLitNode* m = (MapLitNode*)e;
+            for (ASTNode* k = m->keys; k; k = k->next) {
+                if (expr_names_local(k, target, unknown)) return true;
+            }
+            for (ASTNode* v = m->values; v; v = v->next) {
+                if (expr_names_local(v, target, unknown)) return true;
+            }
+            return false;
+        }
+        case AST_STRUCT_LITERAL:
+            for (ASTNode* f = ((StructLiteralNode*)e)->field_values; f; f = f->next) {
+                if (expr_names_local(f, target, unknown)) return true;
+            }
+            return false;
+        default:
+            *unknown = true;
+            return false;
+    }
+}
+
+// Does another local hold a second pointer to what this one holds?
+//
+// THIS IS THE CONDITION NOTHING ELSE PROVIDES. `p := last` keeps a pointer to
+// last's buffer WITHOUT making it outlive the function, so local_escape reports
+// nothing and condition 1 passes. Releasing at last's next store then leaves `p`
+// dangling inside the same function -- an invalid read, not a leak.
+//
+// COMPLETE BY CONSTRUCTION. Every binding in the function flows through
+// note_declaration or note_assignment, so every value another local could have
+// taken is in some record's `values`. A statement kind the walk cannot read sets
+// `unreadable` and refuses the whole function before this is ever consulted.
+//
+// WIDER THAN A BARE IDENTIFIER, because `p := borrow(last)` aliases just as hard
+// as `p := last` when the callee returns its argument. So any MENTION inside a
+// value that could carry a pointer out counts.
+//
+// AN OWNED VALUE IS PRUNED WHOLE, and that is what makes this usable rather than
+// merely safe. binding_is_owned already means "this expression yields FRESH
+// memory" -- a new/composite, a concat, a call whose return_escapes is false, a
+// non-retaining shim. Fresh memory cannot contain a pointer into our local, so
+// no mention inside it can be an alias.
+//
+// MEASURED, not reasoned. Without this prune, scanning every mention refused
+// `u := strings.ToUpper(last)` -- an ordinary read into a new local, which
+// COPIES -- and the daemon shape reclaimed nothing. The probe went from 32 bytes
+// back to 15,890. Reading the answer out of condition 2's own table is what
+// separates "names it" from "could still be holding it".
+static bool has_alias(Collected* c, const ParamEscapeResult* pe, const char* name) {
+    for (size_t i = 0; i < c->count; i++) {
+        LocalRecord* other = &c->items[i];
+        if (strcmp(other->name, name) == 0) continue;   // its own values are not aliases
+        for (size_t j = 0; j < other->value_count; j++) {
+            ASTNode* v = other->values[j];
+            if (!v) continue;                       // nothing bound, nothing held
+            if (binding_is_owned(c, pe, v)) continue;   // fresh: cannot alias
+            bool unknown = false;
+            if (expr_names_local(v, name, &unknown)) return true;
+            if (unknown) return true;   // fail closed
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Plan construction
 // ---------------------------------------------------------------------------
 
 static void collected_free(Collected* c) {
-    for (size_t i = 0; i < c->count; i++) free(c->items[i].name);
+    for (size_t i = 0; i < c->count; i++) {
+        free(c->items[i].name);
+        // The elements are borrowed AST nodes; only the array is ours.
+        free(c->items[i].values);
+    }
     free(c->items);
     c->items = NULL;
     c->count = c->cap = 0;
@@ -1159,8 +1405,32 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     // clean -- removing the zero store makes that probe report 70,000 uninitialised
     // reads, which is what the refusal used to prevent.
 
-    // Condition 4, the re-assignment half.
-    if (r->binding_count > 1) return RELEASE_NO_REBOUND;
+    // CONDITION 4's RE-ASSIGNMENT HALF IS RELAXED, and conditions 2' and 7 take
+    // its place. It used to refuse outright, because a second binding left the
+    // first value with no release site. Releasing AT THE STORE is that missing
+    // site: the assignment frees what the slot held, and scope exit frees
+    // whatever it holds last.
+    //
+    // NOT WHAT #276 DID. That made a reassigned package-level GLOBAL immortal
+    // (3b4757a, 0f25db9, 9068675) so that nothing frees it -- the opposite
+    // direction, and no machinery to copy.
+    //
+    // TWO NEW REFUSALS, and they are different questions:
+    //
+    //   2'  all_values_release_safe -- EVERY value that reached the slot is
+    //       safe to free, because the store cannot tell them apart at run time.
+    //       This replaces condition 2 rather than joining it: the ordinary form
+    //       asks only about `bound_value`, and for `last := ""` that is a
+    //       literal, so it would refuse the very shape this path exists for.
+    //
+    //   7   has_alias -- another local holds a second pointer to the value.
+    //       local_escape cannot see it, so nothing else refuses it, and a
+    //       release at the next store dangles inside the same function.
+    if (r->binding_count > 1) {
+        if (!all_values_release_safe((Collected*)c, pe, r)) return RELEASE_NO_NOT_OWNED;
+        if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;
+        return RELEASE_OK;
+    }
 
     // Condition 2 last: it is the one that needs the callee summaries.
     if (!binding_is_owned((Collected*)c, pe, r->bound_value)) return RELEASE_NO_NOT_OWNED;
@@ -1386,6 +1656,7 @@ const char* release_verdict_name(ReleaseVerdict v) {
         case RELEASE_NO_ARENA:      return "RELEASE_NO_ARENA";
         case RELEASE_NO_LOOP_SCOPE: return "RELEASE_NO_LOOP_SCOPE";
         case RELEASE_NO_REBOUND:    return "RELEASE_NO_REBOUND";
+        case RELEASE_NO_ALIASED:    return "RELEASE_NO_ALIASED";
         case RELEASE_NO_BLOCK_ESCAPE: return "RELEASE_NO_BLOCK_ESCAPE";
         case RELEASE_NO_NO_BINDING: return "RELEASE_NO_NO_BINDING";
         case RELEASE_NO_UNKNOWN:    return "RELEASE_NO_UNKNOWN";

@@ -416,7 +416,12 @@ static TestRow rows[] = {
         //
         // Added because scripts/release_decision_teeth.sh reported this condition
         // UNGUARDED: deleting it from decide() left all 15 original rows green.
-        16, "declared owned, then RE-ASSIGNED to a borrowed value -> refuse, REBOUND",
+        // CAUSE CHANGED WITH THE REBOUND RELAXATION, and this row is the reason
+        // the change is safe. `t.p` is a selector, so condition 2' finds a
+        // BORROWED value in the slot and refuses on that -- a stricter and more
+        // specific answer than "it was rebound". If condition 2' were ever
+        // dropped, this row is what goes RELEASE_OK and frees `t`'s field.
+        16, "declared owned, then RE-ASSIGNED to a borrowed value -> refuse, NOT_OWNED",
         "package main\n"
         "type T struct { p *int }\n"
         "func f(t *T) {\n"
@@ -424,7 +429,7 @@ static TestRow rows[] = {
         "    a = t.p\n"
         "    _ = a\n"
         "}\n",
-        "f", { { "a", RELEASE_NO_REBOUND } }, 1
+        "f", { { "a", RELEASE_NO_NOT_OWNED } }, 1
     },
 
     // ---------------- conservative defaults ----------------
@@ -527,13 +532,25 @@ static TestRow rows[] = {
         "    sink = sink + len(a) + len(b)\n"
         "}\n",
         // `b` is still its own owner and still releases; only `a` is refused.
-        "f", { { "a", RELEASE_NO_REBOUND }, { "b", RELEASE_OK } }, 2
+        "f", { { "a", RELEASE_NO_NOT_OWNED }, { "b", RELEASE_OK } }, 2
     },
     {
         // A COMPOUND operator is never an append, so it stays a rebind. Without
         // the `plain_assign` guard, `xs += ...` would take the self-append path
         // by accident.
-        21, "a compound assignment is not a self-append -> refuse, REBOUND",
+        // NOW RELEASES, and the journey of this row is worth recording. It read
+        // RELEASE_NO_REBOUND, because a rebind was refused outright. Both values
+        // are FRESH slice literals and nothing holds either one, so releasing at
+        // the store is correct and this is a real reclamation the old condition
+        // 4 was throwing away.
+        //
+        // IT WENT THROUGH RELEASE_NO_ALIASED ON THE WAY, and that was a defect in
+        // condition 7's first form: `sink = sink + len(xs)` MENTIONS xs, and a
+        // scanner that counted every mention called it an alias. len() returns an
+        // int and can alias nothing. has_alias now prunes any value that
+        // binding_is_owned calls fresh -- a concat here -- which is what makes
+        // this row, and the daemon, reclaim at all.
+        21, "rebound to a second fresh literal, only read by len -> RELEASE",
         "package main\n"
         "var sink int\n"
         "func f(n int) {\n"
@@ -541,7 +558,7 @@ static TestRow rows[] = {
         "    xs = []int{2}\n"
         "    sink = sink + len(xs) + n\n"
         "}\n",
-        "f", { { "xs", RELEASE_NO_REBOUND } }, 1
+        "f", { { "xs", RELEASE_OK } }, 1
     },
 
     // ---------------- STRING CONCATENATION, condition 2's binary arm ----------
@@ -607,7 +624,7 @@ static TestRow rows[] = {
         "    s += \"e\"\n"
         "    sink = sink + len(s)\n"
         "}\n",
-        "f", { { "s", RELEASE_NO_REBOUND } }, 1
+        "f", { { "s", RELEASE_NO_NOT_OWNED } }, 1
     },
     {
         // AN INTEGER `+` REACHES THE SAME ARM, and this verdict is DELIBERATE.
@@ -796,7 +813,7 @@ static TestRow rows[] = {
         "    }\n"
         "    _ = a\n"
         "}\n",
-        "f", { { "a", RELEASE_NO_REBOUND } }, 1
+        "f", { { "a", RELEASE_NO_NOT_OWNED } }, 1
     },
     {
         // SOUNDNESS ROW, and the one that fails if the case BODIES are not walked
@@ -817,7 +834,7 @@ static TestRow rows[] = {
         "    sink = sink + 1\n"
         "    _ = a\n"
         "}\n",
-        "f", { { "a", RELEASE_NO_REBOUND } }, 1
+        "f", { { "a", RELEASE_NO_NOT_OWNED } }, 1
     },
     {
         // RELEASE_NO_UNKNOWN MUST STAY REACHABLE, or release_decision_teeth.sh
@@ -924,6 +941,96 @@ static TestRow rows[] = {
         "    return len(a) + len(b)\n"
         "}\n",
         "f", {{"a", RELEASE_OK}, {"b", RELEASE_NO_NOT_OWNED}}, 2
+    },
+
+    // ---------------- CONDITIONS 2' AND 7: releasing at the STORE -----------
+    //
+    // Condition 4 used to refuse every rebound local outright, because a second
+    // binding left the first value with no release site. The store IS that site.
+    // These four rows are the whole of that relaxation: one that must release,
+    // and three that must not, each refused by a DIFFERENT rule.
+    {
+        // THE WIN, and it is bench/daemon/daemon.goo's `main` verbatim in shape.
+        // Measured there: 80,000 bytes per 2,000 requests, the last record of
+        // that program's return line.
+        //
+        // `last` is declared at FUNCTION scope, so condition 6 and the
+        // loop-header rule do not reach it -- the only thing that ever refused
+        // it was condition 4's rebound half.
+        //
+        // THE INITIALISER IS A LITERAL ON PURPOSE. `last := ""` is the shape
+        // include/runtime.h names as the reason string literals carry a real
+        // GOO_RC_IMMORTAL header. Condition 2 would refuse it (a literal is not
+        // "owned"), which is exactly why the rebound path asks
+        // all_values_release_safe instead. Change that and this row goes red.
+        40, "declared to a LITERAL, reassigned to fresh values in a loop -> RELEASE",
+        "package main\n"
+        "func make1(i int) *int {\n"
+        "    return new(int)\n"
+        "}\n"
+        "func f(n int) {\n"
+        "    last := new(int)\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        last = make1(i)\n"
+        "    }\n"
+        "    _ = last\n"
+        "}\n",
+        "f", { { "last", RELEASE_OK } }, 1
+    },
+    {
+        // CONDITION 7, AND NOTHING ELSE PROVIDES IT. `p := last` keeps a second
+        // pointer to last's buffer WITHOUT making it outlive f, so local_escape
+        // reports nothing and condition 1 passes. Releasing at the next store
+        // leaves `p` dangling inside the same function.
+        //
+        // `p` itself is refused by condition 2 as a plain alias (row 8's rule),
+        // which is a different question from this one: that stops `p` freeing
+        // the buffer, and condition 7 stops `last` freeing it out from under p.
+        41, "another local ALIASES the value -> refuse, ALIASED",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    last := makeOwned()\n"
+        "    p := last\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        last = makeOwned()\n"
+        "    }\n"
+        "    _ = p\n"
+        "}\n",
+        "f", { { "last", RELEASE_NO_ALIASED }, { "p", RELEASE_NO_NOT_OWNED } }, 2
+    },
+    {
+        // CONDITION 2'. borrowView returns a view of its argument, so one of the
+        // values reaching the slot is the CALLER's buffer. The store cannot tell
+        // which value it holds on any given pass, so one borrowed value refuses
+        // the local outright.
+        42, "a BORROWED value reaches the slot -> refuse, NOT_OWNED",
+        "package main\n"
+        BORROW_HELPER
+        "func f(s string, n int) {\n"
+        "    last := s + \"x\"\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        last = borrowView(s)\n"
+        "    }\n"
+        "    _ = last\n"
+        "}\n",
+        "f", { { "last", RELEASE_NO_NOT_OWNED } }, 1
+    },
+    {
+        // CONDITION 1 STILL RUNS FIRST. The relaxation is inside condition 4, so
+        // a rebound local that ESCAPES must still refuse for the original
+        // reason -- its final value has to survive the return.
+        43, "a rebound local that ESCAPES -> refuse, ESCAPES (condition 1 first)",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) *int {\n"
+        "    last := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        last = makeOwned()\n"
+        "    }\n"
+        "    return last\n"
+        "}\n",
+        "f", { { "last", RELEASE_NO_ESCAPES } }, 1
     },
 };
 

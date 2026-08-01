@@ -624,6 +624,15 @@ bool codegen_arc_classify_heap_field(LLVMTypeRef value_ty, Type* goo_type, int* 
 // them measured no change. See the definition in statement_codegen.c.
 void codegen_arc_make_global_immortal(CodeGenerator* codegen, LLVMValueRef target_ptr,
                                       LLVMValueRef stored_val, Type* goo_type);
+
+// T4, the rebound half: release what `slot` holds immediately BEFORE a store
+// overwrites it. This is the release site condition 4 used to say did not exist.
+//
+// A NO-OP unless the plan approved that exact slot -- the lookup is by identity
+// against arc_release_slots, which is filled only for locals whose verdict is
+// RELEASE_OK. Call it AFTER the right-hand side is evaluated and immediately
+// before the store; see the definition for why that order is the safe one.
+void codegen_arc_release_before_store(CodeGenerator* codegen, LLVMValueRef slot);
 #endif
 int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
