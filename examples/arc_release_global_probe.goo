@@ -37,11 +37,24 @@
 // This is why the fix gives the backing array a real header rather than
 // widening the guard: it makes the stated invariant TRUE instead of adding a
 // second special case to the runtime.
+// A FIFTH SHAPE (fix round 3): a global REASSIGNED after init. Immortality was
+// applied by codegen_generate_global_init_function only, so a value stored into
+// a global LATER got none of it, and the getErr/useErr shape below then freed
+// it. Measured before the fix: "panic: release of an object with reference
+// count 0", exit 2, 4 valgrind errors from 2 contexts. A reviewer had deferred
+// this as "exits 0 today" -- it does not, and this leg is why that cannot be
+// recorded from memory again.
+//
+// It also pins the THREE-PATH property. A store to a global has three codegen
+// paths (general TOKEN_ASSIGN, multi-assign, and NULLABLE); an `error` takes
+// the nullable one, and the first attempt at the fix patched only the general
+// one and measured no change at all.
 package main
 
 import "errors"
 
 var ErrSentinel error = errors.New("sentinel failure")
+var ErrLate error = errors.New("initial value, replaced before use")
 var GCounter *int = new(int)
 var msgA = "hello from a global"
 var msgB = msgA
@@ -52,6 +65,19 @@ var sink int
 
 func getErr() error { return ErrSentinel }
 func getPtr() *int  { return GCounter }
+
+// The replacement is built AFTER global init, so goo_make_immortal never saw it
+// until the store site itself started calling it.
+func resetLate()     { ErrLate = errors.New("replacement value, set after init") }
+func getLate() error { return ErrLate }
+
+func useLate() int {
+    e := getLate()
+    if errors.Is(e, e) {
+        return 1
+    }
+    return 0
+}
 
 func useErr() int {
     e := getErr()
@@ -74,9 +100,11 @@ func main() {
     // MORE THAN ONE CALL IS THE WHOLE POINT. The first call frees the global;
     // the second is the one that reads freed memory. A single-call probe
     // reports clean against the exact defect it exists to catch.
+    resetLate()
     for i := 0; i < 100; i++ {
         total = total + useErr()
         total = total + usePtr()
+        total = total + useLate()
     }
     sink = total
     println(total)

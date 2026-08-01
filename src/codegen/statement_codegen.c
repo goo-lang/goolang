@@ -302,6 +302,7 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             // Do NOT free `target`: for an identifier it aliases the live
             // value-table entry (freeing it would undefine the variable).
             LLVMBuildStore(codegen->builder, sval, target->llvm_value);
+            codegen_arc_make_global_immortal(codegen, target->llvm_value, sval, target->goo_type);
         }
     }
     return 1;
@@ -2758,6 +2759,54 @@ static bool codegen_arc_zero_slot(CodeGenerator* codegen, LLVMValueRef slot, LLV
 // On a match, returns true and sets *field_out to -1 (the value itself is the
 // pointer), 0, or 1 (that field of the struct is the pointer). Returns false,
 // *field_out untouched, otherwise.
+// A PACKAGE-LEVEL GLOBAL IS IMMORTAL AT EVERY STORE, NOT ONLY AT INIT.
+//
+// codegen_generate_global_init_function makes a global's INITIAL value
+// immortal, which is what stops a local that aliases it from being freed:
+// return_escapes tracks PARAMETERS only, so a function returning a global looks
+// exactly like one returning a fresh allocation. A value assigned LATER got
+// none of that protection.
+//
+// MEASURED. With `var G error = errors.New(..)` and a reset() doing
+// `G = errors.New(..)`, the existing global-probe shape (getErr/useErr over 100
+// iterations) gave "panic: release of an object with reference count 0", exit 2,
+// 4 valgrind errors from 2 contexts. The reviewer who deferred this recorded
+// that the shape "exits 0 today"; it does not.
+//
+// THIS IS A HELPER BECAUSE A STORE TO A GLOBAL HAS THREE CODEGEN PATHS, and the
+// first attempt at this fix patched only one of them and measured no change.
+// The paths are the general TOKEN_ASSIGN arm (expression_codegen.c), the
+// multi-assign arm (codegen_generate_multi_assign above), and the NULLABLE arm
+// (codegen_generate_nullable_assignment) -- an `error` is a nullable, so it
+// takes the third. Anything that stores to a global must call this, and a
+// fourth path added later must call it too.
+//
+// LLVMIsAGlobalVariable is the whole test. A local's address is an alloca and a
+// field is a GEP, so neither answers true; no symbol-table lookup is needed.
+//
+// Gated on release_plan for the same reason the init path is (549d0bb):
+// GOO_ARC_RELEASE=0 must emit nothing at all.
+void codegen_arc_make_global_immortal(CodeGenerator* codegen, LLVMValueRef target_ptr,
+                                      LLVMValueRef stored_val, Type* goo_type) {
+    if (!codegen || !codegen->release_plan || !target_ptr || !stored_val) return;
+    if (!LLVMIsAGlobalVariable(target_ptr)) return;
+
+    int heap_field;
+    if (!codegen_arc_classify_heap_field(LLVMTypeOf(stored_val), goo_type, &heap_field)) return;
+
+    LLVMValueRef heap_ptr = (heap_field == -1)
+        ? stored_val
+        : LLVMBuildExtractValue(codegen->builder, stored_val,
+                                (unsigned)heap_field, "global.store.immortal.ptr");
+    if (!heap_ptr) return;
+
+    LLVMTypeRef ip_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+    LLVMTypeRef ifn_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), &ip_ty, 1, 0);
+    LLVMValueRef ifn = LLVMGetNamedFunction(codegen->module, "goo_make_immortal");
+    if (!ifn) ifn = LLVMAddFunction(codegen->module, "goo_make_immortal", ifn_ty);
+    if (ifn) LLVMBuildCall2(codegen->builder, ifn_ty, ifn, &heap_ptr, 1, "");
+}
+
 bool codegen_arc_classify_heap_field(LLVMTypeRef value_ty, Type* goo_type, int* field_out) {
     if (!value_ty || !field_out) return false;
 
