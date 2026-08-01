@@ -41,7 +41,11 @@ restore() {
 }
 trap restore EXIT INT TERM
 
-# Each entry: label <TAB> the exact line to delete from decide().
+# Each entry: label <TAB> the exact line to find <TAB> OPTIONAL replacement.
+# With no third field the line is DELETED. With one, it is REPLACED, which is
+# the only way to disable a rule whose line opens a braced block -- deleting
+# such a line does not compile, and an INCONCLUSIVE-build reads almost like an
+# unguarded condition.
 MUTATIONS=(
 "cond1-escapes	    if (local_escape_local_escapes(le, fn, r->name)) return RELEASE_NO_ESCAPES;"
 "cond2-owned	    if (!binding_is_owned((Collected*)c, pe, r->bound_value)) return RELEASE_NO_NOT_OWNED;"
@@ -51,7 +55,17 @@ MUTATIONS=(
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
 # Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
 # `L = append(L, x)` counts as a rebind and row 18 must fail.
-"self-append	    if (plain_assign && is_self_append(name, rhs)) return;"
+#
+# THIS ENTRY WAS DEAD FROM PR #274 UNTIL 2026-08-01. That PR gave the rule a
+# braced body (note_append_elems), so the one-line form named here stopped
+# existing. The script then died FATAL at this entry -- the LAST one -- on every
+# run, and nothing noticed, because this script is not wired into verify-core.
+# Seven conditions reported CAUGHT above it, which is what made the abort easy
+# to read as success.
+#
+# `&& false` rather than `if (false)` keeps every name referenced, so the mutant
+# compiles without an unused-function warning that could mask the result.
+"self-append	    if (plain_assign && is_self_append(name, rhs)) {	    if (plain_assign && is_self_append(name, rhs) && false) {"
 )
 
 # Baseline first. A red baseline makes every cell below meaningless.
@@ -68,19 +82,23 @@ echo
 rc=0
 for entry in "${MUTATIONS[@]}"; do
     label="${entry%%$'\t'*}"
-    line="${entry#*$'\t'}"
+    rest="${entry#*$'\t'}"
+    line="${rest%%$'\t'*}"
+    # No third field means DELETE; `rest` then equals `line`.
+    if [ "$rest" = "$line" ]; then replacement=""; else replacement="${rest#*$'\t'}"; fi
 
     # Assert the file is BACK to the original before mutating it again, or a
     # failed restore turns the next result into a cumulative lie.
     cmp -s -- "$BACKUP" "$SRC" || die "$SRC differs from the backup before mutation '$label'"
     grep -qF -- "$line" "$SRC" || die "mutation '$label' target line not found; the script is stale"
-    python3 - "$SRC" "$line" <<'PY'
+    python3 - "$SRC" "$line" "$replacement" <<'PY'
 import sys
-path, line = sys.argv[1], sys.argv[2]
+path, line, replacement = sys.argv[1], sys.argv[2], sys.argv[3]
 src = open(path).read()
 if src.count(line + "\n") != 1:
     sys.exit("target line is not unique")
-open(path, "w").write(src.replace(line + "\n", "", 1))
+new = (replacement + "\n") if replacement else ""
+open(path, "w").write(src.replace(line + "\n", new, 1))
 PY
     [ $? -eq 0 ] || die "could not apply mutation '$label'"
 
