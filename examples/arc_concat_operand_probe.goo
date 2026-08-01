@@ -1,0 +1,106 @@
+// The concat operand release, and the four operand shapes that must refuse it.
+//
+// `goo_string_concat` COPIES both operands and returns fresh memory, so an
+// operand that is a fresh temporary is garbage the instant the call returns.
+// Measured on bench/daemon/daemon.goo: the return line
+//
+//     strconv.Itoa(total) + ":" + strconv.Itoa(len(counts)) + ":" +
+//     strings.Join(parts, "|")
+//
+// leaks SIX records per request — two Itoa results, one Join result, and the
+// three intermediate concats — for 270,000 bytes per 2,000 requests. Nothing
+// else names any of them.
+//
+// THE DANGEROUS DIRECTION IS THE OPERAND THAT IS NOT A TEMPORARY. Releasing one
+// of those is a double free, not a leak, because the local that names it
+// releases the same buffer again at function exit. Each refusal below is a
+// separate reason, and each is a reason condition 2's table already gives:
+//
+//   named        an AST_IDENTIFIER operand. Another name holds it.
+//   borrowed     a call whose result aliases an argument (return_escapes).
+//   view         `s[1:]`, which is a window into a buffer this code never owned.
+//   literal      immortal, so the release is a no-op rather than a fault.
+//
+// EVERY READ IS OF THE BYTES. A string is a fat value, so `len(x)` touches no
+// heap memory and a probe built on len() alone stays green over a freed buffer.
+// ToUpper reads the bytes, which is what makes valgrind see a wrong release.
+package main
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// THE WIN. Every operand is a fresh temporary that nothing else names: two
+// call results, one Join result, and the three intermediate concats. This is
+// bench/daemon/daemon.goo's return line, unchanged.
+func summary(n int, parts []string) string {
+	return strconv.Itoa(n) + ":" + strconv.Itoa(len(parts)) + ":" + strings.Join(parts, "|")
+}
+
+// REFUSAL 1 — a NAMED operand. `a` is an identifier, so the local `a` owns the
+// buffer and releases it at function exit. A release at the concat would free
+// it twice, and the second concat below would read freed bytes in between.
+func namedOperand() int {
+	a := strings.ToUpper("aaaaaaaaaaaaaaaa")
+	b := a + "!"
+	c := a + "?"
+	return len(b) + len(c) + len(strings.ToUpper(a))
+}
+
+// A Goo callee whose result IS its argument. param_escape records
+// return_escapes for it, which is exactly the borrowed-result relation.
+func borrow(s string) string {
+	return s
+}
+
+// REFUSAL 2 — a BORROWED call result. `borrow(a)` aliases `a`'s buffer, so
+// releasing the operand frees a buffer the local `a` still owns.
+func borrowedOperand() int {
+	a := strings.ToUpper("bbbbbbbbbbbbbbbb")
+	r := borrow(a) + "!"
+	return len(r) + len(strings.ToUpper(a))
+}
+
+// REFUSAL 3 — a VIEW. `s[1:]` is a window into `s`, never a fresh allocation.
+func viewOperand() int {
+	s := strings.ToUpper("cccccccccccccccc")
+	v := s[1:] + "!"
+	return len(v) + len(strings.ToUpper(s))
+}
+
+// REFUSAL 4 — a LITERAL operand on both sides. Immortal, so a release is a
+// no-op. Present so the emission is exercised over a non-heap operand.
+func literalOperand() int {
+	x := "dddddddddddddddd" + "!"
+	return len(strings.ToUpper(x))
+}
+
+func main() {
+	parts := []string{"1", "2", "3", "four", "5", "six", "7"}
+
+	// Reads the BYTES of the whole chain's result, many times over, so the six
+	// dead records per call are large enough to measure.
+	//
+	// THE RESULT IS BOUND TO `s`, mirroring the daemon's `last = handle(req)`.
+	//
+	// IT IS STILL NOT RECLAIMED, and the reason is worth recording: binding it
+	// was tried as a way to leave this fixture measuring only the six operand
+	// records, and it changed the figure by NOTHING. `summary` returns a value
+	// param_escape reports as derived from its own parameters, so condition 2
+	// refuses `s` and no local release fires. The seventh record is therefore
+	// the residue this probe expects, not an operand this change missed — see
+	// the record-count assertion in scripts/arc_concat_operand_probe.sh.
+	total := 0
+	for i := 0; i < 500; i++ {
+		s := summary(i, parts)
+		total = total + len(strings.ToUpper(s))
+	}
+	fmt.Println(total)
+
+	fmt.Println(namedOperand())
+	fmt.Println(borrowedOperand())
+	fmt.Println(viewOperand())
+	fmt.Println(literalOperand())
+}

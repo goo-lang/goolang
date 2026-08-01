@@ -217,6 +217,15 @@ typedef struct ReleasePlanFunction {
     // ever held the value, so exactly one owner exists and the map may be it.
     ASTNode**         owned_keys;     // owned array, borrowed elements
     size_t            owned_key_count;
+
+    // Operands of a `+` that are FRESH TEMPORARIES, so the concat that consumes
+    // one may release it. Borrowed AST pointers, same as owned_keys.
+    //
+    // Condition 2's table again, applied to an operand. goo_string_concat COPIES
+    // both operands into fresh memory, so an operand nothing else names is
+    // unreachable the instant the call returns.
+    ASTNode**         owned_concat_operands;   // owned array, borrowed elements
+    size_t            owned_concat_count;
 } ReleasePlanFunction;
 
 typedef struct ReleasePlan {
@@ -272,5 +281,22 @@ bool release_plan_key_is_owned(const ReleasePlan* plan, const char* fn,
 // every program did before this existed.
 bool release_plan_slice_owns_elems(const ReleasePlan* plan, const char* fn,
                                    const char* local);
+
+// May the concat that consumes this operand release it?
+//
+// `operand` is one side of a `+` node. True only when that expression is a fresh
+// temporary by condition 2's table, so no other name ever held it and this
+// concat is its single consumer. `goo_string_concat` copies both operands into
+// fresh memory, so the result aliases neither and the release is safe the
+// instant the call returns.
+//
+// HALF THE GUARD, as always: this module holds no type information and cannot
+// tell a string `+` from an integer one. Codegen has the type and asks only at a
+// string-concat site.
+//
+// Conservative on every miss. False leaves the operand borrowed, which is what
+// every program did before this existed.
+bool release_plan_concat_operand_is_owned(const ReleasePlan* plan, const char* fn,
+                                          const ASTNode* operand);
 
 #endif // RELEASE_DECISION_H

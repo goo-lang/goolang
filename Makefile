@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth arc-concat-operand-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -3278,6 +3278,7 @@ VERIFY_ALL_DEPS := \
     arena-valgrind-probe \
     arc-release-probe \
     arc-loop-carried-probe \
+    arc-concat-operand-probe \
     arena-rss-probe \
     dead-package-code-probe \
     alloc-doors-probe \
@@ -5163,6 +5164,13 @@ arc-loop-carried-probe: $(COMPILER) $(RUNTIME_LIB)
 	fi; \
 	if [ $$fail -ne 0 ]; then echo "arc-loop-carried-probe: FAIL"; exit 1; fi; \
 	echo "arc-loop-carried-probe: PASS"
+
+# A concat operand that nothing else names is garbage the instant the concat
+# copies it. Six of the seven records in bench/daemon/daemon.goo's return line
+# are exactly that, and the fixture carries four operand shapes that must be
+# REFUSED — a wrong release there is a double free, not a leak.
+arc-concat-operand-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/arc_concat_operand_probe.sh
 
 arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
