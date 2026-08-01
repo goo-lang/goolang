@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -3270,6 +3270,7 @@ VERIFY_ALL_DEPS := \
     block-escape-test \
     local-escape-test \
     release-decision-test \
+    release-decision-teeth \
     obj-header-test \
     obj-header-tsan \
     arena-routing-test \
@@ -4938,6 +4939,34 @@ release_decision_test: $(TEST_UNIT_DIR)/types/release_decision_test.c $(SRC_OBJS
 release-decision-test: release_decision_test
 	@echo "Running T4 release-decision tests..."
 	./release_decision_test
+
+# T4 teeth. scripts/release_decision_teeth.sh deletes one condition at a time
+# and asserts that a row goes RED. verify-core runs it, so it must NEVER write
+# to the tracked tree: a killed run that left src/types/release_decision.c
+# mutated would make the next build compile the mutant silently. So the script
+# writes each mutant to a scratch directory and points RELEASE_DECISION_SRC at
+# it, and the rules below compile that copy in place of the normal object.
+#
+# The binary is DELIBERATELY not release_decision_test. Under `make -j` the
+# ordinary suite can run at the same time, and it must never find a mutant
+# behind its own name.
+RELEASE_DECISION_SRC ?= $(SRCDIR)/types/release_decision.c
+
+# No DEPFLAGS here, unlike every other object rule. A .d file would record the
+# scratch source path, and the next build would die once that path is gone.
+# Nothing -includes this object's dependencies (see the -include line above).
+$(BUILDDIR)/teeth/release_decision.o: $(RELEASE_DECISION_SRC) | $(BUILDDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
+
+release_decision_teeth_test: $(TEST_UNIT_DIR)/types/release_decision_test.c \
+                             $(BUILDDIR)/teeth/release_decision.o \
+                             $(filter-out $(BUILDDIR)/types/release_decision.o,$(SRC_OBJS))
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+
+release-decision-teeth:
+	@echo "Running T4 release-decision mutation teeth..."
+	./scripts/release_decision_teeth.sh
 
 block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(SRC_OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
