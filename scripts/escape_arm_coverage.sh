@@ -297,13 +297,27 @@ self_test() {
 
     # A MIXED pattern, and the strongest control here. Controls 2-4 all expect
     # every suite to fail, and a bluntly broken build produces that too. This one
-    # expects the mutation to reach block and NOT param or local, so a guard that
-    # is injected wrongly -- or a build that ignores the injection -- cannot
-    # produce it by accident.
-    echo "=== Control 2b: over/AST_UNARY_EXPR -> block FAIL only (mixed pattern) ==="
+    # expects param to PASS while the others fail, so a guard that is injected
+    # wrongly -- or a build that ignores the injection -- cannot produce it by
+    # accident.
+    #
+    # UPDATED 2026-08-01, from "PASS FAIL PASS", and NOT because anything got
+    # more conservative. local_escape_test's ADR 0005 rows assert the whole
+    # reason SET with ==, and that catches over-marking a boolean row cannot:
+    #
+    #   FAIL: local 'p' reasons=UNCLASSIFIED|CALLEE_VALUE, expected CALLEE_VALUE
+    #
+    # An `over` mutation adds UNCLASSIFIED to every slot it touches. A row
+    # asserting `escapes == true` cannot see that, because true stays true --
+    # which is why this whole direction needed a PRECISION row before. A row
+    # asserting the exact set sees the extra bit while still being a soundness
+    # row. Local row 42 is that row, and it closed four arms at once:
+    # AST_UNARY_EXPR, AST_SELECTOR_EXPR, AST_FUNC_LIT and AST_STRUCT_LITERAL
+    # all went GAP -> COVERED for local in the same commit.
+    echo "=== Control 2b: over/AST_UNARY_EXPR -> param PASS, block+local FAIL (mixed) ==="
     r=$(measure_arm AST_UNARY_EXPR over)
     echo "  got: $r"
-    [ "$r" = "PASS FAIL PASS" ] || { echo "  CONTROL 2b FAILED"; rc=1; }
+    [ "$r" = "PASS FAIL FAIL" ] || { echo "  CONTROL 2b FAILED"; rc=1; }
 
     echo "=== Control 3: over/AST_IDENTIFIER -> all three FAIL ==="
     r=$(measure_arm AST_IDENTIFIER over)
