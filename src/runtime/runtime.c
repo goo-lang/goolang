@@ -4,6 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+// malloc_usable_size, for the poison-on-free debug mode below. glibc/musl put
+// it here; it is used ONLY on that path, so a platform without it needs no
+// substitute for ordinary operation.
+#include <malloc.h>
 #include <unistd.h>
 #include <math.h>
 
@@ -129,6 +133,45 @@ void* goo_realloc(void* ptr, size_t size) {
     return new_base + GOO_OBJ_HEADER_SIZE;
 }
 
+// ---------------------------------------------------------------------------
+// POISON ON FREE — turning a SILENT use-after-free into a LOUD one
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS, measured. The golden corpus (494 programs under examples/)
+// already catches any release defect that CHANGES OUTPUT -- re-introducing the
+// #284 self-append defect fails closure_probe and composite_slice_range_probe.
+// What it cannot see is a use-after-free that reads freed-but-not-yet-recycled
+// memory, because the stale bytes are still the RIGHT bytes and the program
+// prints the right answer over a defect.
+//
+// Poisoning closes exactly that gap and costs no new corpus: a freed payload
+// becomes 0xDE bytes, so a read after free produces visible garbage, an
+// invalid string, or a segfault on a non-canonical 0xDEDE... pointer. The 494
+// programs we already have then catch the silent class the same way they catch
+// the loud one.
+//
+// OFF BY DEFAULT, and gated at RUNTIME rather than by a build flag, so one
+// runtime archive serves both modes and the golden runner only has to set an
+// environment variable. `GOO_ARC_POISON=1`.
+//
+// A CORRECT PROGRAM CANNOT NOTICE. Nothing may read a block after it is freed,
+// so overwriting it changes no defined behaviour. That is the whole argument
+// for running the corpus under it.
+#define GOO_POISON_BYTE 0xDE
+
+static int goo_poison_enabled(void) {
+    // Benign race: two threads may both compute this and they compute the same
+    // answer. Relaxed is enough -- there is no other state to order against.
+    static int cached = -1;
+    int v = __atomic_load_n(&cached, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char* e = getenv("GOO_ARC_POISON");
+        v = (e && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+        __atomic_store_n(&cached, v, __ATOMIC_RELAXED);
+    }
+    return v;
+}
+
 void goo_free(void* ptr) {
     // The sentinel is a static byte, not a heap allocation — freeing it
     // would be undefined behavior. Every zero-size allocation aliases it,
@@ -145,7 +188,28 @@ void goo_free(void* ptr) {
     if (goo_obj_refcount(ptr) == GOO_RC_IMMORTAL) {
         return;
     }
-    free((unsigned char*)ptr - GOO_OBJ_HEADER_SIZE);
+    unsigned char* base = (unsigned char*)ptr - GOO_OBJ_HEADER_SIZE;
+
+    if (goo_poison_enabled()) {
+        // THE PAYLOAD ONLY, and the header is handled separately below. Sized
+        // with malloc_usable_size because the header carries no length --
+        // `reserved` is documented as free for a future type tag and writing a
+        // size there would cost every allocation for a debug-only feature.
+        // usable_size is >= the requested size and every byte of it is ours
+        // until free() returns, so filling all of it is in bounds.
+        size_t usable = malloc_usable_size(base);
+        if (usable > GOO_OBJ_HEADER_SIZE) {
+            memset(base + GOO_OBJ_HEADER_SIZE, GOO_POISON_BYTE,
+                   usable - GOO_OBJ_HEADER_SIZE);
+        }
+        // rc = 0 RATHER THAN POISON, deliberately. Filling the count with 0xDE
+        // would make a second release decrement a huge number quietly; zero
+        // makes it hit goo_release's `prev == 0` panic, which names the defect.
+        // Poisoning must not cost a diagnostic that already exists.
+        ((GooObjHeader*)base)->rc = 0;
+    }
+
+    free(base);
 }
 
 // A count that is not lock-free calls into libatomic and takes a LOCK, which
