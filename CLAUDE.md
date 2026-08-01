@@ -158,26 +158,62 @@ ADAPTER under the ordinary mangled package symbol
 method-call path and the interface thunk builder both resolve it with no
 special case. `os.File.Write` is the first.
 
-## Memory model (v1 limitation)
+## Memory model
 
-v1 heap allocations are malloc with NO systematic reclamation — no GC, no
-ownership-based freeing.
+**ARC ships and is ON by default.** ADR 0002
+(docs/adr/0002-memory-model-arc-with-escape-analysis-elision.md, accepted
+2026-07-28) chose automatic reference counting with the existing escape
+analysis as the elision pass, and PRs #258–#286 built it.
+`GOO_ARC_RELEASE=0` is the KILL SWITCH, not the default — it leaves the
+release plan NULL and emits no release at all, which is what every "control"
+figure below was measured with.
 
-Opt-in `arena { ... }` regions are the only bulk-free mechanism, and their
-reach is NARROWER than that phrasing suggests. Measured (ADR 0002): an arena
-reclaims only the allocation sites codegen emits directly in the block
-(`new`, `&T{}`) and that `block_escape` proves non-escaping. Every allocation
-made through a runtime helper — `append`, slice/map literals, string
-operations, and therefore EVERY stdlib call — is untouched. Wrapping ordinary
-code in an arena can measure identically to not doing so.
+Measured 2026-08-02, three builds in ONE sitting, on `bench/daemon/daemon.goo`
+(docs/adr/0005-measurements/scale-400k.md):
 
-Consequence: a long-running service is not expressible. A per-request loop
-retains ~1.63 KB per request forever (651 MB at 400k requests, against Go's
-flat 8 MB on the same program).
+| 400,000 requests | peak RSS | in use at exit / 2,000 req |
+|---|---|---|
+| `GOO_ARC_RELEASE=0` (control) | 793,248 KB | 2,866,207 bytes / 88,003 blocks |
+| **default, ARC on** | **26,276 KB** | **82,207 bytes / 4,003 blocks** |
+| Go, same program | 8,232 KB | — |
 
-The successor model is DECIDED but not implemented — ADR 0002
-(docs/adr/0002-memory-model-arc-with-escape-analysis-elision.md): automatic
-reference counting with the existing escape analysis as the elision pass.
+96.7% of peak reclaimed; 1,433 → 41 bytes retained per request; 3.19x Go's
+peak RSS, where ADR 0002's opening measurement was 81x. valgrind: 0 errors.
+
+**Quote bytes, or re-measure all builds together.** A control drifted 5.6%
+between two sittings, which made cross-session percentages non-comparable.
+Read the BLOCK COUNT first — `main` reads `os.Args` and the runtime copies
+`argv[0]` to the heap unfreed, so the byte total moves with the output path
+length while the block count holds.
+
+### What is NOT reclaimed
+
+- **Reference cycles leak.** ADR 0002 names this as the real cost, with no
+  cheap fix. Swift ships the same way.
+- **Every local with a method set is unreleasable** — `sync.Mutex`,
+  `bytes.Buffer`, `os.File`, any user struct with methods. This is the
+  CALLEE_VALUE ceiling, named at include/escape_core.h:128 and load-bearing
+  (discarding the taint dangled a receiver). Its reach across the corpus is
+  UNMEASURED — do not quote a number.
+- **A multi-assign target gets no store release.** `a, b = x, y` stores
+  without freeing what the slots held. A LEAK, never a use-after-free, and
+  untested rather than proven absent.
+- **An unbound temporary has no release site at all.** `return
+  len(strings.ToUpper(x))` leaks 32 bytes with release OFF and ON.
+- **The residual 82,207 is a conditional hand-over** — `f` reaches
+  `counts[strings.ToUpper(f)]` on one arm only, so it is owned on one branch
+  and orphaned on the other, which one release site cannot express.
+
+### Arenas
+
+Opt-in `arena { ... }` regions predate ARC and their reach is NARROWER than
+the syntax suggests. Measured (ADR 0002): an arena reclaims only the
+allocation sites codegen emits directly in the block (`new`, `&T{}`) and that
+`block_escape` proves non-escaping. Every allocation made through a runtime
+helper — `append`, slice/map literals, string operations, and therefore EVERY
+stdlib call — is untouched. Wrapping ordinary code in an arena can measure
+identically to not doing so. ADR 0002 re-specifies `arena` as the user-visible
+name for a PROVEN region, which is not yet implemented.
 
 ## Project Structure
 
