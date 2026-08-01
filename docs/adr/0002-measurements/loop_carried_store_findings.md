@@ -84,3 +84,66 @@ general problem.
 A loop-carried store probe that must REFUSE, in the shape of `carryLocal`. It
 must be shown able to fail: with the guard removed, the probe must report a
 release for `s`, and valgrind must show the invalid read through `last`.
+
+---
+
+# The outcome, 2026-08-01
+
+Route 1 was taken. This section records what the route actually cost and what it
+bought, because the section above deliberately did not choose between the two.
+
+## Route 1 as built differs from route 1 as proposed
+
+The proposal was a blacklist: "refuse any loop-declared local that appears as the
+RHS of an assignment whose LHS is not declared in the same block". It called that
+sound by construction, and a blacklist of sink shapes is not — a sink nobody
+listed frees live memory silently.
+
+What shipped keeps the property and drops the enumeration. The walk in
+`release_decision.c` is TOTAL: a statement kind it does not recognise sets
+`unreadable` and refuses the whole function. So every store a READABLE function
+can perform passes through `note_assignment` or `note_declaration`, and hooking
+both enumerates the sinks by construction rather than by inspection.
+
+The rule is a MENTION test with a depth comparison, not a flow test: a local
+declared at loop depth D is refused when its name appears anywhere in the RHS of
+a store whose target lives longer than D.
+
+## What it cost
+
+**`deadEach` is now REFUSED**, where this document predicted route 1 would
+approve it. `n = n + len(s)` mentions `s`, and proving that `len` propagates
+nothing needs the inverse of condition 2's binding table, which does not exist.
+The prediction assumed a flow test. A mention test is cheaper and stricter.
+
+This did not cost the measured bytes, because the daemon's `err` appears only in
+`if err == nil` — a condition, not a store.
+
+## What it bought
+
+340,000 bytes on `bench/daemon/daemon.goo`, both builds measured in one sitting:
+952,098 → 612,100 in use at exit per 2,000 requests. 160,000 direct plus 180,000
+indirect, matching the record's recorded composition on both halves.
+
+## Finding 2 is now covered, and that was checked rather than assumed
+
+`carrySlice` still reads `RELEASE_NO_ESCAPES`: `append`'s elements keep
+`retains = true`, so condition 1 refuses `s` before condition 6 is consulted. The
+accidental safety this document warned about is therefore still what holds today.
+
+The difference is that there is now a second, real reason underneath it. Moving
+the condition 6 test above condition 1 makes `carrySlice: s` read
+`RELEASE_NO_BLOCK_ESCAPE`. So future precision work on append's element marking
+no longer creates a hazard with no gate to notice it.
+
+## The gate, and the reason it must be valgrind
+
+`examples/arc_loop_carried_probe.goo` covers the hazard plus the six exit paths.
+With condition 6 removed it reports 3 `Invalid read` through
+`carried()` → `ToUpper` → `strlen` on a freed block.
+
+**Its stdout is byte-identical and its exit status is 0 in both cases.** The
+freed bytes have not been reused by the time they are read. A golden fixture, an
+exit-status check and a diff of output are all blind to this defect. That is why
+the gate greps valgrind's log and why it also asserts that the release-off side
+leaks something — a probe that measures nothing reports green too.
