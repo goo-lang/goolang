@@ -321,6 +321,16 @@ typedef struct ArcReleaseSite {
     // A DESTRUCTOR CANNOT DO THIS: GooObjDtor gets only the object pointer, and
     // the element count lives in the slice value, not in the object header.
     int64_t      elem_stride;
+
+    // cfctx.loop_depth at the moment this local was DECLARED. 0 means function
+    // scope; >= 1 means the local belongs to that loop's iteration.
+    //
+    // PARALLEL TO arena_loop_depth[] BY DESIGN, and read by the same formula.
+    // `break`/`continue` pass the loop depth they exit and release exactly the
+    // sites declared INSIDE it; `return` passes 0 and releases everything.
+    // Making the two mechanisms agree is what let the loop-scoped release reuse
+    // the arena work's exit-path enumeration instead of rediscovering it.
+    int          loop_depth;
 } ArcReleaseSite;
 
 struct FunctionInfo {

@@ -182,14 +182,22 @@ static TestRow rows[] = {
         "f", { { "z", RELEASE_NO_ARENA } }, 1
     },
 
-    // ---------------- CONDITION 4: loop scope ----------------
+    // ---------------- CONDITION 6: the loop-carried store ----------------
     //
-    // THE ROW THAT RETARGETED T4. `inner` is rebound on every iteration, so a release
-    // at function exit frees one of N. `outer` is bound once and does release,
-    // which is the contrast that proves the rule is about SCOPE and not about
-    // the presence of a loop in the function.
+    // THESE TWO ROWS USED TO EXPECT RELEASE_NO_LOOP_SCOPE, and the change is the
+    // point of the increment rather than an accommodation to it. Condition 4's
+    // loop half refused every local declared in a loop, because the only
+    // placement on offer was function exit, where a release frees one of N.
+    // Codegen now releases at ITERATION end, so the refusal has to answer the
+    // real question instead: does the value outlive its iteration?
+    //
+    // WHY THIS PAIR OF ROWS MATTERS MORE THAN ITS PREDECESSOR. The measurement
+    // that motivated condition 6 recorded that the HAZARD and the CONTROL were
+    // INDISTINGUISHABLE -- both read RELEASE_NO_LOOP_SCOPE, so the old table
+    // could not have told a correct relaxation from a memory-corrupting one.
+    // Rows 12a and 12b below are that pair, and they now disagree.
     {
-        12, "declared inside a loop -> refuse, LOOP_SCOPE; outer still releases",
+        12, "declared inside a loop, nothing retains it -> RELEASE; outer too",
         "package main\n"
         "func f(n int) {\n"
         "    outer := new(int)\n"
@@ -199,10 +207,10 @@ static TestRow rows[] = {
         "    }\n"
         "    _ = outer\n"
         "}\n",
-        "f", { { "outer", RELEASE_OK }, { "inner", RELEASE_NO_LOOP_SCOPE } }, 2
+        "f", { { "outer", RELEASE_OK }, { "inner", RELEASE_OK } }, 2
     },
     {
-        13, "the daemon's shape: err bound inside the loop -> refuse, LOOP_SCOPE",
+        13, "the daemon's shape: err bound inside the loop -> RELEASE per iteration",
         "package main\n"
         OWNED_HELPER
         "func f(n int) {\n"
@@ -211,7 +219,192 @@ static TestRow rows[] = {
         "        _ = err\n"
         "    }\n"
         "}\n",
-        "f", { { "err", RELEASE_NO_LOOP_SCOPE } }, 1
+        "f", { { "err", RELEASE_OK } }, 1
+    },
+    {
+        // THE HAZARD. `last` is declared OUTSIDE the loop, so it still points at
+        // the buffer after the iteration that produced it ends. Releasing `s`
+        // per iteration leaves `last` dangling, and the read after the loop is
+        // an invalid read -- NOT a double free, because `last` is refused
+        // separately as REBOUND.
+        //
+        // Condition 1 does not catch this and cannot: local_escape's boundary is
+        // the FUNCTION, `last` never leaves the function, so `s` genuinely does
+        // not escape it. The answer is correct and useless at this granularity.
+        40, "loop-carried store into an OUTER local -> refuse, BLOCK_ESCAPE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    last := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        last = s\n"
+        "    }\n"
+        "    _ = last\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
+    {
+        // THE CONTROL for row 14, differing ONLY in where the target is
+        // declared. `t` dies with the same iteration `s` does, so `s` may go.
+        // If this row and row 14 ever agree again, condition 6 has stopped
+        // discriminating and the measurement it was built from has regressed.
+        41, "store into a local of the SAME iteration -> still RELEASE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        t := s\n"
+        "        _ = t\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_OK } }, 1
+    },
+    {
+        // A FIELD STORE, AND IT IS A LAYERING ROW, NOT A CONDITION 6 ROW.
+        //
+        // It was WRITTEN expecting BLOCK_ESCAPE and it measured NO_ESCAPES:
+        // a store into a struct field makes `s` escape the whole function, so
+        // condition 1 refuses it first and condition 6 is never consulted. The
+        // expectation is corrected rather than the code, because condition 1 is
+        // the better answer -- it holds at every granularity.
+        //
+        // CONDITION 6 IS STILL THE BACKSTOP HERE, and that was checked by
+        // MUTATION rather than assumed: moving the condition 6 test above
+        // condition 1 turns this row's verdict into BLOCK_ESCAPE. The same
+        // check was run for `acc = append(acc, s)`, whose safety today rests
+        // entirely on append's elements being marked retaining.
+        42, "loop-carried store into a FIELD -> condition 1 refuses it FIRST",
+        "package main\n"
+        "type Box struct { p *int }\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    b := Box{}\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        b.p = s\n"
+        "    }\n"
+        "    _ = b\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_ESCAPES } }, 1
+    },
+    {
+        // THE LOOP HEADER, which is NOT iteration-scoped however it looks. `p`
+        // is bound ONCE for the whole loop and read by every following
+        // iteration's condition, so an iteration-end release frees it under the
+        // test about to run. Kept at LOOP_SCOPE, the cause whose reach narrowed.
+        43, "a pointer declared in the loop HEADER -> refuse, LOOP_SCOPE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for p := makeOwned(); n > 0; n = n - 1 {\n"
+        "        _ = p\n"
+        "    }\n"
+        "}\n",
+        "f", { { "p", RELEASE_NO_LOOP_SCOPE } }, 1
+    },
+    {
+        // A SWITCH IS A BREAK SCOPE, and this row exists because it was a live
+        // use-after-free found in review of the first version of condition 6.
+        //
+        // codegen raises cfctx.loop_depth for a `switch` as well as a `for`,
+        // because both are things a `break` leaves. This walk raised its own
+        // counter only for a `for`. So `s` and `keep` read as the SAME depth,
+        // condition 6 did not mark the store between them, and the switch's
+        // `break` released `s` while `keep` still pointed at the buffer.
+        //
+        // The two counters must track each other exactly. If cfctx gains a
+        // scope kind, this walk must gain it too, and this row is what notices.
+        45, "a switch-case local stored into a LOOP-BODY local -> refuse, BLOCK_ESCAPE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        keep := makeOwned()\n"
+        "        switch i {\n"
+        "        case 0:\n"
+        "            s := makeOwned()\n"
+        "            keep = s\n"
+        "        }\n"
+        "        _ = keep\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
+    {
+        // THE MULTI-ASSIGN COUNT MISMATCH. `x, keep = pass(s)` hands the ONE
+        // value to the FIRST target and NULL to the rest, so a per-pair scan
+        // compares the call with x's depth and never with keep's.
+        //
+        // `pass` returns a value derived from its argument, so condition 1
+        // ALSO refuses `s` here -- this row would pass without condition 6 at
+        // all. It is kept because it pins the SHALLOWEST-TARGET rule, which is
+        // what stops the verdict depending on which rule happens to fire first.
+        47, "multi-assign, one call feeding two targets -> refuse `s`",
+        "package main\n"
+        "func pass(a *int) (int, *int) {\n"
+        "    return 1, a\n"
+        "}\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    keep := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        inner := 0\n"
+        "        inner, keep = pass(s)\n"
+        "        _ = inner\n"
+        "    }\n"
+        "    _ = keep\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_ESCAPES } }, 1
+    },
+    {
+        // A GOTO MAKES THE WHOLE FUNCTION UNREADABLE, and that is load-bearing
+        // rather than incidental. The `goto` arm in codegen releases the
+        // current scope's locals before it branches, which would be wrong for a
+        // BACKWARD goto inside one iteration -- it would free a local the label
+        // still reads.
+        //
+        // That is unreachable only because this walk has no arm for a label or
+        // a goto, so both fall to `default:` and refuse every local here. If
+        // this walk ever learns labels, the codegen arm needs a real fix and
+        // this row is the tripwire that says so.
+        46, "a function containing a goto -> every local refuses, UNKNOWN",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        seen := 0\n"
+        "    again:\n"
+        "        if seen == 0 {\n"
+        "            seen = 1\n"
+        "            goto again\n"
+        "        }\n"
+        "        _ = s\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_UNKNOWN } }, 1
+    },
+    {
+        // NESTED LOOPS. `s` belongs to the INNER iteration and `outer_local` to
+        // the outer one, which is longer. A depth comparison is what separates
+        // them -- a boolean "is it in a loop" cannot.
+        44, "inner-loop local stored into an OUTER-loop local -> refuse, BLOCK_ESCAPE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        keep := makeOwned()\n"
+        "        for j := 0; j < n; j++ {\n"
+        "            s := makeOwned()\n"
+        "            keep = s\n"
+        "        }\n"
+        "        _ = keep\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
     },
 
     {

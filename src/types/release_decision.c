@@ -30,6 +30,7 @@
 #include "shim_signatures.h"
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 // ---------------------------------------------------------------------------
 // Per-function collection
@@ -39,9 +40,47 @@ typedef struct {
     char*     name;          // owned
     ASTNode*  bound_value;   // the declaration's initial value; may be NULL
     int       binding_count; // declarations plus assignments
-    int       loop_depth;    // loop nesting at the DECLARATION
+    // BREAK-SCOPE nesting at the DECLARATION, and it MUST equal
+    // codegen->cfctx.loop_depth at the same point in the same program.
+    //
+    // NOT "for-loop nesting", which is what it counted until 2026-08-01 and
+    // what its old name said. cfctx raises this for a `switch`, a type switch
+    // and a `select` as well as a `for` (cfctx_push_break_scope), because each
+    // is a target a `break` can leave. Counting only `for` here made a
+    // switch-case local and a loop-body local read as the SAME depth, so
+    // condition 6 did not mark a store between them -- while codegen filed the
+    // case local one level deeper and released it at the switch's `break`,
+    // leaving the loop-body local pointing at freed memory.
+    //
+    // Measured, not reasoned: examples/arc_loop_carried_probe.goo's
+    // switchBreak() reported 3 invalid reads through ToUpper, exit 0, plausible
+    // output. If cfctx gains or loses a scope kind, this walk must follow.
+    int       block_depth;
     int       arena_depth;   // arena nesting at the DECLARATION
     bool      declared;      // a declaration was seen (not only an assignment)
+
+    // CONDITION 6. The name appeared in the right-hand side of a store whose
+    // TARGET outlives one iteration of this local's declaring loop. Only
+    // consulted when loop_depth > 0 -- at function scope the release is at
+    // function exit, and a store to another function-scope local changes
+    // nothing about when that exit happens.
+    bool      block_escapes;
+
+    // Declared by the loop HEADER -- the `i` of `for i := 0; ...`, or a range
+    // clause's key/value name -- rather than by the body.
+    //
+    // ITS LIFETIME IS THE LOOP, NOT THE ITERATION. `for p := new(int); *p < n;`
+    // reads `p` in the condition of every following iteration, so an
+    // iteration-end release frees it under the test that is about to run. The
+    // body's locals have no such reader, which is the whole distinction
+    // condition 6 relaxes condition 4 for. This keeps the header out of it.
+    //
+    // NOT left to condition 2 to catch. A range key/value is refused there as a
+    // view (a NULL binding), and `i` is an integer codegen records no slot for,
+    // so both are safe today for reasons that are NOT this one -- which is
+    // exactly the "safe by accident" shape the measurement that motivated
+    // condition 6 recorded as finding 2.
+    bool      loop_header;
 } LocalRecord;
 
 typedef struct {
@@ -78,12 +117,26 @@ typedef struct {
     struct { const char* target; ASTNode* expr; } *elem_sites;
     size_t       elem_count;
     size_t       elem_cap;
+
+    // CONDITION 6's own `unreadable`, and it is DELIBERATELY SEPARATE from the
+    // field above. An expression kind the mention scanner cannot descend might
+    // hide a store to something outliving the iteration, so every LOOP-declared
+    // local must refuse. A FUNCTION-scope local is unaffected: its release is at
+    // function exit, which no store can move.
+    //
+    // Refusing the whole function instead would cost the daemon's `fields`,
+    // `counts` and `parts` -- three live reclamations -- to answer a question
+    // that is not asked about them.
+    bool         loop_locals_unreadable;
 } Collected;
 
 typedef struct {
     Collected* out;
-    int        loop_depth;
+    int        block_depth;
     int        arena_depth;
+    // Walking a loop's init/post/range clause rather than its body. See
+    // LocalRecord.loop_header.
+    bool       in_loop_header;
 } WalkCtx;
 
 static LocalRecord* find_record(Collected* c, const char* name) {
@@ -109,11 +162,141 @@ static LocalRecord* intern_record(Collected* c, const char* name) {
     if (!r->name) return NULL;
     r->bound_value = NULL;
     r->binding_count = 0;
-    r->loop_depth = 0;
+    r->block_depth = 0;
     r->arena_depth = 0;
     r->declared = false;
+    r->block_escapes = false;
+    r->loop_header = false;
     c->count++;
     return r;
+}
+
+// ---------------------------------------------------------------------------
+// Condition 6 — the mention scanner
+// ---------------------------------------------------------------------------
+
+// Mark every local mentioned in `expr` whose declaring loop is DEEPER than
+// `target_depth`, meaning the store about to happen outlives its iteration.
+//
+// `target_depth` is the loop depth of the thing being stored INTO: the depth of
+// the target local's own declaration, or -1 when the target is anything this
+// module cannot resolve to a local (a field, an index, a parameter, a global).
+// -1 is below every real depth, so an unresolved target marks everything —
+// which is the conservative answer and the one a wrong guess must land on.
+//
+// A MENTION, NOT A FLOW. `n = n + len(s)` marks `s`, because proving `len` does
+// not propagate its argument needs the inverse of condition 2's binding table
+// and this increment does not have it. Named in include/release_decision.h as
+// the precision this deliberately gives up.
+static void mark_mentions(WalkCtx* ctx, ASTNode* expr, int target_depth) {
+    if (!expr) return;
+    Collected* c = ctx->out;
+
+    switch (expr->type) {
+        case AST_IDENTIFIER: {
+            const char* name = ((IdentifierNode*)expr)->name;
+            if (!name) return;
+            LocalRecord* r = find_record(c, name);
+            if (r && r->block_depth > target_depth) r->block_escapes = true;
+            return;
+        }
+
+        // Nothing to descend into, and nothing that can name a local.
+        case AST_LITERAL:
+            return;
+
+        case AST_BINARY_EXPR:
+            mark_mentions(ctx, ((BinaryExprNode*)expr)->left, target_depth);
+            mark_mentions(ctx, ((BinaryExprNode*)expr)->right, target_depth);
+            return;
+
+        case AST_UNARY_EXPR:
+            mark_mentions(ctx, ((UnaryExprNode*)expr)->operand, target_depth);
+            return;
+
+        case AST_CALL_EXPR: {
+            CallExprNode* call = (CallExprNode*)expr;
+            // The CALLEE too: a method value's receiver is its base, and
+            // `f(x)` where f is a local names that local.
+            mark_mentions(ctx, call->function, target_depth);
+            for (ASTNode* a = call->args; a; a = a->next) {
+                mark_mentions(ctx, a, target_depth);
+            }
+            return;
+        }
+
+        case AST_INDEX_EXPR:
+            mark_mentions(ctx, ((IndexExprNode*)expr)->expr, target_depth);
+            mark_mentions(ctx, ((IndexExprNode*)expr)->index, target_depth);
+            return;
+
+        case AST_SELECTOR_EXPR:
+            // The BASE only. The selector is a field name, not an expression.
+            mark_mentions(ctx, ((SelectorExprNode*)expr)->expr, target_depth);
+            return;
+
+        case AST_SLICE_INDEX_EXPR: {
+            SliceIndexExprNode* s = (SliceIndexExprNode*)expr;
+            mark_mentions(ctx, s->expr, target_depth);
+            mark_mentions(ctx, s->low, target_depth);
+            mark_mentions(ctx, s->high, target_depth);
+            return;
+        }
+
+        case AST_SLICE_EXPR:
+            for (ASTNode* e = ((SliceLitNode*)expr)->elements; e; e = e->next) {
+                mark_mentions(ctx, e, target_depth);
+            }
+            return;
+
+        case AST_ARRAY_LITERAL:
+            for (ASTNode* e = ((ArrayLitNode*)expr)->elements; e; e = e->next) {
+                mark_mentions(ctx, e, target_depth);
+            }
+            return;
+
+        // A MAP LITERAL IS TAGGED AST_PAREN_EXPR (include/ast.h): that enum slot
+        // was reserved for parenthesized expressions, which Goo parses inline as
+        // identity, so the slot was free. Both lists carry expressions.
+        case AST_PAREN_EXPR: {
+            MapLitNode* m = (MapLitNode*)expr;
+            for (ASTNode* k = m->keys; k; k = k->next) mark_mentions(ctx, k, target_depth);
+            for (ASTNode* v = m->values; v; v = v->next) mark_mentions(ctx, v, target_depth);
+            return;
+        }
+
+        case AST_STRUCT_LITERAL:
+            for (ASTNode* f = ((StructLiteralNode*)expr)->field_values; f; f = f->next) {
+                mark_mentions(ctx, f, target_depth);
+            }
+            return;
+
+        default:
+            // An expression kind this scanner cannot descend MIGHT name a local,
+            // so no loop-declared local in this function can be trusted. See
+            // Collected.loop_locals_unreadable for why this is not the
+            // function-wide `unreadable`.
+            c->loop_locals_unreadable = true;
+            return;
+    }
+}
+
+// The loop depth a store into `lhs` must be compared against. See mark_mentions.
+static int target_lifetime_depth(Collected* c, ASTNode* lhs) {
+    if (!lhs || lhs->type != AST_IDENTIFIER) return -1;   // a field or index store
+    const char* name = ((IdentifierNode*)lhs)->name;
+    if (!name) return -1;
+    // THE BLANK IDENTIFIER STORES NOTHING. `_ = err` is a discard, so no value
+    // survives it and no local it names can outlive its iteration. INT_MAX is
+    // deeper than any real loop nesting, so the comparison in mark_mentions
+    // never marks. Without this the daemon's own `err` shape refuses, because
+    // `_ = err` is how a Goo program says "used, deliberately".
+    if (strcmp(name, "_") == 0) return INT_MAX;
+    LocalRecord* r = find_record(c, name);
+    // NOT A LOCAL of this function: a parameter, a global, or a name declared
+    // by a construct the walk records no binding for. Each outlives the loop.
+    if (!r || !r->declared) return -1;
+    return r->block_depth;
 }
 
 // Defined below, next to the append collector it pairs with.
@@ -123,11 +306,17 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
     if (!name || strcmp(name, "_") == 0) return;
     LocalRecord* r = intern_record(ctx->out, name);
     if (!r) { ctx->out->unreadable = true; return; }
+    // CONDITION 6, and it runs BEFORE the record is marked declared so that
+    // `s := s` compares against s's PREVIOUS depth rather than this one.
+    // A declaration stores into a name whose lifetime is the block being
+    // declared in, so the current loop depth is the target depth.
+    mark_mentions(ctx, value, ctx->block_depth);
     if (!r->declared) {
         r->declared = true;
         r->bound_value = value;
-        r->loop_depth = ctx->loop_depth;
+        r->block_depth = ctx->block_depth;
         r->arena_depth = ctx->arena_depth;
+        r->loop_header = ctx->in_loop_header;
         // A slice literal's own elements count as stored values, exactly as
         // appended ones do. `[]string{}` records nothing, which is the usual
         // opening move and leaves the appends to decide.
@@ -221,6 +410,11 @@ static void note_append_elems(WalkCtx* ctx, const char* target, ASTNode* rhs) {
 // assigned value needs classifying only far enough to spot a self-append.
 static void note_assignment(WalkCtx* ctx, ASTNode* lhs, ASTNode* rhs, bool plain_assign) {
     if (!lhs) return;
+    // CONDITION 6, and it runs FIRST because it is the one part of this function
+    // that applies to EVERY assignment shape. The identifier test below returns
+    // early for a field or index store, and such a store is precisely the case
+    // that must mark hardest -- target_lifetime_depth answers -1 for it.
+    mark_mentions(ctx, rhs, target_lifetime_depth(ctx->out, lhs));
     // Before the identifier test below returns: an index target is not a rebind
     // of any local, but its KEY is a candidate for map ownership.
     note_key_site(ctx, lhs);
@@ -337,6 +531,36 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 size_t tcount = 0, vcount = 0;
                 for (ASTNode* t = n->targets; t; t = t->next) tcount++;
                 for (ASTNode* v = n->values; v; v = v->next) vcount++;
+
+                // CONDITION 6 ON THE COUNT-MISMATCH PATH, where the per-pair
+                // scan below cannot reach. `x, keep = f(s)` hands the ONE value
+                // to the FIRST target and NULL to the rest, so a scan against
+                // each pair compares `f(s)` with x's depth only -- and never
+                // with keep's, which may be shallower and outlive the iteration.
+                //
+                // Scan once against the SHALLOWEST target instead, because the
+                // value reaches all of them and the longest-lived one decides.
+                //
+                // MEASURED AS NOT-YET-A-DEFECT, and fixed anyway. A mismatch
+                // needs a CALL, and a call that propagates an argument into a
+                // result is what param_escape's return_escapes reports, so
+                // condition 1 refuses such an `s` today -- verified: the shape
+                // reads RELEASE_NO_ESCAPES. That makes this guard safe because
+                // ANOTHER rule fires first, which is the arrangement that
+                // already cost this branch one use-after-free on the switch
+                // scope. return_escapes precision is live work; this does not
+                // wait for it.
+                if (!n->is_short_decl && tcount != vcount) {
+                    int min_depth = INT_MAX;
+                    for (ASTNode* t = n->targets; t; t = t->next) {
+                        int d = target_lifetime_depth(ctx->out, t);
+                        if (d < min_depth) min_depth = d;
+                    }
+                    for (ASTNode* val = n->values; val; val = val->next) {
+                        mark_mentions(ctx, val, min_depth);
+                    }
+                }
+
                 ASTNode* v = n->values;
                 for (ASTNode* t = n->targets; t; t = t->next) {
                     if (n->is_short_decl) {
@@ -346,7 +570,12 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                                                  : ((vcount == 1) ? n->values : NULL));
                         }
                     } else {
-                        note_assignment(ctx, t, v, !n->is_short_decl);
+                        // The mismatch path pre-scanned above, so hand the rhs
+                        // over only when the pairing is real. Everything else
+                        // note_assignment does -- the binding count, the key
+                        // sites -- still runs.
+                        note_assignment(ctx, t, (tcount == vcount) ? v : NULL,
+                                        !n->is_short_decl);
                     }
                     if (v) v = v->next;
                 }
@@ -365,21 +594,31 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
 
             case AST_FOR_STMT: {
                 ForStmtNode* n = (ForStmtNode*)stmt;
-                ctx->loop_depth++;
+                ctx->block_depth++;
                 // The init clause declares INSIDE the loop's own scope (`i` in
                 // `for i := 0; ...`), so it is counted at the raised depth.
+                //
+                // AND IT IS FLAGGED AS THE HEADER, which is what keeps condition
+                // 6 from approving it. `i` is bound ONCE for the whole loop and
+                // read by every following iteration's condition, so it is not an
+                // iteration-scoped value however it is declared. See
+                // LocalRecord.loop_header.
+                bool saved_header = ctx->in_loop_header;
+                ctx->in_loop_header = true;
                 walk_stmts(ctx, n->init);
                 walk_stmts(ctx, n->post);
                 // `for k, v := range xs` binds k and v per ITERATION, and both
                 // are views derived from the range expression. Recording them
-                // keeps the plan honest; the raised loop_depth is what refuses
-                // them.
+                // keeps the plan honest; condition 2 refuses them as views and
+                // the header flag refuses them again, on purpose -- one reason
+                // that holds is not the same as two.
                 if (n->range_expr) {
                     if (n->key_name)   note_declaration(ctx, n->key_name, NULL);
                     if (n->value_name) note_declaration(ctx, n->value_name, NULL);
                 }
+                ctx->in_loop_header = saved_header;
                 walk_stmts(ctx, n->body);
-                ctx->loop_depth--;
+                ctx->block_depth--;
                 break;
             }
 
@@ -414,10 +653,13 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 SwitchStmtNode* n = (SwitchStmtNode*)stmt;
                 // `default:` is an AST_CASE_CLAUSE with NULL exprs -- the parser
                 // never builds AST_DEFAULT_CLAUSE -- so one test covers both.
+                // A BREAK SCOPE, so the depth rises exactly as cfctx's does.
+                ctx->block_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_CASE_CLAUSE) { ctx->out->unreadable = true; continue; }
                     walk_stmts(ctx, ((CaseClauseNode*)c)->body);
                 }
+                ctx->block_depth--;
                 break;
             }
 
@@ -428,6 +670,12 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // NULL binding value makes condition 2 refuse it with NOT_OWNED --
                 // the more fundamental cause, and one that no zero-store increment
                 // could ever lift. Pinned by row 30.
+                // A BREAK SCOPE, and the rise comes BEFORE the bind because
+                // codegen_generate_type_switch_stmt pushes its break scope
+                // before it generates any case body, and the bind is created
+                // inside one. The two counters must agree at every point, which
+                // is the invariant the switch defect broke.
+                ctx->block_depth++;
                 if (n->bind_name && n->bind_name->type == AST_IDENTIFIER) {
                     note_declaration(ctx, ((IdentifierNode*)n->bind_name)->name, NULL);
                 }
@@ -435,11 +683,14 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                     if (c->type != AST_TYPE_CASE) { ctx->out->unreadable = true; continue; }
                     walk_stmts(ctx, ((TypeCaseNode*)c)->body);
                 }
+                ctx->block_depth--;
                 break;
             }
 
             case AST_SELECT_STMT: {
                 SelectStmtNode* n = (SelectStmtNode*)stmt;
+                // A BREAK SCOPE, as cfctx_push_break_scope makes it.
+                ctx->block_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_SELECT_CASE) { ctx->out->unreadable = true; continue; }
                     SelectCaseNode* sc = (SelectCaseNode*)c;
@@ -484,6 +735,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                     }
                     walk_stmts(ctx, sc->body);
                 }
+                ctx->block_depth--;
                 break;
             }
 
@@ -718,10 +970,31 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     // reason that actually makes it dangerous rather than merely wasteful.
     if (r->arena_depth > 0) return RELEASE_NO_ARENA;
 
-    // Condition 4, the loop half. Checked before condition 5 because a local
-    // inside a loop is refused for the more fundamental cause: it is rebound
-    // every iteration, so a release at exit frees one of N.
-    if (r->loop_depth > 0)    return RELEASE_NO_LOOP_SCOPE;
+    // CONDITION 4's LOOP HALF IS RELAXED, and conditions 6 and the loop-header
+    // rule take its place. Codegen releases a loop-declared local at ITERATION
+    // end (codegen_emit_loop_scope_releases), so "one of N" is no longer what
+    // happens -- every iteration releases its own value.
+    //
+    // TWO REFUSALS REMAIN, and they are different questions:
+    //
+    //   loop_header   the local is the loop's own `i`, or a range key/value.
+    //                 Bound once for the whole loop and read by the NEXT
+    //                 iteration's condition, so iteration-end placement is
+    //                 wrong for it. Still RELEASE_NO_LOOP_SCOPE: the cause is
+    //                 unchanged, only its reach narrowed.
+    //
+    //   block_escapes the value is stored into something that outlives the
+    //                 iteration. Measured before it was written -- see
+    //                 docs/adr/0002-measurements/loop_carried_store_findings.md,
+    //                 where this shape and a plain dead local were shown to be
+    //                 INDISTINGUISHABLE under the old condition 4.
+    if (r->block_depth > 0) {
+        if (r->loop_header) return RELEASE_NO_LOOP_SCOPE;
+        // The scanner met an expression it could not descend somewhere in this
+        // function, so no loop-declared local here has a trustworthy answer.
+        if (c->loop_locals_unreadable) return RELEASE_NO_BLOCK_ESCAPE;
+        if (r->block_escapes) return RELEASE_NO_BLOCK_ESCAPE;
+    }
 
     // CONDITION 5 IS RETIRED. It used to refuse any local declared in a
     // conditional block,
@@ -787,7 +1060,8 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         if (!name) continue;
 
         Collected c = { 0 };
-        WalkCtx ctx = { .out = &c, .loop_depth = 0, .arena_depth = 0, };
+        WalkCtx ctx = { .out = &c, .block_depth = 0, .arena_depth = 0,
+                        .in_loop_header = false, };
         walk_stmts(&ctx, ((FuncDeclNode*)d)->body);
 
         ReleasePlanFunction* pf = &plan->functions[plan->count];
@@ -936,6 +1210,7 @@ const char* release_verdict_name(ReleaseVerdict v) {
         case RELEASE_NO_ARENA:      return "RELEASE_NO_ARENA";
         case RELEASE_NO_LOOP_SCOPE: return "RELEASE_NO_LOOP_SCOPE";
         case RELEASE_NO_REBOUND:    return "RELEASE_NO_REBOUND";
+        case RELEASE_NO_BLOCK_ESCAPE: return "RELEASE_NO_BLOCK_ESCAPE";
         case RELEASE_NO_NO_BINDING: return "RELEASE_NO_NO_BINDING";
         case RELEASE_NO_UNKNOWN:    return "RELEASE_NO_UNKNOWN";
     }
