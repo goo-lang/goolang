@@ -498,28 +498,48 @@ still leaves as a genuine loop now branches on a literal trip count
 
 ### Honest vectorization status
 
-**Vectorization is not achieved, and this document does not claim SIMD.**
-The `lanes-kernel-ir-pin` Makefile gate compiles
-`examples/lanes_stencilstep_r2_probe.goo` at `-O2` and checks the
-specialized `goo_pkg__lanes__StencilStep__n2` body for **unroll evidence**
-— at least 5 `fmul double` instructions (16 measured) — rather than the
-originally-intended vector-type predicate (any `<N x double>` in the
-function body), because the vector-type predicate fails outright, both
-before and after the Task 4b comptime fold: 0 matches, scoped to the
-function body, either way. The fold did not cause this and cannot fix it:
-the root cause is that every tap access (`own[...]` and `coeffs[k]`) still
-carries a `goo_bounds_check` call, and that runtime function has no
-`readnone`/`speculatable` attributes on its declaration — LLVM must treat
-an opaque, possibly-side-effecting call conservatively on every loop
-iteration, which blocks SLP/loop vectorization regardless of how constant
-the trip count is. The honest summary: comptime specialization delivers
-full unrolling with compile-time-constant trip counts — a real, measured,
-IR-verified payoff — but not vectorization; closing that gap requires
-attributing `goo_bounds_check` (or an equivalent inlined/attributed bounds
-check) so LLVM can prove it side-effect-free and hoist it out of the
-vectorization-blocking path. That is out of scope for this milestone and
-is not something a library-level change to `goostd/lanes` can fix on its
-own.
+**LOOP vectorization is not achieved, and this document does not claim SIMD.**
+
+**Corrected 2026-08-01. The cause named below for months was already fixed
+when it was written, and the claim above it was too weak.** This section
+used to say the vector-type predicate found 0 matches and blamed a
+`goo_bounds_check` call. Both halves are now wrong:
+
+- **There is no `goo_bounds_check` call.** Commit `f3c98c9` (arc-17,
+  2026-07-23) replaced it with an inline `icmp uge` plus a cold
+  `goo_bounds_fail` edge. The whole module contains **0** call sites, and
+  `lanes-kernel-ir-pin` now asserts that so the lowering cannot regress
+  silently. Attributing `goo_bounds_check` would change nothing, because
+  nothing calls it.
+- **The vector-type predicate passes.** It finds 10 `<N x double>` matches
+  in the specialized body. That happened when arc-17 landed, five days
+  before the Rust comparison that motivated this work.
+
+**But passing it does not mean what it looks like.** Every one of those
+matches is straight-line **SLP**: the body does two 2-wide `fmul`s and then
+extracts both lanes back to scalars for a sequential `fadd` chain. That is
+not throughput. The witness for LOOP vectorization is a `vector.body`
+block, and the module contains **0**. The gate therefore reports that count
+rather than asserting it — a hard check would pin the gate red today — and
+its PASS line says explicitly that SLP is not the same thing.
+
+**The real blocker is a reloaded slice header, not an attribute.** In the
+interior loop, `ctx.scratch` reloads both its pointer and its length on
+every iteration (`build/lk_n2_body.ll:560,593`), because nothing binds it
+to a local. So SCEV cannot prove the index range and the bounds check on
+`scratch[i]` survives. The contrast is in the same loop: `own := ctx.own`
+at `lanes.go:558` binds a local, and LLVM has already removed **every**
+`own[]` bounds check. The fix is a library change — bind `ctx.scratch`,
+`ctx.haloBufL` and `ctx.haloBufR` to locals — not a compiler feature.
+
+A second, larger cost sits beside it: `StencilStep` computes into
+`ctx.scratch` and then **copies back** into `ctx.own` every round, so it
+moves about twice the bytes Rust's pointer swap does. That copy-back is not
+even a `memcpy` — it is a scalar loop with a bounds check and two struct
+reloads per element.
+
+See `docs/adr/0003-competitive-position-measured-against-rust.md`, which
+names parallel throughput a **parity target, not a win**.
 
 ### Updated Limits (M2 additions)
 

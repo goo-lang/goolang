@@ -2126,7 +2126,7 @@ lanes-monomorphize-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 #      unscoped.
 lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== lanes-kernel-ir-pin: specialized instance, vectorization + unroll evidence, no fast-math ==="
+	@echo "=== lanes-kernel-ir-pin: specialized instance, SLP + unroll evidence, inline bounds checks, no fast-math ==="
 	@"$(COMPILER)" --emit-llvm -O2 examples/lanes_stencilstep_r2_probe.goo -o build/lk_ir.ll >build/lk_ir.err 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "lanes-kernel-ir-pin: FAIL (compile failed)"; cat build/lk_ir.err; exit 1; fi
 	@n=$$(grep -cE '^define[^{]*@"?goo_pkg__lanes__StencilStep__n2(\.[0-9]+)?"?\(' build/lk_ir.ll); \
@@ -2135,10 +2135,33 @@ lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@awk '/^define void @"?goo_pkg__lanes__StencilStep__n2"?\(/,/^}/' build/lk_ir.ll > build/lk_n2_body.ll; \
 	  vec=$$(grep -c "x double>" build/lk_n2_body.ll); \
 	  if [ "$$vec" -lt 1 ]; then \
-	    echo "lanes-kernel-ir-pin: FAIL (vectorization evidence: expected >=1 '<N x double>' vector type in the specialized instance body, found $$vec — see the arc-17 comment above; inline bounds checks may have regressed back to blocking SLP vectorization)"; \
+	    echo "lanes-kernel-ir-pin: FAIL (SLP evidence: expected >=1 '<N x double>' vector type in the specialized instance body, found $$vec)"; \
 	    cat build/lk_n2_body.ll; exit 1; \
 	  fi; \
-	  echo "  PASS >=1 '<N x double>' vector type in the specialized instance body ($$vec occurrences found — genuine SLP vectorization, unlocked by arc-17's inline bounds checks)"
+	  echo "  PASS >=1 '<N x double>' vector type in the body ($$vec found — STRAIGHT-LINE SLP only, see the vector.body line below for what this does NOT claim)"
+	@: "WHAT THIS GATE DOES NOT CLAIM. The check above passes on SLP, which" ; \
+	 : "here does two 2-wide multiplies and then extracts both lanes back to" ; \
+	 : "scalars for a sequential fadd chain -- no throughput. LOOP" ; \
+	 : "vectorization is what would move the benchmark, and its witness is a" ; \
+	 : "vector.body block. There are currently ZERO in the whole module, so" ; \
+	 : "this is REPORTED and not asserted: making it a hard check would pin" ; \
+	 : "the gate red today. ADR 0003 names parallel throughput a parity" ; \
+	 : "target, and docs/lanes.md records the real blocker." ; \
+	 vb=$$(grep -c "vector.body" build/lk_ir.ll); \
+	 echo "  INFO vector.body blocks in the module: $$vb (0 = no LOOP vectorization; SLP above is not the same thing)"
+	@: "REGRESSION GUARD for arc-17. Codegen lowers a bounds check to an" ; \
+	 : "inline icmp plus a cold goo_bounds_fail edge. It used to emit a call" ; \
+	 : "to the opaque goo_bounds_check, which LLVM had to treat as possibly" ; \
+	 : "side-effecting on every iteration. Re-introducing that call would" ; \
+	 : "block SLP again, and docs/lanes.md blamed it for years after it was" ; \
+	 : "already gone. Commit a861829 returns 53 here, which is how to see" ; \
+	 : "this check fail. NO BACKTICKS in these strings." ; \
+	 bc=$$(grep -cE "call .*@goo_bounds_check" build/lk_ir.ll); \
+	 if [ "$$bc" -ne 0 ]; then \
+	   echo "lanes-kernel-ir-pin: FAIL (goo_bounds_check call sites: expected 0 in the module, found $$bc — the inline bounds-check lowering from arc-17 has regressed)"; \
+	   exit 1; \
+	 fi; \
+	 echo "  PASS 0 goo_bounds_check call sites in the module (inline lowering intact)"
 	@fmul=$$(grep -c "fmul double" build/lk_n2_body.ll); \
 	  if [ "$$fmul" -lt 5 ]; then \
 	    echo "lanes-kernel-ir-pin: FAIL (unroll evidence: expected >=5 'fmul double' in the specialized instance body, found $$fmul — the comptime-fold specialization payoff is not real for this kernel shape)"; \
