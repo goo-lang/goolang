@@ -37,12 +37,20 @@ func make1(i int) string {
 
 // THE WIN — the daemon's `last = handle(req)`. Every value assigned is a fresh
 // temporary, nothing else names any of them, and only the final one is read.
+// THE ToUpper RESULT IS BOUND, and that is not cosmetic. Written as
+// `return len(strings.ToUpper(last))` the result is an UNBOUND TEMPORARY: it has
+// no slot, so it has no release site, and it leaked 32 bytes with release both
+// off and on. That is a different and still-open leak class -- a call result
+// nothing ever names -- and counting it here would make this probe demand work
+// this change cannot do. Binding it gives it an ordinary bound-once release,
+// and the ToUpper call still reads last's BYTES, which is the whole point.
 func reassigned(n int) int {
 	last := ""
 	for i := 0; i < n; i++ {
 		last = make1(i)
 	}
-	return len(strings.ToUpper(last))
+	u := strings.ToUpper(last)
+	return len(u)
 }
 
 // REFUSAL 1 — an ALIAS. `p` still points at the value `last` held, so freeing
@@ -73,7 +81,27 @@ func borrowedReassign(x string, n int) int {
 	return len(strings.ToUpper(keep)) + len(last)
 }
 
-// REFUSAL 3 — the local LEAVES the function, so its final value must survive.
+// REFUSAL 3 — A SELF-APPEND, and this shape is in the probe because it was
+// MISSED. Everything above passed while bench/daemon/daemon.goo printed nothing
+// and reported 7 invalid reads: `parts = append(parts, x)` is not a rebind, and
+// goo_slice_append's realloc frees the old base ITSELF, so a release emitted at
+// that store reads a pointer the right-hand side already freed.
+//
+// The elements are read after the loop, so a wrong release here is an invalid
+// read rather than a silent pass.
+func selfAppend(n int) int {
+	parts := []string{}
+	for i := 0; i < n; i++ {
+		parts = append(parts, make1(i))
+	}
+	total := 0
+	for _, p := range parts {
+		total = total + len(strings.ToUpper(p))
+	}
+	return total
+}
+
+// REFUSAL 4 — the local LEAVES the function, so its final value must survive.
 func escapes(n int) string {
 	last := ""
 	for i := 0; i < n; i++ {
@@ -86,5 +114,6 @@ func main() {
 	fmt.Println(reassigned(500))
 	fmt.Println(aliased(50))
 	fmt.Println(borrowedReassign("  zz  ", 50))
+	fmt.Println(selfAppend(50))
 	fmt.Println(len(strings.ToUpper(escapes(50))))
 }

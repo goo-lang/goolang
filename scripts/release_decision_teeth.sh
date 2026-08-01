@@ -93,7 +93,7 @@ MUTATIONS=(
 # CONDITION 7, the one nothing else provides. `p := last` holds a second pointer
 # without making the value outlive the function, so local_escape reports nothing
 # and condition 1 passes. Row 41.
-"alias-refusal	        if (has_alias((Collected*)c, r->name)) return RELEASE_NO_ALIASED;	        if (has_alias((Collected*)c, r->name) && false) return RELEASE_NO_ALIASED;"
+"alias-refusal	        if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;	        if (has_alias((Collected*)c, pe, r->name) && false) return RELEASE_NO_ALIASED;"
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
 # Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
 # `L = append(L, x)` counts as a rebind and row 18 must fail.

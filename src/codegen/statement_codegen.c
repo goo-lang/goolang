@@ -2646,6 +2646,13 @@ static void emit_deferred_calls_only(CodeGenerator* codegen, TypeChecker* checke
 // visits every site -- loads NULL and goo_release no-ops. Without the clear, a
 // loop local would be released once per iteration AND once more at exit, on a
 // pointer already freed.
+#if LLVM_AVAILABLE
+// Defined below, next to the store-path caller it is shared with.
+static void emit_site_release(CodeGenerator* codegen, ArcReleaseSite* site,
+                              LLVMTypeRef rel_ty, LLVMValueRef rel_fn,
+                              LLVMTypeRef relw_ty, bool clear_after);
+#endif
+
 static void emit_scope_releases(CodeGenerator* codegen, int min_loop_depth) {
 #if LLVM_AVAILABLE
     if (!codegen || !codegen->release_plan) return;   // NULL plan == GOO_ARC_RELEASE=0
@@ -2676,15 +2683,41 @@ static void emit_scope_releases(CodeGenerator* codegen, int min_loop_depth) {
         ArcReleaseSite* site = &fi->arc_release_slots[i];
         if (!site->slot) continue;
         if (site->loop_depth < min_loop_depth) continue;
+        // Clear the slot after a release ONLY for a loop-scoped site: a
+        // function-scope slot is visited exactly once here, so the store would
+        // be dead, and emitting it anyway would churn the IR of every golden
+        // that releases anything.
+        emit_site_release(codegen, site, rel_ty, rel_fn, relw_ty,
+                          site->loop_depth > 0);
+    }
+#else
+    (void)codegen;
+    (void)min_loop_depth;
+#endif
+}
 
+#if LLVM_AVAILABLE
+// The body that used to be emit_scope_releases' loop, for ONE site, at the
+// current insert point. Extracted so the release-before-store path emits
+// BYTE-IDENTICAL code to the scope-exit path -- a second copy of this would be
+// a second place for the elem-then-buffer ordering and the fail-closed rules to
+// drift, and both of those are use-after-free rules rather than style.
+static void emit_site_release(CodeGenerator* codegen, ArcReleaseSite* site,
+                              LLVMTypeRef rel_ty, LLVMValueRef rel_fn,
+                              LLVMTypeRef relw_ty, bool clear_after) {
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    {
         // field == -1: the slot holds the object pointer. field >= 0: the slot
         // holds a fat value and that field holds the object pointer.
         LLVMValueRef addr = site->slot;
         if (site->field >= 0) {
-            if (!site->slot_ty) continue;
+            // Fail closed, as the loop form did by skipping the site: emit NO
+            // release rather than one built on an address we could not form.
+            if (!site->slot_ty) return;
             addr = LLVMBuildStructGEP2(codegen->builder, site->slot_ty, site->slot,
                                        (unsigned)site->field, "arc.release.fld");
-            if (!addr) continue;
+            if (!addr) return;
         }
         LLVMValueRef obj = LLVMBuildLoad2(codegen->builder, ptr_ty, addr, "arc.release.obj");
 
@@ -2745,20 +2778,71 @@ static void emit_scope_releases(CodeGenerator* codegen, int min_loop_depth) {
             released = true;
         }
 
-        // Clear the slot after a release, so the function-exit sweep finds NULL
-        // where an iteration already freed it. ONLY for a loop-scoped site: a
-        // function-scope slot is visited exactly once, so the store would be
-        // dead, and emitting it anyway would churn the IR of every golden that
-        // releases anything.
-        if (released && site->loop_depth > 0) {
+        // Clear the slot after a release, so a later sweep finds NULL where this
+        // one already freed it. The caller decides: see emit_scope_releases for
+        // the loop-scoped rule, and the store path for why it does NOT clear.
+        if (released && clear_after) {
             LLVMBuildStore(codegen->builder, LLVMConstPointerNull(ptr_ty), addr);
         }
     }
-#else
-    (void)codegen;
-#endif
 }
 
+// Release what a local's slot holds, immediately BEFORE a store overwrites it.
+//
+// THIS IS THE SITE CONDITION 4 USED TO SAY DID NOT EXIST. A rebound local was
+// refused outright because the first value had nowhere to be freed; the
+// assignment is that place, and scope exit still frees whatever the slot holds
+// last, so every value is released exactly once.
+//
+// ONLY A SLOT THE PLAN ALREADY APPROVED. The lookup is by slot identity against
+// arc_release_slots, which codegen_arc_note_local fills only for locals whose
+// verdict is RELEASE_OK. So a local refused by conditions 2' or 7 -- a borrowed
+// value, or one another local aliases -- has no entry here and this is a no-op.
+// That makes the guard structural rather than a second copy of the decision.
+//
+// NO CLEAR AFTERWARDS, unlike the loop-scoped path: the store that follows
+// writes the new value into this very slot on the next instruction, so a NULL
+// store between them would be dead.
+//
+// THE RHS IS ALREADY EVALUATED when this runs, which is what makes it safe for
+// `s = s + "x"`: goo_string_concat has copied both operands into fresh memory
+// before the old buffer is freed. A right-hand side that ALIASES the old value
+// instead of copying it -- `s = borrowView(s)` -- is refused by condition 2'
+// and never reaches here.
+void codegen_arc_release_before_store(CodeGenerator* codegen, LLVMValueRef slot) {
+    if (!codegen || !codegen->release_plan) return;   // NULL plan == GOO_ARC_RELEASE=0
+    if (!slot || !codegen->builder) return;
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi || fi->arc_release_count == 0) return;
+
+    LLVMBasicBlockRef here = LLVMGetInsertBlock(codegen->builder);
+    if (!here || LLVMGetBasicBlockTerminator(here)) return;
+
+    ArcReleaseSite* site = NULL;
+    for (size_t i = 0; i < fi->arc_release_count; i++) {
+        if (fi->arc_release_slots[i].slot == slot) { site = &fi->arc_release_slots[i]; break; }
+    }
+    if (!site) return;
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef rel_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_ty, 1, 0);
+    LLVMValueRef rel_fn = LLVMGetNamedFunction(codegen->module, "goo_release");
+    if (!rel_fn) rel_fn = LLVMAddFunction(codegen->module, "goo_release", rel_ty);
+    if (!rel_fn) return;
+
+    LLVMTypeRef dtor_ty = LLVMPointerType(LLVMFunctionType(LLVMVoidTypeInContext(ctx),
+                                                           &ptr_ty, 1, 0), 0);
+    LLVMTypeRef relw_params[] = { ptr_ty, dtor_ty };
+    LLVMTypeRef relw_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), relw_params, 2, 0);
+
+    emit_site_release(codegen, site, rel_ty, rel_fn, relw_ty, false);
+}
+#else
+void codegen_arc_release_before_store(CodeGenerator* codegen, LLVMValueRef slot) {
+    (void)codegen; (void)slot;
+}
+#endif
 // T4: zero a release candidate's slot immediately after its alloca.
 //
 // WHY THIS EXISTS. codegen_alloc_local_promoted hoists an ordinary local's alloca

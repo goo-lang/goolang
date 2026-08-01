@@ -522,6 +522,19 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
 //
 // The arg-0 identifier must match the assignment target by NAME. `a = append(b,
 // x)` is a rebind of `a` to b's buffer, not a self-append.
+// Exported for codegen, which must NOT emit a release-before-store at a
+// self-append. goo_slice_append reallocs, and goo_realloc frees the old base
+// itself, so by the time the store runs the old pointer in the slot is already
+// dangling -- measured on bench/daemon/daemon.goo as 7 invalid reads through
+// goo_slice_release_elems and goo_release_with, with the program printing
+// nothing at all. ONE implementation rather than a second copy in codegen: the
+// two must agree, and this is the same predicate the rebind rule uses.
+static bool is_self_append(const char* target, ASTNode* rhs);
+
+bool release_decision_is_self_append(const char* target, ASTNode* rhs) {
+    return is_self_append(target, rhs);
+}
+
 static bool is_self_append(const char* target, ASTNode* rhs) {
     if (!target || !rhs || rhs->type != AST_CALL_EXPR) return false;
     CallExprNode* call = (CallExprNode*)rhs;
@@ -1278,18 +1291,31 @@ static bool expr_names_local(ASTNode* e, const char* target, bool* unknown) {
 // taken is in some record's `values`. A statement kind the walk cannot read sets
 // `unreadable` and refuses the whole function before this is ever consulted.
 //
-// DELIBERATELY WIDER THAN A BARE IDENTIFIER. `p := last` is the shape that
-// motivated it, but `p := borrow(last)` aliases just as hard when the callee
-// returns its argument, and this module cannot see which callee does. So any
-// MENTION of the name in another local's value refuses. That over-refuses a
-// copy such as `p := last + "x"`, which costs reclamation and cannot dangle.
-static bool has_alias(Collected* c, const char* name) {
+// WIDER THAN A BARE IDENTIFIER, because `p := borrow(last)` aliases just as hard
+// as `p := last` when the callee returns its argument. So any MENTION inside a
+// value that could carry a pointer out counts.
+//
+// AN OWNED VALUE IS PRUNED WHOLE, and that is what makes this usable rather than
+// merely safe. binding_is_owned already means "this expression yields FRESH
+// memory" -- a new/composite, a concat, a call whose return_escapes is false, a
+// non-retaining shim. Fresh memory cannot contain a pointer into our local, so
+// no mention inside it can be an alias.
+//
+// MEASURED, not reasoned. Without this prune, scanning every mention refused
+// `u := strings.ToUpper(last)` -- an ordinary read into a new local, which
+// COPIES -- and the daemon shape reclaimed nothing. The probe went from 32 bytes
+// back to 15,890. Reading the answer out of condition 2's own table is what
+// separates "names it" from "could still be holding it".
+static bool has_alias(Collected* c, const ParamEscapeResult* pe, const char* name) {
     for (size_t i = 0; i < c->count; i++) {
         LocalRecord* other = &c->items[i];
         if (strcmp(other->name, name) == 0) continue;   // its own values are not aliases
         for (size_t j = 0; j < other->value_count; j++) {
+            ASTNode* v = other->values[j];
+            if (!v) continue;                       // nothing bound, nothing held
+            if (binding_is_owned(c, pe, v)) continue;   // fresh: cannot alias
             bool unknown = false;
-            if (expr_names_local(other->values[j], name, &unknown)) return true;
+            if (expr_names_local(v, name, &unknown)) return true;
             if (unknown) return true;   // fail closed
         }
     }
@@ -1402,7 +1428,7 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     //       release at the next store dangles inside the same function.
     if (r->binding_count > 1) {
         if (!all_values_release_safe((Collected*)c, pe, r)) return RELEASE_NO_NOT_OWNED;
-        if (has_alias((Collected*)c, r->name)) return RELEASE_NO_ALIASED;
+        if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;
         return RELEASE_OK;
     }
 

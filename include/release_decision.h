@@ -297,6 +297,17 @@ bool release_plan_slice_owns_elems(const ReleasePlan* plan, const char* fn,
 //
 // Conservative on every miss. False leaves the operand borrowed, which is what
 // every program did before this existed.
+// Is `rhs` the shape `target = append(target, ...)`?
+//
+// FOR CODEGEN'S RELEASE-BEFORE-STORE, which must NOT fire here. A self-append
+// does not rebind the local to a different object -- it GROWS the existing one,
+// and goo_slice_append's realloc frees the old base ITSELF. A release emitted at
+// such a store reads a pointer the RHS already freed.
+//
+// Exported rather than reimplemented: this is the same predicate the rebind rule
+// uses, and the two must agree or one of them frees live memory.
+bool release_decision_is_self_append(const char* target, ASTNode* rhs);
+
 bool release_plan_concat_operand_is_owned(const ReleasePlan* plan, const char* fn,
                                           const ASTNode* operand);
 

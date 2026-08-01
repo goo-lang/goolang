@@ -538,7 +538,19 @@ static TestRow rows[] = {
         // A COMPOUND operator is never an append, so it stays a rebind. Without
         // the `plain_assign` guard, `xs += ...` would take the self-append path
         // by accident.
-        21, "a compound assignment is not a self-append -> refuse, REBOUND",
+        // NOW RELEASES, and the journey of this row is worth recording. It read
+        // RELEASE_NO_REBOUND, because a rebind was refused outright. Both values
+        // are FRESH slice literals and nothing holds either one, so releasing at
+        // the store is correct and this is a real reclamation the old condition
+        // 4 was throwing away.
+        //
+        // IT WENT THROUGH RELEASE_NO_ALIASED ON THE WAY, and that was a defect in
+        // condition 7's first form: `sink = sink + len(xs)` MENTIONS xs, and a
+        // scanner that counted every mention called it an alias. len() returns an
+        // int and can alias nothing. has_alias now prunes any value that
+        // binding_is_owned calls fresh -- a concat here -- which is what makes
+        // this row, and the daemon, reclaim at all.
+        21, "rebound to a second fresh literal, only read by len -> RELEASE",
         "package main\n"
         "var sink int\n"
         "func f(n int) {\n"
@@ -546,7 +558,7 @@ static TestRow rows[] = {
         "    xs = []int{2}\n"
         "    sink = sink + len(xs) + n\n"
         "}\n",
-        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+        "f", { { "xs", RELEASE_OK } }, 1
     },
 
     // ---------------- STRING CONCATENATION, condition 2's binary arm ----------
