@@ -1,0 +1,89 @@
+// A map taking ownership of a key that comes from a LOCAL, and the three shapes
+// that must refuse it.
+//
+// PR #272 let a map own a key that is a fresh temporary written in the index
+// position: `counts[strings.ToUpper(f)] = 1`. It refuses an AST_IDENTIFIER,
+// because an identifier means another name holds the buffer and only one owner
+// may free it.
+//
+// bench/daemon/daemon.goo writes `counts[f] = counts[f] + 1`, where `f` is a
+// local. Measured: `f` is 262,000 bytes per 2,000 client messages, all 14,000
+// allocations of it, and the `counts[f]` half is 180,000 of that. The local is
+// never released either — `counts[f]` marks it escaping, so condition 1 refuses
+// it — which is exactly what makes the map safe to be its single owner.
+//
+// THE REFUSALS ARE THE POINT. Each one below frees a buffer somebody else still
+// uses, and each fails for a different reason:
+//
+//   escapesByReturn  the local LEAVES the function. The map dies at function
+//                    exit and the caller is left reading freed bytes. This is
+//                    the shape that made the rule doubtful, and no map may own
+//                    a local that any other exit site can reach.
+//   twoMaps          TWO maps take the SAME buffer. Each frees it once.
+//   viewKey          a VIEW. `s[1:]` is a window into a buffer this code never
+//                    allocated, so no map may free it.
+//
+// EVERY READ IS OF THE BYTES. A string is a fat value, so `len(x)` touches no
+// heap memory and a probe built on len() alone stays green over a freed buffer.
+// ToUpper reads the bytes, which is what makes valgrind see a wrong release.
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+// THE WIN — the daemon's shape. `f` is a fresh temporary, it appears only as a
+// map key and as an argument to a shim that copies, and nothing else names it.
+func counted(reqs []string) int {
+	counts := map[string]int{}
+	for i := 0; i < len(reqs); i++ {
+		f := strings.TrimSpace(reqs[i])
+		counts[f] = counts[f] + 1
+	}
+	return len(counts)
+}
+
+// REFUSAL 1 — the local LEAVES the function through the return.
+func escapesByReturn(x string) string {
+	m := map[string]int{}
+	s := strings.TrimSpace(x)
+	m[s] = 1
+	return s
+}
+
+// REFUSAL 2 — TWO maps are handed the same buffer.
+func twoMaps(x string) int {
+	a := map[string]int{}
+	b := map[string]int{}
+	s := strings.TrimSpace(x)
+	a[s] = 1
+	b[s] = 2
+	return len(a) + len(b)
+}
+
+// REFUSAL 3 — a VIEW into a buffer this function never allocated.
+func viewKey(x string) int {
+	m := map[string]int{}
+	s := strings.TrimSpace(x)
+	v := s[1:]
+	m[v] = 1
+	return len(m) + len(strings.ToUpper(s))
+}
+
+func main() {
+	reqs := []string{"  1  ", "  2  ", "  3  ", "  four  ", "  5  "}
+
+	// Many calls, so the per-call keys are large enough to measure.
+	total := 0
+	for i := 0; i < 400; i++ {
+		total = total + counted(reqs)
+	}
+	fmt.Println(total)
+
+	// Reads the BYTES of the value that left the function, so a map that wrongly
+	// owned it is an invalid read rather than a silent pass.
+	fmt.Println(len(strings.ToUpper(escapesByReturn("  alpha  "))))
+	fmt.Println(twoMaps("  beta  "))
+	fmt.Println(viewKey("  gamma  "))
+}

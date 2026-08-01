@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth arc-concat-operand-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth arc-concat-operand-probe arc-map-key-local-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -5171,6 +5171,17 @@ arc-loop-carried-probe: $(COMPILER) $(RUNTIME_LIB)
 # REFUSED — a wrong release there is a double free, not a leak.
 arc-concat-operand-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_concat_operand_probe.sh
+
+# KNOWN-RED, AND IN NO GATE ON PURPOSE. Not in VERIFY_ALL_DEPS, and it must not
+# be added there while it fails — the red records work nobody has done, and a
+# gate that is expected to fail teaches every reader to ignore a red gate.
+#
+# A spike showed that taking a map key from a local reclaims ZERO bytes from
+# bench/daemon/daemon.goo on its own, because condition 6 refuses `f` as well.
+# The script's header carries the measurement. Closing it needs a reason bit in
+# escape_core AND precision in condition 6.
+arc-map-key-local-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/arc_map_key_local_probe.sh
 
 arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
