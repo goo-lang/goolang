@@ -182,14 +182,22 @@ static TestRow rows[] = {
         "f", { { "z", RELEASE_NO_ARENA } }, 1
     },
 
-    // ---------------- CONDITION 4: loop scope ----------------
+    // ---------------- CONDITION 6: the loop-carried store ----------------
     //
-    // THE ROW THAT RETARGETED T4. `inner` is rebound on every iteration, so a release
-    // at function exit frees one of N. `outer` is bound once and does release,
-    // which is the contrast that proves the rule is about SCOPE and not about
-    // the presence of a loop in the function.
+    // THESE TWO ROWS USED TO EXPECT RELEASE_NO_LOOP_SCOPE, and the change is the
+    // point of the increment rather than an accommodation to it. Condition 4's
+    // loop half refused every local declared in a loop, because the only
+    // placement on offer was function exit, where a release frees one of N.
+    // Codegen now releases at ITERATION end, so the refusal has to answer the
+    // real question instead: does the value outlive its iteration?
+    //
+    // WHY THIS PAIR OF ROWS MATTERS MORE THAN ITS PREDECESSOR. The measurement
+    // that motivated condition 6 recorded that the HAZARD and the CONTROL were
+    // INDISTINGUISHABLE -- both read RELEASE_NO_LOOP_SCOPE, so the old table
+    // could not have told a correct relaxation from a memory-corrupting one.
+    // Rows 12a and 12b below are that pair, and they now disagree.
     {
-        12, "declared inside a loop -> refuse, LOOP_SCOPE; outer still releases",
+        12, "declared inside a loop, nothing retains it -> RELEASE; outer too",
         "package main\n"
         "func f(n int) {\n"
         "    outer := new(int)\n"
@@ -199,10 +207,10 @@ static TestRow rows[] = {
         "    }\n"
         "    _ = outer\n"
         "}\n",
-        "f", { { "outer", RELEASE_OK }, { "inner", RELEASE_NO_LOOP_SCOPE } }, 2
+        "f", { { "outer", RELEASE_OK }, { "inner", RELEASE_OK } }, 2
     },
     {
-        13, "the daemon's shape: err bound inside the loop -> refuse, LOOP_SCOPE",
+        13, "the daemon's shape: err bound inside the loop -> RELEASE per iteration",
         "package main\n"
         OWNED_HELPER
         "func f(n int) {\n"
@@ -211,7 +219,109 @@ static TestRow rows[] = {
         "        _ = err\n"
         "    }\n"
         "}\n",
-        "f", { { "err", RELEASE_NO_LOOP_SCOPE } }, 1
+        "f", { { "err", RELEASE_OK } }, 1
+    },
+    {
+        // THE HAZARD. `last` is declared OUTSIDE the loop, so it still points at
+        // the buffer after the iteration that produced it ends. Releasing `s`
+        // per iteration leaves `last` dangling, and the read after the loop is
+        // an invalid read -- NOT a double free, because `last` is refused
+        // separately as REBOUND.
+        //
+        // Condition 1 does not catch this and cannot: local_escape's boundary is
+        // the FUNCTION, `last` never leaves the function, so `s` genuinely does
+        // not escape it. The answer is correct and useless at this granularity.
+        40, "loop-carried store into an OUTER local -> refuse, BLOCK_ESCAPE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    last := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        last = s\n"
+        "    }\n"
+        "    _ = last\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
+    {
+        // THE CONTROL for row 14, differing ONLY in where the target is
+        // declared. `t` dies with the same iteration `s` does, so `s` may go.
+        // If this row and row 14 ever agree again, condition 6 has stopped
+        // discriminating and the measurement it was built from has regressed.
+        41, "store into a local of the SAME iteration -> still RELEASE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        t := s\n"
+        "        _ = t\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_OK } }, 1
+    },
+    {
+        // A FIELD STORE, AND IT IS A LAYERING ROW, NOT A CONDITION 6 ROW.
+        //
+        // It was WRITTEN expecting BLOCK_ESCAPE and it measured NO_ESCAPES:
+        // a store into a struct field makes `s` escape the whole function, so
+        // condition 1 refuses it first and condition 6 is never consulted. The
+        // expectation is corrected rather than the code, because condition 1 is
+        // the better answer -- it holds at every granularity.
+        //
+        // CONDITION 6 IS STILL THE BACKSTOP HERE, and that was checked by
+        // MUTATION rather than assumed: moving the condition 6 test above
+        // condition 1 turns this row's verdict into BLOCK_ESCAPE. The same
+        // check was run for `acc = append(acc, s)`, whose safety today rests
+        // entirely on append's elements being marked retaining.
+        42, "loop-carried store into a FIELD -> condition 1 refuses it FIRST",
+        "package main\n"
+        "type Box struct { p *int }\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    b := Box{}\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        b.p = s\n"
+        "    }\n"
+        "    _ = b\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_ESCAPES } }, 1
+    },
+    {
+        // THE LOOP HEADER, which is NOT iteration-scoped however it looks. `p`
+        // is bound ONCE for the whole loop and read by every following
+        // iteration's condition, so an iteration-end release frees it under the
+        // test about to run. Kept at LOOP_SCOPE, the cause whose reach narrowed.
+        43, "a pointer declared in the loop HEADER -> refuse, LOOP_SCOPE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for p := makeOwned(); n > 0; n = n - 1 {\n"
+        "        _ = p\n"
+        "    }\n"
+        "}\n",
+        "f", { { "p", RELEASE_NO_LOOP_SCOPE } }, 1
+    },
+    {
+        // NESTED LOOPS. `s` belongs to the INNER iteration and `outer_local` to
+        // the outer one, which is longer. A depth comparison is what separates
+        // them -- a boolean "is it in a loop" cannot.
+        44, "inner-loop local stored into an OUTER-loop local -> refuse, BLOCK_ESCAPE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        keep := makeOwned()\n"
+        "        for j := 0; j < n; j++ {\n"
+        "            s := makeOwned()\n"
+        "            keep = s\n"
+        "        }\n"
+        "        _ = keep\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
     },
 
     {

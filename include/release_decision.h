@@ -42,10 +42,16 @@
 //      local_escape's boundary is the FUNCTION, so such a local reads as
 //      non-escaping and nothing else stops it.
 //
-//   4. BOUND ONCE, AT FUNCTION SCOPE. A local declared inside a loop is rebound
-//      every iteration, and local_escape reports ONE boolean per local NAME with
-//      no kill rule, so a release at function exit frees the value held at that
-//      instant -- one of N -- and leaks the rest.
+//   4. BOUND ONCE. A local rebound after its declaration holds a different
+//      object at exit than the one condition 2 classified.
+//
+//      THE LOOP HALF OF THIS CONDITION IS RELAXED, and condition 6 replaces it.
+//      It used to refuse every local declared inside a loop, because a release
+//      at FUNCTION exit frees the value held at that instant -- one of N -- and
+//      leaks the rest. That is a placement defect, not an ownership one, and
+//      codegen now releases such a local at ITERATION end instead
+//      (codegen_emit_loop_scope_releases, statement_codegen.c). What remains is
+//      the question condition 6 answers.
 //
 //      "Bound once" also rules out RE-ASSIGNMENT, which is a separate hazard and
 //      not merely a lost optimisation. `a := new(int)` followed by
@@ -54,12 +60,16 @@
 //      site was a clean allocation. Condition 2 reads the binding site, so only
 //      counting bindings catches this.
 //
-//      This condition is why T4 does NOT target `err`. Measured on
+//      This condition used to be why T4 did NOT target `err`. Measured on
 //      bench/daemon/daemon.goo: `n, err := strconv.Atoi(f)` is inside handle's
-//      loop, and at exit `err` is nil for the benchmark's input, so a release
-//      there frees ZERO bytes rather than the 5.8% originally projected.
-//      Releasing a loop-bound local is the KILL RULE, which ADR 0004 records as
-//      inseparable from building a CFG.
+//      loop, and at FUNCTION exit `err` is nil for the benchmark's input, so a
+//      release there frees ZERO bytes rather than the 5.8% originally
+//      projected. Released per ITERATION it frees a real error every time the
+//      parse fails, which is the reclamation condition 6 unblocks.
+//
+//   6. DOES NOT OUTLIVE ITS ITERATION. Applies ONLY to a local whose
+//      declaration is inside a loop, and it is the one genuinely new soundness
+//      question in the loop-scoped release. See the block below.
 //
 // A FIFTH CONDITION EXISTED AND IS RETIRED. It refused any local declared inside
 // a conditional block, because codegen_alloc_local_promoted hoists the alloca to
@@ -72,6 +82,49 @@
 // every release candidate's slot immediately after its alloca, and goo_release is
 // a no-op on NULL, so the premise is gone. The guarantee is FAIL-CLOSED: codegen
 // records no release site at all unless that store was emitted.
+//
+// =============================================================================
+// CONDITION 6 -- the loop-carried store, and why conditions 1-3 do not cover it
+// =============================================================================
+//
+// Established by MEASUREMENT before a line of it was written. See
+// docs/adr/0002-measurements/loop_carried_store_findings.md, which recorded
+// that the HAZARD and the CONTROL were indistinguishable: `last = s` with
+// `last` declared outside the loop, and a loop-local nothing retains, BOTH read
+// RELEASE_NO_LOOP_SCOPE. Condition 4 refused both on a syntactic property they
+// share, so relaxing it alone frees `s` while `last` still points at the buffer.
+//
+// WHAT THE OTHER CONDITIONS ALREADY COVER, so this one does not repeat them:
+//
+//   passed to a callee that retains it   condition 1, via param_escape
+//   returned                             condition 1
+//   captured by go / defer / a closure   condition 1
+//   stored into a map or a global        condition 1 -- measured: the daemon's
+//                                        `f` reads RELEASE_NO_ESCAPES because
+//                                        `counts[f]` makes it escape
+//
+// THE ONE GAP is a store into a name whose lifetime is longer than the
+// iteration but SHORTER than the function, because local_escape's boundary is
+// the function and it therefore answers, correctly and uselessly, that nothing
+// escaped. `last = s` is that shape.
+//
+// THE RULE, and it is deliberately a MENTION test rather than a value-flow one:
+// a local declared at loop depth D is refused when its name appears anywhere in
+// the right-hand side of an assignment or declaration whose target lives longer
+// than depth D. A target lives longer when it is a local declared at a
+// shallower loop depth, or when it is not a plain identifier at all -- a field,
+// an index or any other store this module cannot resolve.
+//
+// SOUND BY CONSTRUCTION, which a blacklist of sink shapes would not be. The
+// walk is TOTAL: a statement kind it does not recognise sets `unreadable` and
+// refuses the whole function, so enumerating the assignment forms it does
+// recognise enumerates every store a readable function can perform.
+//
+// THE PRECISION IT GIVES UP, named so the next reader does not rediscover it:
+// `n = n + len(s)` refuses `s`, even though `len` propagates nothing. A mention
+// is not a flow. Refining that needs the reverse of condition 2's binding table
+// -- does this expression PROPAGATE its operand, or merely READ it -- and the
+// loop-carried probe is what makes such a refinement safe to attempt.
 //
 // =============================================================================
 // CONDITION 2 -- the binding-site table
@@ -118,6 +171,7 @@ typedef enum {
     RELEASE_NO_ARENA,           // condition 3: declared inside `arena { }`
     RELEASE_NO_LOOP_SCOPE,      // condition 4: declared inside a loop body
     RELEASE_NO_REBOUND,         // condition 4: assigned again after declaration
+    RELEASE_NO_BLOCK_ESCAPE,    // condition 6: stored into something outliving the iteration
     RELEASE_NO_NO_BINDING,      // no binding site found for the name
     RELEASE_NO_UNKNOWN,         // a statement kind this module cannot read
 } ReleaseVerdict;

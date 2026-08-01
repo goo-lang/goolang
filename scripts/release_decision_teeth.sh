@@ -50,21 +50,25 @@ MUTATIONS=(
 "cond1-escapes	    if (local_escape_local_escapes(le, fn, r->name)) return RELEASE_NO_ESCAPES;"
 "cond2-owned	    if (!binding_is_owned((Collected*)c, pe, r->bound_value)) return RELEASE_NO_NOT_OWNED;"
 "cond3-arena	    if (r->arena_depth > 0) return RELEASE_NO_ARENA;"
-"cond4-loop	    if (r->loop_depth > 0)    return RELEASE_NO_LOOP_SCOPE;"
+"cond6-block-escape	        if (r->block_escapes) return RELEASE_NO_BLOCK_ESCAPE;"
+# CONDITION 4'S LOOP HALF IS GONE, replaced by the two rules above and below.
+# It read `if (r->loop_depth > 0) return RELEASE_NO_LOOP_SCOPE;` and refused
+# EVERY local declared in a loop. Deleting that line is no longer an unsafe
+# mutation: codegen releases a loop local at iteration end now, so the blanket
+# refusal is not what keeps the module sound. The unsafe direction moved to the
+# two rules that decide WHICH loop locals qualify, which is what these mutate.
+"loop-header	        if (r->loop_header) return RELEASE_NO_LOOP_SCOPE;"
 "cond4-rebound	    if (r->binding_count > 1) return RELEASE_NO_REBOUND;"
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
 # Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
 # `L = append(L, x)` counts as a rebind and row 18 must fail.
 #
 # THIS ENTRY WAS DEAD FROM PR #274 UNTIL 2026-08-01. That PR gave the rule a
-# braced body (note_append_elems), so the one-line form named here stopped
-# existing. The script then died FATAL at this entry -- the LAST one -- on every
-# run, and nothing noticed, because this script is not wired into verify-core.
-# Seven conditions reported CAUGHT above it, which is what made the abort easy
-# to read as success.
-#
-# `&& false` rather than `if (false)` keeps every name referenced, so the mutant
-# compiles without an unused-function warning that could mask the result.
+# braced body (note_append_elems), so the one-line form it names stopped
+# existing and the script died FATAL here -- before its last mutation, every
+# time. Nothing noticed, because this script is not in verify-core. `&& false`
+# rather than `if (false)` keeps every name referenced, so the mutant compiles
+# without an unused-function warning that could mask the result.
 "self-append	    if (plain_assign && is_self_append(name, rhs)) {	    if (plain_assign && is_self_append(name, rhs) && false) {"
 )
 

@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -3276,6 +3276,7 @@ VERIFY_ALL_DEPS := \
     arena-free-probe \
     arena-valgrind-probe \
     arc-release-probe \
+    arc-loop-carried-probe \
     arena-rss-probe \
     dead-package-code-probe \
     alloc-doors-probe \
@@ -5063,6 +5064,77 @@ arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 #   3. The ESCAPE probe returns its local, so the plan must refuse it and the
 #      program must stay clean. Verified to have teeth: with decide() forced to
 #      return RELEASE_OK, it reports `Invalid read of size 8` and exits 99.
+# The loop-scoped release, and the loop-carried store that must stop it.
+#
+# THREE ASSERTIONS, and the first exists because a probe that measures nothing
+# also reports green:
+#
+#   1. RELEASE OFF MUST LEAK. If it does not, the fixture stopped allocating and
+#      every later assertion is vacuous.
+#   2. RELEASE ON MUST RECLAIM STRICTLY MORE THAN NOTHING. Not "zero leaked":
+#      the fixture also allocates values it legitimately keeps, so a zero target
+#      would be a false expectation the next change would have to weaken.
+#   3. RELEASE ON MUST BE VALGRIND-CLEAN. This is the soundness half, and it is
+#      the ONLY one that can see the hazard.
+#
+# --errors-for-leak-kinds=none IS LOAD-BEARING. valgrind counts a definite leak
+# as an error by default, so --error-exitcode fires on the bytes this fixture
+# legitimately keeps and the gate reports the SOUNDNESS failure for a leak. It
+# did exactly that when first written. rc must mean "memory error", never
+# "leaked something", because assertion 2 already owns the leak question.
+#
+# WHY 3 CANNOT BE DROPPED FOR A CHEAPER CHECK. With condition 6 removed, this
+# probe prints BYTE-IDENTICAL output and exits 0. The defect is a read of freed
+# memory whose bytes have not yet been reused, so a golden test, an exit status
+# and a diff of stdout are all blind to it. Measured, not assumed: the mutation
+# produced 3 "Invalid read" reports through carried() -> ToUpper -> strlen with
+# stdout unchanged.
+arc-loop-carried-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@if ! which valgrind > /dev/null 2>&1; then \
+	  echo "valgrind not found — SKIPPED"; \
+	  exit 0; \
+	fi
+	@echo "=== arc-loop-carried-probe: iteration-end release + the carried store ==="
+	@fail=0; \
+	GOO_ARC_RELEASE=0 $(COMPILER) -o build/arc_lc_off examples/arc_loop_carried_probe.goo > build/arc_lc_off.cerr 2>&1 \
+	  || { echo "  FAIL (compile, release off)"; cat build/arc_lc_off.cerr; exit 1; }; \
+	$(COMPILER) -o build/arc_lc_on examples/arc_loop_carried_probe.goo > build/arc_lc_on.cerr 2>&1 \
+	  || { echo "  FAIL (compile, release on)"; cat build/arc_lc_on.cerr; exit 1; }; \
+	valgrind --leak-check=full ./build/arc_lc_off > build/arc_lc_off.out 2> build/arc_lc_off.vg; \
+	lost_off=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_lc_off.vg | tr -d ,); \
+	if [ -z "$$lost_off" ] || [ "$$lost_off" -eq 0 ]; then \
+	  echo "  FAIL: with GOO_ARC_RELEASE=0 nothing leaked — the probe measures nothing"; \
+	  fail=1; \
+	else \
+	  echo "  release OFF: $$lost_off bytes leaked (expected — there is something to reclaim)"; \
+	fi; \
+	valgrind --leak-check=full --errors-for-leak-kinds=none --error-exitcode=99 \
+	  ./build/arc_lc_on > build/arc_lc_on.out 2> build/arc_lc_on.vg; \
+	rc=$$?; \
+	lost_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_lc_on.vg | tr -d ,); \
+	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_lc_on.vg; then \
+	  echo "  FAIL: THE LOOP-CARRIED STORE WAS RELEASED — a local outliving its iteration was freed (rc=$$rc)"; \
+	  grep -B2 -A8 "Invalid read" build/arc_lc_on.vg | head -30; \
+	  fail=1; \
+	else \
+	  echo "  release ON:  valgrind clean — the carried store was refused"; \
+	fi; \
+	if [ -n "$$lost_on" ] && [ -n "$$lost_off" ] && [ "$$lost_on" -ge "$$lost_off" ]; then \
+	  echo "  FAIL: release ON reclaimed nothing ($$lost_on vs $$lost_off) — iteration-end placement is not firing"; \
+	  fail=1; \
+	else \
+	  echo "  reclaimed:   $$lost_off -> $$lost_on bytes across the six loop exit paths"; \
+	fi; \
+	if ! diff -q build/arc_lc_off.out build/arc_lc_on.out > /dev/null 2>&1; then \
+	  echo "  FAIL: output differs between release OFF and ON"; \
+	  diff build/arc_lc_off.out build/arc_lc_on.out | head -10; fail=1; \
+	else \
+	  echo "  output:      identical with release off and on"; \
+	fi; \
+	if [ $$fail -ne 0 ]; then echo "arc-loop-carried-probe: FAIL"; exit 1; fi; \
+	echo "arc-loop-carried-probe: PASS"
+
 arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@if ! which valgrind > /dev/null 2>&1; then \

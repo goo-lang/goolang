@@ -37,6 +37,11 @@ static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth)
 // arena-goto fix: defined below, used by the AST_GOTO_STMT arm of
 // codegen_generate_statement above its definition.
 static void codegen_emit_arena_frees_to_depth(CodeGenerator* codegen, int target_arena_depth);
+// T4 loop-scoped release. Defined below, next to the function-exit sweep it
+// shares an emitter with. Called from every path that leaves a loop iteration,
+// which is the same set codegen_emit_arena_frees is called from plus the
+// end-of-body fall-through.
+void codegen_emit_loop_scope_releases(CodeGenerator* codegen, int min_loop_depth);
 
 // --- defer codegen state -------------------------------------------------
 // Per-defer LLVM state that the header's FunctionInfo cannot carry (it only
@@ -462,6 +467,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // (arena_loop_depth >= this loop's depth), before the branch — an
             // enclosing-loop arena (shallower depth) is left alive.
             codegen_emit_arena_frees(codegen, codegen->cfctx.loop_depth);
+            codegen_emit_loop_scope_releases(codegen, codegen->cfctx.loop_depth);
             LLVMBuildBr(codegen->builder, codegen->cfctx.loop_break_bb[codegen->cfctx.loop_depth - 1]);
             // Subsequent statements in this block are unreachable; start a fresh
             // block so later codegen has a valid (dead) insertion point.
@@ -477,6 +483,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // Free the arenas pushed inside this loop iteration before jumping
             // to the loop post/condition; the next iteration re-creates them.
             codegen_emit_arena_frees(codegen, codegen->cfctx.loop_depth);
+            codegen_emit_loop_scope_releases(codegen, codegen->cfctx.loop_depth);
             LLVMBuildBr(codegen->builder, codegen->cfctx.loop_continue_bb[codegen->cfctx.loop_depth - 1]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
@@ -498,6 +505,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // target-plus-one for the innermost frame); generalized to
             // target+1 for an arbitrary enclosing frame.
             codegen_emit_arena_frees(codegen, target + 1);
+            codegen_emit_loop_scope_releases(codegen, target + 1);
             LLVMBuildBr(codegen->builder, codegen->cfctx.loop_break_bb[target]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
             return 1;
@@ -515,6 +523,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 return 0;
             }
             codegen_emit_arena_frees(codegen, target + 1);
+            codegen_emit_loop_scope_releases(codegen, target + 1);
             LLVMBuildBr(codegen->builder, codegen->cfctx.loop_continue_bb[target]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
@@ -553,6 +562,13 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 }
             }
             codegen_emit_arena_frees_to_depth(codegen, target_arena_depth);
+            // A `goto` leaving loops releases every loop-scoped local at or
+            // inside the innermost loop it departs. cfctx.loop_depth is that
+            // loop; a goto that stays inside its own loop passes the same depth
+            // and releases locals the target may still read -- refused, because
+            // condition 6 marks any local a later statement stores from, and a
+            // goto target that reads one is exactly such a store.
+            codegen_emit_loop_scope_releases(codegen, codegen->cfctx.loop_depth);
             LLVMBasicBlockRef target = cfctx_get_or_create_goto_block(codegen, got->label);
             if (!target) {
                 codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
@@ -1662,6 +1678,11 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         if (for_stmt->body) {
             body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
         }
+        // THE FALL-THROUGH ITERATION END, and the path that does nearly all the
+        // reclaiming: break/continue are the exceptions, this is the rule.
+        // BEFORE cfctx_pop, because cfctx.loop_depth is what names this loop.
+        // Skipped on a terminated block, which a `return`-last body leaves.
+        codegen_emit_loop_scope_releases(codegen, codegen->cfctx.loop_depth);
         cfctx_pop(&codegen->cfctx);
         // Only branch to the post block if the body didn't already terminate
         // (e.g. a bare `return` as the loop body's last statement) — otherwise
@@ -1743,6 +1764,9 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             return 0;
         }
     }
+    // The fall-through iteration end. See the range loop above for why this
+    // precedes cfctx_pop.
+    codegen_emit_loop_scope_releases(codegen, codegen->cfctx.loop_depth);
     cfctx_pop(&codegen->cfctx);
     // Skip the post-block branch if the body already terminated (e.g. a bare
     // `return` last statement) to avoid a second terminator / invalid IR.
@@ -2598,11 +2622,29 @@ static void emit_deferred_calls_only(CodeGenerator* codegen, TypeChecker* checke
 // an inner block that already closed is gone from the table, so it simply gets no
 // release -- a lost reclamation, never an unsafe one. Each exit path emits its
 // own releases and exactly one path runs, so nothing is released twice.
-static void emit_scope_releases(CodeGenerator* codegen) {
+//
+// `min_loop_depth` selects WHICH sites, by the formula codegen_emit_arena_frees
+// already uses: release every site whose declaration loop depth is >=
+// min_loop_depth. Function exit passes 0 and takes them all. A `break` or
+// `continue` passes the depth of the loop it leaves and takes only that loop's
+// own, never an enclosing loop's local that the enclosing iteration still uses.
+//
+// EACH RELEASED SLOT IS THEN SET TO NULL, and that is what makes the two
+// placements compose instead of collide. A loop-scoped site is released at
+// iteration end and its slot cleared, so the function-exit sweep -- which still
+// visits every site -- loads NULL and goo_release no-ops. Without the clear, a
+// loop local would be released once per iteration AND once more at exit, on a
+// pointer already freed.
+static void emit_scope_releases(CodeGenerator* codegen, int min_loop_depth) {
 #if LLVM_AVAILABLE
     if (!codegen || !codegen->release_plan) return;   // NULL plan == GOO_ARC_RELEASE=0
     FunctionInfo* fi = codegen->current_function_info;
     if (!fi || !codegen->builder || fi->arc_release_count == 0) return;
+    // Nothing may follow a terminator. `break` and `continue` create a fresh
+    // dead block after their branch, and the end-of-body call can land on a
+    // block a `return` already closed.
+    LLVMBasicBlockRef here = LLVMGetInsertBlock(codegen->builder);
+    if (!here || LLVMGetBasicBlockTerminator(here)) return;
 
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
@@ -2622,6 +2664,7 @@ static void emit_scope_releases(CodeGenerator* codegen) {
     for (size_t i = 0; i < fi->arc_release_count; i++) {
         ArcReleaseSite* site = &fi->arc_release_slots[i];
         if (!site->slot) continue;
+        if (site->loop_depth < min_loop_depth) continue;
 
         // field == -1: the slot holds the object pointer. field >= 0: the slot
         // holds a fat value and that field holds the object pointer.
@@ -2661,6 +2704,12 @@ static void emit_scope_releases(CodeGenerator* codegen) {
 
         // goo_release is a no-op on NULL, on goo_zerobase and on an immortal
         // header (include/runtime.h), so no guard is emitted for those here.
+        // Set once a release has actually been emitted for this site. The
+        // fail-closed paths below leave it false, so a slot whose release could
+        // not be built is never cleared -- clearing it would turn a missing free
+        // into an unreachable object.
+        bool released = false;
+
         if (site->dtor) {
             // The object owns CONTENTS that one goo_free cannot reach. The
             // runtime runs the destructor only on the release that takes the
@@ -2676,13 +2725,23 @@ static void emit_scope_releases(CodeGenerator* codegen) {
             if (dfn && relw) {
                 LLVMValueRef args[] = { obj, dfn };
                 LLVMBuildCall2(codegen->builder, relw_ty, relw, args, 2, "");
-                continue;
+                released = true;
             }
             // Fail closed: no destructor call means no release at all, rather
             // than a release that leaves the contents unreachable.
-            continue;
+        } else {
+            LLVMBuildCall2(codegen->builder, rel_ty, rel_fn, &obj, 1, "");
+            released = true;
         }
-        LLVMBuildCall2(codegen->builder, rel_ty, rel_fn, &obj, 1, "");
+
+        // Clear the slot after a release, so the function-exit sweep finds NULL
+        // where an iteration already freed it. ONLY for a loop-scoped site: a
+        // function-scope slot is visited exactly once, so the store would be
+        // dead, and emitting it anyway would churn the IR of every golden that
+        // releases anything.
+        if (released && site->loop_depth > 0) {
+            LLVMBuildStore(codegen->builder, LLVMConstPointerNull(ptr_ty), addr);
+        }
     }
 #else
     (void)codegen;
@@ -3062,11 +3121,18 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     fi->arc_release_slots[fi->arc_release_count].field = field;
     fi->arc_release_slots[fi->arc_release_count].dtor = dtor;
     fi->arc_release_slots[fi->arc_release_count].elem_stride = elem_stride;
+    // WHERE this release belongs. A local declared inside a loop is released at
+    // ITERATION end; one at function scope at function exit. release_decision's
+    // condition 6 is what proved the loop case safe, and its loop-header rule is
+    // what keeps the loop's own `i` out of it.
+    fi->arc_release_slots[fi->arc_release_count].loop_depth = codegen->cfctx.loop_depth;
     fi->arc_release_count++;
 
     if (getenv("GOO_ARC_DEBUG")) {
-        fprintf(stderr, "[arc] %s: will release %s at exit (field=%d, dtor=%s)\n",
-                fi->name, info->name, field, dtor ? dtor : "none");
+        fprintf(stderr, "[arc] %s: will release %s at %s (field=%d, dtor=%s)\n",
+                fi->name, info->name,
+                codegen->cfctx.loop_depth > 0 ? "iteration end" : "function exit",
+                field, dtor ? dtor : "none");
     }
 #else
     (void)codegen; (void)info;
@@ -3077,7 +3143,26 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
 // The 8 exit paths call THIS, so the defer-before-release ordering cannot drift.
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
     emit_deferred_calls_only(codegen, checker);
-    emit_scope_releases(codegen);
+    emit_scope_releases(codegen, 0);   // 0 == every site, loop-scoped included
+}
+
+// Release the loop-scoped locals of the loop being LEFT, at an iteration
+// boundary rather than a function exit.
+//
+// `min_loop_depth` names that loop exactly as codegen_emit_arena_frees's does,
+// and the two are called from the same places for the same reason: a
+// `break`/`continue` passes cfctx.loop_depth to take only the loop it exits, a
+// labelled form passes target + 1, and end-of-body passes its own depth.
+//
+// NOT the function-exit path. `return` goes through codegen_emit_deferred_calls
+// above, which passes 0 and also runs the defers first. Calling this on a
+// return would release before the defers, which is the ordering that wrapper
+// exists to prevent.
+void codegen_emit_loop_scope_releases(CodeGenerator* codegen, int min_loop_depth) {
+    // min_loop_depth 0 would take the function-scope sites too, which no loop
+    // boundary may free -- their values outlive every iteration.
+    if (min_loop_depth < 1) return;
+    emit_scope_releases(codegen, min_loop_depth);
 }
 
 static void emit_deferred_calls_only(CodeGenerator* codegen, TypeChecker* checker) {
