@@ -103,4 +103,25 @@ void local_escape_result_free(LocalEscapeResult* result);
 bool local_escape_local_escapes(const LocalEscapeResult* result,
                                 const char* fn, const char* local);
 
+// The same lookup, answering WHY rather than WHETHER. `escapes` is
+// `local_escape_local_reasons(...) != ESCAPE_REASON_NONE`, and the boolean
+// lookup above is now written that way.
+//
+// CONSERVATIVE ON A MISS MEANS ESCAPE_REASON_ALL, NOT ZERO. The boolean form
+// fails closed by returning `true`, and the only value that fails closed the
+// same way here is the FULL set: a consumer asks "does this escape ONLY via
+// X", and every wrong answer must make that test fail. Returning zero would
+// read as "escapes for no reason", which is both self-contradictory and the
+// one answer that frees live memory.
+//
+// A REASON IS A SOUND OVER-APPROXIMATION, EXACTLY LIKE THE BIT IT REPLACED.
+// The set may name a cause that a more precise engine would drop, and a
+// consumer must treat an EXTRA reason as a refusal rather than a defect. The
+// measured example is the daemon: `counts[f] = counts[f] + 1` gives `f` both
+// SUBSCRIPT_STORE and CONTAINER_STORE, because reading `counts[f]` carries
+// f's taint into the right-hand side. Nothing about f's buffer reaches the
+// map's value slot.
+EscapeReasons local_escape_local_reasons(const LocalEscapeResult* result,
+                                         const char* fn, const char* local);
+
 #endif // LOCAL_ESCAPE_H

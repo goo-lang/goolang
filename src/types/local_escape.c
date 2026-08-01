@@ -418,16 +418,27 @@ void local_escape_result_free(LocalEscapeResult* result) {
 // must never be mistaken for "provably dies here".
 bool local_escape_local_escapes(const LocalEscapeResult* result,
                                 const char* fn, const char* local) {
-    if (!result || !fn || !local) return true;
+    return local_escape_local_reasons(result, fn, local) != ESCAPE_REASON_NONE;
+}
+
+// ONE lookup, not two. The boolean above is derived from this, so the two can
+// never disagree about whether a local escapes -- two pieces of state that must
+// agree and are maintained separately is the shape ADR 0005 rejected a second
+// boolean for, and it is the shape of PR #278's use-after-free.
+//
+// Every miss returns ESCAPE_REASON_ALL, which is what `true` was.
+EscapeReasons local_escape_local_reasons(const LocalEscapeResult* result,
+                                         const char* fn, const char* local) {
+    if (!result || !fn || !local) return ESCAPE_REASON_ALL;
     for (size_t i = 0; i < result->count; i++) {
         const LocalEscapeSummary* s = &result->summaries[i];
         if (!s->function_name || strcmp(s->function_name, fn) != 0) continue;
         for (size_t j = 0; j < s->local_count; j++) {
             if (s->local_names[j] && strcmp(s->local_names[j], local) == 0) {
-                return s->reasons[j] != ESCAPE_REASON_NONE;
+                return s->reasons[j];
             }
         }
-        return true;  // known function, unknown local -> conservative
+        return ESCAPE_REASON_ALL;  // known function, unknown local
     }
-    return true;      // unknown function -> conservative
+    return ESCAPE_REASON_ALL;      // unknown function
 }
