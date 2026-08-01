@@ -96,4 +96,5 @@ tasks/
 /param_escape_teeth_test
 /block_escape_teeth_test
 /local_escape_teeth_test
+/local_core_teeth_test
 

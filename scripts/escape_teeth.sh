@@ -47,6 +47,7 @@
 #   scripts/escape_teeth.sh --self-test    # prove the harness can say BOTH
 #   scripts/escape_teeth.sh                # all three passes
 #   scripts/escape_teeth.sh local          # one pass
+#   scripts/escape_teeth.sh reasons        # the ADR 0005 reason axis only
 
 set -uo pipefail
 
@@ -103,7 +104,7 @@ PARAM_MUTATIONS=(
 "retention-return	    *out_return_escapes = callee->return_escapes;	    *out_return_escapes = false;"
 # The outer fixpoint's propagation into the registry. Suppressed, a param that
 # escapes is computed correctly and then never published to its callers.
-"escapes-propagate	                if (local_escapes[i] && !f->escapes[i]) {	                if (local_escapes[i] && !f->escapes[i] && false) {"
+"escapes-propagate	                if (local_reasons[i] != ESCAPE_REASON_NONE && !f->escapes[i]) {	                if (local_reasons[i] != ESCAPE_REASON_NONE && !f->escapes[i] && false) {"
 # PRECISION. At FUNCTION granularity a defer runs inside the frame, so `false`
 # is the precise answer and `true` is merely conservative. Only a row that
 # expects a deferred argument NOT to escape can notice.
@@ -165,6 +166,41 @@ LOCAL_MUTATIONS=(
 )
 LOCAL_EXPECTED=3
 
+# ---------------------------------------------------------------------------
+# THE REASON AXIS (ADR 0005). These mutate src/types/escape_core.c, the SHARED
+# engine, and run against local_escape_test alone -- the only suite with rows
+# that assert a reason SET rather than a boolean.
+#
+# WHY A RENAME IS WORTH TESTING AT ALL. Every entry below leaves `reasons != 0`
+# exactly as it was, so the escape BOOLEAN never moves and every row written
+# before ADR 0005 passes under all eleven. Only a row asserting the whole set
+# can tell them apart, which is precisely the claim being gated: that naming the
+# causes bought something a boolean could not express.
+#
+# THE LAST ENTRY IS THE DANGEROUS ONE. ADR 0005 names a reason DROPPED, rather
+# than renamed, as the edit that dangles a pointer: a rename moves a slot
+# between causes and a consumer's test stops matching, while a deletion removes
+# the mark and the value is freed while live. `subscript-mark-deleted` is that
+# edit, and it must be caught by a SOUNDNESS row (local row 15) rather than by
+# a reason row -- if only the reason rows notice, the suite has no guard on the
+# case that frees live memory.
+# ---------------------------------------------------------------------------
+CORE_MUTATIONS=(
+"reason-return	                    escape_mark(ctx, &t, ESCAPE_REASON_RETURN);	                    escape_mark(ctx, &t, ESCAPE_REASON_UNCLASSIFIED);"
+"reason-global-store	        escape_mark(ctx, rhs_taint, ESCAPE_REASON_GLOBAL_STORE);	        escape_mark(ctx, rhs_taint, ESCAPE_REASON_UNCLASSIFIED);"
+"reason-container-store	    escape_mark(ctx, use_reduced ? &reduced : rhs_taint, ESCAPE_REASON_CONTAINER_STORE);	    escape_mark(ctx, use_reduced ? &reduced : rhs_taint, ESCAPE_REASON_UNCLASSIFIED);"
+"reason-subscript-store	            escape_mark(ctx, &idx, ESCAPE_REASON_SUBSCRIPT_STORE);	            escape_mark(ctx, &idx, ESCAPE_REASON_UNCLASSIFIED);"
+"reason-call-retain	        if (retains) escape_mark(ctx, &arg_taints[i], ESCAPE_REASON_CALL_RETAIN);	        if (retains) escape_mark(ctx, &arg_taints[i], ESCAPE_REASON_UNCLASSIFIED);"
+"reason-callee-value	        escape_mark(ctx, &callee_taint, ESCAPE_REASON_CALLEE_VALUE);	        escape_mark(ctx, &callee_taint, ESCAPE_REASON_UNCLASSIFIED);"
+"reason-go-arg	                handle_go_call(ctx, ((GoStmtNode*)stmt)->call, ESCAPE_REASON_GO_ARG);	                handle_go_call(ctx, ((GoStmtNode*)stmt)->call, ESCAPE_REASON_UNCLASSIFIED);"
+"reason-defer-arg	        handle_go_call(ctx, call_node, ESCAPE_REASON_DEFER_ARG);	        handle_go_call(ctx, call_node, ESCAPE_REASON_UNCLASSIFIED);"
+"reason-chan-send	            escape_mark(ctx, &rhs, ESCAPE_REASON_CHAN_SEND);	            escape_mark(ctx, &rhs, ESCAPE_REASON_UNCLASSIFIED);"
+"reason-closure-capture	            escape_mark(ctx, &t, ESCAPE_REASON_CLOSURE_CAPTURE);	            escape_mark(ctx, &t, ESCAPE_REASON_UNCLASSIFIED);"
+# DELETED, not renamed. The map-key sink disappears entirely.
+"subscript-mark-deleted	            escape_mark(ctx, &idx, ESCAPE_REASON_SUBSCRIPT_STORE);"
+)
+CORE_EXPECTED=11
+
 # The table sizes are PINNED, in the shape of scripts/grammar-tripwire.sh's
 # EXPECTED_SR. This is the #274 defect class, not a style rule: there, one
 # mutation stopped running and the summary line said exactly what it says when
@@ -177,12 +213,19 @@ LOCAL_EXPECTED=3
 # tracked source byte-identical. Asserted rather than assumed, because the whole
 # design rests on it and a future edit could quietly reintroduce a write.
 # ---------------------------------------------------------------------------
+CORE_SRC="src/types/escape_core.c"
+
 declare -A SRC_BEFORE
 for m in "${ALL_MODULES[@]}"; do
     src="src/types/${m}_escape.c"
     [ -f "$src" ] || die "$src not found"
     SRC_BEFORE[$m]="$(sha256sum -- "$src")" || die "could not checksum $src"
 done
+# The SHARED engine is now mutated too (the reason axis), so it needs the same
+# guard. Leaving it out would put the one file all three passes compile from
+# outside the property this whole design rests on.
+[ -f "$CORE_SRC" ] || die "$CORE_SRC not found"
+SRC_BEFORE[core]="$(sha256sum -- "$CORE_SRC")" || die "could not checksum $CORE_SRC"
 
 assert_sources_untouched() {
     local m src now
@@ -191,6 +234,8 @@ assert_sources_untouched() {
         now="$(sha256sum -- "$src")" || die "could not re-checksum $src"
         [ "$now" = "${SRC_BEFORE[$m]}" ] || die "$src WAS MODIFIED -- $1"
     done
+    now="$(sha256sum -- "$CORE_SRC")" || die "could not re-checksum $CORE_SRC"
+    [ "$now" = "${SRC_BEFORE[core]}" ] || die "$CORE_SRC WAS MODIFIED -- $1"
 }
 
 # ---------------------------------------------------------------------------
@@ -257,6 +302,56 @@ PY
     else
         VERDICT="UNGUARDED"
         DETAIL="no row notices this condition missing"
+    fi
+    return 0
+}
+
+# Same cycle for the REASON axis: the mutant is the shared engine and the binary
+# links it against local_escape_test's own unmodified pass. Kept as a separate
+# function rather than a parameter on run_one, because the two differ in the
+# source path, the make variable, the object path AND the target name -- four
+# parameters to share nine lines is a worse trade than the duplication.
+run_one_core() {  # label, line, replacement (may be empty)
+    local label="$1" line="$2" replacement="$3"
+    local mutant="$WORK/mut_core_${label}.c"
+    local bin="./local_core_teeth_test"
+
+    grep -qF -- "$line" "$CORE_SRC" \
+        || die "mutation 'core/$label' target line not found; the script is stale"
+
+    python3 - "$CORE_SRC" "$mutant" "$line" "$replacement" <<'PY'
+import sys
+src_path, dest_path, line, replacement = sys.argv[1:5]
+src = open(src_path).read()
+if src.count(line + "\n") != 1:
+    sys.exit("target line is not unique")
+new = (replacement + "\n") if replacement else ""
+open(dest_path, "w").write(src.replace(line + "\n", new, 1))
+PY
+    [ $? -eq 0 ] || die "could not apply mutation 'core/$label'"
+
+    rm -f "build/teeth/escape_core.o" "$bin"
+    if ! "$MAKE" local_core_teeth_test "CORE_ESCAPE_SRC=$mutant" \
+            > "$WORK/build_core_${label}.log" 2>&1; then
+        VERDICT="INCONCLUSIVE-build"
+        DETAIL="see $WORK/build_core_${label}.log"
+        return 0
+    fi
+    "$bin" > "$WORK/run_core_${label}.log" 2>&1
+    if ! grep -q "local_escape_test summary:" "$WORK/run_core_${label}.log"; then
+        VERDICT="INCONCLUSIVE-crash"
+        DETAIL="see $WORK/run_core_${label}.log"
+        return 0
+    fi
+    local failed rows
+    failed=$(grep -oP "summary: [0-9]+ assertions passed, \K[0-9]+" "$WORK/run_core_${label}.log")
+    rows=$(grep -c "^  Row .*: FAIL" "$WORK/run_core_${label}.log")
+    if [ "${failed:-0}" -gt 0 ]; then
+        VERDICT="CAUGHT"
+        DETAIL="$failed assertions, $rows rows"
+    else
+        VERDICT="UNGUARDED"
+        DETAIL="no row notices this reason being wrong"
     fi
     return 0
 }
@@ -367,6 +462,64 @@ run_module() {
     return "$rc"
 }
 
+# The reason axis, run as a fourth "module". Same shape as run_module: pin the
+# table size, prove the baseline is green through THIS link path, then read a
+# verdict per entry from the suite's own summary line.
+run_reasons() {
+    local rc=0 caught=0
+    local expected="$CORE_EXPECTED"
+
+    [ "${#CORE_MUTATIONS[@]}" -eq "$expected" ] \
+        || die "core table holds ${#CORE_MUTATIONS[@]} entries, expected $expected"
+
+    # The baseline compiles the UNMUTATED engine through the same rule and the
+    # same link line every mutation uses. A fault in this script's own build
+    # path would otherwise read as eleven caught conditions.
+    rm -f "build/teeth/escape_core.o" "./local_core_teeth_test"
+    "$MAKE" local_core_teeth_test "CORE_ESCAPE_SRC=$CORE_SRC" \
+        > "$WORK/build_core_base.log" 2>&1 \
+        || die "core baseline build failed; see $WORK/build_core_base.log"
+    ./local_core_teeth_test > "$WORK/run_core_base.log" 2>&1
+    local base_rc=$?
+    grep -q "local_escape_test summary:" "$WORK/run_core_base.log" \
+        || die "core baseline produced no summary line"
+    [ "$base_rc" -eq 0 ] || die "core baseline is RED; fix that before reading any mutation"
+    echo "== reasons (shared engine) =="
+    echo "baseline: PASS ($(grep -o 'summary:.*' "$WORK/run_core_base.log"))"
+
+    local entry label rest line replacement
+    for entry in "${CORE_MUTATIONS[@]}"; do
+        label="${entry%%$'\t'*}"
+        rest="${entry#*$'\t'}"
+        line="${rest%%$'\t'*}"
+        # No third field means DELETE; `rest` then equals `line`.
+        if [ "$rest" = "$line" ]; then replacement=""; else replacement="${rest#*$'\t'}"; fi
+
+        run_one_core "$label" "$line" "$replacement"
+        case "$VERDICT" in
+            CAUGHT)
+                printf '  %-26s CAUGHT   (%s)\n' "$label" "$DETAIL"
+                caught=$((caught + 1)) ;;
+            UNGUARDED)
+                printf '  %-26s UNGUARDED -- %s\n' "$label" "$DETAIL"
+                rc=1 ;;
+            *)
+                printf '  %-26s %s (%s)\n' "$label" "$VERDICT" "$DETAIL"
+                rc=1 ;;
+        esac
+        assert_sources_untouched "during mutation 'core/$label'"
+    done
+
+    if [ "$caught" -ne "$expected" ]; then
+        echo "  TEETH MISSING: $caught of $expected reasons were caught."
+        rc=1
+    else
+        echo "  TEETH CONFIRMED: all $expected reasons have a row that catches a wrong one."
+    fi
+    echo
+    return "$rc"
+}
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -377,12 +530,16 @@ case "${1:-}" in
         ;;
     "")
         for m in "${ALL_MODULES[@]}"; do run_module "$m" || rc=1; done
+        run_reasons || rc=1
         ;;
     param|block|local)
         run_module "$1" || rc=1
         ;;
+    reasons)
+        run_reasons || rc=1
+        ;;
     *)
-        die "unknown argument '$1'; expected --self-test, or one of: ${ALL_MODULES[*]}"
+        die "unknown argument '$1'; expected --self-test, reasons, or one of: ${ALL_MODULES[*]}"
         ;;
 esac
 
@@ -394,6 +551,7 @@ assert_sources_untouched "by the run as a whole"
 for m in "${ALL_MODULES[@]}"; do
     rm -f "build/teeth/${m}_escape.o" "./${m}_escape_teeth_test"
 done
+rm -f "build/teeth/escape_core.o" "./local_core_teeth_test"
 
 if [ "$rc" -eq 0 ] && [ "$WORK_IS_OURS" = yes ]; then
     rm -rf -- "$WORK"

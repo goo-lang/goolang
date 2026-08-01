@@ -23,8 +23,13 @@
 #define MAX_EXPECT_LOCALS 4
 
 typedef struct {
-    const char* name;
-    bool        expected_escapes;
+    const char*   name;
+    bool          expected_escapes;
+    // ADR 0005. Checked ONLY when check_reasons is set, so every row written
+    // before the reason set existed keeps its exact two-field initialiser and
+    // its exact assertion count.
+    EscapeReasons expected_reasons;
+    bool          check_reasons;
 } LocalExpectation;
 
 typedef struct {
@@ -327,34 +332,39 @@ static TestRow rows[] = {
         "f", { { "xs", true } }, 1
     },
     {
-        // PRECISION COST of the arm above, pinned deliberately rather than left
-        // to drift -- the same treatment block-escape row 31 gets.
+        // FLIPPED FROM `true` TO `false` on 2026-08-01, and the previous
+        // version of this comment asked for an argument rather than an
+        // accident. Here it is.
         //
-        // AST_INDEX_EXPR unions the taint of the BASE and of the INDEX. On a
-        // WRITE that is required (sink #2b: goo_map_set_sv keeps the key
-        // pointer verbatim). On a READ it is over-conservative, because
-        // goo_map_get stores nothing -- yet `k` still reads as escaping here,
-        // and a local used only as a lookup key can therefore never be
-        // released.
+        // WHAT CHANGED. escape_expr_taint's AST_INDEX_EXPR arm no longer unions
+        // the INDEX's taint into a READ's result. On a WRITE the key is still
+        // marked, from the lvalue side, by mark_lvalue_subscripts -- so row 15
+        // is untouched and goo_map_set_sv's verbatim key is still covered.
         //
-        // MEASURED before deciding to keep it: the daemon's string local stays
-        // escaping because the map holds it as a key in a WRITE, not a read
-        // (docs/superpowers/specs/
-        // 2026-07-28-daemon-alloc-attribution-findings.md). So tightening this
-        // to mark only the base would reclaim ~0% of the daemon, and it would
-        // be a soundness-relevant change to the shared engine. Not worth it
-        // until a measurement says otherwise.
+        // WHY IT IS SOUND. `m[k]` yields the STORED VALUE. No expression makes
+        // that value alias the key: goo_map_get stores nothing, and a slice
+        // index is an integer. The one shape that looks dangerous, `m[k] = k`,
+        // is a WRITE and marks k twice over -- CONTAINER_STORE from the
+        // right-hand side and SUBSCRIPT_STORE from the subscript.
         //
-        // If T4 ever does tighten it, this row is the one that must change, and
-        // changing it should be an argument, not an accident.
-        22, "local used only as a map READ key -> true (conservative, see comment)",
+        // WHY THE OLD "~0%" WAS RIGHT AND IS NOW WRONG. Under one boolean the
+        // WRITE marked the daemon's key anyway, so tightening the READ moved no
+        // verdict and the measurement said ~0%. Under ADR 0005's reason set the
+        // same edit is what makes the map-key consumer reachable: the daemon's
+        // `f` goes from SUBSCRIPT_STORE|CONTAINER_STORE to SUBSCRIPT_STORE
+        // alone, and "escapes ONLY as a subscript" is the safety question a map
+        // must answer before it may own a key. Measured, and row 40 pins it.
+        //
+        // WHAT THIS ROW GUARDS NOW. Restoring the union makes it FAIL, so the
+        // precision is pinned in the same way the conservatism was.
+        22, "local used only as a map READ key -> false (a read retains nothing)",
         "package main\n"
         "var g *int\n"
         "func f(m map[string]*int) {\n"
         "    k := \"a\"\n"
         "    g = m[k]\n"
         "}\n",
-        "f", { { "k", true } }, 1
+        "f", { { "k", false } }, 1
     },
 
     // ---------------- SOUNDNESS: the STATEMENT arms, which are the sinks ----
@@ -629,10 +639,235 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "x", true } }, 1
     },
+
+    // ================== ADR 0005: WHICH reason, not just whether ==========
+    //
+    // One row per NAMED reason. A name nothing pins can be wrong forever: the
+    // boolean stays true either way, so every row above passes whichever cause
+    // the mark records. These are the only rows that can tell the names apart.
+    //
+    // EACH ASSERTS THE WHOLE SET, not a bit test. `expected_reasons` is
+    // compared with `==`, so an EXTRA reason fails the row. That is deliberate
+    // and it is what the map-key consumer needs: its safety question is
+    // "escapes ONLY via the subscript", and a row that passed on a superset
+    // would not be testing that question.
+    //
+    // NO ROW PINS UNCLASSIFIED, and this is the honest gap. Its four sites are
+    // the two default arms plus two defensive arms, and reaching any of them
+    // needs an AST node kind the engine does not know or a shape Go's grammar
+    // does not produce. A fixture would have to be a deliberately broken tree.
+    // scripts/escape_arm_coverage.sh already mutates arms INTO the default, so
+    // the catch-all is exercised there rather than here.
+    {
+        36, "ADR 0005: returned local -> RETURN alone",
+        "package main\n"
+        "func f() *int {\n"
+        "    x := new(int)\n"
+        "    return x\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_RETURN, .check_reasons = true } }, 1
+    },
+    {
+        37, "ADR 0005: stored to a package global -> GLOBAL_STORE alone",
+        "package main\n"
+        "var g *int\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    g = x\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_GLOBAL_STORE, .check_reasons = true } }, 1
+    },
+    {
+        // The VALUE side. The key is a LITERAL, so nothing marks a subscript
+        // and this row isolates CONTAINER_STORE from row 39's SUBSCRIPT_STORE.
+        38, "ADR 0005: stored as a map VALUE -> CONTAINER_STORE alone",
+        "package main\n"
+        "func f(m map[string]*int) {\n"
+        "    x := new(int)\n"
+        "    m[\"k\"] = x\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CONTAINER_STORE, .check_reasons = true } }, 1
+    },
+    {
+        // THE ROW THE WHOLE ADR EXISTS FOR. The value stored is a literal, so
+        // the store sink marks nothing and the subscript is the only cause.
+        // A map may take ownership of a key in exactly this state.
+        39, "ADR 0005: used as a map KEY only -> SUBSCRIPT_STORE alone",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(m map[string]int, s string) {\n"
+        "    k := strings.TrimSpace(s)\n"
+        "    m[k] = 1\n"
+        "}\n",
+        "f", { { .name = "k", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_SUBSCRIPT_STORE, .check_reasons = true } }, 1
+    },
+    {
+        // THE DAEMON'S ACTUAL SHAPE. It read SUBSCRIPT_STORE|CONTAINER_STORE
+        // when the reasons were first named, and the extra bit came from the
+        // READ half: `m[k]` on the right carried k's taint into the store sink,
+        // naming a flow that does not exist -- the value stored is an int.
+        //
+        // The AST_INDEX_EXPR arm no longer propagates a read's index, so this
+        // is now SUBSCRIPT_STORE alone and the shape is one a map may own. Row
+        // 22 carries the soundness argument for that change.
+        //
+        // KEEP THIS ROW SEPARATE FROM ROW 39. Row 39's key appears once, in a
+        // plain write. This one appears three times -- twice reading, once
+        // writing -- and reaching the same verdict by a longer path is exactly
+        // what a consumer needs proved.
+        40, "ADR 0005: compound map update -> SUBSCRIPT_STORE alone",
+        "package main\n"
+        "import \"strings\"\n"
+        "func f(m map[string]int, s string) {\n"
+        "    k := strings.TrimSpace(s)\n"
+        "    m[k] = m[k] + 1\n"
+        "}\n",
+        "f", { { .name = "k", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_SUBSCRIPT_STORE,
+                 .check_reasons = true } }, 1
+    },
+    {
+        41, "ADR 0005: argument a callee retains -> CALL_RETAIN alone",
+        "package main\n"
+        "var g *int\n"
+        "func sink(p *int) {\n"
+        "    g = p\n"
+        "}\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    sink(x)\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CALL_RETAIN, .check_reasons = true } }, 1
+    },
+    {
+        // THE CEILING ON ARC, pinned. Calling a METHOD on a local marks that
+        // local, whatever the method does, because the receiver is not a member
+        // of call->args. Every local with a method set is unreleasable for this
+        // reason -- sync.Mutex, bytes.Buffer, os.File, any user struct with
+        // methods. The row exists so the ceiling is measurable rather than
+        // folded into an unnamed `true`.
+        42, "ADR 0005: method call on a local -> CALLEE_VALUE alone",
+        "package main\n"
+        "type T struct { v int }\n"
+        "func (t *T) m() int {\n"
+        "    return t.v\n"
+        "}\n"
+        "func f() {\n"
+        "    p := &T{}\n"
+        "    _ = p.m()\n"
+        "}\n",
+        "f", { { .name = "p", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CALLEE_VALUE, .check_reasons = true } }, 1
+    },
+    {
+        43, "ADR 0005: goroutine argument -> GO_ARG alone",
+        "package main\n"
+        "func sink(p *int) {\n"
+        "}\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    go sink(x)\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_GO_ARG, .check_reasons = true } }, 1
+    },
+    {
+        // DEFER_ARG rather than GO_ARG, which is the whole point of passing the
+        // reason through handle_go_call. local_escape sets defer_is_like_go,
+        // so the two share the helper and must still be distinguishable.
+        // param_escape sets it false and never raises DEFER_ARG at all.
+        44, "ADR 0005: deferred argument -> DEFER_ARG, not GO_ARG",
+        "package main\n"
+        "func sink(p *int) {\n"
+        "}\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    defer sink(x)\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_DEFER_ARG, .check_reasons = true } }, 1
+    },
+    {
+        45, "ADR 0005: sent on a channel -> CHAN_SEND alone",
+        "package main\n"
+        "func f(ch chan *int) {\n"
+        "    x := new(int)\n"
+        "    ch <- x\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CHAN_SEND, .check_reasons = true } }, 1
+    },
+    {
+        46, "ADR 0005: captured by a closure -> CLOSURE_CAPTURE alone",
+        "package main\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    c := func() { _ = x }\n"
+        "    _ = c\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CLOSURE_CAPTURE, .check_reasons = true } }, 1
+    },
+    {
+        // PRECISION, and the counterweight to all of the above: a local that
+        // escapes for NO reason must read as the empty set, not as ALL. If the
+        // lookup ever confused "found, zero" with "not found", every row above
+        // would still pass and this one would fail.
+        47, "ADR 0005: a local that does not escape -> the EMPTY set",
+        "package main\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    _ = x\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = false,
+                 .expected_reasons = ESCAPE_REASON_NONE, .check_reasons = true } }, 1
+    },
+    {
+        // FAIL-CLOSED, asserted rather than assumed. An unknown local must
+        // report the FULL set: the consumer's question is "only via X", and
+        // ESCAPE_REASON_NONE on a miss would answer it wrongly for every X.
+        48, "ADR 0005: an unknown local -> ESCAPE_REASON_ALL, not zero",
+        "package main\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    _ = x\n"
+        "}\n",
+        "f", { { .name = "nosuchlocal", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_ALL, .check_reasons = true } }, 1
+    },
 };
 
 static int failures = 0;
 static int checks = 0;
+
+// A failing reason row must say WHICH reason differs. `reasons=48, expected 16`
+// sends the reader to the header to decode two bit patterns by hand, and the
+// interesting failure -- one extra bit -- is the one hardest to read that way.
+static void print_reasons(EscapeReasons why) {
+    static const struct { EscapeReasons bit; const char* name; } NAMES[] = {
+        { ESCAPE_REASON_UNCLASSIFIED,    "UNCLASSIFIED"    },
+        { ESCAPE_REASON_RETURN,          "RETURN"          },
+        { ESCAPE_REASON_GLOBAL_STORE,    "GLOBAL_STORE"    },
+        { ESCAPE_REASON_CONTAINER_STORE, "CONTAINER_STORE" },
+        { ESCAPE_REASON_SUBSCRIPT_STORE, "SUBSCRIPT_STORE" },
+        { ESCAPE_REASON_CALL_RETAIN,     "CALL_RETAIN"     },
+        { ESCAPE_REASON_CALLEE_VALUE,    "CALLEE_VALUE"    },
+        { ESCAPE_REASON_GO_ARG,          "GO_ARG"          },
+        { ESCAPE_REASON_DEFER_ARG,       "DEFER_ARG"       },
+        { ESCAPE_REASON_CHAN_SEND,       "CHAN_SEND"       },
+        { ESCAPE_REASON_CLOSURE_CAPTURE, "CLOSURE_CAPTURE" },
+    };
+    if (why == ESCAPE_REASON_NONE) { printf("NONE"); return; }
+    const char* sep = "";
+    for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
+        if (why & NAMES[i].bit) { printf("%s%s", sep, NAMES[i].name); sep = "|"; }
+    }
+}
 
 int main(void) {
     printf("Running per-local escape summary tests...\n");
@@ -676,6 +911,19 @@ int main(void) {
                 printf("  FAIL: local '%s' escapes=%d, expected %d\n",
                        row->expect[i].name, (int)got,
                        (int)row->expect[i].expected_escapes);
+                failures++;
+                row_failed = 1;
+            }
+            if (!row->expect[i].check_reasons) continue;
+            checks++;
+            EscapeReasons why =
+                local_escape_local_reasons(result, row->fn, row->expect[i].name);
+            if (why != row->expect[i].expected_reasons) {
+                printf("  FAIL: local '%s' reasons=", row->expect[i].name);
+                print_reasons(why);
+                printf(", expected ");
+                print_reasons(row->expect[i].expected_reasons);
+                printf("\n");
                 failures++;
                 row_failed = 1;
             }

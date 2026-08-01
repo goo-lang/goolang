@@ -142,7 +142,7 @@ if mode == "over":
     guard = (
         "    if (expr && (int)expr->type == (int)" + arm + ") {\n"
         "        TaintSet t_mut = escape_taint_all(n);\n"
-        "        escape_mark(ctx, &t_mut);\n"
+        "        escape_mark(ctx, &t_mut, ESCAPE_REASON_UNCLASSIFIED);\n"
         "        return t_mut;\n"
         "    }\n")
 elif mode == "under":
@@ -155,7 +155,7 @@ elif mode == "stmt-over":
     # "this statement kind falls to the default arm".
     guard = (
         "        if (stmt && (int)stmt->type == (int)" + arm + ") {\n"
-        "            escape_mark_all(ctx);\n"
+        "            escape_mark_all(ctx, ESCAPE_REASON_UNCLASSIFIED);\n"
         "            continue;\n"
         "        }\n")
 elif mode == "stmt-under":
@@ -297,13 +297,27 @@ self_test() {
 
     # A MIXED pattern, and the strongest control here. Controls 2-4 all expect
     # every suite to fail, and a bluntly broken build produces that too. This one
-    # expects the mutation to reach block and NOT param or local, so a guard that
-    # is injected wrongly -- or a build that ignores the injection -- cannot
-    # produce it by accident.
-    echo "=== Control 2b: over/AST_UNARY_EXPR -> block FAIL only (mixed pattern) ==="
+    # expects param to PASS while the others fail, so a guard that is injected
+    # wrongly -- or a build that ignores the injection -- cannot produce it by
+    # accident.
+    #
+    # UPDATED 2026-08-01, from "PASS FAIL PASS", and NOT because anything got
+    # more conservative. local_escape_test's ADR 0005 rows assert the whole
+    # reason SET with ==, and that catches over-marking a boolean row cannot:
+    #
+    #   FAIL: local 'p' reasons=UNCLASSIFIED|CALLEE_VALUE, expected CALLEE_VALUE
+    #
+    # An `over` mutation adds UNCLASSIFIED to every slot it touches. A row
+    # asserting `escapes == true` cannot see that, because true stays true --
+    # which is why this whole direction needed a PRECISION row before. A row
+    # asserting the exact set sees the extra bit while still being a soundness
+    # row. Local row 42 is that row, and it closed four arms at once:
+    # AST_UNARY_EXPR, AST_SELECTOR_EXPR, AST_FUNC_LIT and AST_STRUCT_LITERAL
+    # all went GAP -> COVERED for local in the same commit.
+    echo "=== Control 2b: over/AST_UNARY_EXPR -> param PASS, block+local FAIL (mixed) ==="
     r=$(measure_arm AST_UNARY_EXPR over)
     echo "  got: $r"
-    [ "$r" = "PASS FAIL PASS" ] || { echo "  CONTROL 2b FAILED"; rc=1; }
+    [ "$r" = "PASS FAIL FAIL" ] || { echo "  CONTROL 2b FAILED"; rc=1; }
 
     echo "=== Control 3: over/AST_IDENTIFIER -> all three FAIL ==="
     r=$(measure_arm AST_IDENTIFIER over)
@@ -341,10 +355,30 @@ self_test() {
     # runs two passes, and Pass 2 drives escape_walk_stmt from the arena block's
     # BODY, so this arm only ever sees a NESTED arena block. No fixture has one,
     # so skipping it moves nothing. Checked, not assumed.
-    echo "=== Control 7: stmt-under/AST_DEFER_STMT -> block FAIL only (mixed) ==="
+    # UPDATED 2026-08-01, from "PASS FAIL PASS", and for the same cause as
+    # control 2 above: a suite got better and the control did not follow.
+    #
+    # local_escape sets defer_is_like_go = TRUE, so `defer sink(x)` is the only
+    # thing that marks `x`. Skipping the statement deletes that sink, `x` reads
+    # non-escaping, and local row 34 -- "local passed to a DEFER whose callee
+    # does not retain it -> true" -- FAILS. That row is doing exactly its job:
+    # its own comment says a release emitted before the deferred call runs
+    # would dangle.
+    #
+    # Row 34 landed on 2026-08-01 (d60989d, the escape teeth work). This
+    # control was written on 2026-07-29 (b490b6d), when local had no row that
+    # noticed, so PASS was the measured truth THEN and is stale now.
+    #
+    # PARAM STAYS PASS, AND THAT IS A REAL GAP RATHER THAN A CORRECT ANSWER.
+    # param_escape treats a defer as an ordinary call, so skipping the
+    # statement drops its argument from the retention sink too -- an
+    # under-mark. No param row has a defer whose callee retains its argument,
+    # so nothing notices. A row for that shape would flip this cell to FAIL,
+    # and this comment is the record of what is missing.
+    echo "=== Control 7: stmt-under/AST_DEFER_STMT -> param PASS, block+local FAIL (mixed) ==="
     r=$(measure_arm AST_DEFER_STMT stmt-under)
     echo "  got: $r"
-    [ "$r" = "PASS FAIL PASS" ] || { echo "  CONTROL 7 FAILED"; rc=1; }
+    [ "$r" = "PASS FAIL FAIL" ] || { echo "  CONTROL 7 FAILED"; rc=1; }
 
     assert_engine_clean
     if [ "$rc" -eq 0 ]; then

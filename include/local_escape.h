@@ -62,6 +62,7 @@
 // consumer needs BOTH.
 
 #include "ast.h"
+#include "escape_core.h"
 #include "param_escape.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -69,7 +70,11 @@
 typedef struct LocalEscapeSummary {
     char*  function_name;  // owned
     char** local_names;    // owned array of owned strings, length local_count
-    bool*  escapes;        // length local_count; true = may outlive F
+    // Length local_count. Non-zero = may outlive F, and the SET says why.
+    // ADR 0005: this was a bool array. `escapes` is now `reasons != 0`, which
+    // is what local_escape_local_escapes returns, so a consumer that only
+    // wants the boolean is unchanged.
+    EscapeReasons* reasons;
     size_t local_count;
 } LocalEscapeSummary;
 
@@ -97,5 +102,26 @@ void local_escape_result_free(LocalEscapeResult* result);
 // "does not escape" by any consumer, so both report true.
 bool local_escape_local_escapes(const LocalEscapeResult* result,
                                 const char* fn, const char* local);
+
+// The same lookup, answering WHY rather than WHETHER. `escapes` is
+// `local_escape_local_reasons(...) != ESCAPE_REASON_NONE`, and the boolean
+// lookup above is now written that way.
+//
+// CONSERVATIVE ON A MISS MEANS ESCAPE_REASON_ALL, NOT ZERO. The boolean form
+// fails closed by returning `true`, and the only value that fails closed the
+// same way here is the FULL set: a consumer asks "does this escape ONLY via
+// X", and every wrong answer must make that test fail. Returning zero would
+// read as "escapes for no reason", which is both self-contradictory and the
+// one answer that frees live memory.
+//
+// A REASON IS A SOUND OVER-APPROXIMATION, EXACTLY LIKE THE BIT IT REPLACED.
+// The set may name a cause that a more precise engine would drop, and a
+// consumer must treat an EXTRA reason as a refusal rather than a defect. The
+// measured example is the daemon: `counts[f] = counts[f] + 1` gives `f` both
+// SUBSCRIPT_STORE and CONTAINER_STORE, because reading `counts[f]` carries
+// f's taint into the right-hand side. Nothing about f's buffer reaches the
+// map's value slot.
+EscapeReasons local_escape_local_reasons(const LocalEscapeResult* result,
+                                         const char* fn, const char* local);
 
 #endif // LOCAL_ESCAPE_H

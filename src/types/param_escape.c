@@ -228,10 +228,10 @@ static const EscapeHooks PARAM_HOOKS = {
 // only grows, so repeating the whole-body walk until it stops changing is
 // sound — this also handles for-loop back-edges, since a second pass
 // re-encounters the loop body with the previous pass's taint already
-// applied). Sinks accumulate monotonically into local_escapes/
+// applied). Sinks accumulate monotonically into local_reasons/
 // local_return_escapes across passes; re-firing an already-fired sink is
 // harmless.
-static void analyze_function_body(Registry* reg, FuncInfo* f, bool* local_escapes, bool* local_return_escapes) {
+static void analyze_function_body(Registry* reg, FuncInfo* f, EscapeReasons* local_reasons, bool* local_return_escapes) {
     LocalEnv env = {0};
     for (size_t i = 0; i < f->param_count; i++) {
         TaintSet seed = escape_taint_new(f->param_count);
@@ -247,7 +247,7 @@ static void analyze_function_body(Registry* reg, FuncInfo* f, bool* local_escape
     EscapeCtx ctx = {
         .env = &env,
         .slot_count = f->param_count,
-        .escapes = local_escapes,
+        .reasons = local_reasons,
         .hooks = &PARAM_HOOKS,
         .owner = &own,
     };
@@ -263,7 +263,7 @@ static void analyze_function_body(Registry* reg, FuncInfo* f, bool* local_escape
         changed = false;
         pass++;
         if (pass > MAX_LOCAL_PASSES) {
-            for (size_t i = 0; i < f->param_count; i++) local_escapes[i] = true;
+            for (size_t i = 0; i < f->param_count; i++) local_reasons[i] = ESCAPE_REASON_UNCLASSIFIED;
             *local_return_escapes = true;
             break;
         }
@@ -302,8 +302,8 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
 
         for (size_t fi = 0; fi < reg.count; fi++) {
             FuncInfo* f = &reg.items[fi];
-            bool* local_escapes = f->param_count ? calloc(f->param_count, sizeof(bool)) : NULL;
-            if (f->param_count && !local_escapes) {
+            EscapeReasons* local_reasons = f->param_count ? calloc(f->param_count, sizeof(EscapeReasons)) : NULL;
+            if (f->param_count && !local_reasons) {
                 registry_free(&reg);
                 return NULL;
             }
@@ -314,14 +314,14 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
                 // function escaping, never open. This should be
                 // unreachable for a correct implementation; see the
                 // monotone-bound argument above.
-                for (size_t i = 0; i < f->param_count; i++) local_escapes[i] = true;
+                for (size_t i = 0; i < f->param_count; i++) local_reasons[i] = ESCAPE_REASON_UNCLASSIFIED;
                 local_return_escapes = true;
             } else {
-                analyze_function_body(&reg, f, local_escapes, &local_return_escapes);
+                analyze_function_body(&reg, f, local_reasons, &local_return_escapes);
             }
 
             for (size_t i = 0; i < f->param_count; i++) {
-                if (local_escapes[i] && !f->escapes[i]) {
+                if (local_reasons[i] != ESCAPE_REASON_NONE && !f->escapes[i]) {
                     f->escapes[i] = true;
                     changed = true;
                 }
@@ -331,7 +331,7 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
                 changed = true;
             }
 
-            free(local_escapes);
+            free(local_reasons);
         }
 
         if (fail_closed) break;

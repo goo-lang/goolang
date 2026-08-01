@@ -3273,6 +3273,7 @@ VERIFY_ALL_DEPS := \
     release-decision-teeth \
     escape-teeth \
     arc-reassign-probe \
+    arc-map-key-local-probe \
     obj-header-test \
     obj-header-tsan \
     arena-routing-test \
@@ -5031,8 +5032,32 @@ $(eval $(call ESCAPE_TEETH_RULES,param,PARAM))
 $(eval $(call ESCAPE_TEETH_RULES,block,BLOCK))
 $(eval $(call ESCAPE_TEETH_RULES,local,LOCAL))
 
+# ADR 0005: the REASON axis mutates the SHARED engine, not a pass's own source,
+# so it cannot use the rules above — those swap src/types/<pass>_escape.c. This
+# swaps src/types/escape_core.c instead and links it in place of the ordinary
+# object, so the suite sees a mutated engine and its own unmodified pass.
+#
+# Only `local` gets a rule. It is the only suite with rows that assert a reason
+# SET, so it is the only one a renamed reason can move. param and block would
+# report UNGUARDED for all eleven entries, which is true and says nothing.
+CORE_ESCAPE_SRC ?= $(SRCDIR)/types/escape_core.c
+
+# No DEPFLAGS, same reason as the pass rule above: a .d file would record the
+# scratch source path and the next build would die once that path is gone.
+$(BUILDDIR)/teeth/escape_core.o: $(CORE_ESCAPE_SRC) | $(BUILDDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
+
+# DELIBERATELY not local_escape_test, for the reason the pass rule gives: under
+# `make -j` the ordinary suite can run at the same time and must never find a
+# mutant behind its own name.
+local_core_teeth_test: $(TEST_UNIT_DIR)/types/local_escape_test.c \
+                       $(BUILDDIR)/teeth/escape_core.o \
+                       $(filter-out $(BUILDDIR)/types/escape_core.o,$(SRC_OBJS))
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+
 escape-teeth:
-	@echo "Running escape-pass mutation teeth (param, block, local)..."
+	@echo "Running escape-pass mutation teeth (param, block, local, reasons)..."
 	./scripts/escape_teeth.sh
 
 block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(SRC_OBJS)
@@ -5238,14 +5263,17 @@ arc-loop-carried-probe: $(COMPILER) $(RUNTIME_LIB)
 arc-concat-operand-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_concat_operand_probe.sh
 
-# KNOWN-RED, AND IN NO GATE ON PURPOSE. Not in VERIFY_ALL_DEPS, and it must not
-# be added there while it fails — the red records work nobody has done, and a
-# gate that is expected to fail teaches every reader to ignore a red gate.
+# GREEN AND GATED since 2026-08-01 (ADR 0005). It was known-red from #281, and
+# the red recorded work nobody had done: a spike had shown that taking a map key
+# from a local reclaimed ZERO on its own.
 #
-# A spike showed that taking a map key from a local reclaims ZERO bytes from
-# bench/daemon/daemon.goo on its own, because condition 6 refuses `f` as well.
-# The script's header carries the measurement. Closing it needs a reason bit in
-# escape_core AND precision in condition 6.
+# THE SPIKE WAS RIGHT AND ITS CONCLUSION WAS WRONG. It deleted the map-key
+# escape MARK and measured no change, then concluded condition 6 was the second
+# blocker. The mark was never the obstacle — `release_plan_key_is_owned`
+# refusing every identifier was — and condition 6 turned out not to be involved
+# at all. What was actually needed was the reason SET, so that "escapes only as
+# a subscript" could be told from "escapes, and also leaves the function".
+# Measured: 262,205 -> 82,205 bytes, 180,000 reclaimed, valgrind clean.
 arc-map-key-local-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_map_key_local_probe.sh
 
