@@ -2,29 +2,37 @@
 # May a map take ownership of a key that comes from a LOCAL?
 #
 # ============================================================================
-# THIS PROBE IS KNOWN-RED, AND IT IS DELIBERATELY IN NO GATE. Do not add it to
-# VERIFY_ALL_DEPS to "fix" the red — the red is the point, and it records work
-# nobody has done. Run it by hand with `make arc-map-key-local-probe`.
+# GREEN AND IN verify-core since 2026-08-01 (ADR 0005). It was known-red from
+# PR #281, and the history is worth keeping because the red was closed by a
+# route nobody predicted.
 #
-# It was written for a change that a SPIKE then invalidated, and the spike's
-# result is why the probe is kept rather than deleted.
-#
-# THE SPIKE: delete the map-key escape mark (escape_core.c, the escape_mark in
-# mark_lvalue_subscripts) and measure. Result, on bench/daemon/daemon.goo:
+# THE SPIKE THAT KEPT IT RED: delete the map-key escape mark (escape_core.c,
+# the escape_mark in mark_lvalue_subscripts) and measure. Result, on
+# bench/daemon/daemon.goo:
 #
 #   counts[f] = 1                 -> f IS released
 #   counts[f] = counts[f] + 1     -> f is NOT released      <- the daemon
 #
-# So the map-key mark is NOT what refuses the daemon's `f`. A SECOND rule does:
-# condition 6, the loop-carried store. `counts[g] = counts[g] + 1` mentions `g`
-# in the RHS of a store whose target outlives the iteration, and mark_mentions
-# marks it — by design, since that rule is a MENTION and not a FLOW.
+# The measurement was correct. The CONCLUSION drawn from it -- that condition 6,
+# the loop-carried store, was the second blocker -- was wrong on both halves:
 #
-# CONSEQUENCE: taking the key is necessary and NOT sufficient. Removing the
-# escape mark on its own reclaims ZERO bytes from the daemon. Both .handoff.md
-# and the plan that produced this probe said otherwise, and both were wrong.
-# Closing this needs BOTH a reason bit in escape_core and precision in
-# condition 6 — two modules that have each produced a use-after-free.
+#   * deleting the mark was never the way in. The mark is what makes the map
+#     the key's SOLE owner, so removing it was removing the thing that made the
+#     reclamation safe. The actual obstacle was release_plan_key_is_owned
+#     refusing every AST_IDENTIFIER, in a different module entirely.
+#   * condition 6 is not involved. GOO_ARC_DEBUG=1 says `f` reads
+#     RELEASE_NO_ESCAPES -- condition 1 -- and `f` is still refused there today.
+#     It does not need to be released: the MAP frees the key.
+#
+# WHAT ACTUALLY CLOSED IT was the reason SET, so that "escapes only as a
+# subscript" could be told apart from "escapes, and also leaves the function".
+# Measured: 262,205 -> 82,205 bytes on the daemon, 180,000 reclaimed, valgrind
+# clean, output unchanged against release-off and against `go run`.
+#
+# THE LESSON, since this file already carries one: a spike that deletes a rule
+# and measures no change has shown that THAT rule is not the obstacle. It has
+# not identified the obstacle, and naming one from the same experiment is a
+# guess wearing a measurement's clothes.
 # ============================================================================
 #
 # PR #272 gave a map the key it is HANDED as a fresh temporary. It refuses an

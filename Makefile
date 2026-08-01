@@ -3273,6 +3273,7 @@ VERIFY_ALL_DEPS := \
     release-decision-teeth \
     escape-teeth \
     arc-reassign-probe \
+    arc-map-key-local-probe \
     obj-header-test \
     obj-header-tsan \
     arena-routing-test \
@@ -5262,14 +5263,17 @@ arc-loop-carried-probe: $(COMPILER) $(RUNTIME_LIB)
 arc-concat-operand-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_concat_operand_probe.sh
 
-# KNOWN-RED, AND IN NO GATE ON PURPOSE. Not in VERIFY_ALL_DEPS, and it must not
-# be added there while it fails — the red records work nobody has done, and a
-# gate that is expected to fail teaches every reader to ignore a red gate.
+# GREEN AND GATED since 2026-08-01 (ADR 0005). It was known-red from #281, and
+# the red recorded work nobody had done: a spike had shown that taking a map key
+# from a local reclaimed ZERO on its own.
 #
-# A spike showed that taking a map key from a local reclaims ZERO bytes from
-# bench/daemon/daemon.goo on its own, because condition 6 refuses `f` as well.
-# The script's header carries the measurement. Closing it needs a reason bit in
-# escape_core AND precision in condition 6.
+# THE SPIKE WAS RIGHT AND ITS CONCLUSION WAS WRONG. It deleted the map-key
+# escape MARK and measured no change, then concluded condition 6 was the second
+# blocker. The mark was never the obstacle — `release_plan_key_is_owned`
+# refusing every identifier was — and condition 6 turned out not to be involved
+# at all. What was actually needed was the reason SET, so that "escapes only as
+# a subscript" could be told from "escapes, and also leaves the function".
+# Measured: 262,205 -> 82,205 bytes, 180,000 reclaimed, valgrind clean.
 arc-map-key-local-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_map_key_local_probe.sh
 
