@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth arc-concat-operand-probe arc-map-key-local-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth arc-concat-operand-probe arc-map-key-local-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -5182,6 +5182,15 @@ arc-concat-operand-probe: $(COMPILER) $(RUNTIME_LIB)
 # escape_core AND precision in condition 6.
 arc-map-key-local-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_map_key_local_probe.sh
+
+# KNOWN-RED, AND IN NO GATE ON PURPOSE — the SECOND one, and the same rule
+# applies: not in VERIFY_ALL_DEPS, and not to be added while it fails.
+#
+# A reassigned local drops its previous value and nothing frees it — 80,000
+# bytes of bench/daemon/daemon.goo. The script's header carries the five-step
+# plan, including the alias condition that no existing rule provides.
+arc-reassign-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/arc_reassign_probe.sh
 
 arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
