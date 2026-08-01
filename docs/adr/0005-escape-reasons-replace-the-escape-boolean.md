@@ -1,8 +1,17 @@
 # ADR 0005 — an escape is recorded as a SET OF REASONS, not a boolean
 
 Date: 2026-08-01
-Status: accepted as a DIRECTION. Nothing here is implemented, and this ADR
-changes no code.
+Status: **IMPLEMENTED** 2026-08-01. Results, and the three things this ADR got
+wrong, are in `docs/adr/0005-measurements/result-after.md`. The headline:
+bench/daemon 262,205 -> 82,205 bytes, valgrind clean, and the last known-red
+probe in the tree is now green and gated.
+
+ONE CONDITION IS MISSING FROM THIS DOCUMENT and it is required for safety.
+`a[s] = 1; b[s] = 2` marks `s` SUBSCRIPT_STORE and nothing else, so "escapes
+only as a subscript" is TRUE of a local handed to TWO maps, and each would free
+the one buffer. Counting the key sites is the only thing that refuses it. A
+reason set says WHERE a value went, never HOW MANY TIMES. See
+`identifier_key_is_owned` and key row 8.
 
 Measurements: `docs/adr/0005-measurements/baseline-before.md` holds the numbers
 this decision is judged against, each with the command that produced it. Every
