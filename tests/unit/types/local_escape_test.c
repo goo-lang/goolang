@@ -554,6 +554,81 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "m", true } }, 1
     },
+
+    // ---------------- SOUNDNESS: the pass's OWN hooks, not the engine -------
+    //
+    // The three rows below exist because scripts/escape_teeth.sh mutated this
+    // pass's own hooks (not the shared engine, which escape_arm_coverage.sh
+    // already covers) and found them unguarded: every mutation left all 32 rows
+    // above green. See that script's header for the two mutation directions.
+    {
+        // Written to isolate local_callee_retention's
+        // `*out_return_escapes = callee->return_escapes`, and MEASUREMENT SHOWED
+        // IT CANNOT. The negative result is kept because it is what justifies
+        // scripts/escape_teeth.sh carrying no such entry for this pass.
+        //
+        // Sink #1 (AST_RETURN_STMT) marks the returned value before on_return
+        // records the signal, so `id` comes out with escapes[0] AND
+        // return_escapes both true -- param_escape_test row 26 asserts that. At
+        // the call site `retains` reads escapes[0], already true, so `x` is
+        // marked by sink #5 whatever return_escapes says.
+        //
+        // The row still earns its place: it covers a local reaching a global
+        // through a CALL RESULT rather than a direct store.
+        33, "local escapes THROUGH a callee that returns its own parameter -> true",
+        "package main\n"
+        "var g *int\n"
+        "func id(p *int) *int {\n"
+        "    return p\n"
+        "}\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    g = id(x)\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // LOCAL_HOOKS.defer_is_like_go. The source comment on that field asks
+        // for exactly this row -- "Tighten it only together with that ordering,
+        // and with a row" -- and no row existed until the teeth said so.
+        //
+        // `sink` deliberately does NOT retain its parameter, so sink #5 is
+        // silent and the defer treatment is the only thing that can mark `x`.
+        // With the field flipped to false a defer becomes an ordinary call,
+        // `x` reads non-escaping, and a release emitted before the deferred
+        // call runs would dangle.
+        34, "local passed to a DEFER whose callee does not retain it -> true",
+        "package main\n"
+        "func sink(p *int) {\n"
+        "}\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    defer sink(x)\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
+    {
+        // unit_add_local's `_` skip, which no fixture above reaches: `_` only
+        // arrives there from a DECLARATION, and every `_` in the rows above is
+        // an assignment (`_ = p`), which never calls unit_add_local.
+        //
+        // THE MEASURED ANSWER, and the reason scripts/escape_teeth.sh has no
+        // blank-skip entry: removing the skip changes NOTHING. `_` takes slot 0
+        // and pushes `x` to slot 1, but the own-bit seeding and the name-to-slot
+        // lookup move together, so the shift cancels. `_` is never read, so its
+        // bit reaches no sink. The skip saves a slot; it decides no verdict.
+        //
+        // The row stays as the fixture that fact rests on -- it is the only one
+        // here that puts a blank name in a DECLARATION.
+        35, "a local declared beside a BLANK name still escapes -> true",
+        "package main\n"
+        "var g *int\n"
+        "func f() {\n"
+        "    _, x := 1, new(int)\n"
+        "    g = x\n"
+        "}\n",
+        "f", { { "x", true } }, 1
+    },
 };
 
 static int failures = 0;

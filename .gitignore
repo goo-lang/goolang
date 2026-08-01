@@ -90,4 +90,10 @@ tasks/
 /local_escape_test
 /release_decision_test
 /release_decision_teeth_test
+# scripts/escape_teeth.sh removes these on every exit path, but a killed run
+# cannot. Each one is linked against a MUTANT object, so it must never be
+# committed or mistaken for the ordinary suite of the same name.
+/param_escape_teeth_test
+/block_escape_teeth_test
+/local_escape_teeth_test
 

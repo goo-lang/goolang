@@ -556,6 +556,36 @@ static TestRow rows[] = {
         "}\n",
         1, { false }
     },
+    {
+        33, "site escapes THROUGH a callee that returns its own parameter -> true",
+        // SOUNDNESS. This row was written to isolate block_callee_retention's
+        // `*out_return_escapes = callee->return_escapes`, and MEASUREMENT SHOWED
+        // IT CANNOT. The record is kept here because the negative result is what
+        // justifies scripts/escape_teeth.sh carrying no such entry.
+        //
+        // Why no fixture can isolate that field: sink #1 (AST_RETURN_STMT) marks
+        // the returned value before on_return records the signal, so `id` comes
+        // out with escapes[0] AND return_escapes both true -- param_escape_test
+        // row 26 asserts exactly that. At the call site `retains` reads
+        // escapes[0], already true, so `x` is marked by sink #5 whatever
+        // return_escapes says. Forcing the field false leaves this row green.
+        //
+        // The row is still worth its place: it covers a site leaving the block
+        // through a CALL RESULT rather than a direct store, and it fails with
+        // the rest when the site-source or site-slot machinery breaks.
+        "package main\n"
+        "var g *int\n"
+        "func id(p *int) *int {\n"
+        "    return p\n"
+        "}\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        x := new(int)\n"
+        "        g = id(x)\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
 };
 
 static int g_pass = 0;

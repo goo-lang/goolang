@@ -387,6 +387,56 @@ static TestRow rows[] = {
         "}\n",
         { { "f", 1, { false }, false, false } }, 1
     },
+    {
+        25, "param passed to a DEFER whose callee does not retain it -> false",
+        // PRECISION row, and the guard on PARAM_HOOKS.defer_is_like_go = false.
+        //
+        // This is the field where this pass and block_escape must disagree. At
+        // FUNCTION granularity a defer runs inside the frame, before it is
+        // gone, so `false` is the PRECISE answer here; block_escape sets the
+        // same field true because its boundary closes first. Nothing recorded
+        // that disagreement as a test until scripts/escape_teeth.sh flipped the
+        // field and all 24 rows above stayed green.
+        //
+        // The teeth: flipped to true, a deferred argument escapes
+        // unconditionally (sink #4), so `p` reads true and this row fails.
+        // `sink` deliberately does NOT retain its parameter, so sink #5 is
+        // silent and the defer treatment is the only thing that can mark `p`.
+        "package main\n"
+        "func sink(q *int) {\n"
+        "}\n"
+        "func f(p *int) {\n"
+        "    defer sink(p)\n"
+        "}\n",
+        { { "f", 1, { false }, false, false } }, 1
+    },
+    {
+        26, "returning a param sets BOTH escapes[0] and return_escapes",
+        // The COUPLING row. It looks trivial and it is not: it is the reason
+        // scripts/escape_teeth.sh carries no `retention-return` entry for the
+        // block and local tables, and that omission needs a fact to stand on.
+        //
+        // Sink #1 (AST_RETURN_STMT in the shared engine) marks the returned
+        // value BEFORE on_return records the interprocedural signal. So a
+        // callee whose return_escapes is true ALWAYS has escapes[i] true as
+        // well -- the two cannot be set apart by any fixture.
+        //
+        // The consequence for the other two passes: at a call site `retains`
+        // reads callee_escapes[i], which is already true, so the argument is
+        // marked by sink #5 no matter what return_escapes says. Forcing
+        // return_escapes false there changes no verdict, which is exactly what
+        // the teeth measured before the entries were dropped.
+        //
+        // param_escape is the one pass where the field IS observable, because
+        // it composes: `func a(p) { return b(p) }` marks a's param only if
+        // b(p)'s result carries taint. That is the `retention-return` entry
+        // this table's own teeth still keep.
+        "package main\n"
+        "func id(p *int) *int {\n"
+        "    return p\n"
+        "}\n",
+        { { "id", 1, { true }, true, true } }, 1
+    },
 };
 
 static int g_pass = 0;

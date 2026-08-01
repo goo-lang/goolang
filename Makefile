@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth arc-concat-operand-probe arc-map-key-local-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth arc-concat-operand-probe arc-map-key-local-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -4968,6 +4968,47 @@ release_decision_teeth_test: $(TEST_UNIT_DIR)/types/release_decision_test.c \
 release-decision-teeth:
 	@echo "Running T4 release-decision mutation teeth..."
 	./scripts/release_decision_teeth.sh
+
+# Escape-pass teeth. The three suites above (param/block/local-escape-test) run
+# in verify-core and had NO teeth until this: none of them had ever been shown
+# able to fail. scripts/escape_arm_coverage.sh mutates for all three, but only
+# src/types/escape_core.c — the SHARED engine. Each pass also owns its hooks,
+# its source-seeding and its site/local discovery, and nothing mutated those.
+#
+# Same two disciplines as the release-decision rules above:
+#   1. The tracked tree is NEVER written. Each mutant goes to a scratch file and
+#      <PASS>_ESCAPE_SRC points this object rule at that copy instead.
+#   2. The mutant object REPLACES the real one on the link line (filter-out). If
+#      both were linked the gate would measure nothing.
+#
+# One eval'd template rather than three copied blocks: a fix to this recipe must
+# not have to land three times. That copy-drift is the #274 defect class, which
+# left a mutation dead for two months with the verdict line unchanged.
+define ESCAPE_TEETH_RULES
+$(2)_ESCAPE_SRC ?= $$(SRCDIR)/types/$(1)_escape.c
+
+# No DEPFLAGS, for the reason the release-decision object rule gives: a .d file
+# would record the scratch source path, and the next build would die once that
+# path is gone.
+$$(BUILDDIR)/teeth/$(1)_escape.o: $$($(2)_ESCAPE_SRC) | $$(BUILDDIR)
+	@mkdir -p $$(dir $$@)
+	$$(CC) $$(CFLAGS) $$(LLVM_CFLAGS) -c $$< -o $$@
+
+# DELIBERATELY not $(1)_escape_test. Under `make -j` the ordinary suite can run
+# at the same time, and it must never find a mutant behind its own name.
+$(1)_escape_teeth_test: $$(TEST_UNIT_DIR)/types/$(1)_escape_test.c \
+                        $$(BUILDDIR)/teeth/$(1)_escape.o \
+                        $$(filter-out $$(BUILDDIR)/types/$(1)_escape.o,$$(SRC_OBJS))
+	$$(CC) $$(CFLAGS) $$(LLVM_CFLAGS) -o $$@ $$^ $$(LDFLAGS) $$(LLVM_LDFLAGS)
+endef
+
+$(eval $(call ESCAPE_TEETH_RULES,param,PARAM))
+$(eval $(call ESCAPE_TEETH_RULES,block,BLOCK))
+$(eval $(call ESCAPE_TEETH_RULES,local,LOCAL))
+
+escape-teeth:
+	@echo "Running escape-pass mutation teeth (param, block, local)..."
+	./scripts/escape_teeth.sh
 
 block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(SRC_OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
