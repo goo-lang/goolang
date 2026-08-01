@@ -43,6 +43,74 @@ static const char* codegen_map_setter_name(CodeGenerator* codegen, ASTNode* key_
     }
     return "goo_map_set_sv_owning";
 }
+// Release a concat operand that is ITSELF a string `+`.
+//
+// `goo_string_concat` (src/runtime/runtime.c) ALWAYS returns fresh goo_alloc
+// memory and COPIES both operands, so the value a nested concat produced is
+// unreachable the instant the enclosing concat returns: the result aliases none
+// of it, and no name was ever bound to it. Measured on bench/daemon/daemon.goo,
+// whose return line is a chain of four concats — the three intermediate results
+// are 126,000 bytes per 2,000 requests.
+//
+// TWO REASONS AN OPERAND QUALIFIES, and they need different evidence:
+//
+//   NESTED CONCAT   the operand node is itself a `+`. That needs no analysis at
+//                   all: goo_string_concat always allocates, and no name was
+//                   ever bound to a nested node's result. 126,000 bytes.
+//   OWNED TEMPORARY release_decision proves the expression is a fresh temporary
+//                   by condition 2's table — a shim call whose row says it
+//                   copies, or a Goo call whose summary says its result derives
+//                   from no argument. 144,000 bytes, and this is the half that
+//                   can be wrong, which is why it defers to that module.
+//
+// EVERY OTHER SHAPE IS REFUSED, and that is the whole safety argument.
+// `x := a + b; y := x + c` reaches here with an AST_IDENTIFIER operand, and the
+// local `x` releases that same buffer at function exit — releasing it here as
+// well is a double free, not a leak. A view (`s[1:]`) and a borrowed call
+// result alias a buffer this code never owned; condition 2's table refuses both.
+//
+// The kill switch is the plan pointer: GOO_ARC_RELEASE=0 leaves it NULL
+// (codegen.c) and every release in this arc must then emit nothing.
+static void codegen_release_temp_concat_operand(CodeGenerator* codegen,
+                                                ASTNode* operand,
+                                                LLVMValueRef operand_val) {
+    if (!codegen || !codegen->release_plan || !operand || !operand_val) return;
+
+    bool nested_concat = operand->type == AST_BINARY_EXPR &&
+                         ((BinaryExprNode*)operand)->operator == TOKEN_PLUS;
+    if (!nested_concat) {
+        FunctionInfo* fi = codegen->current_function_info;
+        if (!fi || !fi->name) return;
+        if (!release_plan_concat_operand_is_owned(codegen->release_plan,
+                                                  fi->name, operand)) {
+            return;
+        }
+    }
+
+    LLVMBasicBlockRef here = LLVMGetInsertBlock(codegen->builder);
+    if (!here || LLVMGetBasicBlockTerminator(here)) return;
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef rel_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_ty, 1, 0);
+    LLVMValueRef rel_fn = LLVMGetNamedFunction(codegen->module, "goo_release");
+    if (!rel_fn) rel_fn = LLVMAddFunction(codegen->module, "goo_release", rel_ty);
+    if (!rel_fn) return;
+
+    // A goo_string_t is {data, length}; the releasable object is field 0.
+    // goo_release is a no-op on NULL, on goo_zerobase and on an immortal
+    // header, so the empty-operand result needs no guard here.
+    LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, operand_val, 0,
+                                              "arc.concat.tmp");
+    LLVMBuildCall2(codegen->builder, rel_ty, rel_fn, &data, 1, "");
+
+    if (getenv("GOO_ARC_DEBUG")) {
+        FunctionInfo* fi = codegen->current_function_info;
+        fprintf(stderr, "[arc] %s: released a nested concat operand\n",
+                (fi && fi->name) ? fi->name : "?");
+    }
+}
+
 // Read-modify-write for a map-index target `m[k]`: read the old value via
 // goo_map_get_sv, compute old <op> rhs (or old +/- 1 for postfix, when
 // rhs_or_null is NULL), and write the result back via goo_map_set_sv.
@@ -2508,6 +2576,11 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 result = LLVMBuildCall2(codegen->builder,
                                         LLVMGlobalGetValueType(concat_fn), concat_fn,
                                         cargs, 2, "strconcat");
+                // AFTER the call, never before: goo_string_concat reads both
+                // operands' bytes, so a release emitted first would free a
+                // buffer it is about to copy from.
+                codegen_release_temp_concat_operand(codegen, binary->left, left_llvm);
+                codegen_release_temp_concat_operand(codegen, binary->right, right_llvm);
             } else if (type_is_integer(left_val->goo_type)) {
                 result = LLVMBuildAdd(codegen->builder, left_llvm, right_llvm, "add");
             } else if (type_is_float(left_val->goo_type)) {

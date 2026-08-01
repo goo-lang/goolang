@@ -103,6 +103,26 @@ typedef struct {
     size_t       key_count;
     size_t       key_cap;
 
+    // Every OPERAND of a `+` expression anywhere this walk reaches. A string
+    // concat COPIES both operands into fresh memory, so an operand that is a
+    // fresh temporary is unreachable the instant the concat returns and nothing
+    // but this concat can ever free it.
+    //
+    // Classified after the walk, for the same reason the key sites are:
+    // binding_is_owned needs the callee summaries.
+    //
+    // AN INTEGER `+` LANDS HERE TOO, exactly as it does in condition 2's table.
+    // This module holds no types and cannot tell the two apart. Recording both
+    // costs nothing, because codegen asks only at a string-concat site and it
+    // is codegen that has the type. Same two-layer split as everywhere else.
+    //
+    // FAIL CLOSED: an expression this scanner cannot reach is simply not
+    // recorded, so the operand stays borrowed and the program keeps the
+    // behaviour it had before this existed.
+    ASTNode**    concat_sites;
+    size_t       concat_count;
+    size_t       concat_cap;
+
     // Every expression STORED INTO a slice local, paired with that local's
     // name. `p = append(p, X)` contributes (p, X), and a slice literal
     // contributes one entry per element.
@@ -279,6 +299,119 @@ static void mark_mentions(WalkCtx* ctx, ASTNode* expr, int target_depth) {
             c->loop_locals_unreadable = true;
             return;
     }
+}
+
+// ---------------------------------------------------------------------------
+// The concat-operand scanner
+// ---------------------------------------------------------------------------
+
+// Record both operands of every `+` in `expr`, then descend.
+//
+// DELIBERATELY A SECOND TRAVERSAL rather than a hook inside mark_mentions. That
+// one runs only for a STORE and carries a target depth, and it marks a local as
+// escaping its block. Reusing it would tie a reclamation to condition 6's
+// question and fire it on the wrong statements.
+//
+// Node coverage MIRRORS mark_mentions above, and the default arm is the reason
+// this is safe to extend later: an expression kind nobody added records nothing,
+// so its operands stay borrowed. A missed operand is a leak we already have.
+static void note_concat_operands(WalkCtx* ctx, ASTNode* expr) {
+    if (!expr) return;
+    Collected* c = ctx->out;
+
+    switch (expr->type) {
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            if (b->operator == TOKEN_PLUS) {
+                ASTNode* operands[2] = { b->left, b->right };
+                for (int i = 0; i < 2; i++) {
+                    if (!operands[i]) continue;
+                    if (c->concat_count >= c->concat_cap) {
+                        size_t ncap = c->concat_cap ? c->concat_cap * 2 : 8;
+                        ASTNode** grown = realloc(c->concat_sites, ncap * sizeof(ASTNode*));
+                        // Fail CLOSED, as note_key_site does: an unrecorded
+                        // operand is never owned, so nothing frees it.
+                        if (!grown) return;
+                        c->concat_sites = grown;
+                        c->concat_cap = ncap;
+                    }
+                    c->concat_sites[c->concat_count++] = operands[i];
+                }
+            }
+            note_concat_operands(ctx, b->left);
+            note_concat_operands(ctx, b->right);
+            return;
+        }
+
+        case AST_IDENTIFIER:
+        case AST_LITERAL:
+            return;
+
+        case AST_UNARY_EXPR:
+            note_concat_operands(ctx, ((UnaryExprNode*)expr)->operand);
+            return;
+
+        case AST_CALL_EXPR: {
+            CallExprNode* call = (CallExprNode*)expr;
+            note_concat_operands(ctx, call->function);
+            for (ASTNode* a = call->args; a; a = a->next) note_concat_operands(ctx, a);
+            return;
+        }
+
+        case AST_INDEX_EXPR:
+            note_concat_operands(ctx, ((IndexExprNode*)expr)->expr);
+            note_concat_operands(ctx, ((IndexExprNode*)expr)->index);
+            return;
+
+        case AST_SELECTOR_EXPR:
+            note_concat_operands(ctx, ((SelectorExprNode*)expr)->expr);
+            return;
+
+        case AST_SLICE_INDEX_EXPR: {
+            SliceIndexExprNode* s = (SliceIndexExprNode*)expr;
+            note_concat_operands(ctx, s->expr);
+            note_concat_operands(ctx, s->low);
+            note_concat_operands(ctx, s->high);
+            return;
+        }
+
+        case AST_SLICE_EXPR:
+            for (ASTNode* e = ((SliceLitNode*)expr)->elements; e; e = e->next) {
+                note_concat_operands(ctx, e);
+            }
+            return;
+
+        case AST_ARRAY_LITERAL:
+            for (ASTNode* e = ((ArrayLitNode*)expr)->elements; e; e = e->next) {
+                note_concat_operands(ctx, e);
+            }
+            return;
+
+        case AST_PAREN_EXPR: {
+            MapLitNode* m = (MapLitNode*)expr;
+            for (ASTNode* k = m->keys; k; k = k->next) note_concat_operands(ctx, k);
+            for (ASTNode* v = m->values; v; v = v->next) note_concat_operands(ctx, v);
+            return;
+        }
+
+        case AST_STRUCT_LITERAL:
+            for (ASTNode* f = ((StructLiteralNode*)expr)->field_values; f; f = f->next) {
+                note_concat_operands(ctx, f);
+            }
+            return;
+
+        default:
+            // Records nothing and marks nothing. Unlike mark_mentions this
+            // scanner has no conservative direction to take: it only ever ADDS
+            // a reclamation, so not reaching an expression costs bytes rather
+            // than safety.
+            return;
+    }
+}
+
+// Record every `+` operand in a list of expressions.
+static void note_concat_operand_list(WalkCtx* ctx, ASTNode* list) {
+    for (ASTNode* e = list; e; e = e->next) note_concat_operands(ctx, e);
 }
 
 // The loop depth a store into `lhs` must be compared against. See mark_mentions.
@@ -497,6 +630,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
 
             case AST_EXPR_STMT: {
                 ASTNode* e = ((ExprStmtNode*)stmt)->expr;
+                note_concat_operands(ctx, e);
                 if (e && e->type == AST_BINARY_EXPR) {
                     BinaryExprNode* b = (BinaryExprNode*)e;
                     if (is_assign_operator(b->operator)) {
@@ -509,18 +643,21 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
 
             case AST_VAR_DECL: {
                 VarDeclNode* n = (VarDeclNode*)stmt;
+                note_concat_operand_list(ctx, n->values);
                 seed_names(ctx, n->names, n->name_count, n->values);
                 break;
             }
 
             case AST_CONST_DECL: {
                 ConstDeclNode* n = (ConstDeclNode*)stmt;
+                note_concat_operand_list(ctx, n->values);
                 seed_names(ctx, n->names, n->name_count, n->values);
                 break;
             }
 
             case AST_MULTI_ASSIGN: {
                 MultiAssignNode* n = (MultiAssignNode*)stmt;
+                note_concat_operand_list(ctx, n->values);
                 // `targets` is a NODE LIST, not a name array. `a, b := f()`
                 // declares, `a, b = x, y` assigns; either way condition 4 only
                 // needs the count. When ONE value feeds several names -- the
@@ -751,6 +888,12 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
             }
 
             case AST_RETURN_STMT:
+                // THE DAEMON'S OWN SHAPE. Its whole reply is built in the return
+                // expression, and before this the arm below reached nothing in
+                // it. No local is bound here, so the rest of the arm still holds.
+                note_concat_operand_list(ctx, ((ReturnStmtNode*)stmt)->values);
+                break;
+
             case AST_BREAK_STMT:
             case AST_CONTINUE_STMT:
             case AST_GO_STMT:
@@ -950,6 +1093,9 @@ static void collected_free(Collected* c) {
     free(c->key_sites);
     c->key_sites = NULL;
     c->key_count = c->key_cap = 0;
+    free(c->concat_sites);
+    c->concat_sites = NULL;
+    c->concat_count = c->concat_cap = 0;
     free(c->elem_sites);
     c->elem_sites = NULL;
     c->elem_count = c->elem_cap = 0;
@@ -1131,6 +1277,21 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
             // A NULL array means no key is owned, which is the safe answer.
         }
 
+        // Same timing, same reason: binding_is_owned needs `pe`, which
+        // release_plan_analyze frees below.
+        if (c.concat_count) {
+            pf->owned_concat_operands = calloc(c.concat_count, sizeof(ASTNode*));
+            if (pf->owned_concat_operands) {
+                for (size_t i = 0; i < c.concat_count; i++) {
+                    if (binding_is_owned(&c, pe, c.concat_sites[i])) {
+                        pf->owned_concat_operands[pf->owned_concat_count++] =
+                            c.concat_sites[i];
+                    }
+                }
+            }
+            // A NULL array means no operand is owned, which is the safe answer.
+        }
+
         plan->count++;
         collected_free(&c);
     }
@@ -1148,6 +1309,7 @@ void release_plan_free(ReleasePlan* plan) {
         free(pf->decisions);
         // The elements are borrowed AST nodes; only the array is ours.
         free(pf->owned_keys);
+        free(pf->owned_concat_operands);
         free(pf->function_name);
     }
     free(plan->functions);
@@ -1196,6 +1358,20 @@ bool release_plan_key_is_owned(const ReleasePlan* plan, const char* fn,
         const ReleasePlanFunction* pf = &plan->functions[i];
         for (size_t j = 0; j < pf->owned_key_count; j++) {
             if (pf->owned_keys[j] == key_expr) return true;
+        }
+        return false;   // the function is known and this node is not owned
+    }
+    return false;       // unknown function
+}
+
+bool release_plan_concat_operand_is_owned(const ReleasePlan* plan, const char* fn,
+                                          const ASTNode* operand) {
+    if (!plan || !fn || !operand) return false;
+    for (size_t i = 0; i < plan->count; i++) {
+        if (strcmp(plan->functions[i].function_name, fn) != 0) continue;
+        const ReleasePlanFunction* pf = &plan->functions[i];
+        for (size_t j = 0; j < pf->owned_concat_count; j++) {
+            if (pf->owned_concat_operands[j] == operand) return true;
         }
         return false;   // the function is known and this node is not owned
     }
