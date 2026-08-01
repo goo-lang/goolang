@@ -3271,6 +3271,7 @@ VERIFY_ALL_DEPS := \
     local-escape-test \
     release-decision-test \
     release-decision-teeth \
+    escape-teeth \
     obj-header-test \
     obj-header-tsan \
     arena-routing-test \
