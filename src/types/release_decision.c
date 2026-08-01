@@ -40,7 +40,22 @@ typedef struct {
     char*     name;          // owned
     ASTNode*  bound_value;   // the declaration's initial value; may be NULL
     int       binding_count; // declarations plus assignments
-    int       loop_depth;    // loop nesting at the DECLARATION
+    // BREAK-SCOPE nesting at the DECLARATION, and it MUST equal
+    // codegen->cfctx.loop_depth at the same point in the same program.
+    //
+    // NOT "for-loop nesting", which is what it counted until 2026-08-01 and
+    // what its old name said. cfctx raises this for a `switch`, a type switch
+    // and a `select` as well as a `for` (cfctx_push_break_scope), because each
+    // is a target a `break` can leave. Counting only `for` here made a
+    // switch-case local and a loop-body local read as the SAME depth, so
+    // condition 6 did not mark a store between them -- while codegen filed the
+    // case local one level deeper and released it at the switch's `break`,
+    // leaving the loop-body local pointing at freed memory.
+    //
+    // Measured, not reasoned: examples/arc_loop_carried_probe.goo's
+    // switchBreak() reported 3 invalid reads through ToUpper, exit 0, plausible
+    // output. If cfctx gains or loses a scope kind, this walk must follow.
+    int       block_depth;
     int       arena_depth;   // arena nesting at the DECLARATION
     bool      declared;      // a declaration was seen (not only an assignment)
 
@@ -117,7 +132,7 @@ typedef struct {
 
 typedef struct {
     Collected* out;
-    int        loop_depth;
+    int        block_depth;
     int        arena_depth;
     // Walking a loop's init/post/range clause rather than its body. See
     // LocalRecord.loop_header.
@@ -147,7 +162,7 @@ static LocalRecord* intern_record(Collected* c, const char* name) {
     if (!r->name) return NULL;
     r->bound_value = NULL;
     r->binding_count = 0;
-    r->loop_depth = 0;
+    r->block_depth = 0;
     r->arena_depth = 0;
     r->declared = false;
     r->block_escapes = false;
@@ -182,7 +197,7 @@ static void mark_mentions(WalkCtx* ctx, ASTNode* expr, int target_depth) {
             const char* name = ((IdentifierNode*)expr)->name;
             if (!name) return;
             LocalRecord* r = find_record(c, name);
-            if (r && r->loop_depth > target_depth) r->block_escapes = true;
+            if (r && r->block_depth > target_depth) r->block_escapes = true;
             return;
         }
 
@@ -281,7 +296,7 @@ static int target_lifetime_depth(Collected* c, ASTNode* lhs) {
     // NOT A LOCAL of this function: a parameter, a global, or a name declared
     // by a construct the walk records no binding for. Each outlives the loop.
     if (!r || !r->declared) return -1;
-    return r->loop_depth;
+    return r->block_depth;
 }
 
 // Defined below, next to the append collector it pairs with.
@@ -295,11 +310,11 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
     // `s := s` compares against s's PREVIOUS depth rather than this one.
     // A declaration stores into a name whose lifetime is the block being
     // declared in, so the current loop depth is the target depth.
-    mark_mentions(ctx, value, ctx->loop_depth);
+    mark_mentions(ctx, value, ctx->block_depth);
     if (!r->declared) {
         r->declared = true;
         r->bound_value = value;
-        r->loop_depth = ctx->loop_depth;
+        r->block_depth = ctx->block_depth;
         r->arena_depth = ctx->arena_depth;
         r->loop_header = ctx->in_loop_header;
         // A slice literal's own elements count as stored values, exactly as
@@ -544,7 +559,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
 
             case AST_FOR_STMT: {
                 ForStmtNode* n = (ForStmtNode*)stmt;
-                ctx->loop_depth++;
+                ctx->block_depth++;
                 // The init clause declares INSIDE the loop's own scope (`i` in
                 // `for i := 0; ...`), so it is counted at the raised depth.
                 //
@@ -568,7 +583,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 }
                 ctx->in_loop_header = saved_header;
                 walk_stmts(ctx, n->body);
-                ctx->loop_depth--;
+                ctx->block_depth--;
                 break;
             }
 
@@ -603,10 +618,13 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 SwitchStmtNode* n = (SwitchStmtNode*)stmt;
                 // `default:` is an AST_CASE_CLAUSE with NULL exprs -- the parser
                 // never builds AST_DEFAULT_CLAUSE -- so one test covers both.
+                // A BREAK SCOPE, so the depth rises exactly as cfctx's does.
+                ctx->block_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_CASE_CLAUSE) { ctx->out->unreadable = true; continue; }
                     walk_stmts(ctx, ((CaseClauseNode*)c)->body);
                 }
+                ctx->block_depth--;
                 break;
             }
 
@@ -620,15 +638,21 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 if (n->bind_name && n->bind_name->type == AST_IDENTIFIER) {
                     note_declaration(ctx, ((IdentifierNode*)n->bind_name)->name, NULL);
                 }
+                // A BREAK SCOPE. The bind above is recorded BEFORE this rise,
+                // which keeps its existing NOT_OWNED cause (row 30).
+                ctx->block_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_TYPE_CASE) { ctx->out->unreadable = true; continue; }
                     walk_stmts(ctx, ((TypeCaseNode*)c)->body);
                 }
+                ctx->block_depth--;
                 break;
             }
 
             case AST_SELECT_STMT: {
                 SelectStmtNode* n = (SelectStmtNode*)stmt;
+                // A BREAK SCOPE, as cfctx_push_break_scope makes it.
+                ctx->block_depth++;
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_SELECT_CASE) { ctx->out->unreadable = true; continue; }
                     SelectCaseNode* sc = (SelectCaseNode*)c;
@@ -673,6 +697,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                     }
                     walk_stmts(ctx, sc->body);
                 }
+                ctx->block_depth--;
                 break;
             }
 
@@ -925,7 +950,7 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     //                 docs/adr/0002-measurements/loop_carried_store_findings.md,
     //                 where this shape and a plain dead local were shown to be
     //                 INDISTINGUISHABLE under the old condition 4.
-    if (r->loop_depth > 0) {
+    if (r->block_depth > 0) {
         if (r->loop_header) return RELEASE_NO_LOOP_SCOPE;
         // The scanner met an expression it could not descend somewhere in this
         // function, so no loop-declared local here has a trustworthy answer.
@@ -997,7 +1022,7 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         if (!name) continue;
 
         Collected c = { 0 };
-        WalkCtx ctx = { .out = &c, .loop_depth = 0, .arena_depth = 0,
+        WalkCtx ctx = { .out = &c, .block_depth = 0, .arena_depth = 0,
                         .in_loop_header = false, };
         walk_stmts(&ctx, ((FuncDeclNode*)d)->body);
 

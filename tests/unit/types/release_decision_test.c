@@ -305,6 +305,62 @@ static TestRow rows[] = {
         "f", { { "p", RELEASE_NO_LOOP_SCOPE } }, 1
     },
     {
+        // A SWITCH IS A BREAK SCOPE, and this row exists because it was a live
+        // use-after-free found in review of the first version of condition 6.
+        //
+        // codegen raises cfctx.loop_depth for a `switch` as well as a `for`,
+        // because both are things a `break` leaves. This walk raised its own
+        // counter only for a `for`. So `s` and `keep` read as the SAME depth,
+        // condition 6 did not mark the store between them, and the switch's
+        // `break` released `s` while `keep` still pointed at the buffer.
+        //
+        // The two counters must track each other exactly. If cfctx gains a
+        // scope kind, this walk must gain it too, and this row is what notices.
+        45, "a switch-case local stored into a LOOP-BODY local -> refuse, BLOCK_ESCAPE",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        keep := makeOwned()\n"
+        "        switch i {\n"
+        "        case 0:\n"
+        "            s := makeOwned()\n"
+        "            keep = s\n"
+        "        }\n"
+        "        _ = keep\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
+    {
+        // A GOTO MAKES THE WHOLE FUNCTION UNREADABLE, and that is load-bearing
+        // rather than incidental. The `goto` arm in codegen releases the
+        // current scope's locals before it branches, which would be wrong for a
+        // BACKWARD goto inside one iteration -- it would free a local the label
+        // still reads.
+        //
+        // That is unreachable only because this walk has no arm for a label or
+        // a goto, so both fall to `default:` and refuse every local here. If
+        // this walk ever learns labels, the codegen arm needs a real fix and
+        // this row is the tripwire that says so.
+        46, "a function containing a goto -> every local refuses, UNKNOWN",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        seen := 0\n"
+        "    again:\n"
+        "        if seen == 0 {\n"
+        "            seen = 1\n"
+        "            goto again\n"
+        "        }\n"
+        "        _ = s\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_UNKNOWN } }, 1
+    },
+    {
         // NESTED LOOPS. `s` belongs to the INNER iteration and `outer_local` to
         // the outer one, which is longer. A depth comparison is what separates
         // them -- a boolean "is it in a loop" cannot.

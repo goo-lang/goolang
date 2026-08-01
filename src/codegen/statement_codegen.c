@@ -562,12 +562,23 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 }
             }
             codegen_emit_arena_frees_to_depth(codegen, target_arena_depth);
-            // A `goto` leaving loops releases every loop-scoped local at or
-            // inside the innermost loop it departs. cfctx.loop_depth is that
-            // loop; a goto that stays inside its own loop passes the same depth
-            // and releases locals the target may still read -- refused, because
-            // condition 6 marks any local a later statement stores from, and a
-            // goto target that reads one is exactly such a store.
+            // A `goto` leaving a loop releases every loop-scoped local at or
+            // inside the innermost scope it departs.
+            //
+            // A BACKWARD goto INSIDE its own iteration would be wrong here: it
+            // passes the same depth, releases this iteration's locals, and then
+            // jumps to a label that may still read one. That is unreachable for
+            // a different and stronger reason than this arm -- release_decision
+            // has no arm for a label or a goto, so BOTH fall to its `default:`
+            // and mark the whole function unreadable. Every local in a function
+            // containing a goto therefore reads RELEASE_NO_UNKNOWN and no
+            // release site exists to emit.
+            //
+            // MEASURED, not assumed, and an earlier comment here asserted a
+            // WRONG reason: it claimed condition 6 marks a local that a later
+            // statement reads. Condition 6 marks STORES, and a read is not a
+            // store. Pinned by the release_decision row for a goto function --
+            // if that walk ever learns labels, this arm needs the real fix.
             codegen_emit_loop_scope_releases(codegen, codegen->cfctx.loop_depth);
             LLVMBasicBlockRef target = cfctx_get_or_create_goto_block(codegen, got->label);
             if (!target) {
@@ -3131,7 +3142,7 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     if (getenv("GOO_ARC_DEBUG")) {
         fprintf(stderr, "[arc] %s: will release %s at %s (field=%d, dtor=%s)\n",
                 fi->name, info->name,
-                codegen->cfctx.loop_depth > 0 ? "iteration end" : "function exit",
+                codegen->cfctx.loop_depth > 0 ? "scope exit" : "function exit",
                 field, dtor ? dtor : "none");
     }
 #else

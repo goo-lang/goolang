@@ -137,6 +137,33 @@ func nested(n int) int {
 	return hits
 }
 
+// EXIT PATH 7 — a `break` out of a SWITCH inside a loop, which is a scope
+// boundary that is NOT a loop iteration.
+//
+// THIS SHAPE WAS A LIVE USE-AFTER-FREE during review of the first version.
+// codegen raises cfctx.loop_depth for a switch (cfctx_push_break_scope), and
+// release_decision raised its own counter only for a `for`. So `s` and `keep`
+// read as the same depth, condition 6 did not mark the store between them, and
+// the switch's `break` released `s` while `keep` still pointed at it. It
+// reported 3 invalid reads, exit 0, plausible output.
+func switchBreak(reqs []string) int {
+	total := 0
+	for i := 0; i < len(reqs); i++ {
+		keep := ""
+		switch i {
+		case 0:
+			s := strings.TrimSpace(reqs[i])
+			keep = s
+			break
+		default:
+			keep = "zz"
+		}
+		// Reads the BYTES of keep, so a freed buffer is visible to valgrind.
+		total = total + len(strings.ToUpper(keep))
+	}
+	return total
+}
+
 func main() {
 	reqs := []string{"  alpha  ", "  beta  ", "  gamma  "}
 	// Reads the BYTES of a value produced inside a loop and kept past it.
@@ -149,4 +176,5 @@ func main() {
 	fmt.Println(withReturn(n))
 	fmt.Println(withLabel(n))
 	fmt.Println(nested(20))
+	fmt.Println(switchBreak(reqs))
 }
