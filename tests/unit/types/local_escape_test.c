@@ -840,6 +840,54 @@ static TestRow rows[] = {
         "f", { { .name = "nosuchlocal", .expected_escapes = true,
                  .expected_reasons = ESCAPE_REASON_ALL, .check_reasons = true } }, 1
     },
+    {
+        // THE SPLIT OF CALL_RETAIN, and this row is the half that carries no
+        // evidence. `unregistered` has no body in this unit, so nothing tells
+        // the engine what it does with `x`, and the call arm marks the argument
+        // pure-conservatively. That is SOUND and it is NOT the same fact as
+        // row 41's: there, param_escape MEASURED that `sink` stores its
+        // parameter in a global.
+        //
+        // ONE BIT USED TO CARRY BOTH, and the two want opposite actions -- the
+        // ADR 0005 pattern exactly. "It genuinely outlives the call" is a fact
+        // about the program; "we never looked" is a fact about the ANALYSIS,
+        // and only the second can be fixed by making the analysis better.
+        //
+        // MEASURED across 599 corpus programs before this split landed: 578
+        // locals carry CALL_OPAQUE against 86 carrying CALL_RETAIN, so 87% of
+        // what the old single bit reported was the analysis declining to
+        // answer. See docs/adr/0005-measurements/reason-census.md.
+        49, "an unregistered callee -> CALL_OPAQUE, never CALL_RETAIN",
+        "package main\n"
+        "func f() {\n"
+        "    x := new(int)\n"
+        "    unregistered(x)\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CALL_OPAQUE, .check_reasons = true } }, 1
+    },
+    {
+        // The THIRD cause, and it is neither of the other two. `g` HAS a
+        // summary, so this is not the no-summary case, and the summary does not
+        // reach the spread argument, so it is not evidence either. A distinct
+        // fix -- model variadic parameters -- which is why it is not folded
+        // into CALL_OPAQUE.
+        //
+        // SMALL, AND SAID SO: 12 locals across the corpus against CALL_OPAQUE's
+        // 578. It gets its own bit because the alternative is filing a
+        // no-evidence mark under an evidenced name, which is the conflation
+        // this split exists to remove.
+        50, "a spread argument -> CALL_VARIADIC, not CALL_RETAIN",
+        "package main\n"
+        "func g(xs ...*int) {\n"
+        "}\n"
+        "func f() {\n"
+        "    xs := []*int{}\n"
+        "    g(xs...)\n"
+        "}\n",
+        "f", { { .name = "xs", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CALL_VARIADIC, .check_reasons = true } }, 1
+    },
 };
 
 static int failures = 0;
@@ -875,9 +923,13 @@ static int check_reason_names(void) {
         { ESCAPE_REASON_RETURN | ESCAPE_REASON_CALLEE_VALUE, "RETURN|CALLEE_VALUE" },
         { ESCAPE_REASON_SUBSCRIPT_STORE | ESCAPE_REASON_CONTAINER_STORE,
           "CONTAINER_STORE|SUBSCRIPT_STORE" },
+        { ESCAPE_REASON_CALL_OPAQUE,     "CALL_OPAQUE"     },
+        { ESCAPE_REASON_CALL_RETAIN | ESCAPE_REASON_CALL_OPAQUE,
+          "CALL_RETAIN|CALL_OPAQUE" },
         { ESCAPE_REASON_ALL,
           "UNCLASSIFIED|RETURN|GLOBAL_STORE|CONTAINER_STORE|SUBSCRIPT_STORE|"
-          "CALL_RETAIN|CALLEE_VALUE|GO_ARG|DEFER_ARG|CHAN_SEND|CLOSURE_CAPTURE" },
+          "CALL_RETAIN|CALLEE_VALUE|GO_ARG|DEFER_ARG|CHAN_SEND|CLOSURE_CAPTURE|"
+          "CALL_OPAQUE|CALL_VARIADIC" },
     };
     int bad = 0;
     printf("=== escape_reason_names ===\n");

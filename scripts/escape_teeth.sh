@@ -190,7 +190,9 @@ CORE_MUTATIONS=(
 "reason-global-store	        escape_mark(ctx, rhs_taint, ESCAPE_REASON_GLOBAL_STORE);	        escape_mark(ctx, rhs_taint, ESCAPE_REASON_UNCLASSIFIED);"
 "reason-container-store	    escape_mark(ctx, use_reduced ? &reduced : rhs_taint, ESCAPE_REASON_CONTAINER_STORE);	    escape_mark(ctx, use_reduced ? &reduced : rhs_taint, ESCAPE_REASON_UNCLASSIFIED);"
 "reason-subscript-store	            escape_mark(ctx, &idx, ESCAPE_REASON_SUBSCRIPT_STORE);	            escape_mark(ctx, &idx, ESCAPE_REASON_UNCLASSIFIED);"
-"reason-call-retain	        if (retains) escape_mark(ctx, &arg_taints[i], ESCAPE_REASON_CALL_RETAIN);	        if (retains) escape_mark(ctx, &arg_taints[i], ESCAPE_REASON_UNCLASSIFIED);"
+"reason-call-retain	        EscapeReasons why = ESCAPE_REASON_CALL_RETAIN;	        EscapeReasons why = ESCAPE_REASON_UNCLASSIFIED;"
+"reason-call-opaque	            why = ESCAPE_REASON_CALL_OPAQUE;	            why = ESCAPE_REASON_UNCLASSIFIED;"
+"reason-call-variadic	            why = ESCAPE_REASON_CALL_VARIADIC;   // a spread: no summary reaches it	            why = ESCAPE_REASON_UNCLASSIFIED;"
 "reason-callee-value	        escape_mark(ctx, &callee_taint, ESCAPE_REASON_CALLEE_VALUE);	        escape_mark(ctx, &callee_taint, ESCAPE_REASON_UNCLASSIFIED);"
 "reason-go-arg	                handle_go_call(ctx, ((GoStmtNode*)stmt)->call, ESCAPE_REASON_GO_ARG);	                handle_go_call(ctx, ((GoStmtNode*)stmt)->call, ESCAPE_REASON_UNCLASSIFIED);"
 "reason-defer-arg	        handle_go_call(ctx, call_node, ESCAPE_REASON_DEFER_ARG);	        handle_go_call(ctx, call_node, ESCAPE_REASON_UNCLASSIFIED);"
@@ -199,7 +201,7 @@ CORE_MUTATIONS=(
 # DELETED, not renamed. The map-key sink disappears entirely.
 "subscript-mark-deleted	            escape_mark(ctx, &idx, ESCAPE_REASON_SUBSCRIPT_STORE);"
 )
-CORE_EXPECTED=11
+CORE_EXPECTED=13
 
 # The table sizes are PINNED, in the shape of scripts/grammar-tripwire.sh's
 # EXPECTED_SR. This is the #274 defect class, not a style rule: there, one
