@@ -199,6 +199,28 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                                                    tt);
                 }
             }
+            // The SECOND store site, and it needs the same release as pass 2
+            // below. `a, b = f()` reaches here instead, so a fix applied only
+            // to the two-value form would leak half the shape it set out to
+            // close.
+            //
+            // NO SELF-APPEND GUARD IS NEEDED HERE, and the reason is
+            // structural rather than lucky: this arm runs only when ONE value
+            // feeds TWO targets, so that value is a single call returning a
+            // struct. `append(a, x)` returns a slice, not a two-field
+            // multi-return, and could never be spread across two targets.
+            //
+            // UNPROBED TODAY, and that is stated rather than implied. Nothing
+            // reaches this store with a RELEASE_OK verdict: the value comes
+            // from a Goo callee, and condition 2 refuses it because
+            // param_escape's return_escapes describes the returned VALUE and
+            // not whether the callee allocated it fresh. Measured on
+            // examples/arc_multi_assign_probe.goo's `destructured`, which reads
+            // RELEASE_NO_NOT_OWNED for both targets. The call is a no-op until
+            // that changes, which is exactly why it is here -- the day
+            // condition 2 learns to read a Goo callee's freshness, this site
+            // must not be the one nobody remembered.
+            codegen_arc_release_before_store(codegen, target->llvm_value);
             LLVMBuildStore(codegen->builder, field, target->llvm_value);
         }
         value_info_free(rhs);
@@ -208,6 +230,10 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
     // Pass 1: evaluate all RHS values up front (the load-bearing step).
     LLVMValueRef rvals[2];
     Type* rtypes[2];
+    // The value's AST node, kept for pass 2's self-append guard. The guard has
+    // to ask about the SOURCE expression, and by pass 2 only the evaluated
+    // LLVM value is in hand.
+    ASTNode* rnodes[2] = { NULL, NULL };
     size_t n = 0;
     for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
         ValueInfo* vi = codegen_generate_expression(codegen, checker, v);
@@ -215,6 +241,7 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             codegen_error(codegen, stmt->pos, "Failed to evaluate multi-assign value");
             return 0;
         }
+        rnodes[n] = v;
         // Read the current value of an lvalue operand NOW, before any store.
         if (vi->is_lvalue && vi->goo_type) {
             LLVMTypeRef vt = codegen_type_to_llvm(codegen, vi->goo_type);
@@ -303,6 +330,33 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                     sval = codegen_coerce_to_type(codegen, sval,
                                                   type_is_signed(rtypes[i]), tt);
                 }
+            }
+            // Free what this slot holds before the store drops it -- the same
+            // rule the single-assign arm applies, and the reason `a, b = x, y`
+            // used to leak both previous values. Measured on
+            // examples/arc_multi_assign_probe.goo: 44,999 bytes in 2,000 blocks
+            // leaked with release ON, which is what release OFF leaks.
+            //
+            // POSITION IS THE WHOLE CORRECTNESS ARGUMENT, and it is why this
+            // sits in PASS 2 rather than beside pass 1's evaluation. `a, b = b,
+            // a` reads BOTH rvalues in pass 1, before either store. Releasing
+            // during pass 1 would free a buffer the other target is about to
+            // store, and the swap would read freed memory. Here every rvalue is
+            // already in hand, exactly as the single-assign arm relies on for
+            // `s = s + "x"`.
+            //
+            // THE SELF-APPEND GUARD IS NOT OPTIONAL, and it is the SAME
+            // predicate, not a second copy. `a, b = append(a, x), y` is not a
+            // rebind: goo_slice_append reallocs and goo_realloc frees the old
+            // base itself, so the pointer in the slot is ALREADY dangling and
+            // releasing it is a double free. Reimplementing the test here would
+            // give two rules that must agree while different code maintains
+            // them -- the shape that already cost this branch a use-after-free
+            // in #284.
+            if (!(t->type == AST_IDENTIFIER && rnodes[i] &&
+                  release_decision_is_self_append(((IdentifierNode*)t)->name,
+                                                  rnodes[i]))) {
+                codegen_arc_release_before_store(codegen, target->llvm_value);
             }
             // Do NOT free `target`: for an identifier it aliases the live
             // value-table entry (freeing it would undefine the variable).

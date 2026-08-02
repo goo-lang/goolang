@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth arc-concat-operand-probe arc-map-key-local-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -3274,6 +3274,7 @@ VERIFY_ALL_DEPS := \
     escape-teeth \
     arc-reassign-probe \
     arc-map-key-local-probe \
+    arc-multi-assign-probe \
     obj-header-test \
     obj-header-tsan \
     arena-routing-test \
@@ -5276,6 +5277,22 @@ arc-concat-operand-probe: $(COMPILER) $(RUNTIME_LIB)
 # Measured: 262,205 -> 82,205 bytes, 180,000 reclaimed, valgrind clean.
 arc-map-key-local-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_map_key_local_probe.sh
+
+# A MULTI-ASSIGN TARGET GETS NO STORE RELEASE — closed 2026-08-02.
+#
+# codegen_arc_release_before_store had ONE caller, the single-assign arm, so
+# `a, b = x, y` wrote into two slots and freed neither previous value. Carried
+# across three handoffs as "untested rather than proven absent". Measured:
+# 44,999 bytes in 2,000 blocks leaked with release ON, which is what release
+# OFF leaks.
+#
+# TWO MUTATIONS, BOTH PROVEN TO GO RED:
+#   disable the pass-2 release  -> 2 blocks reclaimed, not 1,501
+#   remove the self-append guard -> 5 invalid reads, WITH IDENTICAL OUTPUT and
+#                                   an identical block count. Only the
+#                                   memory-error check sees that one.
+arc-multi-assign-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/arc_multi_assign_probe.sh
 
 # KNOWN-RED, AND IN NO GATE ON PURPOSE — the SECOND one, and the same rule
 # applies: not in VERIFY_ALL_DEPS, and not to be added while it fails.

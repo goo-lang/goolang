@@ -1,0 +1,90 @@
+// A MULTI-ASSIGN TARGET GETS NO STORE RELEASE.
+//
+// `a, b = x, y` writes into two slots and frees neither previous value.
+// codegen_arc_release_before_store had ONE caller -- the single-assign path in
+// expression_codegen.c -- so the identical shape spelled with a comma leaked.
+// A LEAK, never a use-after-free: nothing is freed too early, the old buffers
+// are simply never freed at all.
+//
+// Carried unchanged across three handoffs as "untested rather than proven
+// absent". This is the test.
+//
+// SHAPE, and why each part is here:
+//   reassigned  the plain leak. Two owned strings dropped every iteration.
+//   swapped     `a, b = b, a` must STILL work. Pass 1 reads both rvalues
+//               before pass 2 writes either, and a release inserted between
+//               them would free a buffer the other target is about to store.
+//               If this prints the wrong answer, the release went in the
+//               wrong place.
+//   destructured  the SECOND store site. `a, b = f()` extracts two fields
+//               from one struct and stores each, on a different code path
+//               from the two-value form. One fix that misses this leaks half.
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+// Two owned buffers replaced every iteration. Before the fix, 2 per iteration
+// leak; after it, both old values are released at the store.
+func reassigned(n int) int {
+	a := ""
+	b := ""
+	for i := 0; i < n; i++ {
+		a, b = strings.ToUpper("alpha"), strings.ToUpper("bravo")
+	}
+	return len(a) + len(b)
+}
+
+// The swap must survive the release. Its correctness is what proves the
+// release does not run BETWEEN the two rvalue reads.
+func swapped(n int) string {
+	a := strings.ToUpper("left")
+	b := strings.ToUpper("right")
+	for i := 0; i < n; i++ {
+		a, b = b, a
+	}
+	return a
+}
+
+func pair() (string, string) {
+	return strings.ToUpper("charlie"), strings.ToUpper("delta")
+}
+
+// The destructure store site: one struct, two ExtractValue stores.
+func destructured(n int) int {
+	a := ""
+	b := ""
+	for i := 0; i < n; i++ {
+		a, b = pair()
+	}
+	return len(a) + len(b)
+}
+
+// THE SELF-APPEND GUARD, and it is why this function exists.
+//
+// `xs, tag = append(xs, v), t` is NOT a rebind. goo_slice_append reallocs and
+// goo_realloc frees the old base ITSELF, so the pointer still in the slot is
+// already dangling when the store runs. Releasing it is a double free, and the
+// single-assign arm learned that in #284 at the cost of a use-after-free.
+//
+// Without the guard on the multi-assign arm this is an invalid read or a
+// refcount panic, NOT a leak -- which is the one failure direction in this
+// fixture that is not silent.
+func selfAppend(n int) int {
+	xs := []string{}
+	tag := ""
+	for i := 0; i < n; i++ {
+		xs, tag = append(xs, "x"), strings.ToUpper("tag")
+	}
+	return len(xs) + len(tag)
+}
+
+func main() {
+	n := 500
+	fmt.Println(reassigned(n))
+	fmt.Println(swapped(n))
+	fmt.Println(destructured(n))
+	fmt.Println(selfAppend(n))
+}
