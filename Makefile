@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -3272,6 +3272,7 @@ VERIFY_ALL_DEPS := \
     release-decision-test \
     release-decision-teeth \
     escape-teeth \
+    escape-arm-coverage-selftest \
     arc-reassign-probe \
     arc-map-key-local-probe \
     arc-multi-assign-probe \
@@ -5038,9 +5039,17 @@ $(eval $(call ESCAPE_TEETH_RULES,local,LOCAL))
 # swaps src/types/escape_core.c instead and links it in place of the ordinary
 # object, so the suite sees a mutated engine and its own unmodified pass.
 #
-# Only `local` gets a rule. It is the only suite with rows that assert a reason
-# SET, so it is the only one a renamed reason can move. param and block would
-# report UNGUARDED for all eleven entries, which is true and says nothing.
+# ALL THREE PASSES GET A RULE as of 2026-08-02, and the reason changed.
+# Originally only `local` had one: it is the only suite whose rows assert a
+# reason SET, so it is the only one a renamed REASON can move, and param/block
+# would report UNGUARDED for all eleven reason entries — true, and useless.
+#
+# scripts/escape_arm_coverage.sh needs all three for a DIFFERENT axis. It
+# mutates an ARM of the shared engine, not a reason, and every pass reads every
+# arm, so a deleted `case` must be shown to move whichever suite covers it.
+# That script used to mutate the TRACKED src/types/escape_core.c in place and
+# restore it from a trap — and its own header records the run where that trap
+# DESTROYED uncommitted work. These rules are what let it stop.
 CORE_ESCAPE_SRC ?= $(SRCDIR)/types/escape_core.c
 
 # No DEPFLAGS, same reason as the pass rule above: a .d file would record the
@@ -5049,17 +5058,45 @@ $(BUILDDIR)/teeth/escape_core.o: $(CORE_ESCAPE_SRC) | $(BUILDDIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
 
-# DELIBERATELY not local_escape_test, for the reason the pass rule gives: under
+# One template, three passes — NOT three copied blocks. Copy-drift across
+# near-identical blocks is the #274 defect class, which left a mutation dead for
+# two months while its verdict line kept printing.
+#
+# DELIBERATELY not <pass>_escape_test, for the reason the pass rule gives: under
 # `make -j` the ordinary suite can run at the same time and must never find a
 # mutant behind its own name.
-local_core_teeth_test: $(TEST_UNIT_DIR)/types/local_escape_test.c \
-                       $(BUILDDIR)/teeth/escape_core.o \
-                       $(filter-out $(BUILDDIR)/types/escape_core.o,$(SRC_OBJS))
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+define CORE_TEETH_RULES
+$(1)_core_teeth_test: $$(TEST_UNIT_DIR)/types/$(1)_escape_test.c \
+                      $$(BUILDDIR)/teeth/escape_core.o \
+                      $$(filter-out $$(BUILDDIR)/types/escape_core.o,$$(SRC_OBJS))
+	$$(CC) $$(CFLAGS) $$(LLVM_CFLAGS) -o $$@ $$^ $$(LDFLAGS) $$(LLVM_LDFLAGS)
+endef
+
+$(eval $(call CORE_TEETH_RULES,param))
+$(eval $(call CORE_TEETH_RULES,block))
+$(eval $(call CORE_TEETH_RULES,local))
 
 escape-teeth:
 	@echo "Running escape-pass mutation teeth (param, block, local, reasons)..."
 	./scripts/escape_teeth.sh
+
+# THE SEVEN CONTROLS of the arm-coverage harness, and ONLY those.
+#
+# The controls are what prove the harness can report a NEGATIVE. A matrix that
+# can only ever print COVERED is not an instrument, and control 7 was found
+# FAILING in a worktree during the ADR 0005 work -- it had gone stale because
+# the suite it measures got BETTER, and nothing was running it.
+#
+# THE FULL MATRIX IS DELIBERATELY NOT HERE. It rebuilds and re-runs three suites
+# for each of 17 arms per mode, which is tens of minutes against verify-core's
+# ~2. The self-test is 11s with a warm ccache. Measured, both.
+#
+# This became gateable on 2026-08-02, when the script stopped mutating the
+# tracked src/types/escape_core.c and started writing every mutant to a scratch
+# copy that CORE_ESCAPE_SRC points the build at.
+escape-arm-coverage-selftest: $(COMPILER)
+	@echo "Running escape-arm-coverage self-test (7 controls)..."
+	./scripts/escape_arm_coverage.sh --self-test
 
 block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(SRC_OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
