@@ -31,11 +31,22 @@
 # COVERED. Run --self-test first; it proves this script can report both a
 # positive and a negative before any cell of the matrix is believed.
 #
+# NOT IN verify-core, AND THE REASON IS RUN TIME RATHER THAN SAFETY (2026-08-02).
+# It no longer writes to the tracked tree -- see ENGINE_TRACKED below -- so the
+# objection that kept it out is gone. What keeps it out now is cost: the full
+# matrix rebuilds and re-runs three suites for each of ~40 arm/mode pairs, which
+# is tens of minutes against verify-core's ~2. `--self-test` is 7 controls and
+# is the part worth running often.
+#
 # Usage:
-#   scripts/escape_arm_coverage.sh --self-test     # the three controls
+#   scripts/escape_arm_coverage.sh --self-test     # the seven controls
 #   scripts/escape_arm_coverage.sh                 # full matrix, all arms
 #   scripts/escape_arm_coverage.sh AST_INDEX_EXPR  # one arm
 #   scripts/escape_arm_coverage.sh --baseline      # unmutated suites only
+#
+# RUNS ON A DIRTY TREE. It used to refuse, because a mutation landed in the
+# tracked file and a dirty tree made restoring it ambiguous. Nothing tracked is
+# written now.
 
 set -uo pipefail
 
@@ -43,7 +54,23 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo "FATAL: not in a git repository" >&2; exit 2; }
 cd "$REPO_ROOT" || exit 2
 
-ENGINE="src/types/escape_core.c"
+# THE TRACKED ENGINE IS ONLY EVER READ. Every mutant is written to a scratch
+# copy under $WORK, and `make ... CORE_ESCAPE_SRC=<copy>` compiles that instead
+# (Makefile: the $(BUILDDIR)/teeth/escape_core.o rule, plus the three
+# <pass>_core_teeth_test targets). The mutant object REPLACES the real one on
+# the link line via filter-out -- without that both link, the linker picks one,
+# and the matrix measures nothing.
+#
+# THIS SCRIPT USED TO MUTATE THE TRACKED FILE IN PLACE and restore it from an
+# EXIT trap. The header above records the run where that trap DESTROYED
+# uncommitted work: assert_engine_clean found a modified engine and called
+# `die`, which fired the trap, which ran `git checkout --` and threw away the
+# very edit the guard was complaining about. A `kill -9` could also leave a
+# mutant on disk for the next `git add` to commit. Neither failure is reachable
+# now, because nothing tracked is written -- which is also what makes this
+# script safe to put in verify-core.
+ENGINE_TRACKED="src/types/escape_core.c"
+ENGINE=""            # set to the scratch copy once $WORK exists
 ANCHOR='    if (!expr) return escape_taint_new(n);'
 # The statement walk is a SECOND arm population, and the more dangerous one:
 # escape_walk_stmt's arms ARE the sinks (`return`, `go f(x)`, assignment,
@@ -53,6 +80,8 @@ STMT_ANCHOR='    for (; stmt; stmt = stmt->next) {'
 MARKER='ESCAPE_ARM_COVERAGE_MUTATION'
 SUITES=(param block local)
 WORK="${ESCAPE_ARM_WORKDIR:-$(mktemp -d)}"
+mkdir -p "$WORK"
+ENGINE="$WORK/escape_core.c"
 
 die() { printf 'FATAL: %s\n' "$*" >&2; exit 2; }
 
@@ -69,16 +98,25 @@ die() { printf 'FATAL: %s\n' "$*" >&2; exit 2; }
 # protect that work and deleted it instead. Measured: an uncommitted `is_append`
 # arm vanished, and the test row that covered it went from PASS to FAIL.
 INJECTED=0
+
+# RESTORE IS NOW A COPY, NOT A `git checkout`. Each measurement starts from a
+# fresh copy of the tracked engine, so "restore" means "put the pristine text
+# back in the scratch file". No git command touches the working tree, and
+# neither a `die` nor a `kill -9` can lose anything.
 restore_engine() {
-    [ "$INJECTED" -eq 1 ] || return 0
-    git checkout -- "$ENGINE" 2>/dev/null
+    cp "$ENGINE_TRACKED" "$ENGINE"
     INJECTED=0
 }
-trap restore_engine EXIT INT TERM
+trap 'rm -rf "$WORK"' EXIT INT TERM
 
+# The clean-tree requirement is GONE, deliberately, and this note replaces it.
+# It existed because a mutation landed in the tracked file and a dirty tree made
+# the restore ambiguous. Nothing tracked is written now, so the script runs on a
+# dirty tree -- which is the whole point of moving it: a gate that refuses to
+# run mid-edit is a gate nobody runs.
 assert_engine_clean() {
-    git diff --quiet -- "$ENGINE" \
-        || die "$ENGINE is modified; commit or stash before running"
+    [ -f "$ENGINE_TRACKED" ] || die "$ENGINE_TRACKED not found"
+    cp "$ENGINE_TRACKED" "$ENGINE" || die "cannot copy engine to $ENGINE"
 }
 
 # ---------------------------------------------------------------------------
@@ -119,6 +157,28 @@ arms_for_mode() {
 #
 # A precision row cannot catch an `under` mutation and a soundness row cannot
 # catch an `over` one, so the two matrices are complementary, not redundant.
+#
+# A MEASURED CONSEQUENCE, found 2026-08-02 while proving this script's own gate
+# can go red. `AST_POSTFIX_EXPR` reads COVERED for all three passes in the
+# `over` matrix, and NO suite catches it in the `under` direction: replacing the
+# arm body with `return escape_taint_new(n)` leaves param 166/0, block 112/0 and
+# local 70/0 -- all 348 assertions green over an arm that claims `i++` aliases
+# nothing.
+#
+# COVERED IN THE `over` MATRIX IS NOT COVERAGE. The two directions are separate
+# questions and this table answers only one of them at a time. Run the `under`
+# matrix before calling an arm covered, and remember which direction can dangle
+# a pointer: `under`.
+#
+# THAT SENTENCE IS NOW WRONG FOR `local`, and the exception is worth knowing
+# because it is cheap to reuse. An EXACT-REASON-SET row is a soundness row AND a
+# precision row at once. An `over` mutation adds UNCLASSIFIED to every slot it
+# touches: a row asserting `escapes == true` cannot see that, because true stays
+# true, but a row asserting the exact SET sees the extra bit immediately.
+# Measured (ADR 0005): local row 42 alone moved AST_UNARY_EXPR,
+# AST_SELECTOR_EXPR, AST_FUNC_LIT and AST_STRUCT_LITERAL from GAP to COVERED --
+# four arms closed by one row. param and block have no reason-set rows, so the
+# original sentence still holds for them.
 # ---------------------------------------------------------------------------
 #   MODE=stmt-over   the statement arm behaves as ABSENT: escape_mark_all, which
 #                    is exactly what walk_stmt's default arm does. Precision.
@@ -171,8 +231,15 @@ PY
     INJECTED=1
 }
 
+# Builds the THREE TEETH BINARIES, never the ordinary suites.
+#
+# CORE_ESCAPE_SRC points the build/teeth/escape_core.o rule at the scratch copy.
+# The names differ from the ordinary suites on purpose: under `make -j` the real
+# suite can run at the same time, and it must never find a mutant behind its own
+# name.
 build() {
-    make param_escape_test block_escape_test local_escape_test > "$1" 2>&1
+    make param_core_teeth_test block_core_teeth_test local_core_teeth_test \
+         CORE_ESCAPE_SRC="$ENGINE" > "$1" 2>&1
     return $?
 }
 
@@ -224,7 +291,7 @@ reach() {
     inject_reach "$which" "${arms[@]}"
     build "$WORK/build_reach.log" || die "reach build failed; see $WORK/build_reach.log"
     for s in "${SUITES[@]}"; do
-        "./${s}_escape_test" > "$WORK/reach_${s}.out" 2> "$WORK/reach_${s}.err"
+        "./${s}_core_teeth_test" > "$WORK/reach_${s}.out" 2> "$WORK/reach_${s}.err"
         grep -q "${s}_escape_test summary:" "$WORK/reach_${s}.out" \
             || die "$s produced no summary line under the reach probe"
     done
@@ -246,7 +313,7 @@ reach() {
 #   PARSE - summary line present but not in the expected shape
 suite_status() {
     local s="$1" log="$2" failed
-    "./${s}_escape_test" > "$log" 2>&1
+    "./${s}_core_teeth_test" > "$log" 2>&1
     if ! grep -q "${s}_escape_test summary:" "$log"; then echo CRASH; return; fi
     failed=$(grep -oP "${s}_escape_test summary: [0-9]+ assertions passed, \K[0-9]+" "$log")
     [ -n "$failed" ] || { echo PARSE; return; }
