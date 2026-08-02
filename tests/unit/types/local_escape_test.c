@@ -848,29 +848,72 @@ static int checks = 0;
 // A failing reason row must say WHICH reason differs. `reasons=48, expected 16`
 // sends the reader to the header to decode two bit patterns by hand, and the
 // interesting failure -- one extra bit -- is the one hardest to read that way.
+//
+// THE NAME TABLE MOVED INTO escape_core (escape_reason_names). It used to live
+// here, and codegen's GOO_ARC_DEBUG line needed the same thing -- two copies of
+// a table keyed on an enum drift the moment a reason is added, which is exactly
+// the #274 class. One table, two readers.
 static void print_reasons(EscapeReasons why) {
-    static const struct { EscapeReasons bit; const char* name; } NAMES[] = {
-        { ESCAPE_REASON_UNCLASSIFIED,    "UNCLASSIFIED"    },
-        { ESCAPE_REASON_RETURN,          "RETURN"          },
-        { ESCAPE_REASON_GLOBAL_STORE,    "GLOBAL_STORE"    },
-        { ESCAPE_REASON_CONTAINER_STORE, "CONTAINER_STORE" },
+    char buf[ESCAPE_REASON_NAMES_MAX];
+    printf("%s", escape_reason_names(why, buf, sizeof buf));
+}
+
+// The name table is now shared with codegen, so it needs its own assertions
+// rather than being exercised only as failure decoration. These run BEFORE the
+// row loop: a broken decoder makes every row's failure output a lie, so it must
+// be the first thing proved.
+//
+// WHY THE FULL-SET ROW MATTERS. ESCAPE_REASON_ALL is `(1 << 11) - 1`. If a
+// reason is added to the header and NOT to the table, the header's ALL grows a
+// bit the table cannot name and this row fails -- which is the only automatic
+// notice that the two went out of step.
+static int check_reason_names(void) {
+    static const struct { EscapeReasons why; const char* want; } CASES[] = {
+        { ESCAPE_REASON_NONE,            "NONE"            },
         { ESCAPE_REASON_SUBSCRIPT_STORE, "SUBSCRIPT_STORE" },
-        { ESCAPE_REASON_CALL_RETAIN,     "CALL_RETAIN"     },
         { ESCAPE_REASON_CALLEE_VALUE,    "CALLEE_VALUE"    },
-        { ESCAPE_REASON_GO_ARG,          "GO_ARG"          },
-        { ESCAPE_REASON_DEFER_ARG,       "DEFER_ARG"       },
-        { ESCAPE_REASON_CHAN_SEND,       "CHAN_SEND"       },
-        { ESCAPE_REASON_CLOSURE_CAPTURE, "CLOSURE_CAPTURE" },
+        { ESCAPE_REASON_RETURN | ESCAPE_REASON_CALLEE_VALUE, "RETURN|CALLEE_VALUE" },
+        { ESCAPE_REASON_SUBSCRIPT_STORE | ESCAPE_REASON_CONTAINER_STORE,
+          "CONTAINER_STORE|SUBSCRIPT_STORE" },
+        { ESCAPE_REASON_ALL,
+          "UNCLASSIFIED|RETURN|GLOBAL_STORE|CONTAINER_STORE|SUBSCRIPT_STORE|"
+          "CALL_RETAIN|CALLEE_VALUE|GO_ARG|DEFER_ARG|CHAN_SEND|CLOSURE_CAPTURE" },
     };
-    if (why == ESCAPE_REASON_NONE) { printf("NONE"); return; }
-    const char* sep = "";
-    for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
-        if (why & NAMES[i].bit) { printf("%s%s", sep, NAMES[i].name); sep = "|"; }
+    int bad = 0;
+    printf("=== escape_reason_names ===\n");
+    for (size_t i = 0; i < sizeof(CASES) / sizeof(CASES[0]); i++) {
+        char buf[ESCAPE_REASON_NAMES_MAX];
+        const char* got = escape_reason_names(CASES[i].why, buf, sizeof buf);
+        if (strcmp(got, CASES[i].want) != 0) {
+            printf("  FAIL: 0x%x -> \"%s\", expected \"%s\"\n",
+                   (unsigned)CASES[i].why, got, CASES[i].want);
+            bad++;
+        }
     }
+    // A short buffer must TRUNCATE rather than overrun, because codegen passes
+    // a stack buffer and a diagnostic must never be the thing that corrupts a
+    // frame. Asked of the widest input, which is the one that would overrun.
+    {
+        char tiny[8];
+        const char* got = escape_reason_names(ESCAPE_REASON_ALL, tiny, sizeof tiny);
+        if (got != tiny || strlen(got) >= sizeof tiny) {
+            printf("  FAIL: short buffer not truncated (len=%zu, cap=%zu)\n",
+                   strlen(got), sizeof tiny);
+            bad++;
+        }
+    }
+    printf("  escape_reason_names: %s\n", bad ? "FAIL" : "PASS");
+    return bad;
 }
 
 int main(void) {
     printf("Running per-local escape summary tests...\n");
+
+    // Before any row: prove the decoder. Every FAIL line below is printed
+    // through it, so a broken decoder turns each failure into a wrong claim.
+    checks++;
+    if (check_reason_names() != 0) failures++;
+
     size_t nrows = sizeof(rows) / sizeof(rows[0]);
 
     for (size_t r = 0; r < nrows; r++) {

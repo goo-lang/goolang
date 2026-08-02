@@ -158,6 +158,7 @@
 // false, with a reason that says why.
 
 #include "ast.h"
+#include "escape_core.h"   // EscapeReasons, for the diagnostic field below
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -203,6 +204,24 @@ typedef struct ReleaseDecision {
     // meaningful answer here, and the caller must check BOTH -- there is no
     // element release without a buffer release to hang it on.
     bool            owns_elems;
+
+    // WHY the escape passes marked this local, for GOO_ARC_DEBUG. Captured on
+    // the same line as `verdict`, from the same LocalEscapeResult `decide`
+    // reads, so it records the set the verdict was taken from.
+    //
+    // DIAGNOSTIC ONLY. NOTHING MAY BRANCH ON THIS FIELD. It is a second copy of
+    // state local_escape already owns, and two pieces of state that must agree
+    // while different code maintains them is the exact shape of #278's
+    // use-after-free. A copy that is only ever PRINTED cannot cause that: the
+    // worst a stale value can do is mislead a reader. The moment a decision
+    // reads it, that argument stops holding — ask local_escape directly
+    // instead, which is what `decide` does.
+    //
+    // WHY A COPY AT ALL. Codegen holds the plan and not the LocalEscapeResult,
+    // which release_plan_analyze frees. Threading the result through codegen to
+    // make a debug line work would be a far larger change than the line is
+    // worth, and it would put a live analysis result somewhere no analysis runs.
+    EscapeReasons   diagnostic_reasons;
 } ReleaseDecision;
 
 typedef struct ReleasePlanFunction {
@@ -282,6 +301,19 @@ bool release_plan_key_is_owned(const ReleasePlan* plan, const char* fn,
 // every program did before this existed.
 bool release_plan_slice_owns_elems(const ReleasePlan* plan, const char* fn,
                                    const char* local);
+
+// WHY the escape passes marked this local, for GOO_ARC_DEBUG only.
+//
+// NOTHING MAY BRANCH ON THIS. It exists so a reader can see the CAUSE beside
+// the verdict — `RELEASE_NO_ESCAPES` alone does not distinguish "a map-key
+// store marked it" from "it leaves the function", and those want opposite
+// actions. That distinction is what ADR 0005 exists for, and this is how a
+// person reads it on a real program without adding a probe.
+//
+// Returns ESCAPE_REASON_ALL on a miss, matching local_escape's fail-closed
+// contract, so an unknown local never reads as "escapes for no reason".
+EscapeReasons release_plan_diagnostic_reasons(const ReleasePlan* plan,
+                                              const char* fn, const char* local);
 
 // May the concat that consumes this operand release it?
 //

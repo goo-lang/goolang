@@ -136,6 +136,14 @@ typedef uint32_t EscapeReasons;
 // inside an arena block arena-eligible and a method storing its receiver then
 // dangled. Naming it does not lift the ceiling. It makes the ceiling
 // measurable, which is the first thing a fix would need.
+//
+// AND THE MEASUREMENT HAS NOW BEEN TAKEN, which corrects what four handoffs
+// said about this bit. Across 599 corpus programs: 138 locals, 13.1% of those
+// refused for a named escape cause. FIFTH, not first. CALL_RETAIN is the real
+// ceiling at 655 (62.0%) and UNCLASSIFIED second at 439. See
+// docs/adr/0005-measurements/reason-census.md, and note its own limit — it
+// counts LOCALS, not BYTES, and the daemon's whole 180,000-byte win was ONE
+// local. Re-take it with ./scripts/arc_reason_census.sh.
 #define ESCAPE_REASON_CALLEE_VALUE    ((EscapeReasons)1u << 6)
 
 // `go f(x)` — the goroutine outlives every boundary the three passes have.
@@ -158,6 +166,26 @@ typedef uint32_t EscapeReasons;
 // local_escape.h's fail-closed contract. Returning this rather than zero is
 // what stops a future "escapes ONLY via X" test passing on a miss.
 #define ESCAPE_REASON_ALL             ((EscapeReasons)((1u << 11) - 1u))
+
+// Enough for every name plus its separators, with room to spare. Sized once
+// here so a caller never has to work it out from the table.
+#define ESCAPE_REASON_NAMES_MAX 192
+
+// Decode a reason set into a "|"-joined list of names, written into `buf` and
+// returned for use directly in a printf argument. ESCAPE_REASON_NONE gives
+// "NONE".
+//
+// ONE TABLE, TWO READERS, and that is the point. local_escape_test decodes a
+// failing row's reasons, and codegen's GOO_ARC_DEBUG line decodes a local's.
+// A table keyed on an enum and copied into two files drifts the moment a
+// reason is added — the #274 class, where work shrinks to nothing while the
+// verdict holds still. local_escape_test's ESCAPE_REASON_ALL case is what
+// notices if a new reason reaches the header and not this table.
+//
+// TRUNCATES rather than overruns. Callers pass stack buffers, and a
+// diagnostic must never be the thing that corrupts a frame. `n` of 0 is
+// answered with the empty string via a NULL-safe path, not a write.
+const char* escape_reason_names(EscapeReasons why, char* buf, size_t n);
 
 // =============================================================================
 // TaintSet — "which of this unit's slots may this value alias"

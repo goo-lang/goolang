@@ -3081,9 +3081,25 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
     // (loop scope), which `err` never reaches. See
     // docs/superpowers/specs/2026-07-31-arc-loop-scoped-release-design.md.
     if (getenv("GOO_ARC_DEBUG")) {
-        fprintf(stderr, "[arc?] %s: %s -> %s\n", fi->name, info->name,
+        // THE REASON SET IS ON THIS LINE ON PURPOSE. `RELEASE_NO_ESCAPES` does
+        // not distinguish "a map-key store marked it" from "it leaves the
+        // function", and those two want OPPOSITE actions -- that conflation is
+        // the whole of ADR 0005. Printing the verdict alone sends a reader back
+        // to write a throwaway probe, which is how the 180,000-byte precision
+        // fix was nearly missed.
+        //
+        // It also makes the CALLEE_VALUE ceiling readable for the first time on
+        // a real program: every local with a method set is unreleasable, and
+        // include/escape_core.h says naming the ceiling does not lift it but
+        // does make it MEASURABLE, which is what a fix would need first.
+        char why[ESCAPE_REASON_NAMES_MAX];
+        fprintf(stderr, "[arc?] %s: %s -> %s (reasons=%s)\n", fi->name, info->name,
                 release_verdict_name(release_plan_verdict(codegen->release_plan,
-                                                          fi->name, info->name)));
+                                                          fi->name, info->name)),
+                escape_reason_names(
+                    release_plan_diagnostic_reasons(codegen->release_plan,
+                                                    fi->name, info->name),
+                    why, sizeof why));
     }
 
     if (!release_plan_should_release(codegen->release_plan, fi->name, info->name)) return;

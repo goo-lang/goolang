@@ -1570,6 +1570,13 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
             pf->decisions[i].local_name = strdup(c.items[i].name);
             if (!pf->decisions[i].local_name) continue;
             pf->decisions[i].verdict = decide(&c, &c.items[i], pe, le, name);
+            // DIAGNOSTIC ONLY, captured HERE so it cannot drift. `decide` reads
+            // the same `le` on the same line, so this records the reason set
+            // the verdict was actually taken from rather than one recomputed
+            // later from a table that may have moved on. Nothing branches on
+            // it -- see the field's comment in release_decision.h.
+            pf->decisions[i].diagnostic_reasons =
+                local_escape_local_reasons(le, name, c.items[i].name);
             pf->count++;
         }
 
@@ -1699,6 +1706,24 @@ bool release_plan_slice_owns_elems(const ReleasePlan* plan, const char* fn,
         return false;
     }
     return false;
+}
+
+// Fails closed on every miss, exactly as local_escape_local_reasons does, so
+// the two agree about what "I cannot answer" looks like.
+EscapeReasons release_plan_diagnostic_reasons(const ReleasePlan* plan,
+                                              const char* fn, const char* local) {
+    if (!plan || !fn || !local) return ESCAPE_REASON_ALL;
+    for (size_t i = 0; i < plan->count; i++) {
+        if (strcmp(plan->functions[i].function_name, fn) != 0) continue;
+        const ReleasePlanFunction* pf = &plan->functions[i];
+        for (size_t j = 0; j < pf->count; j++) {
+            if (strcmp(pf->decisions[j].local_name, local) == 0) {
+                return pf->decisions[j].diagnostic_reasons;
+            }
+        }
+        return ESCAPE_REASON_ALL;
+    }
+    return ESCAPE_REASON_ALL;
 }
 
 bool release_plan_key_is_owned(const ReleasePlan* plan, const char* fn,
