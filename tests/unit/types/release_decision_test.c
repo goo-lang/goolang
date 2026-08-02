@@ -360,6 +360,40 @@ static TestRow rows[] = {
         "f", { { "s", RELEASE_NO_ESCAPES } }, 1
     },
     {
+        // THE TWO-VALUE MULTI-ASSIGN REBIND, and this row is a PRECONDITION for
+        // work that lives in another module.
+        //
+        // `a, b = mk(), mk()` must reach RELEASE_OK, because codegen's
+        // multi-assign arm hangs a release-before-store on exactly this verdict
+        // (statement_codegen.c, pass 2). Until 2026-08-02 that call did not
+        // exist and `a, b = x, y` leaked both previous values -- measured at
+        // 44,999 bytes in 2,000 blocks on examples/arc_multi_assign_probe.goo,
+        // which is what release-OFF leaks.
+        //
+        // WHAT THIS ROW GUARDS is the half the probe cannot diagnose. If a
+        // future condition starts refusing this shape, the probe goes red with
+        // "expected 1501 blocks reclaimed, got N" and says nothing about WHY.
+        // This row names the module and the verdict.
+        //
+        // Row 47 above is the OTHER multi-assign shape -- one call feeding two
+        // targets, which condition 6 refuses. Both are needed: that one pins a
+        // refusal, this one pins an acceptance, and a suite with only refusals
+        // is satisfied by a rule that refuses everything.
+        48, "two-value multi-assign rebind -> release both targets",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    a := makeOwned()\n"
+        "    b := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        a, b = makeOwned(), makeOwned()\n"
+        "    }\n"
+        "    _ = a\n"
+        "    _ = b\n"
+        "}\n",
+        "f", { { "a", RELEASE_OK }, { "b", RELEASE_OK } }, 2
+    },
+    {
         // A GOTO MAKES THE WHOLE FUNCTION UNREADABLE, and that is load-bearing
         // rather than incidental. The `goto` arm in codegen releases the
         // current scope's locals before it branches, which would be wrong for a
