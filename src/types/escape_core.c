@@ -124,6 +124,57 @@ static inline EscapeReasons reason_or_unclassified(EscapeReasons why) {
     return why ? why : ESCAPE_REASON_UNCLASSIFIED;
 }
 
+// THE ONLY NAME TABLE FOR EscapeReasons. Both readers -- local_escape_test's
+// failure output and codegen's GOO_ARC_DEBUG line -- come through here, so a
+// reason added to the header without a name here is caught by that test's
+// ESCAPE_REASON_ALL case rather than by a reader silently printing a gap.
+//
+// Order is BIT ORDER, not alphabetical, so a printed set reads the same way
+// twice and can be diffed between two runs.
+const char* escape_reason_names(EscapeReasons why, char* buf, size_t n) {
+    static const struct { EscapeReasons bit; const char* name; } NAMES[] = {
+        { ESCAPE_REASON_UNCLASSIFIED,    "UNCLASSIFIED"    },
+        { ESCAPE_REASON_RETURN,          "RETURN"          },
+        { ESCAPE_REASON_GLOBAL_STORE,    "GLOBAL_STORE"    },
+        { ESCAPE_REASON_CONTAINER_STORE, "CONTAINER_STORE" },
+        { ESCAPE_REASON_SUBSCRIPT_STORE, "SUBSCRIPT_STORE" },
+        { ESCAPE_REASON_CALL_RETAIN,     "CALL_RETAIN"     },
+        { ESCAPE_REASON_CALLEE_VALUE,    "CALLEE_VALUE"    },
+        { ESCAPE_REASON_GO_ARG,          "GO_ARG"          },
+        { ESCAPE_REASON_DEFER_ARG,       "DEFER_ARG"       },
+        { ESCAPE_REASON_CHAN_SEND,       "CHAN_SEND"       },
+        { ESCAPE_REASON_CLOSURE_CAPTURE, "CLOSURE_CAPTURE" },
+    };
+    if (!buf || n == 0) return "";
+    buf[0] = '\0';
+
+    size_t used = 0;
+    const char* sep = "";
+    for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
+        if (!(why & NAMES[i].bit)) continue;
+        // Truncate rather than overrun: stop the moment the next name plus its
+        // separator would not fit, leaving what is already written intact.
+        size_t need = strlen(sep) + strlen(NAMES[i].name);
+        if (used + need + 1 > n) break;
+        memcpy(buf + used, sep, strlen(sep));
+        used += strlen(sep);
+        memcpy(buf + used, NAMES[i].name, strlen(NAMES[i].name));
+        used += strlen(NAMES[i].name);
+        buf[used] = '\0';
+        sep = "|";
+    }
+    if (used == 0) {
+        // NONE and "the buffer was too small for even the first name" are not
+        // the same thing, but both leave nothing to print. NONE is the honest
+        // answer for a zero set, and a set this narrow cannot arise from a
+        // caller that sized its buffer with ESCAPE_REASON_NAMES_MAX.
+        const char* none = (why == ESCAPE_REASON_NONE) ? "NONE" : "?";
+        size_t len = strlen(none);
+        if (len + 1 <= n) memcpy(buf, none, len + 1);
+    }
+    return buf;
+}
+
 void escape_mark(EscapeCtx* ctx, const TaintSet* t, EscapeReasons why) {
     why = reason_or_unclassified(why);
     size_t n = t->n < ctx->slot_count ? t->n : ctx->slot_count;
