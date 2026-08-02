@@ -192,16 +192,30 @@ length while the block count holds.
   cheap fix. Swift ships the same way.
 - **Every local with a method set is unreleasable** — `sync.Mutex`,
   `bytes.Buffer`, `os.File`, any user struct with methods. This is the
-  CALLEE_VALUE ceiling, named at include/escape_core.h:128 and load-bearing
+  CALLEE_VALUE ceiling, named at include/escape_core.h and load-bearing
   (discarding the taint dangled a receiver). **MEASURED 2026-08-02: 138
   locals, 13.1% of those refused for a named escape cause — fifth, not
-  first.** `CALL_RETAIN` is the real ceiling at 655 (62.0%) and
-  `UNCLASSIFIED` second at 439. Full table, and the severe limit that it
-  counts LOCALS and not BYTES, in
-  docs/adr/0005-measurements/reason-census.md.
-  Re-take it with `./scripts/arc_reason_census.sh`, or read any one program
-  with `GOO_ARC_DEBUG=1 ./bin/goo -o /dev/null prog.goo`, which prints a
-  verdict AND its reason set for each local.
+  first.**
+- **A call to a callee the analysis cannot see marks its arguments**, soundly
+  and without evidence. That is `CALL_OPAQUE`, and it is the largest reason in
+  the corpus at **578 locals** — against `CALL_RETAIN`'s **86**, which is the
+  only one backed by a `param_escape` measurement, and `CALL_VARIADIC`'s 12.
+  **87% of what the old single `CALL_RETAIN` bit reported was the analysis
+  declining to answer, not a measured escape.**
+  **216 locals are refused ONLY by a no-evidence mark** (all reading
+  `RELEASE_NO_ESCAPES`), which is the upper bound on what precision here would
+  unlock, against 365 released today.
+  **The reachable fix is NARROWER than 578 suggests**: the dominant opaque
+  callees are builtins and type conversions (`make`, `rune`, `uint64`, `int`),
+  and most of their arguments are integers no release path would free. Decide
+  the whitelist one builtin at a time, with a row each — `panic` genuinely
+  propagates and `copy` writes one buffer into another.
+
+  Full tables, and the severe limit that all of this counts LOCALS and not
+  BYTES, in docs/adr/0005-measurements/reason-census.md. Re-take with
+  `./scripts/arc_reason_census.sh`, or read any one program with
+  `GOO_ARC_DEBUG=1 ./bin/goo -o /dev/null prog.goo`, which prints a verdict
+  AND its reason set for each local.
 - **A multi-assign target gets no store release.** `a, b = x, y` stores
   without freeing what the slots held. A LEAK, never a use-after-free, and
   untested rather than proven absent.

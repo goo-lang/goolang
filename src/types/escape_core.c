@@ -144,6 +144,8 @@ const char* escape_reason_names(EscapeReasons why, char* buf, size_t n) {
         { ESCAPE_REASON_DEFER_ARG,       "DEFER_ARG"       },
         { ESCAPE_REASON_CHAN_SEND,       "CHAN_SEND"       },
         { ESCAPE_REASON_CLOSURE_CAPTURE, "CLOSURE_CAPTURE" },
+        { ESCAPE_REASON_CALL_OPAQUE,     "CALL_OPAQUE"     },
+        { ESCAPE_REASON_CALL_VARIADIC,   "CALL_VARIADIC"   },
     };
     if (!buf || n == 0) return "";
     buf[0] = '\0';
@@ -458,21 +460,39 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
                      && strcmp(callee_name, "append") == 0
                      && !selector_base_is_local(ctx, call->function);
 
+    // EACH ARM NAMES WHY IT MARKS, and the three answers are not the same fact.
+    // CALL_RETAIN means param_escape READ the callee and measured retention.
+    // CALL_OPAQUE means nobody looked. CALL_VARIADIC means a summary exists and
+    // is silent about this position. Only the last two can be removed by making
+    // the analysis better, and one bit for all three said nothing about which a
+    // reader was facing -- ADR 0005's own argument, applied a second time.
+    // Measured before the split: 578 / 86 / 12 locals respectively.
     for (i = 0; i < argc; i++) {
         bool retains;
+        // The default is the EVIDENCED reason, so an arm that forgets to name
+        // its cause claims evidence it does not have. That is the wrong
+        // direction for a default, and it is caught rather than reasoned about:
+        // escape_teeth's reason-call-retain entry mutates this line, and only
+        // row 41 -- the one call with a real summary -- keeps it honest.
+        EscapeReasons why = ESCAPE_REASON_CALL_RETAIN;
         bool variadic_tail = call->has_spread && (i == argc - 1);
         if (whitelisted) {
             retains = false; // whitelisted external retains no argument (7a')
         } else if (variadic_tail) {
             retains = true;
+            why = ESCAPE_REASON_CALL_VARIADIC;   // a spread: no summary reaches it
         } else if (is_append && i == 0) {
             retains = false;  // append does not store the slice; it returns it
         } else if (callee) {
             retains = (i < callee_count) ? callee_escapes[i] : true;
+            // Past the summary's parameter count -- a variadic user function.
+            // The summary exists, so this is not CALL_OPAQUE.
+            if (i >= callee_count) why = ESCAPE_REASON_CALL_VARIADIC;
         } else {
             retains = true; // external/unregistered/no-summaries: pure-conservative
+            why = ESCAPE_REASON_CALL_OPAQUE;
         }
-        if (retains) escape_mark(ctx, &arg_taints[i], ESCAPE_REASON_CALL_RETAIN);
+        if (retains) escape_mark(ctx, &arg_taints[i], why);
     }
 
     TaintSet result = escape_taint_new(n);

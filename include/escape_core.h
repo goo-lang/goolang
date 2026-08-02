@@ -165,7 +165,50 @@ typedef uint32_t EscapeReasons;
 // Every reason. The value a lookup returns when it cannot answer — see
 // local_escape.h's fail-closed contract. Returning this rather than zero is
 // what stops a future "escapes ONLY via X" test passing on a miss.
-#define ESCAPE_REASON_ALL             ((EscapeReasons)((1u << 11) - 1u))
+// An argument to a callee the analysis CANNOT SEE — external, unregistered, or
+// with no summary. The mark is pure conservatism, and it is sound: an unseen
+// body might store the argument anywhere.
+//
+// THE DISTINCTION FROM CALL_RETAIN IS THE POINT, and it is ADR 0005's own
+// pattern applied a second time. CALL_RETAIN is a fact ABOUT THE PROGRAM:
+// param_escape read the callee's body and measured that it keeps the argument.
+// CALL_OPAQUE is a fact ABOUT THE ANALYSIS: nobody looked. Only the second can
+// be removed by making the analysis better, and one bit carrying both told a
+// reader nothing about which they were facing.
+//
+// MEASURED across 599 corpus programs (docs/adr/0005-measurements/
+// reason-census.md), which is what justified the split rather than a guess:
+//
+//     CALL_OPAQUE     578 locals      <- the analysis declining to answer
+//     CALL_RETAIN      86 locals      <- measured retention
+//     CALL_VARIADIC    12 locals
+//
+// 216 of those locals are refused ONLY by a no-evidence mark, every one of them
+// reading RELEASE_NO_ESCAPES. That is the upper bound on what precision here
+// would buy, against 365 locals released today.
+//
+// DO NOT READ THE 578 AS A WORK PLAN. The dominant opaque callees are BUILTINS
+// AND TYPE CONVERSIONS -- `make`, `rune`, `uint64`, `int`, `new`, `close` --
+// not unregistered functions, and most of their arguments are integers that no
+// release path would ever have freed. The reachable fix is narrower than the
+// count suggests; see the census document's own caveat.
+#define ESCAPE_REASON_CALL_OPAQUE     ((EscapeReasons)1u << 11)
+
+// An argument the callee's summary DOES NOT REACH: a spread (`f(xs...)`), or an
+// argument past the summary's parameter count. Neither no-summary nor evidence
+// — a summary exists and is silent about this position.
+//
+// A SEPARATE BIT FOR 12 LOCALS, deliberately. Folding it into CALL_OPAQUE would
+// claim there is no summary when there is one; folding it into CALL_RETAIN
+// would file a no-evidence mark under an evidenced name, which is the exact
+// conflation this split removes. Its fix is also its own: model variadic
+// parameters.
+#define ESCAPE_REASON_CALL_VARIADIC   ((EscapeReasons)1u << 12)
+
+// Every reason. The value a lookup returns when it cannot answer — see
+// local_escape.h's fail-closed contract. Returning this rather than zero is
+// what stops a future "escapes ONLY via X" test passing on a miss.
+#define ESCAPE_REASON_ALL             ((EscapeReasons)((1u << 13) - 1u))
 
 // Enough for every name plus its separators, with room to spare. Sized once
 // here so a caller never has to work it out from the table.
