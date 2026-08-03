@@ -49,6 +49,9 @@ awk -F'\t' -v ALLN="$ALL_NAMES" '
     user = (fn !~ /^goo_pkg__/)     # vendored goostd is re-analysed per program
 
     total++;              if (user) utotal++
+    # BEFORE any `next` below, because several arms skip the rest of the body
+    # and a verdict counted after one of them would silently under-report.
+    vd_cnt[vd]++;         if (user) uvd_cnt[vd]++
     if (vd == "RELEASE_OK") { ok++; if (user) uok++; next }
 
     refused++;            if (user) urefused++
@@ -69,6 +72,21 @@ END {
     printf "%-34s %10d %10d\n", "     of those, reasons=NONE",  none,       unone
     printf "\nreason tallies (a local may carry several; misses excluded)\n"
     for (r in cnt) printf "%-34s %10d %10d\n", "  " r, cnt[r], ucnt[r]
+
+    # VERDICT TALLY. Added 2026-08-03, and it is a different question from the
+    # reason tally above: a REASON says why the escape analysis marked a local,
+    # a VERDICT says which condition in release_decision refused it. Only
+    # (NO APOSTROPHE ANYWHERE IN THIS BLOCK. The awk program is a single-quoted
+    # shell string, so one apostrophe ends it and bash then tries to run awk
+    # syntax. That is what happened when this comment was first written.)
+    # RELEASE_OK appeared anywhere in this output before, so the relative size
+    # of the conditions was unmeasured -- and .handoff.md item 4 planned work
+    # against a verdict this tally shows is reported ZERO times in the corpus
+    # (RELEASE_NO_REBOUND, which has no producer in src/ at all).
+    #
+    # One row per local, so unlike the reason tally these DO sum to the total.
+    printf "\nverdict tallies (one per local; these sum to the row count)\n"
+    for (v in vd_cnt) printf "%-34s %10d %10d\n", "  " v, vd_cnt[v], uvd_cnt[v]
 }' "$RAW" | tee "$OUT"
 
 echo

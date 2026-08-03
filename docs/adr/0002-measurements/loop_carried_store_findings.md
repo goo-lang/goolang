@@ -13,6 +13,15 @@ The loop-scoped-release design says this, of step D:
 This is that measurement. **It says neither option works as stated, because the
 distinguishing fact is not computed anywhere today.**
 
+> **FOLLOW-UP, 2026-08-03 — condition 6 shipped, and it is worth at most four
+> locals in the whole corpus.** `docs/adr/0005-measurements/verdict-census.md`
+> tallies `RELEASE_NO_BLOCK_ESCAPE` at **13** rows over 600 programs, of which
+> six are integers and floats with no heap allocation and three are hazards that
+> must stay refused (`carried: s` below is one of them). It also retires the
+> "loop-declared rebound local" framing this file's era produced:
+> `RELEASE_NO_REBOUND` has **no producer in `src/`** and is reported zero times,
+> while a rebound local reads `RELEASE_OK` and reclaims both allocations.
+
 ## The fixture and the verdicts
 
 Read with `GOO_ARC_DEBUG=1`. `ESCAPES` is checked BEFORE `LOOP_SCOPE`, so a
