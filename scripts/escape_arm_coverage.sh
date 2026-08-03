@@ -558,7 +558,20 @@ classify_stmt_arms() {
 matrix() {
     local mode="$1"; shift
     local arms=("$@") arm r p b l
-    printf '| Arm | param (23) | block (31) | local (16) |\n|---|---|---|---|\n'
+    # NO ROW COUNTS IN THIS HEADER, and that is deliberate rather than an
+    # omission. It used to read `param (23) | block (31) | local (16)` from this
+    # very string, so the numbers aged the moment a row landed and every matrix
+    # pasted into a document carried whatever count was baked in on the day.
+    # They were wrong by 4, 3 and 35 when this line was corrected (2026-08-03:
+    # the real counts are param 27 rows, block 34, local 51). The verdicts were
+    # never affected -- they come from real mutation runs -- but a decorative
+    # number in a measurement record is a claim, and this one was false.
+    # Take the counts from the suites themselves:
+    #   ./param_core_teeth_test -> "166 assertions passed, 0 failed, 0/27 rows failed"
+    #   ./block_core_teeth_test -> the same shape, 34 rows
+    #   ./local_core_teeth_test -> assertions ONLY; it prints no row count, so
+    #     local's 51 comes from counting the initialisers in its `rows[]` table.
+    printf '| Arm | param | block | local |\n|---|---|---|---|\n'
     for arm in "${arms[@]}"; do
         if is_equivalent_mutant "$arm" "$mode"; then
             printf '| `%s` | N/A-equivalent | N/A-equivalent | N/A-equivalent |\n' "$arm"

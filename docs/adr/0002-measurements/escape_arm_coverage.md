@@ -511,7 +511,9 @@ buys one cell.
 ### An instrument defect in this script — the header row lies
 
 `matrix()` prints `| Arm | param (23) | block (31) | local (16) |` from a
-HARDCODED string at `scripts/escape_arm_coverage.sh:460`. Those numbers are not
+HARDCODED string in `matrix()` (`scripts/escape_arm_coverage.sh`; the line
+number moved twice while this defect stood, which is its own small argument
+against citing one). Those numbers are not
 computed from the suites, and they have been wrong since the rows moved past
 them — the real counts at the time of this run are param 25, block 33, local
 32. The tables recorded above therefore carry whatever count the script had
@@ -520,6 +522,135 @@ between sections of this file.
 
 The COVERED/GAP verdicts are unaffected: those come from real mutation runs.
 Only the header is decorative. Fix it by computing the counts, or drop them.
+
+**FIXED 2026-08-03, by dropping them.** The header now reads
+`| Arm | param | block | local |`. The counts it carried were wrong by 4, 3 and
+35 by the time they were removed. Every matrix in this file above that date
+still carries the stale parenthesised number it was pasted with, and those
+numbers are decoration rather than evidence — read the row counts from the
+suites, which is what the replacement comment tells the next reader to do.
+
+## Re-measured after the reason-set arc (ADR 0005, #286–#291)
+
+Taken 2026-08-03 against `de7f092`, by `scripts/escape_arm_coverage.sh`.
+**Both soundness matrices only** — the `over` direction answers the precision
+question and was not re-run.
+
+**Why this run happened, and it is not the reason `.handoff.md` gave.** That
+file's NEXT item 5 said "nobody has run the whole under matrix", and that was
+wrong twice: both `--under` and `--stmt-under` are recorded above, and the
+`AST_POSTFIX_EXPR` gap that item calls an accidental discovery is already in the
+matrix-2 table. The real problem was AGE. Six commits changed
+`src/types/escape_core.c` or `include/escape_core.h` after `ab00c16`, the last
+run recorded here:
+
+| Commit | What it did |
+|---|---|
+| `ef6b7bf` | a method result may alias its receiver |
+| `d31e224` | the escape accumulator widened to a reason set |
+| `c978b7a` | each of the 15 mark sites names its cause |
+| **`9a74dcf`** | **a map READ no longer marks its key** |
+| `32e55d5` | the reason set prints beside the verdict |
+| `d330983` | `CALL_RETAIN` split into three causes |
+
+`9a74dcf` SUBTRACTS MARKS. `include/escape_core.h` names under-marking as the
+only bug class that can dangle a pointer, and these two matrices are the only
+instrument that measures protection against it. A mark-subtracting change is
+exactly the shape that has to be re-measured before it is trusted, and the same
+rule is applied twice above (the select-comm fix, the self-store rule).
+
+### Instrument first
+
+`--self-test`: **7 of 7 controls, `SELF-TEST PASSED`, exit 0.** Both MIXED
+controls reproduced — control 2b `PASS FAIL FAIL`, control 7 `PASS FAIL FAIL` —
+which is what rules out a guard that lands everywhere or a build that ignores
+the injection. `--baseline`: `PASS PASS PASS`.
+
+Suite sizes at this commit, read from the suites and not from the header:
+**param 166 assertions / 27 rows, block 112 / 34 rows, local 74 assertions**
+(`local_escape_test` prints no row count; its `rows[]` table holds 51
+initialisers).
+
+### Expression soundness (`--under`) — BYTE-IDENTICAL
+
+**No cell moved.** All 17 arms match "Soundness (`--under`), after" above,
+compared cell by cell rather than by eye. `AST_POSTFIX_EXPR` is still GAP in all
+three suites, with the cause the open-items table above already records.
+
+That is the result that matters for `9a74dcf`: subtracting a mark cost no
+soundness coverage anywhere in the expression walk.
+
+**The sharper form of that claim, because "no cell moved" is weaker than it
+sounds.** `9a74dcf` deletes one line — `escape_taint_union_into(&base, &idx)` —
+from the `AST_INDEX_EXPR` arm. That arm reads **`GAP | GAP | COVERED`**, both
+before and after. So the arm the mark-subtracting commit actually edited is one
+of the nine that `local` still catches under-marking on, and a mutation that
+claims the whole arm aliases nothing still turns `local` red. The commit did not
+land in a blind spot. `param` and `block` would not have noticed, and that pair
+of GAPs is unchanged rather than newly discovered.
+
+### Statement soundness (`--stmt-under`) — one cell gained, none lost
+
+| Arm | param | block | local |
+|---|---|---|---|
+| `AST_DEFER_STMT` | GAP | COVERED | GAP -> **COVERED** |
+
+Every other cell matches the recorded state, once the select-comm section's
+recorded delta for `AST_SELECT_STMT` is applied to it. Statement arms
+soundness-covered in `local` go **12 of 18 -> 13 of 18**. The expression figure
+is unchanged at 9 of 16.
+
+**The cause is measured, not inferred.** Reproducing the mutation by hand
+against a scratch copy and running `local_core_teeth_test` gives:
+
+```
+  FAIL: local 'x' escapes=0, expected 1          <- Row 34
+  FAIL: local 'x' escapes=0, expected 1          <- Row 44
+  FAIL: local 'x' reasons=NONE, expected DEFER_ARG
+local_escape_test summary: 71 assertions passed, 3 failed
+```
+
+TWO rows see it, and both landed after `ab00c16` (2026-07-29):
+
+- **row 34**, "local passed to a DEFER whose callee does not retain it -> true",
+  in `d60989d` (2026-08-01).
+- **row 44**, the ADR 0005 row asserting `DEFER_ARG` as the exact reason set.
+
+Row 44 is the second instance of the effect recorded in the harness's own
+comments: an EXACT-REASON-SET row is a soundness row and a precision row at
+once, so it catches a deleted sink that no boolean row of the same shape would
+have needed to be written for.
+
+**The table above was already known to be stale here and nobody updated it.**
+The script's control 7 was corrected on 2026-08-01 to expect `PASS FAIL FAIL`
+for this exact cell, with a comment saying local row 34 now notices. The matrix
+in this file kept saying GAP for two more days. A control that is re-run every
+`verify-core` and a table that is re-run by hand will diverge, and the table is
+the one that goes stale.
+
+**`AST_DEFER_STMT` is still GAP in `param`, and that remains a real hole rather
+than a correct answer** — `param_escape` treats a defer as an ordinary call, so
+skipping the statement drops its argument from the retention sink too. No param
+row has a defer whose callee retains its argument. Control 7's comment records
+this, and this run confirms it is still true.
+
+### What this run does NOT say
+
+- **Nothing about precision.** The `over` and `stmt-over` matrices were not
+  re-run, so no claim here covers whether the reason-set arc cost reclamation.
+- **Nothing new about the standing gaps.** TWELVE arms read GAP in all three
+  suites, exactly as before: six expression arms (`AST_POSTFIX_EXPR`,
+  `AST_SLICE_INDEX_EXPR`, `AST_ARRAY_LITERAL`, `AST_KEYED_ELEMENT`,
+  `AST_SLICE_CONVERSION`, `AST_TYPE_ASSERT`) and six statement arms
+  (`AST_IF_LET_STMT`, `AST_CONST_DECL`, `AST_UNSAFE_STMT`, `AST_ARENA_BLOCK`,
+  `AST_ASSERT_STMT`, `AST_ASSUME_STMT`).
+  **GAP is two different findings and this run cannot tell them apart.** For an
+  arm with 0 reach, GAP means no fixture makes the node at all; for a reached
+  arm it means the rows exist and none notices. The reach tables answer that,
+  and they were NOT re-run — see the next bullet. Closing any of these is
+  separate work and needs its own decision.
+- **Nothing about reach.** `--reach` and `--reach-stmt` were not re-run, so the
+  reach tables above are as old as `ab00c16`.
 
 ## Reproducing
 
