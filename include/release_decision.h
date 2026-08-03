@@ -171,7 +171,20 @@ typedef enum {
     RELEASE_NO_NOT_OWNED,       // condition 2: a borrowed view, or an alias
     RELEASE_NO_ARENA,           // condition 3: declared inside `arena { }`
     RELEASE_NO_LOOP_SCOPE,      // condition 4: declared inside a loop body
-    RELEASE_NO_REBOUND,         // condition 4: assigned again after declaration
+    // DEAD SINCE THE REASSIGN RELEASE (#285), AND THIS COMMENT USED TO CLAIM
+    // OTHERWISE. It read "condition 4: assigned again after declaration", which
+    // describes a rule the code no longer has: nothing in src/ ever assigns this
+    // verdict -- grep finds only this line, the name-table case, and comments.
+    // MEASURED 2026-08-03 over the 600-program corpus: reported ZERO times,
+    // while a rebound local (`x := mk(); x = mk()`) reads RELEASE_OK and
+    // reclaims BOTH allocations. See docs/adr/0005-measurements/verdict-census.md.
+    //
+    // IT IS KEPT RATHER THAN DELETED because the name table is what makes a
+    // resurrected producer readable, and removing a member renumbers the ones
+    // after it. What must not come back is the old comment: it cost a handoff
+    // item, which planned work against "a loop-declared rebound local" and named
+    // a cause that does not exist.
+    RELEASE_NO_REBOUND,         // DEAD: no producer in src/, 0 rows in the corpus
     RELEASE_NO_ALIASED,         // condition 7: another local names this one's value
     RELEASE_NO_BLOCK_ESCAPE,    // condition 6: stored into something outliving the iteration
     RELEASE_NO_NO_BINDING,      // no binding site found for the name
