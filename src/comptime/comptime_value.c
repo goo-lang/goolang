@@ -184,7 +184,7 @@ ComptimeValue* comptime_value_copy(const ComptimeValue* value) {
             break;
         case COMPTIME_VALUE_STRING:
             if (value->string_value) {
-                copy->string_value = strdup(value->string_value);
+                copy->string_value = xstrdup(value->string_value);
             }
             break;
         case COMPTIME_VALUE_ARRAY:
@@ -203,7 +203,7 @@ ComptimeValue* comptime_value_copy(const ComptimeValue* value) {
                 copy->struct_value.field_names = malloc(sizeof(char*) * copy->struct_value.field_count);
                 copy->struct_value.field_values = malloc(sizeof(ComptimeValue*) * copy->struct_value.field_count);
                 for (size_t i = 0; i < copy->struct_value.field_count; i++) {
-                    copy->struct_value.field_names[i] = strdup(value->struct_value.field_names[i]);
+                    copy->struct_value.field_names[i] = xstrdup(value->struct_value.field_names[i]);
                     copy->struct_value.field_values[i] = comptime_value_copy(value->struct_value.field_values[i]);
                 }
             }
@@ -277,7 +277,7 @@ bool comptime_context_bind_var(ComptimeContext* ctx, const char* name, ComptimeV
     }
     
     // Add the binding
-    ctx->var_names[ctx->var_count] = strdup(name);
+    ctx->var_names[ctx->var_count] = xstrdup(name);
     ctx->var_values[ctx->var_count] = value;
     ctx->var_count++;
     
@@ -326,7 +326,7 @@ bool comptime_context_bind_func(ComptimeContext* ctx, const char* name, ASTNode*
     }
     
     // Add the binding
-    ctx->func_names[ctx->func_count] = strdup(name);
+    ctx->func_names[ctx->func_count] = xstrdup(name);
     ctx->func_nodes[ctx->func_count] = func_node;
     ctx->func_count++;
     
@@ -380,7 +380,7 @@ ComptimeValue* comptime_value_from_bool(bool value) {
 ComptimeValue* comptime_value_from_string(const char* value) {
     ComptimeValue* val = comptime_value_new(COMPTIME_VALUE_STRING);
     if (val && value) {
-        val->string_value = strdup(value);
+        val->string_value = xstrdup(value);
     }
     return val;
 }
@@ -434,7 +434,7 @@ bool comptime_value_is_truthy(const ComptimeValue* value) {
 
 // Convert a value to string representation
 char* comptime_value_to_string(const ComptimeValue* value) {
-    if (!value) return strdup("null");
+    if (!value) return xstrdup("null");
     
     char* result = NULL;
     
@@ -446,34 +446,34 @@ char* comptime_value_to_string(const ComptimeValue* value) {
             asprintf(&result, "%g", value->float_value);
             break;
         case COMPTIME_VALUE_BOOL:
-            result = strdup(value->bool_value ? "true" : "false");
+            result = xstrdup(value->bool_value ? "true" : "false");
             break;
         case COMPTIME_VALUE_STRING:
-            result = strdup(value->string_value ? value->string_value : "");
+            result = xstrdup(value->string_value ? value->string_value : "");
             break;
         case COMPTIME_VALUE_NULL:
-            result = strdup("null");
+            result = xstrdup("null");
             break;
         case COMPTIME_VALUE_UNDEFINED:
-            result = strdup("undefined");
+            result = xstrdup("undefined");
             break;
         case COMPTIME_VALUE_ARRAY:
             // TODO: Implement array string representation
-            result = strdup("[array]");
+            result = xstrdup("[array]");
             break;
         case COMPTIME_VALUE_STRUCT:
             // TODO: Implement struct string representation
-            result = strdup("{struct}");
+            result = xstrdup("{struct}");
             break;
         case COMPTIME_VALUE_FUNCTION:
-            result = strdup("<function>");
+            result = xstrdup("<function>");
             break;
         case COMPTIME_VALUE_TYPE:
-            result = strdup("<type>");
+            result = xstrdup("<type>");
             break;
     }
     
-    return result ? result : strdup("error");
+    return result ? result : xstrdup("error");
 }
 
 // Create a new compile-time error
@@ -481,7 +481,7 @@ ComptimeError* comptime_error_new(const char* message, Position pos) {
     ComptimeError* error = xmalloc(sizeof(ComptimeError));
     if (!error) return NULL;
     
-    error->message = strdup(message);
+    error->message = xstrdup(message);
     error->position = pos;
     error->next = NULL;
     

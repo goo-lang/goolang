@@ -38,7 +38,7 @@ InferredInvariant* proof_infer_loop_invariants(ProofGenerationContext* ctx, stru
         .invariant_expr = simple_invariant,
         .domain_used = ABSTRACT_DOMAIN_INTERVALS,
         .confidence_score = 0.85,
-        .inference_method = strdup("interval_analysis"),
+        .inference_method = xstrdup("interval_analysis"),
         .next = NULL
     };
     
@@ -71,7 +71,7 @@ InferredInvariant* abstract_interpretation_intervals(
         .invariant_expr = interval_invariant,
         .domain_used = ABSTRACT_DOMAIN_INTERVALS,
         .confidence_score = 0.9,
-        .inference_method = strdup("interval_widening"),
+        .inference_method = xstrdup("interval_widening"),
         .next = NULL
     };
     
@@ -99,7 +99,7 @@ InferredInvariant* abstract_interpretation_shapes(
         .invariant_expr = shape_invariant,
         .domain_used = ABSTRACT_DOMAIN_SHAPES,
         .confidence_score = 0.75,
-        .inference_method = strdup("shape_analysis"),
+        .inference_method = xstrdup("shape_analysis"),
         .next = NULL
     };
     
@@ -142,7 +142,7 @@ TerminationMeasure* generate_termination_proof(ProofGenerationContext* ctx, stru
     *measure = (TerminationMeasure) {
         .ranking_function = ranking_func,
         .bound_condition = bound_cond,
-        .termination_argument = strdup("Loop counter decreases on each iteration")
+        .termination_argument = xstrdup("Loop counter decreases on each iteration")
     };
     
     ctx->statistics.termination_proofs++;
@@ -172,7 +172,7 @@ TerminationMeasure* discover_ranking_function(
     *measure = (TerminationMeasure) {
         .ranking_function = linear_ranking,
         .bound_condition = non_negative,
-        .termination_argument = strdup("Linear decrease in loop counter")
+        .termination_argument = xstrdup("Linear decrease in loop counter")
     };
     
     return measure;
@@ -211,15 +211,15 @@ ProofObligation* contract_to_proof_obligation(
     
     *obligation = (ProofObligation) {
         .proof_type = proof_type,
-        .description = contract->description ? strdup(contract->description) : strdup("Contract verification"),
+        .description = contract->description ? xstrdup(contract->description) : xstrdup("Contract verification"),
         .source_location = context,
         .preconditions = NULL,
         .postconditions = contract_to_smt_expression(contract, NULL),
         .invariants = NULL,
         .line = contract->line,
         .column = contract->column,
-        .filename = contract->filename ? strdup(contract->filename) : NULL,
-        .function_name = strdup("unknown"),
+        .filename = contract->filename ? xstrdup(contract->filename) : NULL,
+        .function_name = xstrdup("unknown"),
         .status = PROOF_STATUS_UNKNOWN,
         .verification_time = 0.0,
         .proof_trace = NULL,
@@ -270,9 +270,9 @@ int proof_cache_store(
     if (!entry) return 0;
     
     *entry = (ProofCache) {
-        .obligation_hash = strdup(obligation_hash),
+        .obligation_hash = xstrdup(obligation_hash),
         .cached_status = status,
-        .cached_proof = proof ? strdup(proof) : NULL,
+        .cached_proof = proof ? xstrdup(proof) : NULL,
         .cached_time = verification_time,
         .cache_timestamp = time(NULL),
         .next = cache
@@ -349,7 +349,7 @@ int generate_proof_for_assignment(
     
     *obligation = (ProofObligation) {
         .proof_type = PROOF_MEMORY_SAFETY,
-        .description = strdup("Assignment null pointer check"),
+        .description = xstrdup("Assignment null pointer check"),
         .source_location = assignment_node,
         .preconditions = NULL,
         .postconditions = null_check,
@@ -378,7 +378,7 @@ int generate_proof_for_function_call(
     
     *obligation = (ProofObligation) {
         .proof_type = PROOF_FUNCTIONAL_CORRECTNESS,
-        .description = strdup("Function call precondition verification"),
+        .description = xstrdup("Function call precondition verification"),
         .source_location = call_node,
         .preconditions = smt_const_bool(true),  // Would extract from function contract
         .postconditions = smt_const_bool(true), // Would extract from function contract
@@ -415,7 +415,7 @@ int generate_proof_for_array_access(
     
     *obligation = (ProofObligation) {
         .proof_type = PROOF_BOUNDS_CHECKING,
-        .description = strdup("Array bounds verification"),
+        .description = xstrdup("Array bounds verification"),
         .source_location = access_node,
         .preconditions = NULL,
         .postconditions = bounds_check,

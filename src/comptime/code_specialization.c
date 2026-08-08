@@ -507,7 +507,7 @@ SpecializationKey* create_specialization_key(const char* function_name,
     SpecializationKey* key = xcalloc(1, sizeof(SpecializationKey));
     if (!key) return NULL;
     
-    key->function_name = strdup(function_name);
+    key->function_name = xstrdup(function_name);
     if (!key->function_name) {
         free(key);
         return NULL;
@@ -526,10 +526,10 @@ SpecializationKey* create_specialization_key(const char* function_name,
     // Deep copy parameters
     for (size_t i = 0; i < param_count; i++) {
         key->params[i] = params[i];
-        key->params[i].param_name = strdup(params[i].param_name);
+        key->params[i].param_name = xstrdup(params[i].param_name);
         
         if (params[i].type == SPEC_TYPE_PATTERN && params[i].value.pattern_value) {
-            key->params[i].value.pattern_value = strdup(params[i].value.pattern_value);
+            key->params[i].value.pattern_value = xstrdup(params[i].value.pattern_value);
         }
     }
     

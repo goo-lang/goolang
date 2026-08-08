@@ -354,7 +354,7 @@ Result_void_ptr work_stealing_parallel_for(
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid scope or function"),
+            .message = xstrdup("Invalid scope or function"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -379,7 +379,7 @@ Result_void_ptr work_stealing_parallel_for(
                     .code = ERROR_INTERNAL,
                     .severity = ERROR_SEVERITY_ERROR,
                     .category = ERROR_CATEGORY_INTERNAL,
-                    .message = strdup("Failed to create worker threads"),
+                    .message = xstrdup("Failed to create worker threads"),
                     .hint = NULL,
                     .location = (SourceLocation){0},
                     .next = NULL
@@ -410,7 +410,7 @@ Result_void_ptr work_stealing_parallel_for(
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate task tracking array"),
+            .message = xstrdup("Failed to allocate task tracking array"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL

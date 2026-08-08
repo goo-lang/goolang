@@ -44,7 +44,7 @@ TargetInfo* target_info_detect(void) {
     
     // Detect architecture
 #if defined(__x86_64__) && !defined(__COMPCERT__)
-    info->architecture = strdup("x86_64");
+    info->architecture = xstrdup("x86_64");
     
     // Detect x86 features using CPUID
     unsigned int eax, ebx, ecx, edx;
@@ -67,7 +67,7 @@ TargetInfo* target_info_detect(void) {
     }
     
 #elif defined(__aarch64__)
-    info->architecture = strdup("aarch64");
+    info->architecture = xstrdup("aarch64");
     
 #ifdef __linux__
     // Detect ARM features using getauxval (Linux only)
@@ -81,7 +81,7 @@ TargetInfo* target_info_detect(void) {
 #endif
     
 #else
-    info->architecture = strdup("unknown");
+    info->architecture = xstrdup("unknown");
 #endif
 
     // Detect core count (simplified)
@@ -106,7 +106,7 @@ TargetInfo* target_info_detect(void) {
     info->l3_cache_size = 8 * 1024 * 1024; // 8MB
     
     // CPU model detection (simplified)
-    info->cpu_model = strdup("generic");
+    info->cpu_model = xstrdup("generic");
     
     // GPU detection (placeholder - would use OpenCL/CUDA/etc. in real implementation)
     info->has_gpu = false;
@@ -126,16 +126,16 @@ TargetInfo* target_info_from_string(const char* target_spec) {
     
     // Simple parsing - in real implementation would be more sophisticated
     if (strstr(target_spec, "x86_64")) {
-        info->architecture = strdup("x86_64");
+        info->architecture = xstrdup("x86_64");
         // Enable common x86_64 features
         info->features[HW_FEATURE_SSE] = true;
         info->features[HW_FEATURE_SSE2] = true;
         info->features[HW_FEATURE_SSE3] = true;
     } else if (strstr(target_spec, "aarch64")) {
-        info->architecture = strdup("aarch64");
+        info->architecture = xstrdup("aarch64");
         info->features[HW_FEATURE_NEON] = true;
     } else {
-        info->architecture = strdup("unknown");
+        info->architecture = xstrdup("unknown");
     }
     
     // Set defaults
@@ -144,7 +144,7 @@ TargetInfo* target_info_from_string(const char* target_spec) {
     info->l1_cache_size = 32 * 1024;
     info->l2_cache_size = 256 * 1024;
     info->l3_cache_size = 8 * 1024 * 1024;
-    info->cpu_model = strdup("generic");
+    info->cpu_model = xstrdup("generic");
     
     return info;
 }
@@ -193,7 +193,7 @@ OptimizationContext* comptime_optimization_context_new(ComptimeContext* comptime
     ctx->optimization_buffer_capacity = 0;
     
     // Set default benchmark cache directory
-    ctx->benchmark_cache_dir = strdup(".goo_benchmark_cache");
+    ctx->benchmark_cache_dir = xstrdup(".goo_benchmark_cache");
     
     return ctx;
 }
@@ -232,7 +232,7 @@ OptimizationDirective* optimization_directive_new(const char* name, Optimization
     
     memset(directive, 0, sizeof(OptimizationDirective));
     
-    directive->name = strdup(name);
+    directive->name = xstrdup(name);
     directive->goal = goal;
     directive->strategies = NULL;
     directive->strategy_count = 0;
@@ -341,7 +341,7 @@ ComptimeResult* comptime_directive_optimize_for(OptimizationContext* ctx, Optimi
     }
     
     ComptimeValue* result_value = comptime_value_new(COMPTIME_VALUE_STRING);
-    result_value->string_value = strdup(optimization_code);  // Create a copy for the value
+    result_value->string_value = xstrdup(optimization_code);  // Create a copy for the value
     
     return comptime_result_new(result_value, NULL, optimization_code);  // Use original for generated_code
 }
@@ -365,7 +365,7 @@ ComptimeResult* comptime_directive_use_algorithm(OptimizationContext* ctx, UseAl
         params->min_speedup_required);
     
     ComptimeValue* result_value = comptime_value_new(COMPTIME_VALUE_STRING);
-    result_value->string_value = strdup(algorithm_code);  // Create a copy for the value
+    result_value->string_value = xstrdup(algorithm_code);  // Create a copy for the value
     
     return comptime_result_new(result_value, NULL, algorithm_code);  // Use original for generated_code
 }
@@ -404,7 +404,7 @@ ComptimeResult* comptime_directive_profile_guided(OptimizationContext* ctx, Prof
         params->confidence_threshold);
     
     ComptimeValue* result_value = comptime_value_new(COMPTIME_VALUE_STRING);
-    result_value->string_value = strdup(pgo_code);  // Create a copy for the value
+    result_value->string_value = xstrdup(pgo_code);  // Create a copy for the value
     
     return comptime_result_new(result_value, NULL, pgo_code);  // Use original for generated_code
 }
@@ -446,7 +446,7 @@ ComptimeResult* comptime_directive_benchmark_and_select(OptimizationContext* ctx
         optimization_goal_name(params->selection_criteria));
     
     ComptimeValue* result_value = comptime_value_new(COMPTIME_VALUE_STRING);
-    result_value->string_value = strdup(selected_impl);
+    result_value->string_value = xstrdup(selected_impl);
     
     return comptime_result_new(result_value, NULL, benchmark_code);
 }
@@ -609,7 +609,7 @@ void register_builtin_algorithms(OptimizationContext* ctx) {
     if (!ctx->available_algorithms) return;
     
     for (size_t i = 0; i < count; i++) {
-        ctx->available_algorithms[i] = strdup(builtin_algorithms[i]);
+        ctx->available_algorithms[i] = xstrdup(builtin_algorithms[i]);
     }
     ctx->algorithm_count = count;
 }

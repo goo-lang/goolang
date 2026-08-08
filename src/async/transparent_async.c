@@ -224,7 +224,7 @@ Result_void_ptr async_future_get(AsyncFuture* future, uint64_t timeout_ms) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid future or task"),
+            .message = xstrdup("Invalid future or task"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -257,8 +257,8 @@ Result_void_ptr async_future_get(AsyncFuture* future, uint64_t timeout_ms) {
                 .code = ERROR_OPERATION_CANCELLED,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_RUNTIME,
-                .message = strdup("Future wait timeout"),
-                .hint = strdup("Increase timeout or check for deadlocks"),
+                .message = xstrdup("Future wait timeout"),
+                .hint = xstrdup("Increase timeout or check for deadlocks"),
                 .location = (SourceLocation){0},
                 .next = NULL
             };
@@ -293,7 +293,7 @@ Result_void_ptr async_future_poll(AsyncFuture* future) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid future"),
+            .message = xstrdup("Invalid future"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -364,7 +364,7 @@ static Result_void_ptr inline_executor_submit(AsyncExecutor* executor, AsyncTask
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid executor or task"),
+            .message = xstrdup("Invalid executor or task"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -501,7 +501,7 @@ Result_void_ptr async_runtime_start(AsyncRuntime* runtime) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Runtime not initialized"),
+            .message = xstrdup("Runtime not initialized"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -529,7 +529,7 @@ Result_void_ptr async_runtime_shutdown(AsyncRuntime* runtime, uint64_t timeout_m
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid runtime"),
+            .message = xstrdup("Invalid runtime"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -566,7 +566,7 @@ Result_void_ptr async_task_submit(AsyncRuntime* runtime, AsyncTask* task) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid runtime or task"),
+            .message = xstrdup("Invalid runtime or task"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -580,8 +580,8 @@ Result_void_ptr async_task_submit(AsyncRuntime* runtime, AsyncTask* task) {
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Runtime is not running"),
-            .hint = strdup("Start the runtime first"),
+            .message = xstrdup("Runtime is not running"),
+            .hint = xstrdup("Start the runtime first"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -599,7 +599,7 @@ Result_void_ptr async_task_submit(AsyncRuntime* runtime, AsyncTask* task) {
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("No suitable executor available"),
+            .message = xstrdup("No suitable executor available"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -716,8 +716,8 @@ Result_void_ptr async_submit_transparent(AsyncFunction function, void* context, 
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("No global runtime available"),
-            .hint = strdup("Initialize a global runtime first"),
+            .message = xstrdup("No global runtime available"),
+            .hint = xstrdup("Initialize a global runtime first"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -731,7 +731,7 @@ Result_void_ptr async_submit_transparent(AsyncFunction function, void* context, 
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Failed to create async task"),
+            .message = xstrdup("Failed to create async task"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL

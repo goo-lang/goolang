@@ -1065,7 +1065,7 @@ static int type_checker_record_capture(TypeChecker* checker, Variable* var,
         if (already) continue;
         char** grown = realloc(lit->captured_names, sizeof(char*) * (lit->captured_count + 1));
         if (!grown) continue;  // defensive: leave this literal's env short rather than crash
-        grown[lit->captured_count] = strdup(name);
+        grown[lit->captured_count] = xstrdup(name);
         lit->captured_names = grown;
         lit->captured_count++;
     }
@@ -1177,7 +1177,7 @@ Type* type_check_literal(TypeChecker* checker, ASTNode* expr) {
             // nil has special type that can be assigned to any nullable type
             type = type_new(TYPE_UNKNOWN);  // Special nil type
             if (type) {
-                type->name = strdup("nil");
+                type->name = xstrdup("nil");
             }
             break;
         default:
@@ -5160,7 +5160,7 @@ static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position po
         s->base.node_type = NULL;
         s->base.next = NULL;
         s->expr = base;
-        s->selector = strdup(r->path[i]);
+        s->selector = xstrdup(r->path[i]);
         base = (ASTNode*)s;
     }
     return base;

@@ -282,7 +282,7 @@ void add_parallelization_opportunity(AutoParallelContext* ctx,
     opp->strategy = strategy;
     opp->confidence_score = confidence;
     opp->performance_gain = gain;
-    opp->reasoning = reasoning ? strdup(reasoning) : NULL;
+    opp->reasoning = reasoning ? xstrdup(reasoning) : NULL;
     opp->loop_info = NULL; // Will be set separately if needed
     opp->transformed_node = NULL;
     

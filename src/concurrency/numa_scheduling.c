@@ -428,8 +428,8 @@ Result_void_ptr numa_task_scope_start(NumaTaskScope* scope) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("NUMA task scope not properly initialized"),
-            .hint = strdup("Ensure NUMA topology is available"),
+            .message = xstrdup("NUMA task scope not properly initialized"),
+            .hint = xstrdup("Ensure NUMA topology is available"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -643,7 +643,7 @@ Result_void_ptr numa_parallel_for(
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid NUMA parallel for parameters"),
+            .message = xstrdup("Invalid NUMA parallel for parameters"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL

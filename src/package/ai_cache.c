@@ -133,7 +133,7 @@ AICacheManager* ai_cache_create(void) {
     
     // Default configuration
     cache->max_cache_size = 10ULL * 1024 * 1024 * 1024; // 10GB
-    cache->cache_directory = strdup("/tmp/goo-ai-cache");
+    cache->cache_directory = xstrdup("/tmp/goo-ai-cache");
     
     cache->entry_capacity = 1000;
     cache->entries = calloc(cache->entry_capacity, sizeof(CacheEntry*));
@@ -546,12 +546,12 @@ CachePrediction** ai_cache_predict_future_access(AICacheManager* cache,
             if (probability > 0.5f) {
                 CachePrediction* pred = xcalloc(1, sizeof(CachePrediction));
                 if (pred) {
-                    pred->predicted_key = strdup(entry->key);
+                    pred->predicted_key = xstrdup(entry->key);
                     pred->probability = probability;
                     pred->predicted_time = time(NULL) + hours_ahead * 3600;
                     pred->priority = (int)(probability * 10);
                     pred->should_prefetch = (probability > 0.7f);
-                    pred->reason = strdup("ML model prediction");
+                    pred->reason = xstrdup("ML model prediction");
                     
                     predictions[*prediction_count] = pred;
                     (*prediction_count)++;
@@ -573,7 +573,7 @@ CacheEntry* cache_entry_create(const char* key, const void* data, size_t size,
     CacheEntry* entry = xcalloc(1, sizeof(CacheEntry));
     if (!entry) return NULL;
     
-    entry->key = strdup(key);
+    entry->key = xstrdup(key);
     entry->data = malloc(size);
     if (!entry->key || !entry->data) {
         cache_entry_free(entry);

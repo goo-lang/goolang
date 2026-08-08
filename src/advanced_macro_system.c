@@ -45,7 +45,7 @@ MacroTemplate* create_macro_template(const char* name, MacroType type) {
         return NULL;
     }
     
-    macro->name = strdup(name);
+    macro->name = xstrdup(name);
     macro->type = type;
     macro->hygiene = HYGIENE_SEMANTIC;  // Default to semantic hygiene
     macro->max_recursion = 10;
@@ -128,7 +128,7 @@ bool add_macro_parameter(MacroTemplate* macro, const char* name, MacroParamType 
     macro->parameters = new_params;
     MacroParameter* param = &macro->parameters[macro->param_count];
     
-    param->name = strdup(name);
+    param->name = xstrdup(name);
     param->type = type;
     param->is_optional = false;
     param->default_value = NULL;
@@ -144,7 +144,7 @@ bool set_parameter_constraint(MacroTemplate* macro, const char* param_name, cons
     for (size_t i = 0; i < macro->param_count; i++) {
         if (strcmp(macro->parameters[i].name, param_name) == 0) {
             free(macro->parameters[i].constraint);
-            macro->parameters[i].constraint = strdup(constraint);
+            macro->parameters[i].constraint = xstrdup(constraint);
             return true;
         }
     }
@@ -214,14 +214,14 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
     MacroTemplate* macro = find_macro(registry, macro_name);
     if (!macro) {
         expansion->success = false;
-        expansion->error_message = strdup("Macro not found");
+        expansion->error_message = xstrdup("Macro not found");
         return expansion;
     }
     
     // Validate arguments
     if (!validate_macro_arguments(macro, args, arg_count)) {
         expansion->success = false;
-        expansion->error_message = strdup("Invalid macro arguments");
+        expansion->error_message = xstrdup("Invalid macro arguments");
         return expansion;
     }
     
@@ -229,7 +229,7 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
     MacroContext* context = create_macro_context(macro, args, arg_count);
     if (!context) {
         expansion->success = false;
-        expansion->error_message = strdup("Failed to create macro context");
+        expansion->error_message = xstrdup("Failed to create macro context");
         return expansion;
     }
     
@@ -276,7 +276,7 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
             
         default:
             expansion->success = false;
-            expansion->error_message = strdup("Unsupported macro type");
+            expansion->error_message = xstrdup("Unsupported macro type");
             break;
     }
     

@@ -203,7 +203,7 @@ static LocalRecord* intern_record(Collected* c, const char* name) {
         c->cap = ncap;
     }
     LocalRecord* r = &c->items[c->count];
-    r->name = strdup(name);
+    r->name = xstrdup(name);
     if (!r->name) return NULL;
     r->bound_value = NULL;
     r->binding_count = 0;
@@ -1556,7 +1556,7 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         walk_stmts(&ctx, ((FuncDeclNode*)d)->body);
 
         ReleasePlanFunction* pf = &plan->functions[plan->count];
-        pf->function_name = strdup(name);
+        pf->function_name = xstrdup(name);
         pf->count = 0;
         pf->decisions = c.count ? calloc(c.count, sizeof(ReleaseDecision)) : NULL;
         if (!pf->function_name || (c.count && !pf->decisions)) {
@@ -1567,7 +1567,7 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         }
 
         for (size_t i = 0; i < c.count; i++) {
-            pf->decisions[i].local_name = strdup(c.items[i].name);
+            pf->decisions[i].local_name = xstrdup(c.items[i].name);
             if (!pf->decisions[i].local_name) continue;
             pf->decisions[i].verdict = decide(&c, &c.items[i], pe, le, name);
             // DIAGNOSTIC ONLY, captured HERE so it cannot drift. `decide` reads

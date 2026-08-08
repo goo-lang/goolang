@@ -124,7 +124,7 @@ Result_void_ptr function_registry_register(FunctionRegistry* registry,
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid function registration parameters"),
+            .message = xstrdup("Invalid function registration parameters"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -147,7 +147,7 @@ Result_void_ptr function_registry_register(FunctionRegistry* registry,
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_RUNTIME,
-                .message = strdup("Failed to grow function registry"),
+                .message = xstrdup("Failed to grow function registry"),
                 .hint = NULL,
                 .location = (SourceLocation){0},
                 .next = NULL
@@ -161,7 +161,7 @@ Result_void_ptr function_registry_register(FunctionRegistry* registry,
     
     // Add the function
     TransparentFunction* func = &registry->functions[registry->function_count];
-    func->name = strdup(name);
+    func->name = xstrdup(name);
     func->type = type;
     func->original_function = original_function;
     func->async_wrapper = async_wrapper;
@@ -302,7 +302,7 @@ Result_void_ptr transparent_function_execute(TransparentFunction* func, void* ar
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid transparent function"),
+            .message = xstrdup("Invalid transparent function"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -454,7 +454,7 @@ Result_void_ptr transparent_create_wrapper(const char* name,
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid wrapper parameters"),
+            .message = xstrdup("Invalid wrapper parameters"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -505,7 +505,7 @@ Result_void_ptr transparent_execution_init(void) {
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Failed to create function registry"),
+            .message = xstrdup("Failed to create function registry"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL

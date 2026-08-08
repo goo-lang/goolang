@@ -106,7 +106,7 @@ bool escape_env_add_or_union(LocalEnv* env, const char* name, const TaintSet* va
         env->vars = grown;
         env->capacity = new_cap;
     }
-    env->vars[env->count].name = strdup(name);
+    env->vars[env->count].name = xstrdup(name);
     env->vars[env->count].taint = escape_taint_copy(value);
     env->count++;
     return true;

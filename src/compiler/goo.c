@@ -268,7 +268,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 break;
                 
             case 'o':
-                options->output_file = strdup(optarg);
+                options->output_file = xstrdup(optarg);
                 break;
                 
             case 'O':
@@ -296,7 +296,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             case 'l':
                 options->link_libs = realloc(options->link_libs, 
                                            (options->link_lib_count + 1) * sizeof(char*));
-                options->link_libs[options->link_lib_count++] = strdup(optarg);
+                options->link_libs[options->link_lib_count++] = xstrdup(optarg);
                 break;
                 
             case 'h':
@@ -518,11 +518,11 @@ static bool write_file(const char* filename, const char* content) {
 static char* get_output_filename(const char* input_file, const char* output_file,
                                  const char* ext) {
     if (output_file) {
-        return strdup(output_file);
+        return xstrdup(output_file);
     }
 
     // Generate default output name
-    char* base = strdup(input_file);
+    char* base = xstrdup(input_file);
     char* dot = strrchr(base, '.');
     // Accept both Goo's own `.goo` and real Go's `.go` so the compiler can be
     // pointed at actual Go source files (Go-compatibility). Strip either so

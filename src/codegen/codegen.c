@@ -195,7 +195,7 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     CodeGenerator* codegen = xmalloc(sizeof(CodeGenerator));
     if (!codegen) return NULL;
     
-    codegen->error_message = strdup("LLVM support not available in this build");
+    codegen->error_message = xstrdup("LLVM support not available in this build");
     codegen->llvm_unavailable = 1;
     codegen->current_file = NULL;
     codegen->error_count = 0;
@@ -277,15 +277,15 @@ int codegen_set_target(CodeGenerator* codegen __attribute__((unused)), const cha
 #if LLVM_AVAILABLE
     if (triple) {
         free(codegen->target_triple);
-        codegen->target_triple = strdup(triple);
+        codegen->target_triple = xstrdup(triple);
     }
     if (cpu) {
         free(codegen->target_cpu);
-        codegen->target_cpu = strdup(cpu);
+        codegen->target_cpu = xstrdup(cpu);
     }
     if (features) {
         free(codegen->target_features);
-        codegen->target_features = strdup(features);
+        codegen->target_features = xstrdup(features);
     }
     return 1;
 #else
@@ -575,7 +575,7 @@ ValueInfo* value_info_new(const char* name, LLVMValueRef llvm_value, Type* goo_t
     ValueInfo* info = xmalloc(sizeof(ValueInfo));
     if (!info) return NULL;
     
-    info->name = name ? strdup(name) : NULL;
+    info->name = name ? xstrdup(name) : NULL;
     info->llvm_value = llvm_value;
     info->goo_type = goo_type;
     info->is_lvalue = 0;
@@ -631,7 +631,7 @@ FunctionInfo* function_info_new(const char* name, LLVMValueRef function, Type* g
     FunctionInfo* info = xmalloc(sizeof(FunctionInfo));
     if (!info) return NULL;
     
-    info->name = name ? strdup(name) : NULL;
+    info->name = name ? xstrdup(name) : NULL;
     info->function = function;
     info->function_type = LLVMGetElementType(LLVMTypeOf(function));
     info->goo_type = goo_type;

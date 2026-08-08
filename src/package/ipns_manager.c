@@ -249,9 +249,9 @@ char* ipns_manager_publish(IpnsManager* manager, const IpfsCid* cid, const char*
     if (root && json_object_object_get_ex(root, "Name", &name_obj)) {
         const char* name_str = json_object_get_string(name_obj);
         if (name_str) {
-            ipns_name = strdup(name_str);
+            ipns_name = xstrdup(name_str);
             free(record->ipns_name);
-            record->ipns_name = strdup(name_str);
+            record->ipns_name = xstrdup(name_str);
         }
     }
     
@@ -455,7 +455,7 @@ IpnsKey* ipns_key_create(const char* name) {
     IpnsKey* key = xcalloc(1, sizeof(IpnsKey));
     if (!key) return NULL;
     
-    key->name = strdup(name);
+    key->name = xstrdup(name);
     if (!key->name) {
         free(key);
         return NULL;
@@ -562,7 +562,7 @@ IpnsRecord* ipns_record_create(const char* ipns_name, const IpfsCid* cid) {
     IpnsRecord* record = xcalloc(1, sizeof(IpnsRecord));
     if (!record) return NULL;
     
-    record->ipns_name = strdup(ipns_name);
+    record->ipns_name = xstrdup(ipns_name);
     record->current_cid = ipfs_cid_clone(cid);
     
     if (!record->ipns_name || !record->current_cid) {
@@ -596,7 +596,7 @@ IpnsSubscription* ipns_subscription_create(const char* ipns_name) {
     IpnsSubscription* subscription = xcalloc(1, sizeof(IpnsSubscription));
     if (!subscription) return NULL;
     
-    subscription->ipns_name = strdup(ipns_name);
+    subscription->ipns_name = xstrdup(ipns_name);
     if (!subscription->ipns_name) {
         free(subscription);
         return NULL;

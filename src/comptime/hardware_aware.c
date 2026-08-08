@@ -196,7 +196,7 @@ HardwareProfile* detect_hardware_profile(void) {
     profile->has_power_gating = true;
     
     // Generate LLVM target information
-    profile->target_triple = strdup(
+    profile->target_triple = xstrdup(
         #if defined(__x86_64__)
         "x86_64-unknown-linux-gnu"
         #elif defined(__aarch64__)
@@ -208,7 +208,7 @@ HardwareProfile* detect_hardware_profile(void) {
         #endif
     );
     
-    profile->cpu_name = strdup("generic");
+    profile->cpu_name = xstrdup("generic");
     
     // Build feature string based on detected capabilities
     char feature_buffer[1024] = {0};
@@ -225,7 +225,7 @@ HardwareProfile* detect_hardware_profile(void) {
         strncat(feature_buffer, "+fma", sizeof(feature_buffer) - strlen(feature_buffer) - 1);
     }
     
-    profile->feature_string = strdup(feature_buffer);
+    profile->feature_string = xstrdup(feature_buffer);
     
     return profile;
 }
@@ -330,22 +330,22 @@ HardwareOptimization* create_hardware_optimization(const HardwareProfile* profil
     
     // Algorithm selection based on hardware
     if (profile->capabilities & HW_CAP_SIMD_AVX512) {
-        opt->sort_algorithm = strdup("radix_avx512");
+        opt->sort_algorithm = xstrdup("radix_avx512");
     } else if (profile->capabilities & HW_CAP_SIMD_AVX2) {
-        opt->sort_algorithm = strdup("quicksort_avx2");
+        opt->sort_algorithm = xstrdup("quicksort_avx2");
     } else {
-        opt->sort_algorithm = strdup("quicksort");
+        opt->sort_algorithm = xstrdup("quicksort");
     }
     
     if (profile->capabilities & HW_CAP_AES_NI) {
-        opt->hash_algorithm = strdup("aes_hash");
-        opt->crypto_backend = strdup("aes_ni");
+        opt->hash_algorithm = xstrdup("aes_hash");
+        opt->crypto_backend = xstrdup("aes_ni");
     } else {
-        opt->hash_algorithm = strdup("xxhash");
-        opt->crypto_backend = strdup("software");
+        opt->hash_algorithm = xstrdup("xxhash");
+        opt->crypto_backend = xstrdup("software");
     }
     
-    opt->compression_algorithm = strdup("lz4"); // Fast, good for most cases
+    opt->compression_algorithm = xstrdup("lz4"); // Fast, good for most cases
     
     // Code generation preferences
     opt->enable_branch_prediction_hints = true;
@@ -357,11 +357,11 @@ HardwareOptimization* create_hardware_optimization(const HardwareProfile* profil
     // GPU offloading decisions
     opt->can_offload_to_gpu = profile->has_gpu;
     if (profile->capabilities & HW_CAP_GPU_CUDA) {
-        opt->gpu_kernel_language = strdup("cuda");
+        opt->gpu_kernel_language = xstrdup("cuda");
     } else if (profile->capabilities & HW_CAP_GPU_OPENCL) {
-        opt->gpu_kernel_language = strdup("opencl");
+        opt->gpu_kernel_language = xstrdup("opencl");
     } else if (profile->capabilities & HW_CAP_GPU_METAL) {
-        opt->gpu_kernel_language = strdup("metal");
+        opt->gpu_kernel_language = xstrdup("metal");
     }
     opt->min_data_size_for_gpu = 1024 * 1024; // 1MB minimum
     

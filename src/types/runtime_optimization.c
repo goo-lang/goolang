@@ -266,7 +266,7 @@ BoundsCheckInfo* analyze_bounds_check(OptimizationContext* ctx, struct ASTNode* 
                 
                 if (info->safety_proof) {
                     info->can_eliminate = true;
-                    info->elimination_reason = strdup("Statically proven safe by proof generation system");
+                    info->elimination_reason = xstrdup("Statically proven safe by proof generation system");
                 }
             }
             
@@ -280,7 +280,7 @@ BoundsCheckInfo* analyze_bounds_check(OptimizationContext* ctx, struct ASTNode* 
                         // For constant positive indices, we could potentially eliminate
                         // if we know the array size at compile time
                         info->can_eliminate = false; // Conservative for now
-                        info->elimination_reason = strdup("Constant index analysis incomplete");
+                        info->elimination_reason = xstrdup("Constant index analysis incomplete");
                     }
                 }
             }
@@ -288,7 +288,7 @@ BoundsCheckInfo* analyze_bounds_check(OptimizationContext* ctx, struct ASTNode* 
     }
     
     if (!info->elimination_reason) {
-        info->elimination_reason = strdup("Cannot prove bounds safety");
+        info->elimination_reason = xstrdup("Cannot prove bounds safety");
     }
     
     return info;
@@ -784,7 +784,7 @@ ProfileData* profile_data_new(const char* function_name) {
     if (!data) return NULL;
     
     memset(data, 0, sizeof(ProfileData));
-    data->function_name = strdup(function_name);
+    data->function_name = xstrdup(function_name);
     if (!data->function_name) {
         free(data);
         return NULL;
@@ -927,7 +927,7 @@ OptimizationDiagnostic* optimization_diagnostic_new(OptimizationType opt_type,
     diag->opt_type = opt_type;
     diag->target_node = target;
     diag->error = error;
-    diag->message = strdup(message);
+    diag->message = xstrdup(message);
     diag->is_warning = (error == OPT_ERROR_NONE);
     
     return diag;
@@ -1004,7 +1004,7 @@ OptimizationBenchmark* benchmark_optimization(OptimizationContext* ctx,
     if (!benchmark) return NULL;
     
     memset(benchmark, 0, sizeof(OptimizationBenchmark));
-    benchmark->name = strdup("optimization_benchmark");
+    benchmark->name = xstrdup("optimization_benchmark");
     benchmark->baseline_time = 1.0;      // Placeholder
     benchmark->optimized_time = 0.8;     // 20% improvement
     benchmark->speedup_factor = benchmark->baseline_time / benchmark->optimized_time;

@@ -1190,7 +1190,7 @@ EnumVariantNode* ast_enum_variant_new(const char* name, ASTNode* fields, Positio
     n->base.pos = pos;
     n->base.node_type = NULL;
     n->base.next = NULL;
-    n->name = name ? strdup(name) : NULL;
+    n->name = name ? xstrdup(name) : NULL;
     n->fields = fields;
     return n;
 }

@@ -16,7 +16,7 @@ Type* type_interface_enhanced(InterfaceMethod* methods, size_t method_count, Con
     if (interface_type && methods && method_count > 0) {
         interface_type->data.interface.methods = methods;
         interface_type->data.interface.method_count = method_count;
-        interface_type->data.interface.name = strdup("SynthesizedInterface");
+        interface_type->data.interface.name = xstrdup("SynthesizedInterface");
         interface_type->data.interface.is_synthesized = 0;
         interface_type->data.interface.source_concept = NULL;
     }
@@ -942,7 +942,7 @@ int extract_concept_requirements(ConceptDefinition* concept, ASTNode* requiremen
                 TypeDeclNode* type_decl = (TypeDeclNode*)current;
                 Type* assoc_type = type_from_ast_node(type_decl->type, checker);
                 if (assoc_type) {
-                    assoc_type->name = strdup(type_decl->name);
+                    assoc_type->name = xstrdup(type_decl->name);
                     concept_add_associated_type(concept, assoc_type);
                 }
                 break;
@@ -1163,7 +1163,7 @@ Type* create_concept_constrained_function_enhanced(const char* func_name,
         }
     }
     
-    func_type->name = strdup(func_name);
+    func_type->name = xstrdup(func_name);
     return func_type;
 }
 

@@ -55,8 +55,8 @@ static Error* create_error(ErrorContext* ctx, ErrorCode code,
     error->code = code;
     error->severity = severity;
     error->category = (ErrorCategory)(code / 1000);
-    error->message = message ? strdup(message) : NULL;
-    error->hint = hint ? strdup(hint) : NULL;
+    error->message = message ? xstrdup(message) : NULL;
+    error->hint = hint ? xstrdup(hint) : NULL;
     error->location = location;
     error->next = NULL;
     
@@ -298,7 +298,7 @@ char* format_error(const Error* error) {
                 error->message ? error->message : "");
     }
     
-    return strdup(buffer);
+    return xstrdup(buffer);
 }
 
 // Convert error code to string
@@ -423,7 +423,7 @@ ErrorBuilder* error_builder_with_message(ErrorBuilder* builder, const char* fmt,
     va_end(args);
     
     free(builder->message);
-    builder->message = strdup(buffer);
+    builder->message = xstrdup(buffer);
     
     return builder;
 }
@@ -432,7 +432,7 @@ ErrorBuilder* error_builder_with_hint(ErrorBuilder* builder, const char* hint) {
     if (!builder || !hint) return builder;
     
     free(builder->hint);
-    builder->hint = strdup(hint);
+    builder->hint = xstrdup(hint);
     
     return builder;
 }

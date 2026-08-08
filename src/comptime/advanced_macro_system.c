@@ -58,7 +58,7 @@ MacroTemplate* create_macro_template(const char* name, MacroType type) {
     MacroTemplate* macro = xmalloc(sizeof(MacroTemplate));
     if (!macro) return NULL;
     
-    macro->name = strdup(name);
+    macro->name = xstrdup(name);
     macro->type = type;
     macro->hygiene = HYGIENE_LEXICAL; // Default hygiene level
     macro->parameters = NULL;
@@ -148,7 +148,7 @@ bool add_macro_parameter(MacroTemplate* macro, const char* name, MacroParamType 
     
     // Initialize new parameter
     MacroParameter* param = &macro->parameters[macro->param_count];
-    param->name = strdup(name);
+    param->name = xstrdup(name);
     param->type = type;
     param->is_optional = false;
     param->default_value = NULL;
@@ -165,7 +165,7 @@ bool set_parameter_constraint(MacroTemplate* macro, const char* param_name, cons
         MacroParameter* param = &macro->parameters[i];
         if (strcmp(param->name, param_name) == 0) {
             if (param->constraint) free(param->constraint);
-            param->constraint = strdup(constraint);
+            param->constraint = xstrdup(constraint);
             return true;
         }
     }
@@ -255,20 +255,20 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
     // Find the macro
     MacroTemplate* macro = find_macro(registry, macro_name);
     if (!macro) {
-        expansion->error_message = strdup("Macro not found");
+        expansion->error_message = xstrdup("Macro not found");
         return expansion;
     }
     
     // Validate arguments
     if (!validate_macro_arguments(macro, args, arg_count)) {
-        expansion->error_message = strdup("Invalid macro arguments");
+        expansion->error_message = xstrdup("Invalid macro arguments");
         return expansion;
     }
     
     // Create expansion context
     MacroContext* context = create_macro_context(macro, args, arg_count);
     if (!context) {
-        expansion->error_message = strdup("Failed to create macro context");
+        expansion->error_message = xstrdup("Failed to create macro context");
         return expansion;
     }
     
@@ -282,7 +282,7 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
             if (macro->evaluator) {
                 ComptimeValue* result = macro->evaluator(context, args);
                 if (result && result->type == COMPTIME_VALUE_STRING) {
-                    expansion->expanded_code = strdup(result->string_value);
+                    expansion->expanded_code = xstrdup(result->string_value);
                     expansion->success = true;
                 }
             } else if (macro->code_template) {
@@ -301,13 +301,13 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
             break;
             
         default:
-            expansion->error_message = strdup("Unsupported macro type");
+            expansion->error_message = xstrdup("Unsupported macro type");
             break;
     }
     
     if (context->has_error) {
         expansion->success = false;
-        expansion->error_message = strdup(context->error_message ? context->error_message : "Unknown error");
+        expansion->error_message = xstrdup(context->error_message ? context->error_message : "Unknown error");
     }
     
     return expansion;
@@ -475,11 +475,11 @@ ComptimeValue* builtin_macro_compile_time_if(MacroContext* ctx, ComptimeValue** 
     }
     
     if (condition && args[1] && args[1]->type == COMPTIME_VALUE_STRING) {
-        result->string_value = strdup(args[1]->string_value);
+        result->string_value = xstrdup(args[1]->string_value);
     } else if (!condition && ctx->arg_count >= 3 && args[2] && args[2]->type == COMPTIME_VALUE_STRING) {
-        result->string_value = strdup(args[2]->string_value);
+        result->string_value = xstrdup(args[2]->string_value);
     } else {
-        result->string_value = strdup(""); // Empty expansion
+        result->string_value = xstrdup(""); // Empty expansion
     }
     
     return result;
@@ -513,7 +513,7 @@ ComptimeValue* builtin_macro_stringify(MacroContext* ctx, ComptimeValue** args) 
             sprintf(result->string_value, "\"%s\"", args[0]->string_value);
         }
     } else {
-        result->string_value = strdup("\"\"");
+        result->string_value = xstrdup("\"\"");
     }
     
     return result;

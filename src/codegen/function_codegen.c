@@ -1647,7 +1647,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
                 rv->decl_node = (struct ASTNode*)fd;  // Closures Task 2 (see param mirror above)
                 scope_add_variable(checker->current_scope, rv);
             }
-            if (names) names[nnamed++] = strdup(rname);
+            if (names) names[nnamed++] = xstrdup(rname);
         }
         if (nnamed > 0) {
             func_info->named_result_names = names;

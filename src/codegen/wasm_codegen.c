@@ -45,7 +45,7 @@ int wasm_codegen_export(const WasmExportNode* export_node) {
     
     // Add to export table
     if (wasm_config.export_count < 256) {
-        wasm_config.export_table[wasm_config.export_count] = strdup(export_node->export_name);
+        wasm_config.export_table[wasm_config.export_count] = xstrdup(export_node->export_name);
         wasm_config.export_count++;
     }
     

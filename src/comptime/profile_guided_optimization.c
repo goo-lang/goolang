@@ -17,7 +17,7 @@ ProfileData* comptime_profile_data_new(const char* source_file) {
     ProfileData* data = xmalloc(sizeof(ProfileData));
     if (!data) return NULL;
     
-    data->source_file = strdup(source_file);
+    data->source_file = xstrdup(source_file);
     data->total_samples = 0;
     data->collection_time = 0.0;
     
@@ -110,7 +110,7 @@ ProfileCollector* profile_collector_new(ProfileMode mode) {
     collector->collect_call_sites = true;
     collector->collect_memory = false; // Disabled by default
     
-    collector->output_file = strdup("profile.pgo");
+    collector->output_file = xstrdup("profile.pgo");
     collector->binary_format = true;
     collector->compress_output = false;
     
@@ -263,7 +263,7 @@ int profile_add_function(ProfileData* data, const char* name, uint64_t call_coun
     FunctionProfile* func = xmalloc(sizeof(FunctionProfile));
     if (!func) return 0;
     
-    func->function_name = strdup(name);
+    func->function_name = xstrdup(name);
     func->call_count = call_count;
     func->total_cycles = cycles;
     func->average_cycles = call_count > 0 ? cycles / call_count : 0;
@@ -283,7 +283,7 @@ int profile_add_branch(ProfileData* data, const char* location, uint64_t taken, 
     BranchInfo* branch = xmalloc(sizeof(BranchInfo));
     if (!branch) return 0;
     
-    branch->location = strdup(location);
+    branch->location = xstrdup(location);
     branch->taken_count = taken;
     branch->not_taken_count = not_taken;
     
@@ -312,7 +312,7 @@ int profile_add_loop(ProfileData* data, const char* location, uint64_t iteration
     LoopProfile* loop = xmalloc(sizeof(LoopProfile));
     if (!loop) return 0;
     
-    loop->location = strdup(location);
+    loop->location = xstrdup(location);
     loop->iteration_count = iterations;
     loop->invocation_count = invocations;
     loop->average_iterations = invocations > 0 ? (double)iterations / invocations : 0.0;
@@ -330,8 +330,8 @@ int profile_add_call_site(ProfileData* data, const char* location, const char* t
     CallSiteProfile* call_site = xmalloc(sizeof(CallSiteProfile));
     if (!call_site) return 0;
     
-    call_site->location = strdup(location);
-    call_site->target_function = strdup(target);
+    call_site->location = xstrdup(location);
+    call_site->target_function = xstrdup(target);
     call_site->call_count = count;
     call_site->call_frequency = 0.0; // Will be calculated later
     call_site->is_indirect = false; // Simplified
@@ -393,10 +393,10 @@ void profile_identify_hot_cold_functions(ProfileData* data, double hot_threshold
     func = data->functions;
     while (func) {
         if (func->hotness_score >= hot_threshold) {
-            data->hot_functions[hot_idx++] = strdup(func->function_name);
+            data->hot_functions[hot_idx++] = xstrdup(func->function_name);
         }
         if (func->hotness_score <= cold_threshold) {
-            data->cold_functions[cold_idx++] = strdup(func->function_name);
+            data->cold_functions[cold_idx++] = xstrdup(func->function_name);
         }
         func = func->next;
     }
@@ -521,7 +521,7 @@ ComptimeResult* pgo_optimize_function(PGOContext* ctx, const char* function_name
     }
     
     ComptimeValue* result_value = comptime_value_new(COMPTIME_VALUE_STRING);
-    result_value->string_value = strdup(optimization_code);
+    result_value->string_value = xstrdup(optimization_code);
     
     return comptime_result_new(result_value, NULL, optimization_code);
 }
@@ -562,7 +562,7 @@ ComptimeResult* pgo_optimize_branch(PGOContext* ctx, const char* location, ASTNo
     }
     
     ComptimeValue* result_value = comptime_value_new(COMPTIME_VALUE_STRING);
-    result_value->string_value = strdup(optimization_code);
+    result_value->string_value = xstrdup(optimization_code);
     
     return comptime_result_new(result_value, NULL, optimization_code);
 }
@@ -603,7 +603,7 @@ ComptimeResult* comptime_pgo_analyze(ComptimeContext* ctx, const char* profile_f
         data->branch_prediction_accuracy);
     
     ComptimeValue* result_value = comptime_value_new(COMPTIME_VALUE_STRING);
-    result_value->string_value = strdup(analysis_result);
+    result_value->string_value = xstrdup(analysis_result);
     
     comptime_profile_data_free(data);
     

@@ -188,7 +188,7 @@ Result_void_ptr shared_var_manager_start_optimization(SharedVarManager* manager)
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid shared variable manager"),
+            .message = xstrdup("Invalid shared variable manager"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -210,8 +210,8 @@ Result_void_ptr shared_var_manager_start_optimization(SharedVarManager* manager)
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to start optimization thread"),
-            .hint = strdup("Check system thread limits"),
+            .message = xstrdup("Failed to start optimization thread"),
+            .hint = xstrdup("Check system thread limits"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -304,7 +304,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     .code = ERROR_INTERNAL,
                     .severity = ERROR_SEVERITY_ERROR,
                     .category = ERROR_CATEGORY_INTERNAL,
-                    .message = strdup("Failed to initialize mutex"),
+                    .message = xstrdup("Failed to initialize mutex"),
                     .hint = NULL,
                     .location = (SourceLocation){0},
                     .next = NULL
@@ -321,7 +321,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     .code = ERROR_OUT_OF_MEMORY,
                     .severity = ERROR_SEVERITY_ERROR,
                     .category = ERROR_CATEGORY_INTERNAL,
-                    .message = strdup("Failed to allocate value storage"),
+                    .message = xstrdup("Failed to allocate value storage"),
                     .hint = NULL,
                     .location = (SourceLocation){0},
                     .next = NULL
@@ -337,7 +337,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     .code = ERROR_INTERNAL,
                     .severity = ERROR_SEVERITY_ERROR,
                     .category = ERROR_CATEGORY_INTERNAL,
-                    .message = strdup("Failed to initialize rwlock"),
+                    .message = xstrdup("Failed to initialize rwlock"),
                     .hint = NULL,
                     .location = (SourceLocation){0},
                     .next = NULL
@@ -353,7 +353,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     .code = ERROR_OUT_OF_MEMORY,
                     .severity = ERROR_SEVERITY_ERROR,
                     .category = ERROR_CATEGORY_INTERNAL,
-                    .message = strdup("Failed to allocate value storage"),
+                    .message = xstrdup("Failed to allocate value storage"),
                     .hint = NULL,
                     .location = (SourceLocation){0},
                     .next = NULL
@@ -371,7 +371,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     .code = ERROR_OUT_OF_MEMORY,
                     .severity = ERROR_SEVERITY_ERROR,
                     .category = ERROR_CATEGORY_INTERNAL,
-                    .message = strdup("Failed to allocate value storage"),
+                    .message = xstrdup("Failed to allocate value storage"),
                     .hint = NULL,
                     .location = (SourceLocation){0},
                     .next = NULL
@@ -403,7 +403,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                             .code = ERROR_INTERNAL,
                             .severity = ERROR_SEVERITY_ERROR,
                             .category = ERROR_CATEGORY_INTERNAL,
-                            .message = strdup("Failed to initialize adaptive mutex"),
+                            .message = xstrdup("Failed to initialize adaptive mutex"),
                             .hint = NULL,
                             .location = (SourceLocation){0},
                             .next = NULL
@@ -418,7 +418,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                             .code = ERROR_OUT_OF_MEMORY,
                             .severity = ERROR_SEVERITY_ERROR,
                             .category = ERROR_CATEGORY_INTERNAL,
-                            .message = strdup("Failed to allocate adaptive value storage"),
+                            .message = xstrdup("Failed to allocate adaptive value storage"),
                             .hint = NULL,
                             .location = (SourceLocation){0},
                             .next = NULL
@@ -436,8 +436,8 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     .code = ERROR_INVALID_EXPRESSION,
                     .severity = ERROR_SEVERITY_ERROR,
                     .category = ERROR_CATEGORY_INTERNAL,
-                    .message = strdup("Custom sync mode requires custom operations"),
-                    .hint = strdup("Provide CustomSyncOps in configuration"),
+                    .message = xstrdup("Custom sync mode requires custom operations"),
+                    .hint = xstrdup("Provide CustomSyncOps in configuration"),
                     .location = (SourceLocation){0},
                     .next = NULL
                 };
@@ -453,7 +453,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     .code = ERROR_OUT_OF_MEMORY,
                     .severity = ERROR_SEVERITY_ERROR,
                     .category = ERROR_CATEGORY_INTERNAL,
-                    .message = strdup("Failed to allocate custom value storage"),
+                    .message = xstrdup("Failed to allocate custom value storage"),
                     .hint = NULL,
                     .location = (SourceLocation){0},
                     .next = NULL
@@ -468,7 +468,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Unsupported synchronization mode"),
+                .message = xstrdup("Unsupported synchronization mode"),
                 .hint = NULL,
                 .location = (SourceLocation){0},
                 .next = NULL
@@ -686,7 +686,7 @@ Result_void_ptr sync_group_add_variable(SyncGroup* group, SharedVariable* var) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid sync group or variable"),
+            .message = xstrdup("Invalid sync group or variable"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -704,8 +704,8 @@ Result_void_ptr sync_group_add_variable(SyncGroup* group, SharedVariable* var) {
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Sync group is at capacity"),
-            .hint = strdup("Create a new sync group or increase capacity"),
+            .message = xstrdup("Sync group is at capacity"),
+            .hint = xstrdup("Create a new sync group or increase capacity"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -727,8 +727,8 @@ Result_int32_t shared_var_get_int32(SharedVariable* var) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_INT32"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_INT32"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -782,7 +782,7 @@ Result_int32_t shared_var_get_int32(SharedVariable* var) {
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Unsupported synchronization mode for int32"),
+                .message = xstrdup("Unsupported synchronization mode for int32"),
                 .hint = NULL,
                 .location = (SourceLocation){0},
                 .next = NULL
@@ -803,8 +803,8 @@ Result_void_ptr shared_var_set_int32(SharedVariable* var, int32_t value) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_INT32"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_INT32"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -856,7 +856,7 @@ Result_void_ptr shared_var_set_int32(SharedVariable* var, int32_t value) {
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Unsupported synchronization mode for int32"),
+                .message = xstrdup("Unsupported synchronization mode for int32"),
                 .hint = NULL,
                 .location = (SourceLocation){0},
                 .next = NULL
@@ -879,8 +879,8 @@ Result_bool shared_var_cas_int32(SharedVariable* var, int32_t expected, int32_t 
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_INT32"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_INT32"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -924,8 +924,8 @@ Result_bool shared_var_cas_int32(SharedVariable* var, int32_t expected, int32_t 
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("CAS not supported for this synchronization mode"),
-                .hint = strdup("Use atomic or adaptive mode for CAS operations"),
+                .message = xstrdup("CAS not supported for this synchronization mode"),
+                .hint = xstrdup("Use atomic or adaptive mode for CAS operations"),
                 .location = (SourceLocation){0},
                 .next = NULL
             };
@@ -948,8 +948,8 @@ Result_int32_t shared_var_fetch_add_int32(SharedVariable* var, int32_t value) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_INT32"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_INT32"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -987,8 +987,8 @@ Result_int32_t shared_var_fetch_add_int32(SharedVariable* var, int32_t value) {
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Fetch-add not supported for this synchronization mode"),
-                .hint = strdup("Use atomic or adaptive mode for fetch-add operations"),
+                .message = xstrdup("Fetch-add not supported for this synchronization mode"),
+                .hint = xstrdup("Use atomic or adaptive mode for fetch-add operations"),
                 .location = (SourceLocation){0},
                 .next = NULL
             };
@@ -1010,8 +1010,8 @@ Result_int64_t shared_var_get_int64(SharedVariable* var) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_INT64"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_INT64"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1050,8 +1050,8 @@ Result_void_ptr shared_var_set_int64(SharedVariable* var, int64_t value) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_INT64"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_INT64"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1089,8 +1089,8 @@ Result_uint32_t shared_var_get_uint32(SharedVariable* var) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_UINT32"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_UINT32"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1138,8 +1138,8 @@ Result_void_ptr shared_var_set_uint32(SharedVariable* var, uint32_t value) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_UINT32"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_UINT32"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1186,8 +1186,8 @@ Result_bool shared_var_get_bool(SharedVariable* var) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_BOOL"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_BOOL"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1235,8 +1235,8 @@ Result_void_ptr shared_var_set_bool(SharedVariable* var, bool value) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_BOOL"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_BOOL"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1284,8 +1284,8 @@ Result_void_ptr shared_var_get_string(SharedVariable* var, char* buffer, size_t 
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable, type mismatch, or null buffer"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_STRING and buffer is not null"),
+            .message = xstrdup("Invalid variable, type mismatch, or null buffer"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_STRING and buffer is not null"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1340,8 +1340,8 @@ Result_void_ptr shared_var_set_string(SharedVariable* var, const char* value) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_STRING"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_STRING"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1399,8 +1399,8 @@ Result_int64_t shared_var_fetch_add_int64(SharedVariable* var, int64_t value) {
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable or type mismatch"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_INT64"),
+            .message = xstrdup("Invalid variable or type mismatch"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_INT64"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1438,8 +1438,8 @@ Result_void_ptr shared_var_get_custom(SharedVariable* var, void* buffer, size_t 
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable, type mismatch, or null buffer"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_CUSTOM and buffer is not null"),
+            .message = xstrdup("Invalid variable, type mismatch, or null buffer"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_CUSTOM and buffer is not null"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1482,8 +1482,8 @@ Result_void_ptr shared_var_set_custom(SharedVariable* var, const void* value, si
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable, type mismatch, or null value"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_CUSTOM and value is not null"),
+            .message = xstrdup("Invalid variable, type mismatch, or null value"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_CUSTOM and value is not null"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1526,8 +1526,8 @@ Result_bool shared_var_cas_custom(SharedVariable* var, const void* expected, con
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid variable, type mismatch, or null values"),
-            .hint = strdup("Ensure variable is of type SHARED_TYPE_CUSTOM and values are not null"),
+            .message = xstrdup("Invalid variable, type mismatch, or null values"),
+            .hint = xstrdup("Ensure variable is of type SHARED_TYPE_CUSTOM and values are not null"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1608,7 +1608,7 @@ Result_void_ptr stm_read(STMTransaction* tx, SharedVariable* var, void* buffer, 
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid transaction or parameters"),
+            .message = xstrdup("Invalid transaction or parameters"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1667,7 +1667,7 @@ Result_void_ptr stm_write(STMTransaction* tx, SharedVariable* var, const void* v
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid transaction or parameters"),
+            .message = xstrdup("Invalid transaction or parameters"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1696,7 +1696,7 @@ Result_void_ptr stm_commit(STMTransaction* tx) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid or inactive transaction"),
+            .message = xstrdup("Invalid or inactive transaction"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1716,8 +1716,8 @@ Result_void_ptr stm_commit(STMTransaction* tx) {
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Transaction conflict detected - variable modified by another transaction"),
-                .hint = strdup("Retry the transaction"),
+                .message = xstrdup("Transaction conflict detected - variable modified by another transaction"),
+                .hint = xstrdup("Retry the transaction"),
                 .location = (SourceLocation){0},
                 .next = NULL
             };

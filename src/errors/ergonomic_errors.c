@@ -91,8 +91,8 @@ ErrorContextFrame* ergo_push_context_frame(ErgoErrorContext* ctx,
     ErrorContextFrame* frame = xcalloc(1, sizeof(ErrorContextFrame));
     if (!frame) return NULL;
     
-    frame->function_name = function_name ? strdup(function_name) : NULL;
-    frame->operation_description = operation_description ? strdup(operation_description) : NULL;
+    frame->function_name = function_name ? xstrdup(function_name) : NULL;
+    frame->operation_description = operation_description ? xstrdup(operation_description) : NULL;
     frame->parent = ctx->current_frame;
     
     ctx->current_frame = frame;
@@ -138,7 +138,7 @@ void _ergo_propagate_error(Error* error, const char* file, size_t line,
     
     // If this error doesn't have a hint, add our context as hint
     if (!error->hint) {
-        error->hint = strdup(context_buffer);
+        error->hint = xstrdup(context_buffer);
     } else {
         // Append to existing hint
         char* new_hint = malloc(strlen(error->hint) + strlen(context_buffer) + 10);
@@ -163,7 +163,7 @@ void _ergo_add_context(Error* error, const char* context) {
     if (!error || !context) return;
     
     if (!error->hint) {
-        error->hint = strdup(context);
+        error->hint = xstrdup(context);
     } else {
         char* new_hint = malloc(strlen(error->hint) + strlen(context) + 4);
         if (new_hint) {
@@ -337,8 +337,8 @@ bool error_collector_try(ErrorCollector* collector, Error* error) {
     if (!cloned_error) return false;
     
     *cloned_error = *error;
-    cloned_error->message = error->message ? strdup(error->message) : NULL;
-    cloned_error->hint = error->hint ? strdup(error->hint) : NULL;
+    cloned_error->message = error->message ? xstrdup(error->message) : NULL;
+    cloned_error->hint = error->hint ? xstrdup(error->hint) : NULL;
     cloned_error->next = NULL;
     
     collector->errors[collector->count++] = cloned_error;
@@ -409,7 +409,7 @@ Error* error_collector_finish(ErrorCollector* collector) {
     }
     
     aggregated->message = message;
-    aggregated->hint = strdup("Review each error individually and fix them one by one");
+    aggregated->hint = xstrdup("Review each error individually and fix them one by one");
     
     return aggregated;
 }
@@ -427,8 +427,8 @@ StructuredError* structured_error_new(StructuredErrorType type,
     error->base.location = empty_source_location();
     
     error->error_type = type;
-    error->domain = domain ? strdup(domain) : NULL;
-    error->component = component ? strdup(component) : NULL;
+    error->domain = domain ? xstrdup(domain) : NULL;
+    error->component = component ? xstrdup(component) : NULL;
     
     return error;
 }
@@ -480,8 +480,8 @@ void structured_error_add_context(StructuredError* error,
         if (!error->context_keys || !error->context_values) return;
     }
     
-    error->context_keys[error->context_count] = strdup(key);
-    error->context_values[error->context_count] = strdup(value);
+    error->context_keys[error->context_count] = xstrdup(key);
+    error->context_values[error->context_count] = xstrdup(value);
     error->context_count++;
 }
 
@@ -494,8 +494,8 @@ void structured_error_set_help(StructuredError* error,
     free((void*)error->help_url);
     free((void*)error->suggested_action);
     
-    error->help_url = help_url ? strdup(help_url) : NULL;
-    error->suggested_action = suggested_action ? strdup(suggested_action) : NULL;
+    error->help_url = help_url ? xstrdup(help_url) : NULL;
+    error->suggested_action = suggested_action ? xstrdup(suggested_action) : NULL;
 }
 
 // Error transformer implementation

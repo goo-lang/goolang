@@ -204,8 +204,8 @@ Result_void_ptr taint_propagate(TaintTracker* tracker, TaintedData* input, Taint
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for taint propagation"),
-            .hint = strdup("Ensure all parameters are non-null"),
+            .message = xstrdup("Invalid parameters for taint propagation"),
+            .hint = xstrdup("Ensure all parameters are non-null"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -259,7 +259,7 @@ Result_void_ptr taint_sanitize(TaintTracker* tracker, TaintedData* tainted, cons
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for taint sanitization"),
+            .message = xstrdup("Invalid parameters for taint sanitization"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -313,7 +313,7 @@ Result_void_ptr taint_validate(TaintTracker* tracker, TaintedData* tainted, cons
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for taint validation"),
+            .message = xstrdup("Invalid parameters for taint validation"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -451,7 +451,7 @@ Result_bool capability_check(CapabilityManager* manager, uint32_t required_capab
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid capability manager"),
+            .message = xstrdup("Invalid capability manager"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -515,7 +515,7 @@ Result_void_ptr capability_grant(CapabilityManager* manager, uint32_t capabiliti
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid capability manager"),
+            .message = xstrdup("Invalid capability manager"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -535,7 +535,7 @@ Result_void_ptr capability_grant(CapabilityManager* manager, uint32_t capabiliti
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to create capability set"),
+            .message = xstrdup("Failed to create capability set"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -553,8 +553,8 @@ Result_void_ptr capability_grant(CapabilityManager* manager, uint32_t capabiliti
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Capability manager at capacity"),
-            .hint = strdup("Consider cleaning up unused capability sets"),
+            .message = xstrdup("Capability manager at capacity"),
+            .hint = xstrdup("Consider cleaning up unused capability sets"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -576,7 +576,7 @@ Result_void_ptr capability_revoke(CapabilityManager* manager, uint32_t capabilit
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid capability manager"),
+            .message = xstrdup("Invalid capability manager"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -607,7 +607,7 @@ Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabil
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for capability delegation"),
+            .message = xstrdup("Invalid parameters for capability delegation"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -637,8 +637,8 @@ Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabil
             .code = ERROR_CAPABILITY_DENIED,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Capability delegation not permitted"),
-            .hint = strdup("Ensure delegator has delegation rights for these capabilities"),
+            .message = xstrdup("Capability delegation not permitted"),
+            .hint = xstrdup("Ensure delegator has delegation rights for these capabilities"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -655,7 +655,7 @@ Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabil
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to create delegated capability set"),
+            .message = xstrdup("Failed to create delegated capability set"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -676,7 +676,7 @@ Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabil
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Cannot delegate: capability manager at capacity"),
+            .message = xstrdup("Cannot delegate: capability manager at capacity"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -771,7 +771,7 @@ Result_void_ptr security_audit_report_violation(SecurityAuditor* auditor, Securi
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid auditor or violation"),
+            .message = xstrdup("Invalid auditor or violation"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -804,7 +804,7 @@ Result_void_ptr security_audit_operation(SecurityAuditor* auditor, const char* o
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for security audit"),
+            .message = xstrdup("Invalid parameters for security audit"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -920,7 +920,7 @@ Result_void_ptr crypto_encrypt(CryptoManager* manager, const void* plaintext, si
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for encryption"),
+            .message = xstrdup("Invalid parameters for encryption"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -942,7 +942,7 @@ Result_void_ptr crypto_encrypt(CryptoManager* manager, const void* plaintext, si
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate ciphertext buffer"),
+            .message = xstrdup("Failed to allocate ciphertext buffer"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -967,7 +967,7 @@ Result_void_ptr crypto_decrypt(CryptoManager* manager, const void* ciphertext, s
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for decryption"),
+            .message = xstrdup("Invalid parameters for decryption"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -987,7 +987,7 @@ Result_void_ptr crypto_decrypt(CryptoManager* manager, const void* ciphertext, s
             .code = ERROR_CRYPTO_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid ciphertext length"),
+            .message = xstrdup("Invalid ciphertext length"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1004,7 +1004,7 @@ Result_void_ptr crypto_decrypt(CryptoManager* manager, const void* ciphertext, s
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate plaintext buffer"),
+            .message = xstrdup("Failed to allocate plaintext buffer"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1029,7 +1029,7 @@ Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algo
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for key generation"),
+            .message = xstrdup("Invalid parameters for key generation"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1047,8 +1047,8 @@ Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algo
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Key storage at capacity"),
-            .hint = strdup("Consider cleaning up unused keys"),
+            .message = xstrdup("Key storage at capacity"),
+            .hint = xstrdup("Consider cleaning up unused keys"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1087,8 +1087,8 @@ Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algo
                 .code = ERROR_CRYPTO_OPERATION_FAILED,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Algorithm does not meet minimum key length requirements"),
-                .hint = strdup("Use a stronger algorithm or adjust security policy"),
+                .message = xstrdup("Algorithm does not meet minimum key length requirements"),
+                .hint = xstrdup("Use a stronger algorithm or adjust security policy"),
                 .location = (SourceLocation){0},
                 .next = NULL
             };
@@ -1107,7 +1107,7 @@ Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algo
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate key material"),
+            .message = xstrdup("Failed to allocate key material"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1239,7 +1239,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid security context"),
+            .message = xstrdup("Invalid security context"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1256,7 +1256,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Failed to create taint tracker"),
+                .message = xstrdup("Failed to create taint tracker"),
                 .hint = NULL,
                 .location = (SourceLocation){0},
                 .next = NULL
@@ -1273,7 +1273,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Failed to create capability manager"),
+                .message = xstrdup("Failed to create capability manager"),
                 .hint = NULL,
                 .location = (SourceLocation){0},
                 .next = NULL
@@ -1290,7 +1290,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Failed to create security auditor"),
+                .message = xstrdup("Failed to create security auditor"),
                 .hint = NULL,
                 .location = (SourceLocation){0},
                 .next = NULL
@@ -1311,7 +1311,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to create crypto manager"),
+            .message = xstrdup("Failed to create crypto manager"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
