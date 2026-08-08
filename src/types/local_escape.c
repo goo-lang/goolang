@@ -104,7 +104,7 @@ static size_t unit_list_push(UnitList* list, ASTNode* body, const char* fn_name)
     }
     Unit* u = &list->items[list->count];
     u->body = body;
-    u->fn_name = fn_name ? strdup(fn_name) : NULL;
+    u->fn_name = fn_name ? xstrdup(fn_name) : NULL;
     if (fn_name && !u->fn_name) return BLOCK_ESCAPE_NO_UNIT;
     u->local_names = NULL;
     u->local_count = 0;
@@ -126,7 +126,7 @@ static bool unit_add_local(Unit* u, const char* name) {
         u->local_names = grown;
         u->local_cap = new_cap;
     }
-    u->local_names[u->local_count] = strdup(name);
+    u->local_names[u->local_count] = xstrdup(name);
     if (!u->local_names[u->local_count]) return false;
     u->local_count++;
     return true;

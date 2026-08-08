@@ -433,7 +433,7 @@ void register_standard_hkts(TypeChecker* checker) {
     HigherKindedType* option_hkt = higher_kinded_type_new(HKT_TYPE_TO_TYPE, NULL);
     if (option_hkt) {
         // Set the name manually since we can't use the constructor with string
-        option_hkt->name = strdup("Option");
+        option_hkt->name = xstrdup("Option");
         if (option_hkt->name) {
             hkt_registry_register(checker->hkt_registry, option_hkt);
         } else {
@@ -444,7 +444,7 @@ void register_standard_hkts(TypeChecker* checker) {
     // Register Vec<T> - simplified version  
     HigherKindedType* vec_hkt = higher_kinded_type_new(HKT_TYPE_TO_TYPE, NULL);
     if (vec_hkt) {
-        vec_hkt->name = strdup("Vec");
+        vec_hkt->name = xstrdup("Vec");
         if (vec_hkt->name) {
             hkt_registry_register(checker->hkt_registry, vec_hkt);
         } else {

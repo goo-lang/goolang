@@ -216,7 +216,7 @@ bool p2p_discovery_add_peer(P2PDiscovery* discovery, const char* peer_id,
         // Update multiaddr if different
         if (strcmp(existing->multiaddr, multiaddr) != 0) {
             free(existing->multiaddr);
-            existing->multiaddr = strdup(multiaddr);
+            existing->multiaddr = xstrdup(multiaddr);
         }
         return true;
     }
@@ -290,7 +290,7 @@ P2PSwarm* p2p_discovery_create_swarm(P2PDiscovery* discovery, const char* topic)
     P2PSwarm* swarm = xcalloc(1, sizeof(P2PSwarm));
     if (!swarm) return NULL;
     
-    swarm->topic = strdup(topic);
+    swarm->topic = xstrdup(topic);
     if (!swarm->topic) {
         free(swarm);
         return NULL;
@@ -325,7 +325,7 @@ bool p2p_discovery_announce_package(P2PDiscovery* discovery, const char* package
     P2PPackageAnnouncement* announcement = p2p_announcement_create(package_name, version, cid);
     if (!announcement) return false;
     
-    announcement->announcer_peer_id = strdup(discovery->ipfs_client->peer_id);
+    announcement->announcer_peer_id = xstrdup(discovery->ipfs_client->peer_id);
     announcement->announced_at = time(NULL);
     announcement->expires_at = time(NULL) + discovery->announcement_ttl;
     
@@ -441,7 +441,7 @@ P2PSearchResult** p2p_discovery_search_packages(P2PDiscovery* discovery,
                 result->relevance_score *= announcement->availability_score;
                 
                 // Set match reason
-                result->match_reason = strdup("Package name match");
+                result->match_reason = xstrdup("Package name match");
                 
                 // Find recommended peers
                 if (announcement->seeder_count > 0) {
@@ -517,7 +517,7 @@ bool p2p_discovery_gossip_publish(P2PDiscovery* discovery, const char* topic,
     if (!curl) return false;
     
     // Base64 encode the message (simplified - would use proper encoding)
-    char* encoded = strdup(message);
+    char* encoded = xstrdup(message);
     
     char url[1024];
     snprintf(url, sizeof(url), "%s/api/v0/pubsub/pub?arg=%s&arg=%s",
@@ -540,8 +540,8 @@ P2PPeer* p2p_peer_create(const char* peer_id, const char* multiaddr) {
     P2PPeer* peer = xcalloc(1, sizeof(P2PPeer));
     if (!peer) return NULL;
     
-    peer->peer_id = strdup(peer_id);
-    peer->multiaddr = strdup(multiaddr);
+    peer->peer_id = xstrdup(peer_id);
+    peer->multiaddr = xstrdup(multiaddr);
     
     if (!peer->peer_id || !peer->multiaddr) {
         p2p_peer_free(peer);
@@ -633,8 +633,8 @@ P2PPackageAnnouncement* p2p_announcement_create(const char* package_name,
     P2PPackageAnnouncement* announcement = xcalloc(1, sizeof(P2PPackageAnnouncement));
     if (!announcement) return NULL;
     
-    announcement->package_name = strdup(package_name);
-    announcement->version = strdup(version);
+    announcement->package_name = xstrdup(package_name);
+    announcement->version = xstrdup(version);
     announcement->cid = ipfs_cid_clone(cid);
     
     if (!announcement->package_name || !announcement->version || !announcement->cid) {
@@ -677,7 +677,7 @@ P2PSearchQuery* p2p_search_query_create(const char* query_string) {
     if (!query) return NULL;
     
     if (query_string) {
-        query->query_string = strdup(query_string);
+        query->query_string = xstrdup(query_string);
         if (!query->query_string) {
             free(query);
             return NULL;

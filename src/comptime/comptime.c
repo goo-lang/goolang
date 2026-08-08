@@ -502,7 +502,7 @@ ComptimeResult* execute_comptime_block(ASTNode* comptime_block, ComptimeContext*
     
     // Copy generated code from context to result
     if (ctx->generated_code && !result->generated_code) {
-        result->generated_code = strdup(ctx->generated_code);
+        result->generated_code = xstrdup(ctx->generated_code);
     }
     
     if (created_context) {
@@ -561,7 +561,7 @@ ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_
     
     // Copy generated code from function context
     if (func_ctx->generated_code && result && !result->generated_code) {
-        result->generated_code = strdup(func_ctx->generated_code);
+        result->generated_code = xstrdup(func_ctx->generated_code);
     }
     
     comptime_context_free(func_ctx);
@@ -742,7 +742,7 @@ static ComptimeResult* comptime_eval_for_stmt(ComptimeContext* ctx, ASTNode* stm
     
     // Copy generated code from loop context
     if (loop_ctx->generated_code && last_result && !last_result->generated_code) {
-        last_result->generated_code = strdup(loop_ctx->generated_code);
+        last_result->generated_code = xstrdup(loop_ctx->generated_code);
     }
     
     comptime_context_free(loop_ctx);

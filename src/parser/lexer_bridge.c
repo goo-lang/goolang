@@ -404,7 +404,7 @@ static int bridge_next_mapped(void) {
     // Set the semantic value based on token type
     switch (token->type) {
         case TOKEN_IDENT:
-            yylval.string = strdup(token->literal);
+            yylval.string = xstrdup(token->literal);
             break;
         case TOKEN_STRING: {
             // Carry the exact byte length so embedded NUL bytes survive the

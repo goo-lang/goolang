@@ -498,7 +498,7 @@ bool comptime_codegen_pipeline_add_function(CodeGenPipeline* pipeline, const cha
         pipeline->function_capacity = new_capacity;
     }
     
-    pipeline->generated_functions[pipeline->function_count] = strdup(function_code);
+    pipeline->generated_functions[pipeline->function_count] = xstrdup(function_code);
     pipeline->function_count++;
     
     return true;
@@ -520,7 +520,7 @@ char* comptime_codegen_pipeline_finalize(CodeGenPipeline* pipeline) {
         total_size += strlen(pipeline->generated_constants[i]) + 1;
     }
     
-    if (total_size == 0) return strdup("");
+    if (total_size == 0) return xstrdup("");
     
     char* result = malloc(total_size + 1);
     if (!result) return NULL;

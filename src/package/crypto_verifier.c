@@ -202,9 +202,9 @@ PackageSignature* crypto_verifier_sign_cid(CryptoVerifier* verifier,
     // Set signature metadata
     signature->algorithm = key->algorithm;
     signature->hash_algorithm = HASH_ALG_SHA256; // Default
-    signature->signer_key_id = strdup(key->key_id);
-    signature->signer_name = strdup(key->name);
-    signature->signer_email = key->email ? strdup(key->email) : NULL;
+    signature->signer_key_id = xstrdup(key->key_id);
+    signature->signer_name = xstrdup(key->name);
+    signature->signer_email = key->email ? xstrdup(key->email) : NULL;
     signature->signed_at = time(NULL);
     
     // Hash the CID
@@ -426,7 +426,7 @@ SigningKey* signing_key_create(const char* name, CryptoAlgorithm algorithm) {
     if (!key) return NULL;
     
     key->key_id = generate_unique_id();
-    key->name = strdup(name);
+    key->name = xstrdup(name);
     key->algorithm = algorithm;
     key->created_at = time(NULL);
     key->trust_level = 50; // Default trust level
@@ -484,8 +484,8 @@ bool signing_key_generate_keypair(SigningKey* key) {
             EVP_PKEY_CTX_free(ctx);
             
             // Extract keys (simplified)
-            key->public_key = strdup("ed25519_public_key_placeholder");
-            key->private_key = strdup("ed25519_private_key_placeholder");
+            key->public_key = xstrdup("ed25519_public_key_placeholder");
+            key->private_key = xstrdup("ed25519_private_key_placeholder");
             
             EVP_PKEY_free(pkey);
             break;
@@ -517,8 +517,8 @@ bool signing_key_generate_keypair(SigningKey* key) {
             EVP_PKEY_CTX_free(ctx);
             
             // Extract keys (simplified)
-            key->public_key = strdup("rsa_public_key_placeholder");
-            key->private_key = strdup("rsa_private_key_placeholder");
+            key->public_key = xstrdup("rsa_public_key_placeholder");
+            key->private_key = xstrdup("rsa_private_key_placeholder");
             
             EVP_PKEY_free(pkey);
             break;
@@ -541,8 +541,8 @@ PackageSignature* package_signature_create(const char* package_name,
     if (!signature) return NULL;
     
     signature->signature_id = generate_unique_id();
-    signature->package_name = strdup(package_name);
-    signature->package_version = strdup(version);
+    signature->package_name = xstrdup(package_name);
+    signature->package_version = xstrdup(version);
     signature->package_cid = ipfs_cid_clone(cid);
     
     if (!signature->signature_id || !signature->package_name || 

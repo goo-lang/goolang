@@ -78,7 +78,7 @@ HybridRegistry* hybrid_registry_create(void) {
     registry->min_trust_score = 0.5f;
     
     // Cache configuration
-    registry->cache_directory = strdup("/tmp/goo-package-cache");
+    registry->cache_directory = xstrdup("/tmp/goo-package-cache");
     registry->cache_capacity = 100;
     registry->cached_metadata = calloc(registry->cache_capacity, sizeof(PackageMetadata*));
     
@@ -433,7 +433,7 @@ DownloadPlan* hybrid_registry_create_download_plan(HybridRegistry* registry,
     if (package->ipfs_cid) {
         DownloadPlan* source = xcalloc(1, sizeof(DownloadPlan));
         source->backend_type = BACKEND_IPFS;
-        source->source_url = strdup(package->ipfs_cid->hash);
+        source->source_url = xstrdup(package->ipfs_cid->hash);
         source->expected_speed = 10.0f; // Estimate
         source->reliability = 0.9f;
         source->is_verified = false;
@@ -444,7 +444,7 @@ DownloadPlan* hybrid_registry_create_download_plan(HybridRegistry* registry,
     if (package->traditional_url) {
         DownloadPlan* source = xcalloc(1, sizeof(DownloadPlan));
         source->backend_type = BACKEND_TRADITIONAL;
-        source->source_url = strdup(package->traditional_url);
+        source->source_url = xstrdup(package->traditional_url);
         source->expected_speed = 5.0f; // Estimate
         source->reliability = 0.95f;
         source->is_verified = false;
@@ -463,7 +463,7 @@ DownloadPlan* hybrid_registry_create_download_plan(HybridRegistry* registry,
             if (results[i]->announcement->seeder_count > 0) {
                 DownloadPlan* source = xcalloc(1, sizeof(DownloadPlan));
                 source->backend_type = BACKEND_P2P;
-                source->source_url = strdup(results[i]->announcement->cid->hash);
+                source->source_url = xstrdup(results[i]->announcement->cid->hash);
                 source->expected_speed = 8.0f; // Estimate
                 source->reliability = results[i]->announcement->availability_score;
                 source->is_verified = results[i]->announcement->is_verified;
@@ -560,8 +560,8 @@ RegistryBackend* registry_backend_create(BackendType type, const char* name,
     if (!backend) return NULL;
     
     backend->type = type;
-    backend->name = strdup(name);
-    backend->url = strdup(url);
+    backend->name = xstrdup(name);
+    backend->url = xstrdup(url);
     
     if (!backend->name || !backend->url) {
         registry_backend_free(backend);
@@ -644,8 +644,8 @@ PackageMetadata* package_metadata_create(const char* name, const char* version) 
     PackageMetadata* metadata = xcalloc(1, sizeof(PackageMetadata));
     if (!metadata) return NULL;
     
-    metadata->name = strdup(name);
-    metadata->version = strdup(version);
+    metadata->name = xstrdup(name);
+    metadata->version = xstrdup(version);
     
     if (!metadata->name || !metadata->version) {
         package_metadata_free(metadata);
@@ -725,7 +725,7 @@ char* package_metadata_serialize(const PackageMetadata* metadata) {
     
     const char* json_str = json_object_to_json_string_ext(root, 
                                                          JSON_C_TO_STRING_PRETTY);
-    char* result = strdup(json_str);
+    char* result = xstrdup(json_str);
     json_object_put(root);
     
     return result;
@@ -759,7 +759,7 @@ PackageMetadata* package_metadata_deserialize(const char* json_data) {
     // Parse optional fields
     json_object* desc_obj;
     if (json_object_object_get_ex(root, "description", &desc_obj)) {
-        metadata->description = strdup(json_object_get_string(desc_obj));
+        metadata->description = xstrdup(json_object_get_string(desc_obj));
     }
     
     json_object* cid_obj;
@@ -769,7 +769,7 @@ PackageMetadata* package_metadata_deserialize(const char* json_data) {
     
     json_object* ipns_obj;
     if (json_object_object_get_ex(root, "ipns_name", &ipns_obj)) {
-        metadata->ipns_name = strdup(json_object_get_string(ipns_obj));
+        metadata->ipns_name = xstrdup(json_object_get_string(ipns_obj));
     }
     
     // Parse dependencies
@@ -782,7 +782,7 @@ PackageMetadata* package_metadata_deserialize(const char* json_data) {
         
         for (size_t i = 0; i < dep_count; i++) {
             json_object* dep = json_object_array_get_idx(deps_obj, i);
-            metadata->dependencies[i] = strdup(json_object_get_string(dep));
+            metadata->dependencies[i] = xstrdup(json_object_get_string(dep));
         }
     }
     

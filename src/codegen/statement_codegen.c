@@ -3957,7 +3957,7 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
         snprintf(nm, sizeof(nm), "__goo_defer%zu_recv", fi->deferred_count);
         cinfo.arg_slots[idx] = slot;
         cinfo.arg_types[idx] = rt;
-        cinfo.arg_names[idx] = strdup(nm);
+        cinfo.arg_names[idx] = xstrdup(nm);
         type_checker_declare_synthetic(checker, nm, rt);
 
         IdentifierNode* rid = ast_identifier_new(nm, recv_base->pos);
@@ -4000,7 +4000,7 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
         snprintf(nm, sizeof(nm), "__goo_defer%zu_arg%zu", fi->deferred_count, idx);
         cinfo.arg_slots[idx] = slot;
         cinfo.arg_types[idx] = gt;
-        cinfo.arg_names[idx] = strdup(nm);
+        cinfo.arg_names[idx] = xstrdup(nm);
 
         // Register the synthetic name in the type-checker scope with its real
         // snapshotted type. codegen_emit_deferred_calls re-type-checks the

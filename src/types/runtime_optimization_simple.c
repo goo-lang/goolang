@@ -336,7 +336,7 @@ ProfileData* profile_data_new(const char* function_name) {
     if (!data) return NULL;
     
     memset(data, 0, sizeof(ProfileData));
-    data->function_name = strdup(function_name);
+    data->function_name = xstrdup(function_name);
     if (!data->function_name) {
         free(data);
         return NULL;
@@ -479,7 +479,7 @@ OptimizationDiagnostic* optimization_diagnostic_new(OptimizationType opt_type,
     diag->opt_type = opt_type;
     diag->target_node = target;
     diag->error = error;
-    diag->message = strdup(message);
+    diag->message = xstrdup(message);
     diag->is_warning = (error == OPT_ERROR_NONE);
     
     return diag;
@@ -538,7 +538,7 @@ OptimizationBenchmark* benchmark_optimization(OptimizationContext* ctx,
     if (!benchmark) return NULL;
     
     memset(benchmark, 0, sizeof(OptimizationBenchmark));
-    benchmark->name = strdup("optimization_benchmark");
+    benchmark->name = xstrdup("optimization_benchmark");
     benchmark->baseline_time = 1.0;      // Placeholder
     benchmark->optimized_time = 0.8;     // 20% improvement
     benchmark->speedup_factor = benchmark->baseline_time / benchmark->optimized_time;
@@ -569,7 +569,7 @@ BoundsCheckInfo* analyze_bounds_check(OptimizationContext* ctx, struct ASTNode* 
     memset(info, 0, sizeof(BoundsCheckInfo));
     info->index_expr = index_access;
     info->can_eliminate = false; // Conservative default
-    info->elimination_reason = strdup("AST analysis not implemented in simplified version");
+    info->elimination_reason = xstrdup("AST analysis not implemented in simplified version");
     
     return info;
 }

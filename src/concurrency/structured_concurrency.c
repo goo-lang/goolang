@@ -293,7 +293,7 @@ Result_void_ptr task_scope_start(TaskScope* scope) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid task scope"),
+            .message = xstrdup("Invalid task scope"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -330,8 +330,8 @@ Result_void_ptr task_scope_start(TaskScope* scope) {
                 .code = ERROR_INTERNAL,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Failed to start worker threads"),
-                .hint = strdup("Check system thread limits"),
+                .message = xstrdup("Failed to start worker threads"),
+                .hint = xstrdup("Check system thread limits"),
                 .location = (SourceLocation){0},
                 .next = NULL
             };
@@ -351,7 +351,7 @@ Result_void_ptr task_scope_shutdown(TaskScope* scope, uint64_t timeout_ms) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid task scope"),
+            .message = xstrdup("Invalid task scope"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -523,7 +523,7 @@ Result_void_ptr task_submit(ConcurrentTask* task) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid task or scope"),
+            .message = xstrdup("Invalid task or scope"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -544,8 +544,8 @@ Result_void_ptr task_submit(ConcurrentTask* task) {
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Task queue is full"),
-            .hint = strdup("Wait for tasks to complete or increase queue capacity"),
+            .message = xstrdup("Task queue is full"),
+            .hint = xstrdup("Wait for tasks to complete or increase queue capacity"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -579,7 +579,7 @@ Result_void_ptr task_wait(ConcurrentTask* task, uint64_t timeout_ms) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid task"),
+            .message = xstrdup("Invalid task"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -642,8 +642,8 @@ Result_void_ptr task_wait(ConcurrentTask* task, uint64_t timeout_ms) {
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Task wait timed out"),
-            .hint = strdup("Increase timeout or check task responsiveness"),
+            .message = xstrdup("Task wait timed out"),
+            .hint = xstrdup("Increase timeout or check task responsiveness"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -666,7 +666,7 @@ Result_void_ptr task_cancel(ConcurrentTask* task, CancellationStrategy strategy)
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid task"),
+            .message = xstrdup("Invalid task"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -769,7 +769,7 @@ Result_void_ptr task_group_add_task(TaskGroup* group, ConcurrentTask* task) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid task group or task"),
+            .message = xstrdup("Invalid task group or task"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -806,7 +806,7 @@ Result_void_ptr task_group_wait_all(TaskGroup* group, uint64_t timeout_ms) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid task group"),
+            .message = xstrdup("Invalid task group"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -881,8 +881,8 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid scope or function"),
-            .hint = strdup("Ensure both TaskScope and ParallelForFunction are non-null"),
+            .message = xstrdup("Invalid scope or function"),
+            .hint = xstrdup("Ensure both TaskScope and ParallelForFunction are non-null"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -906,8 +906,8 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Range too large for parallel processing"),
-            .hint = strdup("Consider processing smaller chunks sequentially"),
+            .message = xstrdup("Range too large for parallel processing"),
+            .hint = xstrdup("Consider processing smaller chunks sequentially"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -935,8 +935,8 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_WARNING,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Too many concurrent tasks - consider larger chunk size"),
-            .hint = strdup("Increase chunk_size or reduce range"),
+            .message = xstrdup("Too many concurrent tasks - consider larger chunk size"),
+            .hint = xstrdup("Increase chunk_size or reduce range"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -951,8 +951,8 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate task arguments"),
-            .hint = strdup("Reduce max_workers or chunk_size"),
+            .message = xstrdup("Failed to allocate task arguments"),
+            .hint = xstrdup("Reduce max_workers or chunk_size"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -968,8 +968,8 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate task array"),
-            .hint = strdup("Reduce max_workers or chunk_size"),
+            .message = xstrdup("Failed to allocate task array"),
+            .hint = xstrdup("Reduce max_workers or chunk_size"),
             .location = (SourceLocation){0},
             .next = NULL
         };
@@ -1031,8 +1031,8 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Failed to create parallel task"),
-                .hint = strdup("System may be under memory pressure"),
+                .message = xstrdup("Failed to create parallel task"),
+                .hint = xstrdup("System may be under memory pressure"),
                 .location = (SourceLocation){0},
                 .next = NULL
             };
@@ -1231,7 +1231,7 @@ Result_void_ptr task_add_dependency(ConcurrentTask* task, ConcurrentTask* depend
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid task or dependency"),
+            .message = xstrdup("Invalid task or dependency"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1247,7 +1247,7 @@ Result_void_ptr task_add_dependency(ConcurrentTask* task, ConcurrentTask* depend
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate dependency"),
+            .message = xstrdup("Failed to allocate dependency"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1276,7 +1276,7 @@ Result_void_ptr task_scope_map_reduce(TaskScope* scope, MapReduceConfig config,
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters for map-reduce"),
+            .message = xstrdup("Invalid parameters for map-reduce"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1298,7 +1298,7 @@ Result_void_ptr task_scope_map_reduce(TaskScope* scope, MapReduceConfig config,
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to create map group"),
+            .message = xstrdup("Failed to create map group"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1318,7 +1318,7 @@ Result_void_ptr task_scope_map_reduce(TaskScope* scope, MapReduceConfig config,
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate map results"),
+            .message = xstrdup("Failed to allocate map results"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1359,7 +1359,7 @@ Result_void_ptr task_scope_map_reduce(TaskScope* scope, MapReduceConfig config,
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate map task args"),
+            .message = xstrdup("Failed to allocate map task args"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1475,7 +1475,7 @@ Result_void_ptr pipeline_start(Pipeline* pipeline) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid pipeline"),
+            .message = xstrdup("Invalid pipeline"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1492,7 +1492,7 @@ Result_void_ptr pipeline_start(Pipeline* pipeline) {
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Pipeline is already running"),
+            .message = xstrdup("Pipeline is already running"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1517,7 +1517,7 @@ Result_void_ptr pipeline_start(Pipeline* pipeline) {
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_INTERNAL,
-                .message = strdup("Failed to allocate pipeline buffers"),
+                .message = xstrdup("Failed to allocate pipeline buffers"),
                 .hint = NULL,
                 .location = (SourceLocation){0},
                 .next = NULL
@@ -1541,7 +1541,7 @@ Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid pipeline or item"),
+            .message = xstrdup("Invalid pipeline or item"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1555,7 +1555,7 @@ Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Pipeline is not running"),
+            .message = xstrdup("Pipeline is not running"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1574,7 +1574,7 @@ Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_
             .code = ERROR_BUFFER_OVERFLOW,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Pipeline buffer overflow"),
+            .message = xstrdup("Pipeline buffer overflow"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1590,7 +1590,7 @@ Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Failed to allocate item copy"),
+            .message = xstrdup("Failed to allocate item copy"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1610,7 +1610,7 @@ Result_void_ptr pipeline_pop_output(Pipeline* pipeline, void** item, size_t* ite
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid parameters"),
+            .message = xstrdup("Invalid parameters"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -1633,7 +1633,7 @@ Result_void_ptr pipeline_shutdown(Pipeline* pipeline) {
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid pipeline"),
+            .message = xstrdup("Invalid pipeline"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL

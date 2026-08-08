@@ -75,9 +75,9 @@ AdvancedStrategy* analyze_vectorization(ASTNode* node) {
     if (!strategy) return NULL;
     
     strategy->type = STRATEGY_VECTORIZATION;
-    strategy->strategy_name = strdup("Auto-Vectorization Analysis");
+    strategy->strategy_name = xstrdup("Auto-Vectorization Analysis");
     strategy->confidence_score = 0.8;
-    strategy->analysis_data = strdup("Loop vectorization candidate");
+    strategy->analysis_data = xstrdup("Loop vectorization candidate");
     
     // Simulate vectorization analysis
     VectorizationAnalysis* vec = &strategy->strategy_data.vectorization;
@@ -85,7 +85,7 @@ AdvancedStrategy* analyze_vectorization(ASTNode* node) {
     vec->vector_width = 4;  // SSE/NEON 128-bit
     vec->requires_alignment = true;
     vec->has_dependencies = false;
-    vec->dependency_info = strdup("No loop-carried dependencies detected");
+    vec->dependency_info = xstrdup("No loop-carried dependencies detected");
     
     return strategy;
 }
@@ -97,9 +97,9 @@ AdvancedStrategy* analyze_inlining(ASTNode* function_node, int call_frequency) {
     if (!strategy) return NULL;
     
     strategy->type = STRATEGY_INLINING;
-    strategy->strategy_name = strdup("Intelligent Inlining Analysis");
+    strategy->strategy_name = xstrdup("Intelligent Inlining Analysis");
     strategy->confidence_score = 0.9;
-    strategy->analysis_data = strdup("Hot function inlining candidate");
+    strategy->analysis_data = xstrdup("Hot function inlining candidate");
     
     // Simulate inlining analysis
     InliningAnalysis* inline_data = &strategy->strategy_data.inlining;
@@ -110,10 +110,10 @@ AdvancedStrategy* analyze_inlining(ASTNode* function_node, int call_frequency) {
     // Decide based on frequency and size
     if (call_frequency > 100 && inline_data->function_size < 100) {
         inline_data->should_inline = true;
-        inline_data->inline_reason = strdup("Hot path with small function size");
+        inline_data->inline_reason = xstrdup("Hot path with small function size");
     } else {
         inline_data->should_inline = false;
-        inline_data->inline_reason = strdup("Cost/benefit analysis suggests no inlining");
+        inline_data->inline_reason = xstrdup("Cost/benefit analysis suggests no inlining");
     }
     
     return strategy;
@@ -126,16 +126,16 @@ AdvancedStrategy* analyze_escape(ASTNode* allocation_node) {
     if (!strategy) return NULL;
     
     strategy->type = STRATEGY_ESCAPE_ANALYSIS;
-    strategy->strategy_name = strdup("Escape Analysis");
+    strategy->strategy_name = xstrdup("Escape Analysis");
     strategy->confidence_score = 0.85;
-    strategy->analysis_data = strdup("Stack allocation opportunity");
+    strategy->analysis_data = xstrdup("Stack allocation opportunity");
     
     // Simulate escape analysis
     EscapeAnalysis* escape = &strategy->strategy_data.escape;
     escape->escapes = false;  // Doesn't escape current scope
     escape->stack_allocatable = true;
     escape->needs_heap = false;
-    escape->escape_path = strdup("Local scope only");
+    escape->escape_path = xstrdup("Local scope only");
     
     return strategy;
 }
@@ -147,9 +147,9 @@ AdvancedStrategy* analyze_loop_optimization(ASTNode* loop_node) {
     if (!strategy) return NULL;
     
     strategy->type = STRATEGY_LOOP_UNROLLING;
-    strategy->strategy_name = strdup("Loop Optimization Analysis");
+    strategy->strategy_name = xstrdup("Loop Optimization Analysis");
     strategy->confidence_score = 0.75;
-    strategy->analysis_data = strdup("Loop unrolling and vectorization");
+    strategy->analysis_data = xstrdup("Loop unrolling and vectorization");
     
     // Simulate loop analysis
     LoopOptimization* loop = &strategy->strategy_data.loop;
@@ -157,7 +157,7 @@ AdvancedStrategy* analyze_loop_optimization(ASTNode* loop_node) {
     loop->unroll_factor = 4;
     loop->vectorizable = true;
     loop->has_invariants = true;
-    loop->optimization_notes = strdup("Fixed iteration count, no dependencies");
+    loop->optimization_notes = xstrdup("Fixed iteration count, no dependencies");
     
     return strategy;
 }
@@ -293,7 +293,7 @@ void print_strategy_report(StrategyManager* manager) {
 }
 
 char* get_strategy_summary(StrategyManager* manager) {
-    if (!manager) return strdup("No strategy manager");
+    if (!manager) return xstrdup("No strategy manager");
     
     char* summary = malloc(512);
     if (!summary) return NULL;
@@ -336,7 +336,7 @@ ComptimeValue* comptime_get_optimization_strategy(ComptimeValue* target, Comptim
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_STRING;
-    result->string_value = strdup("vectorization_recommended");
+    result->string_value = xstrdup("vectorization_recommended");
     
     return result;
 }

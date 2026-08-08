@@ -659,12 +659,12 @@ ASTNode* ast_type_clone(const ASTNode* node) {
             const BasicTypeNode* s = (const BasicTypeNode*)node;
             BasicTypeNode* c = (BasicTypeNode*)xcalloc(1, sizeof(BasicTypeNode));
             c->base.type = AST_BASIC_TYPE; c->base.pos = node->pos;
-            c->name = s->name ? strdup(s->name) : NULL;
+            c->name = s->name ? xstrdup(s->name) : NULL;
             // P4.2/B1: clone the package qualifier too, so a cloned qualified
             // type name (e.g. a grouped named result `(x, y shapes.Point)`,
             // via reinterpret_grouped_names) keeps its `pkg.Type` identity
             // instead of silently degrading to an unqualified lookup.
-            c->package = s->package ? strdup(s->package) : NULL;
+            c->package = s->package ? xstrdup(s->package) : NULL;
             return (ASTNode*)c;
         }
         case AST_SLICE_TYPE: {
@@ -688,7 +688,7 @@ ASTNode* ast_type_clone(const ASTNode* node) {
             c->base.type = AST_CHAN_TYPE; c->base.pos = node->pos;
             c->element_type = ast_type_clone(s->element_type);
             c->pattern = s->pattern;
-            c->endpoint = s->endpoint ? strdup(s->endpoint) : NULL;
+            c->endpoint = s->endpoint ? xstrdup(s->endpoint) : NULL;
             return (ASTNode*)c;
         }
         case AST_POINTER_TYPE: {

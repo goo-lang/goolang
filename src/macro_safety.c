@@ -76,7 +76,7 @@ SafetyCheckResult* create_safety_result(SafetyCheckType type, bool passed, Safet
     result->type = type;
     result->passed = passed;
     result->severity = severity;
-    result->message = message ? strdup(message) : NULL;
+    result->message = message ? xstrdup(message) : NULL;
     result->line = line;
     result->column = column;
     result->suggestion = NULL;
@@ -183,11 +183,11 @@ SafetyCheckResult* perform_type_safety_check(ASTNode* node, MacroSafetyContext* 
     // Check if node has type information - simplified check
     if (node == NULL) {
         passed = false;
-        message = strdup("Missing type information in AST node");
+        message = xstrdup("Missing type information in AST node");
     } else {
         // Perform basic type validation
         passed = true;
-        message = strdup("Type safety check passed");
+        message = xstrdup("Type safety check passed");
     }
     
     return create_safety_result(SAFETY_CHECK_TYPE, passed, 
@@ -201,7 +201,7 @@ SafetyCheckResult* perform_memory_safety_check(ASTNode* node, MacroSafetyContext
     
     // Simplified memory safety check
     bool passed = true;
-    char* message = strdup("Memory safety check passed");
+    char* message = xstrdup("Memory safety check passed");
     
     // In a full implementation, this would check for:
     // - Use after free
@@ -218,7 +218,7 @@ SafetyCheckResult* perform_bounds_check(ASTNode* node, MacroSafetyContext* ctx) 
     if (!node || !ctx) return NULL;
     
     bool passed = true;
-    char* message = strdup("Bounds checking passed");
+    char* message = xstrdup("Bounds checking passed");
     
     // This would check array accesses, buffer operations, etc.
     
@@ -231,7 +231,7 @@ SafetyCheckResult* perform_null_check(ASTNode* node, MacroSafetyContext* ctx) {
     if (!node || !ctx) return NULL;
     
     bool passed = true;
-    char* message = strdup("Null safety check passed");
+    char* message = xstrdup("Null safety check passed");
     
     // This would check for null pointer dereferences
     
@@ -244,7 +244,7 @@ SafetyCheckResult* perform_overflow_check(ASTNode* node, MacroSafetyContext* ctx
     if (!node || !ctx) return NULL;
     
     bool passed = true;
-    char* message = strdup("Overflow checking passed");
+    char* message = xstrdup("Overflow checking passed");
     
     // This would check arithmetic operations for potential overflows
     
@@ -257,7 +257,7 @@ SafetyCheckResult* perform_lifetime_check(ASTNode* node, MacroSafetyContext* ctx
     if (!node || !ctx) return NULL;
     
     bool passed = true;
-    char* message = strdup("Lifetime checking passed");
+    char* message = xstrdup("Lifetime checking passed");
     
     // This would check object lifetimes and ownership
     
@@ -282,7 +282,7 @@ SafetyCheckResult* perform_recursion_check(MacroExpansion* expansion, MacroSafet
         snprintf(message, 128, "Recursion depth %d exceeds maximum %zu", 
                 current_depth, ctx->max_recursion_depth);
     } else {
-        message = strdup("Recursion check passed");
+        message = xstrdup("Recursion check passed");
     }
     
     current_depth--;
@@ -645,7 +645,7 @@ MacroExpansion* expand_macro_with_safety(MacroTemplate* macro, MacroContext* ctx
     MacroExpansion* expansion = (MacroExpansion*)xcalloc(1, sizeof(MacroExpansion));
     if (expansion) {
         expansion->success = true;
-        expansion->expanded_code = strdup("int safe_var = 42;");
+        expansion->expanded_code = xstrdup("int safe_var = 42;");
         expansion->expanded_ast = NULL; // Simplified for testing
     }
     
@@ -656,7 +656,7 @@ MacroExpansion* expand_macro_with_safety(MacroTemplate* macro, MacroContext* ctx
                 // In strict mode, fail on safety violations
                 expansion->success = false;
                 free(expansion->error_message);
-                expansion->error_message = strdup("Macro safety violation in strict mode");
+                expansion->error_message = xstrdup("Macro safety violation in strict mode");
             }
         }
         

@@ -28,7 +28,7 @@ SMTExpression* smt_var(const char* name, struct Type* type) {
     *expr = (SMTExpression) {
         .type = SMT_VAR,
         .variable = {
-            .name = strdup(name),
+            .name = xstrdup(name),
             .var_type = type
         },
         .next = NULL
@@ -91,7 +91,7 @@ SMTExpression* smt_app(const char* function_name, SMTExpression** args, size_t a
     *expr = (SMTExpression) {
         .type = SMT_APP,
         .application = {
-            .function_name = strdup(function_name),
+            .function_name = xstrdup(function_name),
             .args = copied_args,
             .arg_count = arg_count
         },
@@ -114,7 +114,7 @@ SMTExpression* smt_forall(char** var_names, struct Type** var_types, size_t var_
         return NULL;
     }
     for (size_t i = 0; i < var_count; i++) {
-        copied_names[i] = strdup(var_names[i]);
+        copied_names[i] = xstrdup(var_names[i]);
     }
     
     *expr = (SMTExpression) {

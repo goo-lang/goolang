@@ -313,7 +313,7 @@ GatewayMetrics* gateway_metrics_create(const char* gateway_url) {
     GatewayMetrics* metrics = xcalloc(1, sizeof(GatewayMetrics));
     if (!metrics) return NULL;
     
-    metrics->gateway_url = strdup(gateway_url);
+    metrics->gateway_url = xstrdup(gateway_url);
     if (!metrics->gateway_url) {
         free(metrics);
         return NULL;
@@ -511,7 +511,7 @@ float gateway_ranking_calculate_composite_score(GatewayRanking* ranking,
     } else {
         snprintf(reason, sizeof(reason), "Balanced performance and reliability");
     }
-    ranking->recommendation_reason = strdup(reason);
+    ranking->recommendation_reason = xstrdup(reason);
     
     return ranking->composite_score;
 }

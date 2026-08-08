@@ -37,7 +37,7 @@ BoundsCheckInfo* analyze_bounds_check_with_proofs(
         
         memset(obligation, 0, sizeof(ProofObligation));
         obligation->proof_type = PROOF_BOUNDS_CHECKING;
-        obligation->description = strdup("Bounds check elimination proof");
+        obligation->description = xstrdup("Bounds check elimination proof");
         obligation->source_location = index_access;
         
         // Generate SMT expressions for bounds checking
@@ -77,15 +77,15 @@ BoundsCheckInfo* analyze_bounds_check_with_proofs(
             if (result == SMT_RESULT_UNSAT) {
                 // The bounds check can be eliminated
                 info->can_eliminate = true;
-                info->elimination_reason = strdup("SMT solver proved bounds safety");
+                info->elimination_reason = xstrdup("SMT solver proved bounds safety");
                 obligation->status = PROOF_STATUS_VERIFIED;
             } else if (result == SMT_RESULT_SAT) {
                 info->can_eliminate = false;
-                info->elimination_reason = strdup("SMT solver found potential bounds violation");
+                info->elimination_reason = xstrdup("SMT solver found potential bounds violation");
                 obligation->status = PROOF_STATUS_UNSAFE;
             } else {
                 info->can_eliminate = false;
-                info->elimination_reason = strdup("SMT solver timeout or unknown");
+                info->elimination_reason = xstrdup("SMT solver timeout or unknown");
                 obligation->status = PROOF_STATUS_UNKNOWN;
             }
         }
@@ -231,7 +231,7 @@ int apply_mpx_bounds_check(
     // 3. Let hardware handle bounds checking
     
     // For now, just mark that we're using hardware assistance
-    info->elimination_reason = strdup("Using Intel MPX hardware bounds checking");
+    info->elimination_reason = xstrdup("Using Intel MPX hardware bounds checking");
     ctx->bounds_checks_eliminated++; // Hardware handles it
     
     return 0;

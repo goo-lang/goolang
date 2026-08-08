@@ -52,7 +52,7 @@ TypeFunction* type_function_new(const char* name, Type** param_types, size_t par
     TypeFunction* func = xmalloc(sizeof(TypeFunction));
     if (!func) return NULL;
     
-    func->name = strdup(name);
+    func->name = xstrdup(name);
     func->param_count = param_count;
     func->return_type = return_type;
     func->body = body;
@@ -143,7 +143,7 @@ ComptimeTypeResult* comptime_type_evaluate(TypeChecker* checker, ASTNode* expr) 
     if (!result || !result->value) {
         ComptimeTypeResult* type_result = comptime_type_result_new(NULL, NULL);
         if (type_result && result && result->error) {
-            type_result->error_message = strdup(result->error->message);
+            type_result->error_message = xstrdup(result->error->message);
         }
         comptime_result_free(result);
         return type_result;

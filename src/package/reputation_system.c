@@ -169,7 +169,7 @@ bool reputation_system_report_event(ReputationSystem* system,
     
     event->severity = fmaxf(0.0f, fminf(severity, 1.0f));
     if (description) {
-        event->description = strdup(description);
+        event->description = xstrdup(description);
     }
     
     // Calculate reputation impact based on event type
@@ -281,7 +281,7 @@ bool reputation_system_verify_event(ReputationSystem* system,
     }
     
     event->verifier_ids = new_verifiers;
-    event->verifier_ids[event->verifier_count] = strdup(verifier_id);
+    event->verifier_ids[event->verifier_count] = xstrdup(verifier_id);
     event->verifier_count++;
     
     // Update verification confidence
@@ -483,7 +483,7 @@ char** reputation_system_filter_trusted_peers(ReputationSystem* system,
         
         if (trust_score >= min_reputation &&
             !reputation_system_detect_sybil_attack(system, peer_ids[i])) {
-            filtered[*filtered_count] = strdup(peer_ids[i]);
+            filtered[*filtered_count] = xstrdup(peer_ids[i]);
             (*filtered_count)++;
         }
     }
@@ -498,7 +498,7 @@ PeerReputation* peer_reputation_create(const char* peer_id) {
     PeerReputation* rep = xcalloc(1, sizeof(PeerReputation));
     if (!rep) return NULL;
     
-    rep->peer_id = strdup(peer_id);
+    rep->peer_id = xstrdup(peer_id);
     if (!rep->peer_id) {
         free(rep);
         return NULL;
@@ -552,8 +552,8 @@ ReputationEvent* reputation_event_create(ReputationEventType type,
     if (!event) return NULL;
     
     event->event_id = generate_event_id();
-    event->subject_id = strdup(subject_id);
-    event->reporter_id = strdup(reporter_id);
+    event->subject_id = xstrdup(subject_id);
+    event->reporter_id = xstrdup(reporter_id);
     
     if (!event->event_id || !event->subject_id || !event->reporter_id) {
         reputation_event_free(event);

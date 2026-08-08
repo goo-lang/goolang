@@ -56,7 +56,7 @@ bool repl_syntax_init(void) {
     g_syntax_config->case_sensitive_completion = false;
     g_syntax_config->completion_menu_max_items = 20;
     g_syntax_config->completion_trigger_length = 2;
-    g_syntax_config->theme_name = strdup("default");
+    g_syntax_config->theme_name = xstrdup("default");
     
     // Detect terminal capabilities
     g_terminal_caps = repl_detect_terminal_capabilities();
@@ -287,13 +287,13 @@ SyntaxElementType repl_classify_token(const char* token, const SyntaxContext* co
 char* repl_highlight_line(const char* line, const SyntaxTheme* theme) {
     if (!line || !theme || !g_syntax_config->enable_syntax_highlighting || 
         !g_terminal_caps->supports_color) {
-        return strdup(line);
+        return xstrdup(line);
     }
     
     size_t len = strlen(line);
     size_t output_size = len * 4; // Conservative estimate with ANSI codes
     char* output = malloc(output_size);
-    if (!output) return strdup(line);
+    if (!output) return xstrdup(line);
     
     output[0] = '\0';
     
@@ -436,7 +436,7 @@ CompletionContext* repl_analyze_completion_context(const char* line, int cursor_
     CompletionContext* context = xmalloc(sizeof(CompletionContext));
     if (!context) return NULL;
     
-    context->line = strdup(line);
+    context->line = xstrdup(line);
     context->cursor_pos = cursor_pos;
     
     // Find word boundaries
@@ -490,15 +490,15 @@ CompletionContext* repl_analyze_completion_context(const char* line, int cursor_
     
     // Determine context type
     if (context->in_string) {
-        context->context_type = strdup("string");
+        context->context_type = xstrdup("string");
     } else if (context->in_comment) {
-        context->context_type = strdup("comment");
+        context->context_type = xstrdup("comment");
     } else if (context->after_operator) {
-        context->context_type = strdup("expression");
+        context->context_type = xstrdup("expression");
     } else if (context->in_function_call) {
-        context->context_type = strdup("function_call");
+        context->context_type = xstrdup("function_call");
     } else {
-        context->context_type = strdup("statement");
+        context->context_type = xstrdup("statement");
     }
     
     return context;
@@ -526,12 +526,12 @@ CompletionItem* repl_syntax_get_completions(const CompletionContext* context, in
         if (strlen(context->current_word) == 0 || 
             strncmp(GOO_KEYWORDS[i], context->current_word, strlen(context->current_word)) == 0) {
             
-            items[item_count].text = strdup(GOO_KEYWORDS[i]);
-            items[item_count].description = strdup("Keyword");
-            items[item_count].detail = strdup("Goo language keyword");
+            items[item_count].text = xstrdup(GOO_KEYWORDS[i]);
+            items[item_count].description = xstrdup("Keyword");
+            items[item_count].detail = xstrdup("Goo language keyword");
             items[item_count].type = COMPLETION_KEYWORD;
             items[item_count].priority = 10;
-            items[item_count].insert_text = strdup(GOO_KEYWORDS[i]);
+            items[item_count].insert_text = xstrdup(GOO_KEYWORDS[i]);
             item_count++;
         }
     }
@@ -541,12 +541,12 @@ CompletionItem* repl_syntax_get_completions(const CompletionContext* context, in
         if (strlen(context->current_word) == 0 || 
             strncmp(GOO_TYPES[i], context->current_word, strlen(context->current_word)) == 0) {
             
-            items[item_count].text = strdup(GOO_TYPES[i]);
-            items[item_count].description = strdup("Type");
-            items[item_count].detail = strdup("Built-in type");
+            items[item_count].text = xstrdup(GOO_TYPES[i]);
+            items[item_count].description = xstrdup("Type");
+            items[item_count].detail = xstrdup("Built-in type");
             items[item_count].type = COMPLETION_TYPE;
             items[item_count].priority = 8;
-            items[item_count].insert_text = strdup(GOO_TYPES[i]);
+            items[item_count].insert_text = xstrdup(GOO_TYPES[i]);
             item_count++;
         }
     }
@@ -561,12 +561,12 @@ CompletionItem* repl_syntax_get_completions(const CompletionContext* context, in
         if (strlen(context->current_word) == 0 || 
             strncmp(goo_features[i], context->current_word, strlen(context->current_word)) == 0) {
             
-            items[item_count].text = strdup(goo_features[i]);
-            items[item_count].description = strdup("Goo Feature");
-            items[item_count].detail = strdup("Goo-specific language feature");
+            items[item_count].text = xstrdup(goo_features[i]);
+            items[item_count].description = xstrdup("Goo Feature");
+            items[item_count].detail = xstrdup("Goo-specific language feature");
             items[item_count].type = COMPLETION_GOO_FEATURE;
             items[item_count].priority = 12;
-            items[item_count].insert_text = strdup(goo_features[i]);
+            items[item_count].insert_text = xstrdup(goo_features[i]);
             item_count++;
         }
     }
@@ -585,12 +585,12 @@ CompletionItem* repl_syntax_get_completions(const CompletionContext* context, in
             if (strlen(context->current_word) == 0 || 
                 strncmp(snippets[i][0], context->current_word, strlen(context->current_word)) == 0) {
                 
-                items[item_count].text = strdup(snippets[i][0]);
-                items[item_count].description = strdup("Snippet");
-                items[item_count].detail = strdup(snippets[i][2]);
+                items[item_count].text = xstrdup(snippets[i][0]);
+                items[item_count].description = xstrdup("Snippet");
+                items[item_count].detail = xstrdup(snippets[i][2]);
                 items[item_count].type = COMPLETION_SNIPPET;
                 items[item_count].priority = 15;
-                items[item_count].insert_text = strdup(snippets[i][1]);
+                items[item_count].insert_text = xstrdup(snippets[i][1]);
                 item_count++;
             }
         }
@@ -721,14 +721,14 @@ int repl_find_matching_paren(const char* line, int paren_pos) {
 
 // Highlight matching parentheses
 char* repl_highlight_matching_parens(const char* line, int cursor_pos) {
-    if (!line || !g_current_theme) return strdup(line);
+    if (!line || !g_current_theme) return xstrdup(line);
     
     int match_pos = repl_find_matching_paren(line, cursor_pos);
-    if (match_pos == -1) return strdup(line);
+    if (match_pos == -1) return xstrdup(line);
     
     size_t len = strlen(line);
     char* output = malloc(len * 3); // Space for ANSI codes
-    if (!output) return strdup(line);
+    if (!output) return xstrdup(line);
     
     strcpy(output, "");
     

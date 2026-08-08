@@ -74,7 +74,7 @@ static bool registry_add(Registry* reg, FuncDeclNode* decl) {
 
     FuncInfo* info = &reg->items[reg->count];
     memset(info, 0, sizeof(*info));
-    info->name = strdup(decl->name);
+    info->name = xstrdup(decl->name);
     if (!info->name) return false;
     info->decl = decl;
 
@@ -93,7 +93,7 @@ static bool registry_add(Registry* reg, FuncDeclNode* decl) {
             if (p->type != AST_VAR_DECL) continue;
             VarDeclNode* vd = (VarDeclNode*)p;
             for (size_t i = 0; i < vd->name_count; i++) {
-                info->param_names[idx] = strdup(vd->names[i]);
+                info->param_names[idx] = xstrdup(vd->names[i]);
                 if (!info->param_names[idx]) return false;
                 idx++;
             }
@@ -355,7 +355,7 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
 
     for (size_t i = 0; i < reg.count; i++) {
         ParamEscapeSummary* s = &result->summaries[i];
-        s->function_name = strdup(reg.items[i].name);
+        s->function_name = xstrdup(reg.items[i].name);
         s->param_count = reg.items[i].param_count;
         s->return_escapes = reg.items[i].return_escapes;
         s->escapes = NULL;

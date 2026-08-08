@@ -388,7 +388,7 @@ ProofGenerationConfig* proof_generation_config_default(void) {
         
         .generate_detailed_proofs = true,
         .generate_counterexamples = true,
-        .output_directory = strdup("./proof_output")
+        .output_directory = xstrdup("./proof_output")
     };
     
     // Set up default domains

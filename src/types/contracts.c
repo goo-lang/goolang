@@ -32,8 +32,8 @@ ContractExpression* contract_expression_create(
         .message = NULL,
         .line = condition ? condition->pos.line : 0,
         .column = condition ? condition->pos.column : 0,
-        .filename = (condition && condition->pos.filename) ? strdup(condition->pos.filename) : NULL,
-        .description = description ? strdup(description) : NULL,
+        .filename = (condition && condition->pos.filename) ? xstrdup(condition->pos.filename) : NULL,
+        .description = description ? xstrdup(description) : NULL,
         .is_compile_time = false,
         .next = NULL
     };
@@ -47,7 +47,7 @@ FunctionContract* function_contract_create(const char* function_name) {
     FunctionContract* contract = xmalloc(sizeof(FunctionContract));
     if (!contract) return NULL;
     
-    contract->function_name = strdup(function_name);
+    contract->function_name = xstrdup(function_name);
     contract->preconditions = NULL;
     contract->postconditions = NULL;
     contract->invariants = NULL;
@@ -189,7 +189,7 @@ ContractVerificationInfo* verify_contract_expression(
     // Basic analysis of the contract condition
     if (!expr->condition) {
         info->result = CONTRACT_VIOLATED;
-        info->error_message = strdup("Contract condition is null");
+        info->error_message = xstrdup("Contract condition is null");
         return info;
     }
     
@@ -202,7 +202,7 @@ ContractVerificationInfo* verify_contract_expression(
                 info->can_optimize_away = 1;
             } else {
                 info->result = CONTRACT_VIOLATED;
-                info->error_message = strdup("Contract condition is statically false");
+                info->error_message = xstrdup("Contract condition is statically false");
             }
             return info;
         }
@@ -467,7 +467,7 @@ char* generate_contract_error_message(
         return message;
     }
     
-    return strdup(base_message);
+    return xstrdup(base_message);
 }
 
 // =============================================================================
@@ -649,7 +649,7 @@ char* contract_to_string(ContractExpression* expr) {
         return result;
     }
     
-    return strdup(prefix);
+    return xstrdup(prefix);
 }
 
 int is_contract_compatible(

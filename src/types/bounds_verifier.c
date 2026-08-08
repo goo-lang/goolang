@@ -171,7 +171,7 @@ SymbolicExpression* symbolic_constant(int64_t value) {
 SymbolicExpression* symbolic_variable(const char* name, Type* type) {
     SymbolicExpression* expr = symbolic_expression_new(SYMBOLIC_VARIABLE);
     if (expr) {
-        expr->data.variable.name = strdup(name);
+        expr->data.variable.name = xstrdup(name);
         expr->data.variable.type = type;
         expr->result_type = type;
     }
@@ -331,7 +331,7 @@ SymbolicExpression* symbolic_expression_simplify(SymbolicExpression* expr) {
 }
 
 char* symbolic_expression_to_string(const SymbolicExpression* expr) {
-    if (!expr) return strdup("null");
+    if (!expr) return xstrdup("null");
     
     char* result = malloc(256);
     if (!result) return NULL;
@@ -443,7 +443,7 @@ BoundsConstraint* bounds_constraint_comparison(ConstraintType type, SymbolicExpr
 }
 
 char* bounds_constraint_to_string(const BoundsConstraint* constraint) {
-    if (!constraint) return strdup("null");
+    if (!constraint) return xstrdup("null");
     
     char* result = malloc(512);
     if (!result) return NULL;
@@ -572,7 +572,7 @@ void bounds_proof_add_step(BoundsProof* proof, const char* step_description) {
     if (!new_steps) return;
     
     proof->proof_steps = new_steps;
-    proof->proof_steps[proof->step_count] = strdup(step_description);
+    proof->proof_steps[proof->step_count] = xstrdup(step_description);
     proof->step_count++;
 }
 
@@ -620,15 +620,15 @@ BoundsProof* verify_array_access(BoundsVerifier* verifier, ASTNode* array_access
         // Determine optimization potential
         if (proof->status == PROOF_STATUS_SAFE) {
             proof->can_eliminate_check = 1;
-            proof->optimization_note = strdup("Bounds check can be eliminated - access proven safe");
+            proof->optimization_note = xstrdup("Bounds check can be eliminated - access proven safe");
             verifier->proven_safe_accesses++;
             verifier->eliminated_checks++;
         } else if (proof->status == PROOF_STATUS_CONDITIONAL) {
             proof->requires_runtime_check = 1;
-            proof->optimization_note = strdup("Runtime check required - safety depends on runtime conditions");
+            proof->optimization_note = xstrdup("Runtime check required - safety depends on runtime conditions");
         } else {
             proof->requires_runtime_check = 1;
-            proof->optimization_note = strdup("Runtime check required - safety cannot be proven");
+            proof->optimization_note = xstrdup("Runtime check required - safety cannot be proven");
         }
     } else {
         proof->status = PROOF_STATUS_ERROR;

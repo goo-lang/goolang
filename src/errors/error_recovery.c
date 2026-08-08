@@ -357,7 +357,7 @@ RecoveryResult recovery_execute_int(RecoveryContext* context,
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_INTERNAL,
-            .message = strdup("Invalid recovery context or function"),
+            .message = xstrdup("Invalid recovery context or function"),
             .hint = NULL,
             .location = empty_source_location(),
             .next = NULL
@@ -393,8 +393,8 @@ RecoveryResult recovery_execute_int(RecoveryContext* context,
         if (context->error_count < context->error_capacity) {
             Error* error_copy = xmalloc(sizeof(Error));
             *error_copy = *func_result.error;
-            error_copy->message = func_result.error->message ? strdup(func_result.error->message) : NULL;
-            error_copy->hint = func_result.error->hint ? strdup(func_result.error->hint) : NULL;
+            error_copy->message = func_result.error->message ? xstrdup(func_result.error->message) : NULL;
+            error_copy->hint = func_result.error->hint ? xstrdup(func_result.error->hint) : NULL;
             error_copy->next = NULL;
             
             context->attempt_errors[context->error_count++] = error_copy;
@@ -438,7 +438,7 @@ RecoveryResult recovery_execute_int(RecoveryContext* context,
     char* message = malloc(512);
     snprintf(message, 512, "Operation failed after %d attempts", context->current_attempt);
     aggregated_error->message = message;
-    aggregated_error->hint = strdup("Review individual attempt errors for details");
+    aggregated_error->hint = xstrdup("Review individual attempt errors for details");
     
     result.error = aggregated_error;
     

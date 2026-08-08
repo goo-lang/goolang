@@ -64,7 +64,7 @@ void reinterpret_grouped_names(ASTNode* list) {
         if (!cloned) continue;                         // unclonable shared type: leave as-is
         BasicTypeNode* bt = (BasicTypeNode*)vd->type;  // misparsed type-name == the intended name
         vd->names = (char**)xmalloc(sizeof(char*));
-        vd->names[0] = strdup(bt->name);
+        vd->names[0] = xstrdup(bt->name);
         vd->name_count = 1;
         ast_node_free(vd->type);                       // drop the misparsed bare type-name
         vd->type = cloned;
@@ -172,7 +172,7 @@ ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
 
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     c->names = xmalloc(sizeof(char*));
-    c->names[0] = strdup(ident->name);
+    c->names[0] = xstrdup(ident->name);
     c->name_count = 1;
     c->type = type;
     c->values = value;
@@ -200,8 +200,8 @@ static ASTNode* clone_const_type(const ASTNode* n) {
     basic->base.pos = n->pos;
     basic->base.node_type = NULL;
     basic->base.next = NULL;
-    basic->name = strdup(src->name);
-    basic->package = src->package ? strdup(src->package) : NULL;
+    basic->name = xstrdup(src->name);
+    basic->package = src->package ? xstrdup(src->package) : NULL;
     return (ASTNode*)basic;
 }
 
@@ -264,7 +264,7 @@ ASTNode* var_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
 
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     var->names = xmalloc(sizeof(char*));
-    var->names[0] = strdup(ident->name);
+    var->names[0] = xstrdup(ident->name);
     var->name_count = 1;
     var->type = type;
     var->values = value;
@@ -417,7 +417,7 @@ ASTNode* func_result_from_params(ASTNode* params_list) {
             if (vd->name_count == 0 || !vd->names) {
                 char buf[16]; snprintf(buf, sizeof(buf), "_%zu", idx);
                 vd->names = xmalloc(sizeof(char*));
-                vd->names[0] = strdup(buf); vd->name_count = 1;
+                vd->names[0] = xstrdup(buf); vd->name_count = 1;
             }
         }
         StructTypeNode* st = (StructTypeNode*)xmalloc(sizeof(StructTypeNode));
@@ -440,7 +440,7 @@ ASTNode* const_decl_new(ASTNode* name_ident, ASTNode* type, ASTNode* value, int 
 
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     const_node->names = xmalloc(sizeof(char*));
-    const_node->names[0] = strdup(ident->name);
+    const_node->names[0] = xstrdup(ident->name);
     const_node->name_count = 1;
     const_node->type = type;
     const_node->values = value;
@@ -497,7 +497,7 @@ ASTNode* selector_expr_new(ASTNode* expr, ASTNode* ident_node) {
     selector->base.node_type = NULL;
     selector->base.next = NULL;
     selector->expr = expr;
-    selector->selector = strdup(ident->name);
+    selector->selector = xstrdup(ident->name);
     ast_node_free(ident_node);
     return (ASTNode*)selector;
 }
@@ -518,7 +518,7 @@ ASTNode* func_param_new(ASTNode* name_ident, ASTNode* type, int is_variadic, int
     if (name_ident) {
         IdentifierNode* ident = (IdentifierNode*)name_ident;
         param->names = xmalloc(sizeof(char*));
-        param->names[0] = strdup(ident->name);
+        param->names[0] = xstrdup(ident->name);
         param->name_count = 1;
     } else {
         param->names = NULL;
@@ -536,7 +536,7 @@ ASTNode* var_decl_new_1(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
     VarDeclNode* var = ast_var_decl_new(get_current_position());
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     var->names = xmalloc(sizeof(char*));
-    var->names[0] = strdup(ident->name);
+    var->names[0] = xstrdup(ident->name);
     var->name_count = 1;
     var->type = type;
     var->values = value;
@@ -549,8 +549,8 @@ ASTNode* var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* typ
     IdentifierNode* i1 = (IdentifierNode*)name_ident1;
     IdentifierNode* i2 = (IdentifierNode*)name_ident2;
     var->names = malloc(sizeof(char*) * 2);
-    var->names[0] = strdup(i1->name);
-    var->names[1] = strdup(i2->name);
+    var->names[0] = xstrdup(i1->name);
+    var->names[1] = xstrdup(i2->name);
     var->name_count = 2;
     var->type = type;
     ast_node_free(name_ident1);
@@ -564,9 +564,9 @@ ASTNode* var_decl_new_3(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* nam
     IdentifierNode* i2 = (IdentifierNode*)name_ident2;
     IdentifierNode* i3 = (IdentifierNode*)name_ident3;
     var->names = malloc(sizeof(char*) * 3);
-    var->names[0] = strdup(i1->name);
-    var->names[1] = strdup(i2->name);
-    var->names[2] = strdup(i3->name);
+    var->names[0] = xstrdup(i1->name);
+    var->names[1] = xstrdup(i2->name);
+    var->names[2] = xstrdup(i3->name);
     var->name_count = 3;
     var->type = type;
     ast_node_free(name_ident1);
@@ -579,7 +579,7 @@ ASTNode* short_var_decl_new_1(ASTNode* name_ident, ASTNode* value) {
     VarDeclNode* var = ast_var_decl_new(get_current_position());
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     var->names = xmalloc(sizeof(char*));
-    var->names[0] = strdup(ident->name);
+    var->names[0] = xstrdup(ident->name);
     var->name_count = 1;
     var->values = value;
     var->is_short_decl = 1;
@@ -595,8 +595,8 @@ ASTNode* short_var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNod
     IdentifierNode* i1 = (IdentifierNode*)name_ident1;
     IdentifierNode* i2 = (IdentifierNode*)name_ident2;
     var->names = malloc(sizeof(char*) * 2);
-    var->names[0] = strdup(i1->name);
-    var->names[1] = strdup(i2->name);
+    var->names[0] = xstrdup(i1->name);
+    var->names[1] = xstrdup(i2->name);
     var->name_count = 2;
     var->values = value;
     var->is_short_decl = 1;
@@ -612,7 +612,7 @@ ASTNode* struct_field_new(ASTNode* name_ident, ASTNode* type) {
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     VarDeclNode* field = ast_var_decl_new(get_current_position());
     field->names = xmalloc(sizeof(char*));
-    field->names[0] = strdup(ident->name);
+    field->names[0] = xstrdup(ident->name);
     field->name_count = 1;
     field->type = type;
     field->values = NULL;
@@ -647,7 +647,7 @@ ASTNode* struct_lit_empty_new(ASTNode* type_ident) {
     StructLiteralNode* lit = (StructLiteralNode*)xcalloc(1, sizeof(StructLiteralNode));
     lit->base.type = AST_STRUCT_LITERAL;
     lit->base.pos = get_current_position();
-    lit->type_name = strdup(type_ident_node->name);
+    lit->type_name = xstrdup(type_ident_node->name);
     ast_node_free(type_ident);
     lit->is_keyed = 0;
     lit->field_values = NULL;
@@ -663,7 +663,7 @@ ASTNode* struct_lit_init_keyed(ASTNode* key_ident, ASTNode* value) {
     // the slot before type-check runs.
     IdentifierNode* key = (IdentifierNode*)key_ident;
     ASTNode* result = value;
-    result->node_type = (Type*)strdup(key->name);
+    result->node_type = (Type*)xstrdup(key->name);
     ast_node_free(key_ident);
     return result;
 }

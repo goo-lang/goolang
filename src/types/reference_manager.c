@@ -402,8 +402,8 @@ static ReferenceInfo* reference_info_new(const char* name, const char* target, R
     ReferenceInfo* ref = xcalloc(1, sizeof(ReferenceInfo));
     if (!ref) return NULL;
     
-    ref->name = strdup(name);
-    ref->target_name = strdup(target);
+    ref->name = xstrdup(name);
+    ref->target_name = xstrdup(target);
     ref->kind = kind;
     ref->creation_position = position;
     ref->last_use_position = position;
@@ -424,7 +424,7 @@ static BorrowTracker* borrow_tracker_new(const char* target_name) {
     BorrowTracker* tracker = xcalloc(1, sizeof(BorrowTracker));
     if (!tracker) return NULL;
     
-    tracker->target_name = strdup(target_name);
+    tracker->target_name = xstrdup(target_name);
     tracker->borrower_capacity = 4;
     tracker->borrowers = calloc(tracker->borrower_capacity, sizeof(ReferenceInfo*));
     

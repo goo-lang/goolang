@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest string-literal-header-probe
 
 all: lexer
 
@@ -3287,6 +3287,7 @@ VERIFY_ALL_DEPS := \
     arena-rss-probe \
     dead-package-code-probe \
     alloc-doors-probe \
+    alloc-doors-selftest \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
@@ -5222,6 +5223,15 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 # needed, so it is stable everywhere.
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
+
+# Teeth for the probe above. The strdup door was added on 2026-08-08 and passed
+# on its first run after the sweep, which proves nothing on its own. Five
+# controls, and controls 3-5 are the load-bearing ones: a scan that always
+# passes satisfies 1, and a scan that flags every line satisfies 2, but neither
+# blunt failure can also ignore xstrdup, ignore a comment, and honour the
+# exemption list.
+alloc-doors-selftest:
+	@bash scripts/alloc_doors_probe.sh --self-test
 
 # A Goo string literal must be a real ARC object: { header, bytes } with the
 # count set to GOO_RC_IMMORTAL. Asserts the IR shape, the 16-byte alignment,

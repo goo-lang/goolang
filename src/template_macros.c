@@ -46,7 +46,7 @@ TemplateContext* create_template_context(const char* template_code) {
     TemplateContext* ctx = (TemplateContext*)xcalloc(1, sizeof(TemplateContext));
     if (!ctx) return NULL;
     
-    ctx->template_code = strdup(template_code);
+    ctx->template_code = xstrdup(template_code);
     ctx->preserve_whitespace = true;
     ctx->generate_comments = true;
     ctx->recursion_depth = 0;
@@ -120,7 +120,7 @@ bool add_template_parameter(TemplateContext* ctx, const char* name,
     ctx->parameters = new_params;
     TemplateParameter* param = &ctx->parameters[ctx->param_count];
     
-    param->name = strdup(name);
+    param->name = xstrdup(name);
     param->type = type;
     param->value = value;
     param->constraint = NULL;
@@ -263,7 +263,7 @@ TemplateExpansionResult* expand_template(TemplateContext* ctx) {
         }
     } else {
         result->success = false;
-        result->error_message = strdup("Template expansion failed");
+        result->error_message = xstrdup("Template expansion failed");
     }
     
     return result;
@@ -297,13 +297,13 @@ char* apply_template_filter(const char* input, TemplateFilter filter) {
         case FILTER_QUOTE:
             return quote_string(input);
         default:
-            return strdup(input);
+            return xstrdup(input);
     }
 }
 
 // Apply filter chain
 char* apply_filter_chain(const char* input, const char* filter_chain) {
-    if (!input || !filter_chain) return strdup(input);
+    if (!input || !filter_chain) return xstrdup(input);
     
     // For now, support single filters only
     // In a full implementation, would parse chains like "lowercase | plural"
@@ -347,7 +347,7 @@ TemplateExpansionResult* generate_crud_template(TemplateContext* ctx) {
         "}\n";
     
     free(ctx->template_code);
-    ctx->template_code = strdup(crud_template);
+    ctx->template_code = xstrdup(crud_template);
     
     return expand_template(ctx);
 }
@@ -381,7 +381,7 @@ TemplateExpansionResult* generate_api_client_template(TemplateContext* ctx) {
         "}\n";
     
     free(ctx->template_code);
-    ctx->template_code = strdup(api_template);
+    ctx->template_code = xstrdup(api_template);
     
     return expand_template(ctx);
 }
@@ -425,7 +425,7 @@ ComptimeValue* template_macro_evaluator(MacroContext* ctx, ComptimeValue** args)
 char* to_lowercase(const char* str) {
     if (!str) return NULL;
     
-    char* result = strdup(str);
+    char* result = xstrdup(str);
     if (!result) return NULL;
     
     for (char* p = result; *p; p++) {
@@ -437,7 +437,7 @@ char* to_lowercase(const char* str) {
 char* to_uppercase(const char* str) {
     if (!str) return NULL;
     
-    char* result = strdup(str);
+    char* result = xstrdup(str);
     if (!result) return NULL;
     
     for (char* p = result; *p; p++) {
@@ -449,7 +449,7 @@ char* to_uppercase(const char* str) {
 char* to_capitalize(const char* str) {
     if (!str) return NULL;
     
-    char* result = strdup(str);
+    char* result = xstrdup(str);
     if (!result) return NULL;
     
     if (result[0]) {
@@ -573,7 +573,7 @@ char* to_singular(const char* str) {
     if (!str) return NULL;
     
     size_t len = strlen(str);
-    char* result = strdup(str);
+    char* result = xstrdup(str);
     if (!result) return NULL;
     
     // Simple singularization rules (reverse of pluralization)
@@ -710,15 +710,15 @@ char* get_template_info(TemplateContext* ctx) {
 // Stub implementations for type analysis utilities
 char* extract_type_name(Type* type) {
     // In a real implementation, would extract actual type name
-    return strdup("MockType");
+    return xstrdup("MockType");
 }
 
 char** extract_struct_field_names(Type* struct_type, size_t* count) {
     // Mock implementation
     *count = 2;
     char** names = (char**)malloc(2 * sizeof(char*));
-    names[0] = strdup("field1");
-    names[1] = strdup("field2");
+    names[0] = xstrdup("field1");
+    names[1] = xstrdup("field2");
     return names;
 }
 

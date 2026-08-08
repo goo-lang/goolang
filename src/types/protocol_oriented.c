@@ -17,7 +17,7 @@ ProtocolDefinition* protocol_definition_new(const char* name, Position position)
     ProtocolDefinition* protocol = xcalloc(1, sizeof(ProtocolDefinition));
     if (!protocol) return NULL;
     
-    protocol->name = name ? strdup(name) : NULL;
+    protocol->name = name ? xstrdup(name) : NULL;
     protocol->position = position;
     protocol->type_parameters = NULL;
     protocol->requirements = NULL;
@@ -154,7 +154,7 @@ ProtocolDefinition* protocol_definition_copy(const ProtocolDefinition* protocol)
 ProtocolRequirement protocol_requirement_new_method(const char* name, Type* signature) {
     ProtocolRequirement req = {0};
     req.kind = PROTOCOL_REQ_METHOD;
-    req.name = name ? strdup(name) : NULL;
+    req.name = name ? xstrdup(name) : NULL;
     req.data.method.signature = signature;
     req.data.method.is_static = 0;
     req.data.method.is_mutating = 0;
@@ -164,7 +164,7 @@ ProtocolRequirement protocol_requirement_new_method(const char* name, Type* sign
 ProtocolRequirement protocol_requirement_new_property(const char* name, Type* prop_type, int has_getter, int has_setter) {
     ProtocolRequirement req = {0};
     req.kind = PROTOCOL_REQ_PROPERTY;
-    req.name = name ? strdup(name) : NULL;
+    req.name = name ? xstrdup(name) : NULL;
     req.data.property.type = prop_type;
     req.data.property.has_getter = has_getter;
     req.data.property.has_setter = has_setter;
@@ -174,7 +174,7 @@ ProtocolRequirement protocol_requirement_new_property(const char* name, Type* pr
 ProtocolRequirement protocol_requirement_new_init(Type* signature) {
     ProtocolRequirement req = {0};
     req.kind = PROTOCOL_REQ_INIT;
-    req.name = strdup("init");
+    req.name = xstrdup("init");
     req.data.initializer.signature = signature;
     req.data.initializer.is_required = 1;
     return req;
@@ -183,7 +183,7 @@ ProtocolRequirement protocol_requirement_new_init(Type* signature) {
 ProtocolRequirement protocol_requirement_new_associated_type(const char* name) {
     ProtocolRequirement req = {0};
     req.kind = PROTOCOL_REQ_ASSOCIATED_TYPE;
-    req.name = name ? strdup(name) : NULL;
+    req.name = name ? xstrdup(name) : NULL;
     // Associated type details handled separately
     return req;
 }
@@ -193,7 +193,7 @@ ProtocolRequirement protocol_requirement_copy(const ProtocolRequirement* req) {
     
     ProtocolRequirement copy = {0};
     copy.kind = req->kind;
-    copy.name = req->name ? strdup(req->name) : NULL;
+    copy.name = req->name ? xstrdup(req->name) : NULL;
     
     switch (req->kind) {
         case PROTOCOL_REQ_METHOD:
@@ -233,7 +233,7 @@ void protocol_requirement_free(ProtocolRequirement* req) {
 
 AssociatedType associated_type_new(const char* name, Type* default_type) {
     AssociatedType assoc = {0};
-    assoc.name = name ? strdup(name) : NULL;
+    assoc.name = name ? xstrdup(name) : NULL;
     assoc.default_type = default_type;
     assoc.constraints = NULL;
     assoc.constraint_count = 0;
@@ -244,7 +244,7 @@ AssociatedType associated_type_copy(const AssociatedType* assoc) {
     if (!assoc) return (AssociatedType){0};
     
     AssociatedType copy = {0};
-    copy.name = assoc->name ? strdup(assoc->name) : NULL;
+    copy.name = assoc->name ? xstrdup(assoc->name) : NULL;
     copy.default_type = assoc->default_type;  // Shallow copy
     
     // Copy constraints
@@ -327,7 +327,7 @@ void protocol_conformance_free(ProtocolConformance* conformance) {
 
 MethodImplementation method_implementation_new(const char* name, ASTNode* body) {
     MethodImplementation impl = {0};
-    impl.method_name = name ? strdup(name) : NULL;
+    impl.method_name = name ? xstrdup(name) : NULL;
     impl.body = body;
     impl.signature = NULL;
     impl.is_default = 0;
@@ -339,7 +339,7 @@ MethodImplementation method_implementation_copy(const MethodImplementation* impl
     if (!impl) return (MethodImplementation){0};
     
     MethodImplementation copy = {0};
-    copy.method_name = impl->method_name ? strdup(impl->method_name) : NULL;
+    copy.method_name = impl->method_name ? xstrdup(impl->method_name) : NULL;
     copy.body = impl->body;  // Shallow copy - AST is managed elsewhere
     copy.signature = impl->signature;  // Shallow copy - type is managed elsewhere
     copy.is_default = impl->is_default;
@@ -362,7 +362,7 @@ void method_implementation_free(MethodImplementation* impl) {
 
 AssociatedTypeBinding associated_type_binding_new(const char* name, Type* bound_type) {
     AssociatedTypeBinding binding = {0};
-    binding.associated_type_name = name ? strdup(name) : NULL;
+    binding.associated_type_name = name ? xstrdup(name) : NULL;
     binding.bound_type = bound_type;
     return binding;
 }
@@ -371,7 +371,7 @@ AssociatedTypeBinding associated_type_binding_copy(const AssociatedTypeBinding* 
     if (!binding) return (AssociatedTypeBinding){0};
     
     AssociatedTypeBinding copy = {0};
-    copy.associated_type_name = binding->associated_type_name ? strdup(binding->associated_type_name) : NULL;
+    copy.associated_type_name = binding->associated_type_name ? xstrdup(binding->associated_type_name) : NULL;
     copy.bound_type = binding->bound_type;  // Shallow copy
     
     return copy;
@@ -391,7 +391,7 @@ void associated_type_binding_free(AssociatedTypeBinding* binding) {
 
 DefaultImplementation default_implementation_new(const char* method_name, ASTNode* body) {
     DefaultImplementation impl = {0};
-    impl.method_name = method_name ? strdup(method_name) : NULL;
+    impl.method_name = method_name ? xstrdup(method_name) : NULL;
     impl.body = body;
     impl.signature = NULL;
     impl.constraints = NULL;
@@ -403,7 +403,7 @@ DefaultImplementation default_implementation_copy(const DefaultImplementation* i
     if (!impl) return (DefaultImplementation){0};
     
     DefaultImplementation copy = {0};
-    copy.method_name = impl->method_name ? strdup(impl->method_name) : NULL;
+    copy.method_name = impl->method_name ? xstrdup(impl->method_name) : NULL;
     copy.body = impl->body;  // Shallow copy
     copy.signature = impl->signature;  // Shallow copy
     

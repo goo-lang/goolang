@@ -67,9 +67,9 @@ IpfsClient* ipfs_client_create(const IpfsClientConfig* config) {
     
     // Set default cache directory
     if (config->cache_dir) {
-        client->cache_dir = strdup(config->cache_dir);
+        client->cache_dir = xstrdup(config->cache_dir);
     } else {
-        client->cache_dir = strdup("/tmp/goo_ipfs_cache");
+        client->cache_dir = xstrdup("/tmp/goo_ipfs_cache");
     }
     
     return client;
@@ -346,8 +346,8 @@ IpfsGateway* ipfs_gateway_create(const char* url, const char* name) {
     IpfsGateway* gateway = xcalloc(1, sizeof(IpfsGateway));
     if (!gateway) return NULL;
     
-    gateway->url = strdup(url);
-    gateway->name = name ? strdup(name) : strdup("Unknown");
+    gateway->url = xstrdup(url);
+    gateway->name = name ? xstrdup(name) : xstrdup("Unknown");
     gateway->is_local = (strstr(url, "127.0.0.1") != NULL || strstr(url, "localhost") != NULL);
     gateway->response_time = -1.0f;
     gateway->reliability = 0.0f;
@@ -452,7 +452,7 @@ IpfsCid* ipfs_cid_create(const char* hash) {
     IpfsCid* cid = xcalloc(1, sizeof(IpfsCid));
     if (!cid) return NULL;
     
-    cid->hash = strdup(hash);
+    cid->hash = xstrdup(hash);
     cid->version = (hash[0] == 'Q') ? 0 : 1; // Simple heuristic
     
     return cid;
@@ -490,7 +490,7 @@ bool ipfs_cid_validate(const char* cid_string) {
 
 char* ipfs_cid_to_string(const IpfsCid* cid) {
     if (!cid || !cid->hash) return NULL;
-    return strdup(cid->hash);
+    return xstrdup(cid->hash);
 }
 
 // Package-specific operations
@@ -514,8 +514,8 @@ IpfsPackageManifest* ipfs_package_publish(IpfsClient* client, const char* packag
     manifest->pin_count = 1;  // At least this node
     
     // TODO: Extract name and version from goo.mod in package_dir
-    manifest->name = strdup("unknown");
-    manifest->version = strdup("0.0.0");
+    manifest->name = xstrdup("unknown");
+    manifest->version = xstrdup("0.0.0");
     
     return manifest;
 }
@@ -546,7 +546,7 @@ IpfsClientConfig* ipfs_config_create_default(void) {
     IpfsClientConfig* config = xcalloc(1, sizeof(IpfsClientConfig));
     if (!config) return NULL;
     
-    config->cache_dir = strdup("/tmp/goo_ipfs_cache");
+    config->cache_dir = xstrdup("/tmp/goo_ipfs_cache");
     config->cache_size_limit = 1024 * 1024 * 1024; // 1GB
     config->gateway_timeout = 30;
     config->max_concurrent_downloads = 4;

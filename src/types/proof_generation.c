@@ -25,7 +25,7 @@ ProofGenerationContext* proof_generation_context_create(void) {
         .solver_backend = SMT_SOLVER_Z3,
         .solver_timeout_seconds = 30,
         .use_proof_caching = true,
-        .cache_directory = strdup("/tmp/goo_proof_cache"),
+        .cache_directory = xstrdup("/tmp/goo_proof_cache"),
         
         .enabled_domains = NULL,
         .domain_count = 0,

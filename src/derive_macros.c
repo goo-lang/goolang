@@ -111,9 +111,9 @@ bool analyze_struct_fields(ASTNode* struct_node, DeriveMacroContext* ctx) {
     if (!ctx->field_names || !ctx->field_types) return false;
     
     // Mock field data
-    ctx->field_names[0] = strdup("id");
-    ctx->field_names[1] = strdup("name");
-    ctx->field_names[2] = strdup("email");
+    ctx->field_names[0] = xstrdup("id");
+    ctx->field_names[1] = xstrdup("name");
+    ctx->field_names[2] = xstrdup("email");
     
     // Mock type data (in real implementation, would get from AST)
     ctx->field_types[0] = type_new(TYPE_INT64);
@@ -391,7 +391,7 @@ DeriveResult* derive_eq(DeriveMacroContext* ctx) {
     // Eq requires PartialEq, just generate empty impl
     DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
-        result->function_code = strdup("// Eq automatically implemented (requires PartialEq)\n");
+        result->function_code = xstrdup("// Eq automatically implemented (requires PartialEq)\n");
         result->success = true;
     }
     return result;
@@ -400,7 +400,7 @@ DeriveResult* derive_eq(DeriveMacroContext* ctx) {
 DeriveResult* derive_partial_ord(DeriveMacroContext* ctx) {
     DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
-        result->function_code = strdup("// PartialOrd implementation would go here\n");
+        result->function_code = xstrdup("// PartialOrd implementation would go here\n");
         result->success = true;
     }
     return result;
@@ -409,7 +409,7 @@ DeriveResult* derive_partial_ord(DeriveMacroContext* ctx) {
 DeriveResult* derive_ord(DeriveMacroContext* ctx) {
     DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
-        result->function_code = strdup("// Ord implementation would go here\n");
+        result->function_code = xstrdup("// Ord implementation would go here\n");
         result->success = true;
     }
     return result;
@@ -418,7 +418,7 @@ DeriveResult* derive_ord(DeriveMacroContext* ctx) {
 DeriveResult* derive_serialize(DeriveMacroContext* ctx) {
     DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
-        result->function_code = strdup("// Serialize implementation would go here\n");
+        result->function_code = xstrdup("// Serialize implementation would go here\n");
         result->success = true;
     }
     return result;
@@ -427,7 +427,7 @@ DeriveResult* derive_serialize(DeriveMacroContext* ctx) {
 DeriveResult* derive_deserialize(DeriveMacroContext* ctx) {
     DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
-        result->function_code = strdup("// Deserialize implementation would go here\n");
+        result->function_code = xstrdup("// Deserialize implementation would go here\n");
         result->success = true;
     }
     return result;
@@ -436,7 +436,7 @@ DeriveResult* derive_deserialize(DeriveMacroContext* ctx) {
 DeriveResult* derive_display(DeriveMacroContext* ctx) {
     DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
-        result->function_code = strdup("// Display implementation would go here\n");
+        result->function_code = xstrdup("// Display implementation would go here\n");
         result->success = true;
     }
     return result;

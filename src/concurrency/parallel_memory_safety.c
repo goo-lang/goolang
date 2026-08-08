@@ -21,8 +21,8 @@ Result_void_ptr memory_safe_task_wrapper(TaskContext* task_ctx, void* args) {
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
                 .category = ERROR_CATEGORY_RUNTIME,
-                .message = strdup("Failed to allocate task memory"),
-                .hint = strdup("Reduce max_memory_per_task or increase available memory"),
+                .message = xstrdup("Failed to allocate task memory"),
+                .hint = xstrdup("Reduce max_memory_per_task or increase available memory"),
                 .location = (SourceLocation){0},
                 .next = NULL
             };
@@ -140,7 +140,7 @@ Result_void_ptr memory_safe_parallel_for(
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid parallel for parameters"),
+            .message = xstrdup("Invalid parallel for parameters"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -190,7 +190,7 @@ Result_void_ptr memory_safe_parallel_for(
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Memory allocation failed"),
+            .message = xstrdup("Memory allocation failed"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -377,7 +377,7 @@ Error* memory_safety_create_violation_error(int violation_type, void* address, s
         .severity = ERROR_SEVERITY_ERROR,
         .category = ERROR_CATEGORY_RUNTIME,
         .message = message,
-        .hint = strdup("Check memory access patterns in parallel tasks"),
+        .hint = xstrdup("Check memory access patterns in parallel tasks"),
         .location = (SourceLocation){0},
         .next = NULL
     };

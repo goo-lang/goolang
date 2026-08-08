@@ -213,7 +213,7 @@ ConcurrentExpression* concurrent_expression_create(const char* name,
     
     // Initialize transparent function
     *(expr->function) = (TransparentFunction) {
-        .name = strdup(expr->name),
+        .name = xstrdup(expr->name),
         .type = FUNC_TYPE_ASYNC_NATIVE,
         .original_function = NULL,
         .async_wrapper = (AsyncFunction)function,

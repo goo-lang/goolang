@@ -34,7 +34,7 @@ MacroHygieneContext* create_hygiene_context(void) {
     ctx->current_scope = ctx->global_scope;
     ctx->expansion_depth = 0;
     ctx->name_counter = 0;
-    ctx->macro_prefix = strdup("__macro_");
+    ctx->macro_prefix = xstrdup("__macro_");
     
     // Initialize reserved names
     init_builtin_reserved_names(ctx);
@@ -70,7 +70,7 @@ HygieneScope* create_hygiene_scope(HygieneScopeType type, const char* scope_id, 
     if (!scope) return NULL;
     
     scope->type = type;
-    scope->scope_id = scope_id ? strdup(scope_id) : NULL;
+    scope->scope_id = scope_id ? xstrdup(scope_id) : NULL;
     scope->parent = parent;
     scope->generation_counter = 0;
     scope->bindings = NULL;
@@ -145,7 +145,7 @@ HygieneBinding* create_hygiene_binding(const char* name, Type* type, HygieneScop
     HygieneBinding* binding = (HygieneBinding*)xcalloc(1, sizeof(HygieneBinding));
     if (!binding) return NULL;
     
-    binding->name = strdup(name);
+    binding->name = xstrdup(name);
     binding->type = type;
     binding->scope = scope;
     binding->generation = 0;
@@ -357,20 +357,20 @@ HygieneViolation* detect_hygiene_violation(const char* var_name, MacroHygieneCon
     HygieneViolation* violation = (HygieneViolation*)xcalloc(1, sizeof(HygieneViolation));
     if (!violation) return NULL;
     
-    violation->variable_name = strdup(var_name);
-    violation->macro_name = strdup("unknown");
+    violation->variable_name = xstrdup(var_name);
+    violation->macro_name = xstrdup("unknown");
     violation->line = 0;
     violation->column = 0;
     
     if (is_reserved_name(ctx, var_name)) {
         violation->type = HYGIENE_VIOLATION_RESERVED;
-        violation->description = strdup("Use of reserved name");
+        violation->description = xstrdup("Use of reserved name");
     } else if (check_name_collision(var_name, ctx)) {
         violation->type = HYGIENE_VIOLATION_SHADOW;
-        violation->description = strdup("Variable name collision");
+        violation->description = xstrdup("Variable name collision");
     } else {
         violation->type = HYGIENE_VIOLATION_CAPTURE;
-        violation->description = strdup("Variable capture");
+        violation->description = xstrdup("Variable capture");
     }
     
     return violation;
@@ -438,7 +438,7 @@ bool add_reserved_name(MacroHygieneContext* ctx, const char* name) {
                                          (ctx->reserved_count + 1) * sizeof(char*));
     if (!ctx->reserved_names) return false;
     
-    ctx->reserved_names[ctx->reserved_count] = strdup(name);
+    ctx->reserved_names[ctx->reserved_count] = xstrdup(name);
     ctx->reserved_count++;
     
     return true;
@@ -635,7 +635,7 @@ MacroExpansion* expand_macro_with_hygiene(MacroTemplate* macro, MacroContext* ct
     MacroExpansion* expansion = (MacroExpansion*)xcalloc(1, sizeof(MacroExpansion));
     if (expansion) {
         expansion->success = true;
-        expansion->expanded_code = strdup("int hygienic_var = 42;");
+        expansion->expanded_code = xstrdup("int hygienic_var = 42;");
         expansion->expanded_ast = NULL; // Simplified for testing
     }
     
@@ -645,7 +645,7 @@ MacroExpansion* expand_macro_with_hygiene(MacroTemplate* macro, MacroContext* ct
             // Hygiene violation detected
             expansion->success = false;
             free(expansion->error_message);
-            expansion->error_message = strdup("Macro hygiene violation");
+            expansion->error_message = xstrdup("Macro hygiene violation");
         } else {
             // Apply hygiene transformations
             transform_macro_expansion(expansion, hygiene_ctx);

@@ -76,8 +76,8 @@ static LSPDocument* create_document(const char* uri, const char* content, int ve
     LSPDocument* doc = xmalloc(sizeof(LSPDocument));
     if (!doc) return NULL;
     
-    doc->uri = strdup(uri);
-    doc->content = strdup(content);
+    doc->uri = xstrdup(uri);
+    doc->content = xstrdup(content);
     doc->version = version;
     doc->ast = NULL;
     doc->cached_types = NULL;
@@ -91,7 +91,7 @@ static void update_document(LSPDocument* doc, const char* content, int version) 
     if (!doc) return;
     
     free(doc->content);
-    doc->content = strdup(content);
+    doc->content = xstrdup(content);
     doc->version = version;
     
     // Clear cached AST and types
@@ -142,7 +142,7 @@ static void get_completion_context(const char* content, int line, int character,
     strcpy(scope_context, "");
     
     // Split content into lines
-    char* content_copy = strdup(content);
+    char* content_copy = xstrdup(content);
     char* lines[1000];
     int line_count = 0;
     

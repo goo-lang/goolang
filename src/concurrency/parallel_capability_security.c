@@ -175,7 +175,7 @@ MemoryRegion* memory_region_create(void* base, size_t size, uint32_t access_flag
     region->region_id = atomic_fetch_add(&g_capability_id_counter, 1);
     
     if (name) {
-        region->region_name = strdup(name);
+        region->region_name = xstrdup(name);
     }
     
     atomic_init(&region->access_count, 0);
@@ -373,7 +373,7 @@ Result_void_ptr capability_secure_parallel_for(
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Invalid secure parallel for parameters"),
+            .message = xstrdup("Invalid secure parallel for parameters"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -411,7 +411,7 @@ Result_void_ptr capability_secure_parallel_for(
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
             .category = ERROR_CATEGORY_RUNTIME,
-            .message = strdup("Memory allocation failed"),
+            .message = xstrdup("Memory allocation failed"),
             .hint = NULL,
             .location = (SourceLocation){0},
             .next = NULL
@@ -623,7 +623,7 @@ Error* security_create_access_denied_error(CapabilityType cap_type, void* resour
         .severity = ERROR_SEVERITY_ERROR,
         .category = ERROR_CATEGORY_RUNTIME,
         .message = message,
-        .hint = strdup("Check task capabilities and security configuration"),
+        .hint = xstrdup("Check task capabilities and security configuration"),
         .location = (SourceLocation){0},
         .next = NULL
     };
@@ -648,7 +648,7 @@ Error* security_create_memory_violation_error(void* address, size_t size) {
         .severity = ERROR_SEVERITY_ERROR,
         .category = ERROR_CATEGORY_RUNTIME,
         .message = message,
-        .hint = strdup("Memory access outside permitted regions"),
+        .hint = xstrdup("Memory access outside permitted regions"),
         .location = (SourceLocation){0},
         .next = NULL
     };

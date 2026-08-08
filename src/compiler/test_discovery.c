@@ -85,7 +85,7 @@ static int test_list_append(TestList* l, const char* name) {
     if (!grown) return 0;
     l->names = grown;
 
-    char* copy = strdup(name);
+    char* copy = xstrdup(name);
     if (!copy) return 0;
     l->names[l->count++] = copy;
     return 1;

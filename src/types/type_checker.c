@@ -348,7 +348,7 @@ Type* type_checker_error_type(TypeChecker* checker) {
     // than guarding on !t->name (which would never fire).
     if (t) {
         free(t->name);
-        t->name = strdup("error");
+        t->name = xstrdup("error");
     }
     return t;
 }
@@ -2802,12 +2802,12 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                 if (commaok_struct->data.struct_type.fields) {
                     commaok_struct->data.struct_type.field_count = 2;
                     commaok_struct->data.struct_type.name = NULL;
-                    commaok_struct->data.struct_type.fields[0].name = strdup("v");
+                    commaok_struct->data.struct_type.fields[0].name = xstrdup("v");
                     commaok_struct->data.struct_type.fields[0].type = base_type->data.map.value_type;
                     commaok_struct->data.struct_type.fields[0].offset = 0;
                     commaok_struct->data.struct_type.fields[0].ownership = OWNERSHIP_NONE;
                     commaok_struct->data.struct_type.fields[0].mutability = MUTABILITY_MUTABLE;
-                    commaok_struct->data.struct_type.fields[1].name = strdup("ok");
+                    commaok_struct->data.struct_type.fields[1].name = xstrdup("ok");
                     commaok_struct->data.struct_type.fields[1].type = type_checker_get_builtin(checker, TYPE_BOOL);
                     commaok_struct->data.struct_type.fields[1].offset = 0;
                     commaok_struct->data.struct_type.fields[1].ownership = OWNERSHIP_NONE;
@@ -2847,12 +2847,12 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                 if (commaok_struct->data.struct_type.fields) {
                     commaok_struct->data.struct_type.field_count = 2;
                     commaok_struct->data.struct_type.name = NULL;
-                    commaok_struct->data.struct_type.fields[0].name = strdup("v");
+                    commaok_struct->data.struct_type.fields[0].name = xstrdup("v");
                     commaok_struct->data.struct_type.fields[0].type = v_type;
                     commaok_struct->data.struct_type.fields[0].offset = 0;
                     commaok_struct->data.struct_type.fields[0].ownership = OWNERSHIP_NONE;
                     commaok_struct->data.struct_type.fields[0].mutability = MUTABILITY_MUTABLE;
-                    commaok_struct->data.struct_type.fields[1].name = strdup("ok");
+                    commaok_struct->data.struct_type.fields[1].name = xstrdup("ok");
                     commaok_struct->data.struct_type.fields[1].type = type_checker_get_builtin(checker, TYPE_BOOL);
                     commaok_struct->data.struct_type.fields[1].offset = 0;
                     commaok_struct->data.struct_type.fields[1].ownership = OWNERSHIP_NONE;
@@ -2888,12 +2888,12 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                 if (commaok_struct->data.struct_type.fields) {
                     commaok_struct->data.struct_type.field_count = 2;
                     commaok_struct->data.struct_type.name = NULL;
-                    commaok_struct->data.struct_type.fields[0].name = strdup("v");
+                    commaok_struct->data.struct_type.fields[0].name = xstrdup("v");
                     commaok_struct->data.struct_type.fields[0].type = elem_type;
                     commaok_struct->data.struct_type.fields[0].offset = 0;
                     commaok_struct->data.struct_type.fields[0].ownership = OWNERSHIP_NONE;
                     commaok_struct->data.struct_type.fields[0].mutability = MUTABILITY_MUTABLE;
-                    commaok_struct->data.struct_type.fields[1].name = strdup("ok");
+                    commaok_struct->data.struct_type.fields[1].name = xstrdup("ok");
                     commaok_struct->data.struct_type.fields[1].type = type_checker_get_builtin(checker, TYPE_BOOL);
                     commaok_struct->data.struct_type.fields[1].offset = 0;
                     commaok_struct->data.struct_type.fields[1].ownership = OWNERSHIP_NONE;
@@ -3224,14 +3224,14 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     // can recover it for name mangling (the resolved Type is shared via the
     // registered variable below, so this propagates to every use).
     if (resolved->kind == TYPE_STRUCT && !resolved->data.struct_type.name) {
-        resolved->data.struct_type.name = strdup(td->name);
+        resolved->data.struct_type.name = xstrdup(td->name);
     }
 
     // Stamp the declared name onto an enum type, then register each variant
     // constructor name in scope so variant literals can resolve their parent enum.
     if (resolved->kind == TYPE_ENUM) {
         if (!resolved->data.enum_type.name)
-            resolved->data.enum_type.name = strdup(td->name);
+            resolved->data.enum_type.name = xstrdup(td->name);
         for (size_t i = 0; i < resolved->data.enum_type.variant_count; i++) {
             const char* vname = resolved->data.enum_type.variants[i].name;
             Variable* ctor = variable_new(vname, resolved, decl->pos);
@@ -3251,7 +3251,7 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     // Stamp the declared name onto an interface type so satisfaction
     // diagnostics read "Sq does not implement Shape" rather than "interface".
     if (resolved->kind == TYPE_INTERFACE && !resolved->data.interface.name) {
-        resolved->data.interface.name = strdup(td->name);
+        resolved->data.interface.name = xstrdup(td->name);
     }
 
     // Stamp the declared name onto a named NON-struct/enum/interface type
@@ -3279,7 +3279,7 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
         if (resolved != builtin) {
             // Fresh compound allocation — stamp in place.
             free(resolved->name);
-            resolved->name = strdup(td->name);
+            resolved->name = xstrdup(td->name);
         } else {
             // Shared scalar singleton — clone to avoid corrupting the type table.
             Type* named_clone = type_copy(resolved);
@@ -3288,7 +3288,7 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
                 return 0;
             }
             free(named_clone->name);
-            named_clone->name = strdup(td->name);
+            named_clone->name = xstrdup(td->name);
             resolved = named_clone;
         }
     }
@@ -5886,7 +5886,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 // gets its own offset so the layout is identical to writing the
                 // fields out one per line.
                 for (size_t k = 0; k < fd->name_count; k++) {
-                    result->data.struct_type.fields[idx].name = strdup(fd->names[k]);
+                    result->data.struct_type.fields[idx].name = xstrdup(fd->names[k]);
                     result->data.struct_type.fields[idx].type = ft;
                     result->data.struct_type.fields[idx].offset = total_size;
                     result->data.struct_type.fields[idx].is_embedded = fd->is_embedded;
@@ -5941,7 +5941,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 payload->data.struct_type.field_count = fcount;
                 payload->data.struct_type.fields =
                     fcount ? calloc(fcount, sizeof(StructField)) : NULL;
-                payload->data.struct_type.name = strdup(vn->name);
+                payload->data.struct_type.name = xstrdup(vn->name);
                 size_t off = 0, palign = 1, fidx = 0;
                 for (ASTNode* f = vn->fields; f; f = f->next) {
                     if (f->type != AST_VAR_DECL) continue;
@@ -5966,7 +5966,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                         free(result);
                         return NULL;
                     }
-                    payload->data.struct_type.fields[fidx].name = strdup(fd->names[0]);
+                    payload->data.struct_type.fields[fidx].name = xstrdup(fd->names[0]);
                     payload->data.struct_type.fields[fidx].type = ft;
                     payload->data.struct_type.fields[fidx].offset = off;
                     off += ft->size ? ft->size : 8;
@@ -5976,7 +5976,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 payload->size = off;
                 payload->align = palign;
 
-                result->data.enum_type.variants[idx].name = strdup(vn->name);
+                result->data.enum_type.variants[idx].name = xstrdup(vn->name);
                 result->data.enum_type.variants[idx].payload = payload;
                 result->data.enum_type.variants[idx].tag = (int)idx;
                 if (off > max_payload) max_payload = off;
@@ -6026,7 +6026,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                     for (InterfaceMethod* sm = et->data.interface.methods; sm; sm = sm->next) {
                         InterfaceMethod* im = xcalloc(1, sizeof(InterfaceMethod));
                         if (!im) return NULL;
-                        im->name = strdup(sm->name);
+                        im->name = xstrdup(sm->name);
                         im->type = sm->type;
                         im->next = NULL;
                         if (tail) tail->next = im; else head = im;
@@ -6157,7 +6157,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 // the concept/protocol subsystem helpers).
                 InterfaceMethod* im = xcalloc(1, sizeof(InterfaceMethod));
                 if (!im) return NULL;
-                im->name = strdup(fn->name);
+                im->name = xstrdup(fn->name);
                 im->type = method_fn;
                 im->next = NULL;
                 if (tail) tail->next = im; else head = im;
