@@ -30,7 +30,19 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Use the compiler the MAKEFILE uses, not a bare `gcc`. CI runs
+# `make CC=gcc-14 ...` because the distro default on ubuntu-24.04 is gcc-13,
+# which rejects -std=c23 (.github/workflows/tests.yml:72). A hardcoded `gcc`
+# here compiled locally and failed on CI with "unrecognized command-line option
+# '-std=c23'" -- and the probe correctly reported FAIL rather than passing, so
+# this comment exists because the probe worked, not because it did not.
+#
+# The Makefile passes CC_PROBE="$(CC)", which is "$(CCACHE) gcc" locally: two
+# words. It is deliberately left unquoted at the call sites below so the shell
+# splits it. CFLAGS_PROBE carries -std=..., for the same reason.
 CC_="${CC_PROBE:-gcc}"
+CSTD="${CSTD_PROBE:--std=c23}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -57,7 +69,7 @@ int main(void) {
 EOF
 
 build_and_run() {  # $1 = extra flags, $2 = output var prefix
-    "$CC_" -std=c23 -I"$ROOT/include" $1 "$WORK/probe.c" -o "$WORK/p" 2>"$WORK/cc.err" || {
+    $CC_ $CSTD -I"$ROOT/include" $1 "$WORK/probe.c" -o "$WORK/p" 2>"$WORK/cc.err" || {
         echo "  compile FAILED with flags '$1':"; sed 's/^/    /' "$WORK/cc.err"; return 99
     }
     "$WORK/p" > "$WORK/out" 2>/dev/null
@@ -98,7 +110,7 @@ cat > "$WORK/never.c" <<'EOF'
 #include "goo_assert.h"
 int main(void) { volatile int one = 1; return GOO_NEVER(one); }
 EOF
-"$CC_" -std=c23 -I"$ROOT/include" -DGOO_DEBUG "$WORK/never.c" -o "$WORK/n" 2>/dev/null
+$CC_ $CSTD -I"$ROOT/include" -DGOO_DEBUG "$WORK/never.c" -o "$WORK/n" 2>/dev/null
 # Status taken inside a command substitution: a bare invocation makes the shell
 # print its own "Aborted (core dumped)" job-control line, which looks like probe
 # output and is not.
@@ -109,7 +121,7 @@ cat > "$WORK/always.c" <<'EOF'
 #include "goo_assert.h"
 int main(void) { volatile int zero = 0; return GOO_ALWAYS(zero); }
 EOF
-"$CC_" -std=c23 -I"$ROOT/include" -DGOO_DEBUG "$WORK/always.c" -o "$WORK/a" 2>/dev/null
+$CC_ $CSTD -I"$ROOT/include" -DGOO_DEBUG "$WORK/always.c" -o "$WORK/a" 2>/dev/null
 st=$( "$WORK/a" >/dev/null 2>&1; echo $? )
 [ "$st" = "134" ] && pass "GOO_ALWAYS(false) aborts" || bad "GOO_ALWAYS(false) exited $st, expected 134"
 
@@ -131,7 +143,7 @@ cat > "$WORK/typed.c" <<'EOF'
 struct S { int a; };
 int main(void) { struct S s = {0}; return GOO_NEVER(s.nonexistent_field); }
 EOF
-if "$CC_" -std=c23 -I"$ROOT/include" -DGOO_COVERAGE -c "$WORK/typed.c" -o "$WORK/t.o" 2>/dev/null; then
+if $CC_ $CSTD -I"$ROOT/include" -DGOO_COVERAGE -c "$WORK/typed.c" -o "$WORK/t.o" 2>/dev/null; then
     bad "coverage build ACCEPTED a GOO_NEVER with a bad expression — argument is not type-checked"
 else
     pass "a malformed GOO_NEVER argument is still a compile error under coverage"

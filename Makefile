@@ -4904,7 +4904,10 @@ GOO_COV      = $(BINDIR)/goo-cov
 # always restore the .gcno beside it, which silently drops files from the
 # report — a missing file reads as "not covered" and is indistinguishable from
 # a real gap.
-COV_CC       = gcc
+# ?= so a caller can override, for the same reason CI runs `make CC=gcc-14`:
+# the distro default on ubuntu-24.04 is gcc-13, which rejects -std=c23. Not
+# $(CC), because that carries $(CCACHE) and this build must bypass it (above).
+COV_CC      ?= gcc
 
 # Flat object dir with mangled names, following the ccomp-build rule above.
 # This keeps the instrumented objects (and the .gcno/.gcda beside them) out of
@@ -5251,7 +5254,7 @@ alloc-doors-selftest:
 # not one. The preprocessor picks the arm, so reading the header cannot tell
 # you which happened. Compile the same fixture three ways and observe it.
 goo-assert-probe:
-	@bash scripts/goo_assert_probe.sh
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_assert_probe.sh
 
 # The corpus against an ASSERT-ENABLED compiler. Deliberately NOT in
 # verify-core: `make debug` and `make lexer` both write bin/goo, so this would
