@@ -5238,6 +5238,86 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
 
+# ---------------------------------------------------------------------------
+# Parser fuzzing. See tests/fuzz/README.md for the triage rule and findings.
+#
+# The parser is the one component that reads bytes somebody else wrote. The 197
+# gates in verify-core were all written by a person trying to express something;
+# none of them is trying to break the parser, and the coverage baseline puts the
+# front end at 58.1% branch.
+#
+# clang, not $(CC): libFuzzer is a clang feature. The far-transport-asan and
+# obj-header-tsan targets already name clang directly, so this follows them.
+#
+# The link set is deliberately SMALL -- lexer, parser, ast, errors. No type
+# checker, no codegen, no LLVM. parse_input() is self-contained (it owns its
+# lexer and resets disambiguation state on entry, see src/compiler/goo.c:549),
+# so nothing had to be refactored to reach it.
+#
+# NOT in verify-core: a fuzz run has no fixed duration. What verify-core holds
+# is the reject fixture each fixed finding becomes.
+# ---------------------------------------------------------------------------
+# ?= for the same reason as COV_CC: CI overrides the compiler
+# (`make CC=gcc-14 ...`) because the distro default rejects -std=c23.
+# clang is not $(CC) at all here -- libFuzzer is a clang feature.
+FUZZ_CC     ?= clang
+FUZZ_BIN     = $(BINDIR)/fuzz_parse
+FUZZ_DIR     = $(BUILDDIR)/fuzz
+FUZZ_SEEDS   = $(FUZZ_DIR)/seeds
+FUZZ_ARTIFACTS = $(FUZZ_DIR)/artifacts
+FUZZ_SRCS    = tests/fuzz/fuzz_parse.c $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(ERROR_SRCS)
+FUZZ_CFLAGS  = -std=c23 -g -O1 -I. -Iinclude -D_GNU_SOURCE \
+               -include include/xalloc.h -DLLVM_AVAILABLE=0 \
+               -fsanitize=fuzzer,address,undefined
+# Leak detection OFF by default. NOT a way to look away: ast_node_free has a
+# documented gap (src/ast/ast.c:189) that makes the FIRST seed leak, so with
+# leaks on the run stops there and never reaches a memory-corruption finding.
+# Use fuzz-parse-leaks to hunt that class deliberately.
+FUZZ_ASAN    = ASAN_OPTIONS=detect_leaks=0
+
+$(FUZZ_BIN): $(FUZZ_SRCS) | $(BINDIR)
+	@command -v $(FUZZ_CC) >/dev/null || { echo "fuzz-parse: SKIPPED ($(FUZZ_CC) not installed)"; exit 0; }
+	@echo "Building $(FUZZ_BIN) (libFuzzer + ASan + UBSan)..."
+	@$(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_SRCS) -o $@ -lm
+	@echo "$(FUZZ_BIN): built"
+
+fuzz-parse: $(FUZZ_BIN)
+
+# Seeds are every fixture the repo already has: 595 examples plus 156 reject
+# fixtures. The reject set matters most -- those already sit near the error
+# paths, which is where the fuzzer has the least to discover on its own.
+$(FUZZ_SEEDS): | $(BUILDDIR)
+	@rm -rf $(FUZZ_SEEDS) && mkdir -p $(FUZZ_SEEDS)
+	@i=0; for f in examples/*.goo tests/golden/reject/*.goo; do \
+	  cp "$$f" "$(FUZZ_SEEDS)/`printf '%04d' $$i`.goo" 2>/dev/null || true; \
+	  i=`expr $$i + 1`; \
+	done
+	@echo "seed corpus: `ls $(FUZZ_SEEDS) | wc -l` files"
+
+fuzz-seeds: $(FUZZ_SEEDS)
+
+# Bounded. Proves the harness still builds, links and runs -- the property that
+# would otherwise rot silently between fuzzing sessions.
+fuzz-parse-smoke: $(FUZZ_BIN) $(FUZZ_SEEDS)
+	@mkdir -p $(FUZZ_ARTIFACTS)
+	@$(FUZZ_ASAN) $(FUZZ_BIN) $(FUZZ_SEEDS) -runs=3000 -max_len=65536 \
+	  -artifact_prefix=$(FUZZ_ARTIFACTS)/ -print_final_stats=1 2>&1 | tail -12
+
+fuzz-parse-run: $(FUZZ_BIN) $(FUZZ_SEEDS)
+	@mkdir -p $(FUZZ_ARTIFACTS)
+	@echo "Ctrl-C to stop. Findings -> $(FUZZ_ARTIFACTS)/"
+	@$(FUZZ_ASAN) $(FUZZ_BIN) $(FUZZ_SEEDS) -max_len=65536 \
+	  -artifact_prefix=$(FUZZ_ARTIFACTS)/
+
+fuzz-parse-leaks: $(FUZZ_BIN) $(FUZZ_SEEDS)
+	@mkdir -p $(FUZZ_ARTIFACTS)
+	@echo "Leak detection ON. Expect finding 1 in tests/fuzz/README.md to fire."
+	@ASAN_OPTIONS=detect_leaks=1 $(FUZZ_BIN) $(FUZZ_SEEDS) -max_len=65536 \
+	  -artifact_prefix=$(FUZZ_ARTIFACTS)/
+
+fuzz-clean:
+	rm -rf $(FUZZ_DIR) $(FUZZ_BIN)
+
 # Teeth for the probe above. The strdup door was added on 2026-08-08 and passed
 # on its first run after the sweep, which proves nothing on its own. Five
 # controls, and controls 3-5 are the load-bearing ones: a scan that always
