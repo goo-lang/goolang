@@ -113,9 +113,22 @@ OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
 # tests. The membership test is symbols, not headers: a module joins this
 # list only if the link otherwise fails with an undefined reference.
 # ---------------------------------------------------------------------------
-GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/lane_ownership.c
+# channel_checker.c dropped from the shipped set 2026-08-08. The coverage
+# measurement showed ZERO branches taken across 810 fixtures, and a static check
+# then found ZERO external callers for every one of its nine exported functions,
+# with its header included nowhere. Channels, select and close are probe-gated
+# and work, so their type checking happens on another path. Kept in TYPES_SRCS
+# for the standalone test targets.
+GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/lane_ownership.c
+# P5.6 quarantine, extended 2026-08-08 by the coverage measurement.
+# ergonomic_errors.c took ZERO branches across all 810 fixtures, and a static
+# check found no caller anywhere in src/ for any of its entry points. It depends
+# on error.c and nothing depends on it, so dropping it from the shipped set is a
+# one-way cut. Its 222 branches were padding the denominator of every coverage
+# number this project takes. Kept in ERROR_SRCS for the standalone test targets.
+GOO_ERROR_SRCS = $(SRCDIR)/errors/error.c
 GOO_COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c
-GOO_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(GOO_TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(PACKAGE_SRCS) $(GOO_COMPTIME_SRCS)
+GOO_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(GOO_TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(GOO_ERROR_SRCS) $(PACKAGE_SRCS) $(GOO_COMPTIME_SRCS)
 GOO_OBJS = $(GOO_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 
 # Runtime library
@@ -163,7 +176,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe goo-assert-probe assert-corpus string-literal-header-probe
 
 all: lexer
@@ -3293,6 +3306,8 @@ VERIFY_ALL_DEPS := \
     arena-rss-probe \
     dead-package-code-probe \
     alloc-doors-probe \
+    ast-free-leak-probe \
+    ast-free-leak-selftest \
     alloc-doors-selftest \
     goo-assert-probe \
     string-literal-header-probe \
@@ -5237,6 +5252,24 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 # needed, so it is stable everywhere.
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
+
+# ast_node_free() must free the WHOLE tree, not only the spine. The parser
+# fuzzer found on 2026-08-08 that every assignment statement leaked 188 bytes
+# because there was no `case AST_EXPR_STMT`, so the node reached `default:` and
+# nothing freed its `expr` child.
+#
+# No existing gate could see it. The compiler is a batch process: it exits
+# without freeing, so a leak in ast_node_free costs it nothing and no probe on
+# bin/goo can detect one. This links a driver that parses AND frees in one
+# process and runs it under valgrind. Skips (loudly) when valgrind is absent.
+ast-free-leak-probe:
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/ast_free_leak_probe.sh
+
+# Teeth: delete the AST_EXPR_STMT case from a SCRATCH copy of src/ast/ast.c and
+# require the probe to report the leak again. A leak probe that has only ever
+# passed has not shown it can report a leak.
+ast-free-leak-selftest:
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/ast_free_leak_probe.sh --self-test
 
 # ---------------------------------------------------------------------------
 # Parser fuzzing. See tests/fuzz/README.md for the triage rule and findings.

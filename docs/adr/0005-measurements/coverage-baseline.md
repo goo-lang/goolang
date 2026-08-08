@@ -155,6 +155,52 @@ does not do (`include/xalloc.h` exits on OOM by design).
 The defensible reading: this denominator measures the compiler's own decisions,
 not its allocator wrappers. It is not a claim that those branches are covered.
 
+## Both dead modules quarantined 2026-08-08 — 58.1% to 59.2%
+
+The two modules this measurement found are out of the shipped set, following
+the P5.6 pattern: dropped from `GOO_SRCS`, kept in the full source lists so
+their standalone test targets still build.
+
+| | Branch | MC/DC | Denominator |
+|---|---|---|---|
+| Before | 58.1% | 56.5% | 22,103 |
+| After | **59.2%** | **57.5%** | 21,732 |
+
+371 branches of unreachable code left the denominator. `make verify-core` stayed
+ALL GREEN across both cuts, including the 156 reject fixtures, `select-probe`,
+`parallel-select-soak-probe` (50 iterations) and `channel-send` — which are the
+gates that would have caught either quarantine being wrong.
+
+**`ergonomic_errors.c`** — 222 branches, 0 taken, and a static check found no
+caller anywhere in `src/` for any entry point. It depends on `error.c` and
+nothing depends on it, so the cut was one-way.
+
+**`channel_checker.c`** — 0 taken, and ZERO external callers for all nine
+exported functions, with its header included nowhere. Channels, `select` and
+`close` are probe-gated and work, so their type checking happens elsewhere.
+
+### `error.c` stays, and the reason is worth recording
+
+It reads 0 branches, and function-level data confirms **0 of its 33 functions
+execute** on either a valid or a reject fixture. It is dead at run time.
+
+It cannot be cut yet: `parser_errors.c` still references six of its symbols
+(`report_error`, `report_error_with_hint`, `enter_panic_mode`,
+`exit_panic_mode`, `make_source_location`, `empty_source_location`) from
+functions that are themselves unreachable — `parser_error_report` returns early
+unless `g_parser_error_state->error_ctx` is set, and `parser_error_state_init`,
+the only thing that could set it, has no caller.
+
+Removing it means deleting that `ErrorContext` API. That is a DESIGN decision
+about whether this project wants structured diagnostics later, not a cleanup,
+so it is left for a person to make.
+
+**A caution this exercise produced.** "0 branches taken" is NOT "never called".
+A branchless function contributes nothing to the branch count and can run
+constantly. `empty_source_location` and `make_source_location` are exactly that
+shape, which is why the claim above was re-checked against FUNCTION execution
+counts before being trusted.
+
 ## What this does NOT measure
 
 - **The runtime.** See above. Needs a corpus that RUNS compiled programs.

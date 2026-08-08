@@ -292,6 +292,23 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(unsafe_stmt->body);
             break;
         }
+        // Found by the parser fuzzer, 2026-08-08. Without this case the node
+        // reached `default:`, which frees the ExprStmtNode itself but not the
+        // expression it wraps -- 188 bytes for every assignment statement,
+        // linear in the count. `_ = x` alone leaked, and the compiler never
+        // noticed because it is a batch process that exits without freeing.
+        //
+        // Sole owner, checked before writing this: the three construction sites
+        // (parser.y:1220, parser_actions.c:337 and :701) each build or receive
+        // `expr` and store it nowhere else, and the only readers --
+        // ast_block_trailing_expr's two callers in error_union_codegen.c and
+        // expression_checker.c -- borrow the pointer to generate or type-check
+        // it, and never free or re-parent it.
+        case AST_EXPR_STMT: {
+            ExprStmtNode* expr_stmt = (ExprStmtNode*)node;
+            ast_node_free(expr_stmt->expr);
+            break;
+        }
         case AST_ARENA_BLOCK: {
             ArenaBlockNode* arena_blk = (ArenaBlockNode*)node;
             ast_node_free(arena_blk->body);
