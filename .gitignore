@@ -100,3 +100,6 @@ tasks/
 /block_core_teeth_test
 /local_core_teeth_test
 
+
+# Branch/MC-DC coverage output (scripts/coverage_corpus.sh)
+coverage/
