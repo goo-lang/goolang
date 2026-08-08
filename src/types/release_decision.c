@@ -1504,12 +1504,24 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     if (r->binding_count > 1) {
         if (!all_values_release_safe((Collected*)c, pe, r)) return RELEASE_NO_NOT_OWNED;
         if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;
+        GOO_ASSERT(!local_escape_local_escapes(le, fn, r->name));
         return RELEASE_OK;
     }
 
     // Condition 2 last: it is the one that needs the callee summaries.
     if (!binding_is_owned((Collected*)c, pe, r->bound_value)) return RELEASE_NO_NOT_OWNED;
 
+    // THE INVARIANT THIS WHOLE MODULE RESTS ON, and until now it lived only in
+    // condition 1's ordering. RELEASE_OK means codegen emits a free. If the
+    // local escaped, that free dangles a pointer that is still reachable --
+    // the exact failure PR #278 shipped and that a green verify-core, 493
+    // goldens and an 8/8 teeth run all missed.
+    //
+    // Condition 1 returns RELEASE_NO_ESCAPES near the top of this function, so
+    // reaching here already implies the local does not escape. That is the
+    // point: the assert is what NOTICES if a later edit reorders the conditions
+    // or adds a path that skips condition 1.
+    GOO_ASSERT(!local_escape_local_escapes(le, fn, r->name));
     return RELEASE_OK;
 }
 
