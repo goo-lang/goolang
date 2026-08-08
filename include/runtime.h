@@ -602,12 +602,14 @@ void goo_slice_bounds_check(int64_t low, int64_t high, int64_t max, const char* 
 // width (1..4). Used by rune-aware for-range-over-string. See runtime.c.
 int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_out);
 
-// Debug macros
-#ifdef GOO_DEBUG
-#define GOO_BOUNDS_CHECK(index, length) goo_bounds_check(index, length, __FILE__, __LINE__)
-#else
-#define GOO_BOUNDS_CHECK(index, length) ((void)0)
-#endif
+// (GOO_BOUNDS_CHECK was here. It had ZERO call sites, and its GOO_DEBUG guard
+// was unreachable because no target defined GOO_DEBUG -- so it always expanded
+// to (void)0 and had never been compiled in its live form. Now that `make
+// debug` really defines GOO_DEBUG, keeping it would silently switch on a macro
+// nobody calls, wrapping goo_bounds_check(), which is a RUNTIME entry point
+// that codegen emits for compiled Goo programs and not a check on the
+// compiler's own C. The function stays; the unused C-side macro is gone. Use
+// GOO_ASSERT from include/goo_assert.h for an invariant in compiler code.)
 
 // Concurrency support
 

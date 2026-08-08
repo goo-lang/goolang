@@ -188,6 +188,21 @@ static void print_version(void) {
 #else
     printf("LLVM backend: disabled (using interpreter mode)\n");
 #endif
+    // Which of the three builds is this? GOO_ASSERT, GOO_NEVER and GOO_ALWAYS
+    // expand differently in each (include/goo_assert.h), and NOTHING ELSE
+    // distinguishes the binaries from the outside: the assert format string
+    // sits in .rodata of all three, because goo_assert_fail survives as an
+    // unreferenced static at -O0. scripts/assert_corpus.sh reads this line to
+    // refuse to report a clean sweep from a build whose asserts are compiled
+    // out — a sweep that would otherwise check nothing and look identical to
+    // one that checked everything.
+#if defined(GOO_DEBUG)
+    printf("asserts: on (GOO_DEBUG)\n");
+#elif defined(GOO_COVERAGE)
+    printf("asserts: off, GOO_NEVER/GOO_ALWAYS folded (GOO_COVERAGE)\n");
+#else
+    printf("asserts: off\n");
+#endif
 }
 
 // P5.3: `goo run` compiles to a unique temp binary (deleted after the run).

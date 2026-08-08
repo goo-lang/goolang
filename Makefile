@@ -15,7 +15,12 @@ CC = $(CCACHE) gcc
 # and example tests do) resolve from the repo root; plain "foo.h" still
 # resolves via -Iinclude. Both forms are in use; keeping both on the path
 # avoids "fatal error: include/foo.h: No such file" in those targets.
-CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h
+# include/goo_assert.h is force-included next to xalloc.h so GOO_ASSERT,
+# GOO_NEVER and GOO_ALWAYS are available in every TU with no #include churn.
+# It defines NOTHING in a production build: all three macros compile away
+# unless GOO_DEBUG or GOO_COVERAGE is defined, which only `make debug` and the
+# coverage build do.
+CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
 # Incremental, header-aware builds ("only rebuild what changed"). -MMD writes a
@@ -159,6 +164,7 @@ TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe goo-assert-probe assert-corpus string-literal-header-probe
 
 all: lexer
 
@@ -3288,6 +3294,7 @@ VERIFY_ALL_DEPS := \
     dead-package-code-probe \
     alloc-doors-probe \
     alloc-doors-selftest \
+    goo-assert-probe \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
@@ -4851,7 +4858,11 @@ install: $(COMPILER)
 	cp $(COMPILER) /usr/local/bin/
 
 # Development helpers
-debug: CFLAGS += -DDEBUG -O0
+# -DGOO_DEBUG is what actually turns the asserts on. -DDEBUG was here from the
+# start and NO source file has ever read it — a grep for #ifdef DEBUG across
+# src/ and include/ returns nothing. It is kept only so an out-of-tree caller
+# passing DEBUG keeps working.
+debug: CFLAGS += -DDEBUG -DGOO_DEBUG -O0
 debug: $(COMPILER)
 
 format:
@@ -4918,9 +4929,9 @@ $(GOO_COV): $(GOO_SRCS) $(COMPILER_SRCS) | $(BINDIR)
 	 fi; \
 	 for f in $(GOO_SRCS) $(COMPILER_SRCS); do \
 	   obj=$(COV_OBJDIR)/`echo "$$f" | tr '/' '_' | sed 's/\.c$$/.o/'`; \
-	   $(COV_CC) $(CFLAGS) $(COVERAGE_FLAGS) $$COND $(LLVM_CFLAGS) -c "$$f" -o "$$obj"; \
+	   $(COV_CC) $(CFLAGS) $(COVERAGE_FLAGS) -DGOO_COVERAGE $$COND $(LLVM_CFLAGS) -c "$$f" -o "$$obj"; \
 	 done; \
-	 $(COV_CC) $(CFLAGS) $(COVERAGE_FLAGS) $$COND $(COV_OBJDIR)/*.o -o $@ $(LDFLAGS) $(LLVM_LDFLAGS) $(COVERAGE_LIBS)
+	 $(COV_CC) $(CFLAGS) $(COVERAGE_FLAGS) -DGOO_COVERAGE $$COND $(COV_OBJDIR)/*.o -o $@ $(LDFLAGS) $(LLVM_LDFLAGS) $(COVERAGE_LIBS)
 	@echo "$(GOO_COV): built ($$(find $(COV_OBJDIR) -name '*.gcno' | wc -l) instrumented TUs)"
 
 # The runtime archive is a prerequisite because the corpus runs a FULL compile
@@ -5232,6 +5243,24 @@ alloc-doors-probe:
 # exemption list.
 alloc-doors-selftest:
 	@bash scripts/alloc_doors_probe.sh --self-test
+# The three build modes of include/goo_assert.h. GOO_ASSERT, GOO_NEVER and
+# GOO_ALWAYS expand to DIFFERENT code in a production, a debug and a coverage
+# build, which is the point of them and also the risk: a production build where
+# GOO_ASSERT still aborts ships a compiler that dies on a recoverable
+# condition, and a debug build where it quietly does nothing is a check that is
+# not one. The preprocessor picks the arm, so reading the header cannot tell
+# you which happened. Compile the same fixture three ways and observe it.
+goo-assert-probe:
+	@bash scripts/goo_assert_probe.sh
+
+# The corpus against an ASSERT-ENABLED compiler. Deliberately NOT in
+# verify-core: `make debug` and `make lexer` both write bin/goo, so this would
+# swap the binary out from under the other 197 gates mid-run. It is the
+# pre-release sweep, and it is what stops every assert in the tree from being a
+# comment with parentheses -- verify-core builds production, where they are all
+# (void)0.
+assert-corpus:
+	@bash scripts/assert_corpus.sh
 
 # A Goo string literal must be a real ARC object: { header, bytes } with the
 # count set to GOO_RC_IMMORTAL. Asserts the IR shape, the 16-byte alignment,

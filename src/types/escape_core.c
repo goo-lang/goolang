@@ -121,7 +121,13 @@ bool escape_env_add_or_union(LocalEnv* env, const char* name, const TaintSet* va
 // release consumer frees on that answer. Losing precision is the safe failure;
 // losing the mark is the one that dangles a pointer.
 static inline EscapeReasons reason_or_unclassified(EscapeReasons why) {
-    return why ? why : ESCAPE_REASON_UNCLASSIFIED;
+    // Executable form of the paragraph above. A mark whose reason set came back
+    // empty reads as "does not escape" downstream, and release_decision frees
+    // on that answer -- which is the dangling-pointer failure, not the
+    // imprecise one.
+    EscapeReasons out = why ? why : ESCAPE_REASON_UNCLASSIFIED;
+    GOO_ASSERT(out != ESCAPE_REASON_NONE);
+    return out;
 }
 
 // THE ONLY NAME TABLE FOR EscapeReasons. Both readers -- local_escape_test's
@@ -178,6 +184,11 @@ const char* escape_reason_names(EscapeReasons why, char* buf, size_t n) {
 }
 
 void escape_mark(EscapeCtx* ctx, const TaintSet* t, EscapeReasons why) {
+    // ESCAPE_REASON_ALL is (1<<13)-1 (include/escape_core.h). A bit outside it
+    // is a reason with no row in the name table, so escape_reasons_name() would
+    // print a set that does not mention it, and every census taken from that
+    // output would undercount in a way no row check can see.
+    GOO_ASSERT((why & ~ESCAPE_REASON_ALL) == 0);
     why = reason_or_unclassified(why);
     size_t n = t->n < ctx->slot_count ? t->n : ctx->slot_count;
     for (size_t i = 0; i < n; i++) {
@@ -186,6 +197,7 @@ void escape_mark(EscapeCtx* ctx, const TaintSet* t, EscapeReasons why) {
 }
 
 void escape_mark_all(EscapeCtx* ctx, EscapeReasons why) {
+    GOO_ASSERT((why & ~ESCAPE_REASON_ALL) == 0);
     why = reason_or_unclassified(why);
     for (size_t i = 0; i < ctx->slot_count; i++) ctx->reasons[i] |= why;
 }
