@@ -113,9 +113,22 @@ OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
 # tests. The membership test is symbols, not headers: a module joins this
 # list only if the link otherwise fails with an undefined reference.
 # ---------------------------------------------------------------------------
-GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/lane_ownership.c
+# channel_checker.c dropped from the shipped set 2026-08-08. The coverage
+# measurement showed ZERO branches taken across 810 fixtures, and a static check
+# then found ZERO external callers for every one of its nine exported functions,
+# with its header included nowhere. Channels, select and close are probe-gated
+# and work, so their type checking happens on another path. Kept in TYPES_SRCS
+# for the standalone test targets.
+GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/lane_ownership.c
+# P5.6 quarantine, extended 2026-08-08 by the coverage measurement.
+# ergonomic_errors.c took ZERO branches across all 810 fixtures, and a static
+# check found no caller anywhere in src/ for any of its entry points. It depends
+# on error.c and nothing depends on it, so dropping it from the shipped set is a
+# one-way cut. Its 222 branches were padding the denominator of every coverage
+# number this project takes. Kept in ERROR_SRCS for the standalone test targets.
+GOO_ERROR_SRCS = $(SRCDIR)/errors/error.c
 GOO_COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c
-GOO_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(GOO_TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(PACKAGE_SRCS) $(GOO_COMPTIME_SRCS)
+GOO_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(GOO_TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(GOO_ERROR_SRCS) $(PACKAGE_SRCS) $(GOO_COMPTIME_SRCS)
 GOO_OBJS = $(GOO_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 
 # Runtime library
