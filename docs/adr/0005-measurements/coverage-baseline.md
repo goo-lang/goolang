@@ -117,6 +117,44 @@ which alone would have voided the result:
 It also referenced `$(BUILDBIN)`, which is not defined anywhere in the
 Makefile.
 
+## Re-measured 2026-08-08 after the xstrdup sweep and the asserts
+
+The plan for this arc said the assert work would move the branch count, so the
+baseline would have to be retaken. It was retaken on `main` at 7e93c84, which
+carries all three of the coverage build, the xstrdup sweep and GOO_ASSERT.
+
+**The number did not move at all** — not the percentage, and not the raw counts:
+
+| | Before | After |
+|---|---|---|
+| Branch | 58.1% (12,852 / 22,103) | 58.1% (12,852 / 22,103) |
+| MC/DC | 56.5% (11,452 / 20,254) | 56.5% (11,452 / 20,254) |
+
+Identical numerator AND denominator is the shape of a stale build, so it was
+checked rather than assumed. `bin/goo-cov --version` reports
+`asserts: off, GOO_NEVER/GOO_ALWAYS folded (GOO_COVERAGE)`, a line that only
+exists after the assert work, and `src/` holds 570 `xstrdup` calls and zero raw
+`strdup`. The binary is current. The result is real.
+
+The cause is exact, and it makes an implicit scoping decision load-bearing:
+
+- `GOO_ASSERT` expands to `(void)0` under `GOO_COVERAGE`, by design. No branch.
+- `GOO_NEVER` and `GOO_ALWAYS` fold to constants under `GOO_COVERAGE`, also by
+  design — and nothing uses them yet, so there was nothing to fold.
+- `xstrdup`'s `if (!p)` IS a new branch, inlined at all 570 call sites. It lives
+  in `include/xalloc.h`, and the report counts only files under `src/`.
+
+**That last exclusion is now doing real work and should be read as a choice.**
+`scripts/coverage_corpus.sh` keeps a file only when its path starts with `src/`,
+so every branch in a force-included header — `xalloc.h`'s four OOM checks,
+`goo_assert.h`'s handler — sits outside the denominator. Counting them would add
+one uncoverable branch per allocator wrapper, repeated at every inline site, and
+none of them is reachable without allocator fault injection, which this project
+does not do (`include/xalloc.h` exits on OOM by design).
+
+The defensible reading: this denominator measures the compiler's own decisions,
+not its allocator wrappers. It is not a claim that those branches are covered.
+
 ## What this does NOT measure
 
 - **The runtime.** See above. Needs a corpus that RUNS compiled programs.
