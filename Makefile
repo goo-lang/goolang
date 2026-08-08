@@ -158,7 +158,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe string-literal-header-probe
 
 all: lexer
 
@@ -4859,38 +4859,84 @@ format:
 check:
 	cppcheck --enable=all $(SRCDIR)
 
-# Coverage targets
+# ---------------------------------------------------------------------------
+# Branch coverage of the SHIPPED compiler.
+#
+# The previous `coverage` target measured bin/test_runner_coverage, and it
+# measured nothing. Three independent reasons: test_runner links 5 of the 21
+# files under tests/unit/; its link line ran $(OBJS:_coverage.o=), a no-op
+# substitution that pulled in the NON-instrumented objects; and COVERAGE_LIBS
+# was defined at the top of this file and referenced nowhere, so -lgcov never
+# reached the link. It also had no relationship to what `make verify-core`
+# exercises. Deleted rather than repaired.
+#
+# What replaces it: build bin/goo-cov from GOO_SRCS — the P5.6 reachable set,
+# see the comment above GOO_TYPES_SRCS — drive it over the whole ~810-fixture
+# corpus, and report BRANCH and MC/DC coverage per file. Measured 2026-08-08 on
+# 810 fixtures: 58.1% branch, 56.5% MC/DC over 51 files / 22,103 branches.
+#
+# Scoped to GOO_SRCS and not SRC_OBJS on purpose. The constraint-inference,
+# HKT, and concept-generics frameworks are unlinked from bin/goo, so counting
+# them would report a false low number and hide the reachable gaps. src/runtime/
+# is excluded again inside the script: it is linked into bin/goo but executes
+# only inside COMPILED programs, which this corpus does not run.
+#
+# NOT a gate, and deliberately absent from VERIFY_ALL_DEPS. A coverage target
+# invites tests that raise the number instead of tests that find bugs. The
+# number is an input to "where is the next probe worth writing", nothing more.
+# ---------------------------------------------------------------------------
 COVERAGE_DIR = coverage
-COVERAGE_TEST_RUNNER = $(BINDIR)/test_runner_coverage
+COV_OBJDIR   = $(BUILDDIR)/cov
+GOO_COV      = $(BINDIR)/goo-cov
+# ccache is bypassed for the coverage build. It caches the .o but does not
+# always restore the .gcno beside it, which silently drops files from the
+# report — a missing file reads as "not covered" and is indistinguishable from
+# a real gap.
+COV_CC       = gcc
 
-coverage: coverage-clean $(COVERAGE_TEST_RUNNER)
-	@echo "Running tests with coverage..."
-	./$(COVERAGE_TEST_RUNNER)
-	@echo "Generating coverage report..."
-	lcov --capture --directory $(BUILDDIR) --output-file $(COVERAGE_DIR)/coverage.info
-	lcov --remove $(COVERAGE_DIR)/coverage.info '/usr/*' --output-file $(COVERAGE_DIR)/coverage.info
-	lcov --remove $(COVERAGE_DIR)/coverage.info '*/test/*' --output-file $(COVERAGE_DIR)/coverage.info
-	genhtml $(COVERAGE_DIR)/coverage.info --output-directory $(COVERAGE_DIR)/html
-	@echo "Coverage report generated in $(COVERAGE_DIR)/html/index.html"
+# Flat object dir with mangled names, following the ccomp-build rule above.
+# This keeps the instrumented objects (and the .gcno/.gcda beside them) out of
+# build/, so a coverage build can never be linked into bin/goo by accident.
+$(GOO_COV): $(GOO_SRCS) $(COMPILER_SRCS) | $(BINDIR)
+	@rm -rf $(COV_OBJDIR) && mkdir -p $(COV_OBJDIR)
+	@# MC/DC. GCC 14+ implements modified condition/decision coverage natively
+	@# via -fcondition-coverage — the DO-178B metric, and the one the SQLite
+	@# talk is about. Probed inside the recipe rather than in a := variable so
+	@# older gcc degrades to plain branch coverage instead of failing, and so
+	@# non-coverage builds pay nothing for the probe.
+	@set -e; \
+	 COND=""; \
+	 probe=`mktemp -d`; \
+	 echo 'int main(void){return 0;}' > $$probe/p.c; \
+	 trap "rm -rf $$probe" EXIT; \
+	 if $(COV_CC) -fcondition-coverage -c $$probe/p.c -o $$probe/p.o 2>/dev/null; then \
+	   COND="-fcondition-coverage"; \
+	   echo "Building $(GOO_COV): gcov counters + MC/DC conditions"; \
+	 else \
+	   echo "Building $(GOO_COV): gcov counters only ($(COV_CC) has no -fcondition-coverage; MC/DC needs gcc 14+)"; \
+	 fi; \
+	 for f in $(GOO_SRCS) $(COMPILER_SRCS); do \
+	   obj=$(COV_OBJDIR)/`echo "$$f" | tr '/' '_' | sed 's/\.c$$/.o/'`; \
+	   $(COV_CC) $(CFLAGS) $(COVERAGE_FLAGS) $$COND $(LLVM_CFLAGS) -c "$$f" -o "$$obj"; \
+	 done; \
+	 $(COV_CC) $(CFLAGS) $(COVERAGE_FLAGS) $$COND $(COV_OBJDIR)/*.o -o $@ $(LDFLAGS) $(LLVM_LDFLAGS) $(COVERAGE_LIBS)
+	@echo "$(GOO_COV): built ($$(find $(COV_OBJDIR) -name '*.gcno' | wc -l) instrumented TUs)"
 
-$(COVERAGE_TEST_RUNNER): $(TEST_FRAMEWORK_DIR)/test_main.c | $(BINDIR) $(COVERAGE_DIR)
-	@echo "Building test runner with coverage support..."
-	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) $(LLVM_CFLAGS) -c -o $(BUILDDIR)/test_main_coverage.o $(TEST_FRAMEWORK_DIR)/test_main.c
-	@# Build objects with coverage
-	@for src in $(CURRENT_SRCS); do \
-		obj=$$(echo $$src | sed 's|$(SRCDIR)/|$(BUILDDIR)/|g' | sed 's|\.c$$|_coverage.o|g'); \
-		mkdir -p $$(dirname $$obj); \
-		$(CC) $(CFLAGS) $(COVERAGE_FLAGS) $(LLVM_CFLAGS) -c $$src -o $$obj; \
-	done
-	@# Link with coverage
-	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) $(BUILDBIN)/test_main_coverage.o $(filter-out $(BUILDDIR)/main.o, $(OBJS:_coverage.o=)) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
+# The runtime archive is a prerequisite because the corpus runs a FULL compile
+# (source -> executable), which covers the link path in codegen.c as well as
+# the front end. --emit-llvm would be ~4x faster and would skip that path.
+coverage-goo: $(GOO_COV) $(RUNTIME_LIB)
+	@COMPILER=$(GOO_COV) COV_OBJDIR=$(COV_OBJDIR) COVERAGE_DIR=$(COVERAGE_DIR) \
+	  bash scripts/coverage_corpus.sh
 
-coverage-report:
-	@echo "Opening coverage report..."
-	open $(COVERAGE_DIR)/html/index.html
+# Instrument check: halve the corpus and confirm the number FALLS. A coverage
+# script that reports the same percentage with less input measures nothing.
+coverage-goo-selftest: $(GOO_COV) $(RUNTIME_LIB)
+	@COMPILER=$(GOO_COV) COV_OBJDIR=$(COV_OBJDIR) COVERAGE_DIR=$(COVERAGE_DIR) \
+	  bash scripts/coverage_corpus.sh --self-test
 
 coverage-clean:
-	rm -rf $(COVERAGE_DIR)
+	rm -rf $(COVERAGE_DIR) $(COV_OBJDIR) $(GOO_COV)
 
 # Proof generation test
 proof_generation_test: $(TEST_UNIT_DIR)/proof/proof_generation_test.c $(SRC_OBJS)
