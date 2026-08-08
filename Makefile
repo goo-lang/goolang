@@ -163,7 +163,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe goo-assert-probe assert-corpus string-literal-header-probe
 
 all: lexer
@@ -3293,6 +3293,8 @@ VERIFY_ALL_DEPS := \
     arena-rss-probe \
     dead-package-code-probe \
     alloc-doors-probe \
+    ast-free-leak-probe \
+    ast-free-leak-selftest \
     alloc-doors-selftest \
     goo-assert-probe \
     string-literal-header-probe \
@@ -5237,6 +5239,24 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 # needed, so it is stable everywhere.
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
+
+# ast_node_free() must free the WHOLE tree, not only the spine. The parser
+# fuzzer found on 2026-08-08 that every assignment statement leaked 188 bytes
+# because there was no `case AST_EXPR_STMT`, so the node reached `default:` and
+# nothing freed its `expr` child.
+#
+# No existing gate could see it. The compiler is a batch process: it exits
+# without freeing, so a leak in ast_node_free costs it nothing and no probe on
+# bin/goo can detect one. This links a driver that parses AND frees in one
+# process and runs it under valgrind. Skips (loudly) when valgrind is absent.
+ast-free-leak-probe:
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/ast_free_leak_probe.sh
+
+# Teeth: delete the AST_EXPR_STMT case from a SCRATCH copy of src/ast/ast.c and
+# require the probe to report the leak again. A leak probe that has only ever
+# passed has not shown it can report a leak.
+ast-free-leak-selftest:
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/ast_free_leak_probe.sh --self-test
 
 # ---------------------------------------------------------------------------
 # Parser fuzzing. See tests/fuzz/README.md for the triage rule and findings.
