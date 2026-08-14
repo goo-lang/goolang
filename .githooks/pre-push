@@ -1,9 +1,32 @@
 #!/usr/bin/env sh
-# pre-push — the authoritative gate before code leaves this machine. GitHub
-# Actions does NOT run on push or PR (both workflows are workflow_dispatch-only,
-# because this repo does not pay for Actions), so this hook is the only gate
-# there is. A PR showing an empty status-check rollup is the designed state, not
-# a pending one.
+# pre-push — the local gate before code leaves this machine.
+#
+# WHAT CI ACTUALLY DOES, because the comment that stood here got it wrong. It
+# said GitHub Actions does NOT run on push or PR, that both workflows were
+# workflow_dispatch-only "because this repo does not pay for Actions", and that
+# "a PR showing an empty status-check rollup is the designed state, not a
+# pending one". That stopped being true when the billing block cleared before
+# 2026-07-05 and the `on:` keys were restored — see the HISTORY OF THE `on:` KEY
+# section at the top of .github/workflows/tests.yml. MEASURED on PR #300,
+# 2026-08-14: two checks started by themselves and both concluded SUCCESS —
+# demos (45s) and verify-core (3m45s). An empty rollup on a PR is now a sign
+# that something is broken, not the design.
+#
+# Both workflows trigger on `pull_request`, and on `push` to main only:
+#
+#   - a pull request gets tests.yml (`make verify-core`) and demos.yml
+#   - a push to a branch with no PR open gets NOTHING
+#
+# The second line is why this hook still earns its several minutes, and why it
+# is not redundant with tests.yml even though both call `make verify-core`: the
+# hook covers the window before a PR exists. It is also not a superset of CI.
+# demos.yml builds and runs the demo targets plus an AddressSanitizer step, and
+# MEASURED against the Makefile, none of those are in verify-core (see the
+# comment at the top of demos.yml).
+#
+# Do not read this comment as a statement about CI coverage in a later session.
+# Read `gh pr view <n> --json statusCheckRollup` and look at each `conclusion`.
+# A comment is not an instrument.
 #
 # `make verify-core`, NOT `make verify`. verify-core is the full probe net minus
 # the CompCert bootstrap pilot, and CLAUDE.md designates it "the authoritative
