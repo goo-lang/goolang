@@ -1,0 +1,176 @@
+kind	num	category	decision	deviation	phase	violations	to_fix	waived	checked	note
+Rule	1.1	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	1.2	Advisory	ADOPT			0	0	0	yes	checked and clean
+Rule	1.3	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	1.4	Required	OUT			4	0	0	yes	added by a later amendment; no text in this edition
+Rule	2.1	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	2.2	Required	FIX		P1	3	3	0	yes	dead code
+Rule	2.3	Advisory	FIX		P2	90	90	0	yes	unused type declarations
+Rule	2.4	Advisory	FIX		P2	11	11	0	yes	unused tag declarations
+Rule	2.5	Advisory	FIX		P2	241	241	0	yes	unused macro declarations; a cheap cleanup
+Rule	2.6	Advisory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	2.7	Advisory	FIX		P2	96	96	0	yes	unused parameters
+Rule	3.1	Required	FIX		P1	6	6	0	yes	/* inside a comment
+Rule	3.2	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	4.1	Required	FIX		P1	41	41	0	yes	unterminated escape sequence
+Rule	4.2	Advisory	ADOPT			0	0	0	yes	checked and clean
+Rule	5.1	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	5.2	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	5.3	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	5.4	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	5.5	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	5.6	Required	FIX		P3	412	412	0	yes	typedef uniqueness; triage first
+Rule	5.7	Required	FIX		P3	64	64	0	yes	tag uniqueness
+Rule	5.8	Required	FIX		P2	26	26	0	yes	external identifier uniqueness
+Rule	5.9	Advisory	DECLINE			75	0	75	yes	internal linkage identifier uniqueness
+Rule	6.1	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	6.2	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	7.1	Required	FIX		P1	4	4	0	yes	octal constant
+Rule	7.2	Required	FIX		P2	3	3	0	yes	u suffix on unsigned constants
+Rule	7.3	Required	ADOPT			384	0	0	yes	kept enforced; the 384 reports are an addon regex bug
+Rule	7.4	Required	FIX		P1	11	11	0	yes	string literal assigned to a non-const object
+Rule	8.1	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	8.2	Required	FIX		P2	6	6	0	yes	prototype form with named parameters
+Rule	8.3	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	8.4	Required	FIX		P2	164	164	0	yes	compatible declaration visible
+Rule	8.5	Required	FIX		P2	26	26	0	yes	declared once in one file
+Rule	8.6	Required	FIX		P2	196	196	0	yes	one external definition; an ODR defect class
+Rule	8.7	Advisory	DECLINE			1197	0	1197	yes	1,197 sites; revisit as a link-surface cleanup
+Rule	8.8	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	8.9	Advisory	DECLINE			24	0	24	yes	block scope for single-use objects
+Rule	8.10	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	8.11	Advisory	ADOPT			0	0	0	yes	checked and clean
+Rule	8.12	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	8.13	Advisory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	8.14	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	9.1	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	9.2	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	9.3	Required	FIX		P1	1	1	0	yes	partially initialized array
+Rule	9.4	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	9.5	Required	FIX		P2	6	6	0	yes	designated initializer array size
+Rule	10.1	Required	FIX		P3	97	97	0	yes	inappropriate essential type
+Rule	10.2	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	10.3	Required	FIX		P3	77	77	0	yes	narrowing assignment
+Rule	10.4	Required	FIX		P3	1328	1328	0	yes	essential type category; start in src/types
+Rule	10.5	Advisory	ADOPT			0	0	0	yes	checked and clean
+Rule	10.6	Required	FIX		P3	9	9	0	yes	composite expression assigned to a wider type
+Rule	10.7	Required	FIX		P3	1	1	0	yes	composite operand of a wider type
+Rule	10.8	Required	FIX		P3	34	34	0	yes	composite expression cast
+Rule	11.1	Required	FIX		P1	2	2	0	yes	function pointer conversion is undefined
+Rule	11.2	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	11.3	Required	DEVIATE	D-05		912	0	912	yes	the AST downcast (CallExprNode *)node is the architecture
+Rule	11.4	Advisory	DECLINE			4	0	4	yes	pointer to integer conversion
+Rule	11.5	Advisory	DECLINE			1216	0	1216	yes	void* to object* is every allocator result
+Rule	11.6	Required	FIX		P1	12	12	0	yes	void pointer to arithmetic type
+Rule	11.7	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	11.8	Required	FIX		P1	67	67	0	yes	free((void*)x) on a const char* field; a real defect class
+Rule	11.9	Required	FIX		P2	5	5	0	yes	NULL is the only null pointer constant
+Rule	12.1	Advisory	DECLINE			1463	0	1463	yes	explicit precedence; style, no defect class
+Rule	12.2	Required	FIX		P1	45	45	0	yes	shift out of range is undefined behaviour
+Rule	12.3	Advisory	DECLINE			41	0	41	yes	comma operator
+Rule	12.4	Advisory	ADOPT			0	0	0	yes	checked and clean
+Rule	12.5	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	13.1	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	13.2	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	13.3	Advisory	DECLINE			148	0	148	yes	++ with other side effects
+Rule	13.4	Advisory	FIX		P1	14	14	0	yes	if (x = y) is a real defect class
+Rule	13.5	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	13.6	Mandatory	ADOPT			0	0	0	yes	checked and clean
+Rule	14.1	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	14.2	Required	FIX		P2	25	25	0	yes	for loop well-formed
+Rule	14.3	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	14.4	Required	DEVIATE	D-03		2111	0	2111	yes	if (ptr) and if (!x) are the house idiom
+Rule	15.1	Advisory	FIX		P1	1	1	0	yes	one goto; remove it
+Rule	15.2	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	15.3	Required	FIX		P1	1	1	0	yes	goto label scope
+Rule	15.4	Advisory	DECLINE			7	0	7	yes	more than one break or goto per loop
+Rule	15.5	Advisory	DECLINE			6858	0	6858	yes	single exit; CLAUDE.md prefers early returns
+Rule	15.6	Required	FIX		P2	3755	3755	0	yes	braces; clang-tidy readability-braces-around-statements
+Rule	15.7	Required	FIX		P3	129	129	0	yes	if...else if needs a terminal else
+Rule	16.1	Required	FIX		P1	1	1	0	yes	switch not well-formed
+Rule	16.2	Required	FIX		P1	5	5	0	yes	switch label not in the enclosing compound statement
+Rule	16.3	Required	FIX		P1	12	12	0	yes	missing break; fall-through must be explicit
+Rule	16.4	Required	FIX		P1	26	26	0	yes	a missing default hides a new enum case; the sites switch on kind tags such as comptime value->type
+Rule	16.5	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	16.6	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	16.7	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	17.1	Required	DEVIATE	D-07		50	0	50	yes	varargs diagnostic printers
+Rule	17.2	Required	DEVIATE	D-06		805	0	805	yes	recursive descent parser and AST walks
+Rule	17.3	Mandatory	ADOPT			660	0	0	yes	kept enforced; C23 makes a real violation a build error
+Rule	17.4	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	17.5	Advisory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	17.6	Mandatory	ADOPT			0	0	0	yes	checked and clean
+Rule	17.7	Required	DEVIATE	D-02	P1	3225	1516	1709	yes	1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return
+Rule	17.8	Advisory	DECLINE			53	0	53	yes	parameter modified
+Rule	18.1	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	18.2	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	18.3	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	18.4	Advisory	DECLINE			170	0	170	yes	pointer arithmetic is normal in a lexer and parser
+Rule	18.5	Advisory	DECLINE			14	0	14	yes	more than two pointer levels
+Rule	18.6	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	18.7	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	18.8	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	19.1	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	19.2	Advisory	DECLINE			55	0	55	yes	unions carry the AST and value representation
+Rule	20.1	Advisory	DECLINE			6	0	6	yes	#include preceded by other than directives
+Rule	20.2	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	20.3	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	20.4	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	20.5	Advisory	DECLINE			2	0	2	yes	#undef
+Rule	20.6	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	20.7	Required	FIX		P1	39	39	0	yes	unparenthesised macro parameter
+Rule	20.8	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	20.9	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	20.10	Advisory	DECLINE			44	0	44	yes	# and ## build the diagnostic and probe macros
+Rule	20.11	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	20.12	Required	FIX		P1	1	1	0	yes	macro parameter used with # and elsewhere
+Rule	20.13	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	20.14	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	21.1	Required	FIX		P1	9	9	0	yes	#define on a reserved identifier is undefined
+Rule	21.2	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	21.3	Required	DEVIATE	D-01		2597	0	2597	yes	malloc/free is the memory model: ARC, arenas, xalloc
+Rule	21.4	Required	DEVIATE	D-10		3	0	3	yes	setjmp/longjmp implements t.Fatal in goo test
+Rule	21.5	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	21.6	Required	DEVIATE	D-04		1372	0	1372	yes	a compiler must print diagnostics
+Rule	21.7	Required	FIX		P1	11	11	0	yes	atoi/atof cannot report an error; use strtol
+Rule	21.8	Required	DEVIATE	D-09		14	0	14	yes	exit() carries the compiler's exit status
+Rule	21.9	Required	FIX		P2	1	1	0	yes	bsearch/qsort
+Rule	21.10	Required	DEVIATE	D-08		47	0	47	yes	the compiler measures and reports time
+Rule	21.11	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	21.12	Advisory	ADOPT			0	0	0	yes	checked and clean
+Rule	21.13	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	21.14	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	21.15	Required	FIX		P1	2	2	0	yes	memcpy pointer argument types
+Rule	21.16	Required	FIX		P1	5	5	0	yes	memcmp on pointers to different types
+Rule	21.17	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	21.18	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	21.19	Mandatory	ADOPT			0	0	0	yes	checked and clean
+Rule	21.20	Mandatory	ADOPT			0	0	0	yes	checked and clean
+Rule	21.21	Required	OUT			3	0	0	yes	added by a later amendment; no text in this edition
+Rule	22.1	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	22.2	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	22.3	Required	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	22.4	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	22.5	Mandatory	ADOPT			0	0	0	yes	checked and clean
+Rule	22.6	Mandatory	ADOPT_OTHER			0	0	0	no	no cppcheck check; review, sanitizer or fuzzer
+Rule	22.7	Required	ADOPT			0	0	0	yes	checked and clean
+Rule	22.8	Required	FIX		P1	18	18	0	yes	errno not cleared before the call
+Rule	22.9	Required	FIX		P1	18	18	0	yes	errno not tested after the call
+Rule	22.10	Required	FIX		P1	2	2	0	yes	errno tested after a non-errno-setting call
+Dir	1.1	Required	ADOPT_OTHER			0	0	0	no	docs/adr and docs/*-roadmap record the choices
+Dir	2.1	Required	ADOPT			0	0	0	no	make verify-core fails on any compilation error
+Dir	3.1	Required	ADOPT_OTHER			0	0	0	no	task-master and the roadmap exit gates
+Dir	4.1	Required	ADOPT_OTHER			0	0	0	no	valgrind, ASan, TSan probes and the parser fuzzer
+Dir	4.2	Advisory	ADOPT			0	0	0	no	one site, commented: the compiler barrier in crypto_secure_memzero, src/security/crypto_security.c:42
+Dir	4.3	Required	ADOPT			0	0	0	no	the one asm statement is isolated inside crypto_secure_memzero and emits no instructions
+Dir	4.4	Advisory	ADOPT_OTHER			0	0	0	no	code review
+Dir	4.5	Advisory	ADOPT_OTHER			0	0	0	no	code review; Rules 5.1-5.9 carry most of this
+Dir	4.6	Advisory	DECLINE			0	0	0	no	int and size_t are the house types, not sized typedefs
+Dir	4.7	Required	ADOPT_OTHER			0	0	0	no	paired with Rule 17.7; see deviation D-02
+Dir	4.8	Advisory	DECLINE			0	0	0	no	opaque types would fight the AST downcast pattern
+Dir	4.9	Advisory	DECLINE			0	0	0	no	the probe and diagnostic macros need to be macros
+Dir	4.10	Required	ADOPT			0	0	0	no	every header carries an include guard
+Dir	4.11	Required	ADOPT_OTHER			0	0	0	no	code review and the fuzzer
+Dir	4.12	Required	DEVIATE	D-11		0	0	0	no	dynamic memory allocation is the memory model
+Dir	4.13	Advisory	ADOPT_OTHER			0	0	0	no	code review
+Dir	4.14	Required	ADOPT_OTHER			0	0	0	no	the parser fuzzer is the main enforcement here
