@@ -1,0 +1,105 @@
+# cppcheck suppression list for the MISRA gate.
+#
+# Every entry must name either a deviation record in docs/misra/deviations/
+# or a documented checker defect. An entry with no justification does not
+# belong here: put the decision in docs/misra/tools/policy.py first, so the
+# policy tables stay true.
+#
+# Usage: cppcheck --suppressions-list=docs/misra/misra-suppressions.txt ...
+
+# ---------------------------------------------------------------------------
+# Bison output. MISRA section 6.8 treats generated code separately.
+# 1,542 findings, 912 of them Rule 20.13.
+# ---------------------------------------------------------------------------
+*:src/parser/parser.tab.c
+*:src/parser/parser.tab.h
+*:src/parser/parser.y
+
+# ---------------------------------------------------------------------------
+# Project deviations. See docs/misra/deviations/.
+# ---------------------------------------------------------------------------
+
+# D-01 Rule 21.3 - dynamic memory is the memory model (ARC, arenas, xalloc)
+misra-c2012-21.3
+
+# D-02 Rule 17.7 - PARTIAL. This also hides 1,516 real violations, 840 of them
+# an unchecked pthread_* return. It is the weakest entry in this file and must
+# be narrowed as Phase 1 progresses. Do not treat its absence from the gate
+# output as evidence the code is clean.
+misra-c2012-17.7
+
+# D-03 Rule 14.4 - if (ptr) and if (!x) are the house idiom
+misra-c2012-14.4
+
+# D-04 Rule 21.6 - a compiler must print diagnostics
+misra-c2012-21.6
+
+# D-05 Rule 11.3 - the AST downcast is the architecture
+misra-c2012-11.3
+
+# D-06 Rule 17.2 - recursive descent parser and AST walks
+misra-c2012-17.2
+
+# D-07 Rule 17.1 - varargs diagnostic printers
+misra-c2012-17.1
+
+# D-08 Rule 21.10 - clock_gettime for the performance monitor
+misra-c2012-21.10
+
+# D-09 Rule 21.8 - exit(), abort() and getenv()
+misra-c2012-21.8
+
+# D-10 Rule 21.4 - setjmp/longjmp implements t.Fatal. Scoped to the one file,
+# so a fourth site anywhere else is still reported.
+misra-c2012-21.4:src/runtime/testing.c
+
+# ---------------------------------------------------------------------------
+# Declined advisory guidelines. MISRA 6.2.3 permits this without a formal
+# deviation, provided the non-compliance is documented. It is: see the
+# "Declined advisory guidelines" table in docs/misra/README.md.
+# ---------------------------------------------------------------------------
+misra-c2012-15.5
+misra-c2012-12.1
+misra-c2012-11.5
+misra-c2012-8.7
+misra-c2012-18.4
+misra-c2012-13.3
+misra-c2012-5.9
+misra-c2012-19.2
+misra-c2012-17.8
+misra-c2012-20.10
+misra-c2012-12.3
+misra-c2012-8.9
+misra-c2012-18.5
+misra-c2012-15.4
+misra-c2012-20.1
+misra-c2012-11.4
+misra-c2012-20.5
+
+# ---------------------------------------------------------------------------
+# Checker defects, NOT project decisions. These are suppressed because the
+# check is wrong, not because the guideline is refused. Remove the suppression
+# if the addon is ever fixed.
+# ---------------------------------------------------------------------------
+
+# Rule 7.3 - the addon regex ^(0[xX])?[0-9a-fA-FpP.]+[Uu]*l+[Uu]*$ matches the
+# identifiers call(357), decl(90), al and bl. Of 384 reports, 2 are genuine:
+# src/types/expression_checker.c:1303 uses the suffix 'ull' twice, which should
+# be 'uLL'. Fix those two, then this entry hides nothing real.
+misra-c2012-7.3
+
+# Rule 17.3 - cppcheck has no signature for atomic_*, pthread_cond_*, curl_* or
+# json_object_*, so it reports every call as an implicit declaration. C23 makes
+# a real implicit declaration a constraint violation, so the compiler already
+# enforces this rule and does it correctly.
+misra-c2012-17.3
+
+# ---------------------------------------------------------------------------
+# Not MISRA. cppcheck cannot resolve the LLVM C++ header guard when it
+# preprocesses llvm-c/DataTypes.h as C.
+#
+# Do NOT add missingIncludeSystem here: scan.sh already passes it on the
+# command line, and cppcheck treats a duplicate suppression as a fatal error.
+# It exits 1 having checked nothing, which reads as a clean scan.
+# ---------------------------------------------------------------------------
+preprocessorErrorDirective:*/llvm-c/DataTypes.h

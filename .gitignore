@@ -103,3 +103,11 @@ tasks/
 
 # Branch/MC-DC coverage output (scripts/coverage_corpus.sh)
 coverage/
+
+# cppcheck MISRA addon scratch files (see docs/misra/README.md).
+# cppcheck writes <source>.<pid>.dump beside the source it analyses.
+*.c.*.dump
+*.h.*.dump
+build/misra-scan.txt
+# byte-code from the MISRA tools in docs/misra/tools/
+__pycache__/

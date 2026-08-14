@@ -6540,3 +6540,17 @@ stdlib-coverage:
 .PHONY: safety
 safety:
 	@bash scripts/safety-scan.sh
+
+# Scan the C compiler/runtime source against the adopted MISRA C:2012 subset and
+# fail on any violation not in scripts/misra-baseline.txt. Local-only gate (see
+# docs/misra/README.md for the policy and docs/misra/deviations/ for the eleven
+# project deviations). Needs cppcheck and a rule-text file built from a licensed
+# copy of the standard — docs/misra/tools/README.md explains how. Deliberately
+# NOT part of verify-core: the rule text is copyrighted and cannot be committed,
+# so the gate cannot run on a fresh checkout.
+.PHONY: misra misra-baseline
+misra:
+	@bash scripts/misra-scan.sh
+
+misra-baseline:
+	@bash scripts/misra-scan.sh --update-baseline
