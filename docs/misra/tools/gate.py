@@ -75,12 +75,14 @@ def read_baseline(path):
 
 def write_baseline(counts, path, scan):
     with open(path, "w", encoding="utf-8") as f:
+        # Never interpolate `path` here: it arrives absolute, and this file is
+        # committed, so a machine-specific path would churn the diff per user.
         f.write("# MISRA gate baseline. Regenerate with:\n"
-                "#   docs/misra/tools/gate.py write <scan-output> %s\n"
+                "#   scripts/misra-scan.sh --update-baseline\n"
                 "# One line per file and rule: file<TAB>rule<TAB>count.\n"
                 "# Counts may only go DOWN. gate.py check fails on any rise.\n"
                 "# Total accepted violations: %d across %d file/rule pairs.\n"
-                % (path, sum(counts.values()), len(counts)))
+                % (sum(counts.values()), len(counts)))
         for (fn, rule), n in sorted(counts.items()):
             f.write("%s\t%s\t%d\n" % (fn, rule, n))
     print("gate: wrote %s - %d violations across %d file/rule pairs (from %s)"

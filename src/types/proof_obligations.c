@@ -7,6 +7,7 @@
 #include <math.h>
 #include <unistd.h>    // For mkstemp, write, close, unlink
 #include <sys/stat.h>  // For mkdir
+#include <errno.h>     // For errno/EEXIST in proof_cache_create
 
 // C23 compatibility checks
 _Static_assert(sizeof(ProofType) == sizeof(int), "ProofType should be int size");
@@ -237,11 +238,40 @@ ProofObligation* contract_to_proof_obligation(
 ProofCache* proof_cache_create(const char* cache_dir) {
     if (!cache_dir) return NULL;
     
-    // Create cache directory if it doesn't exist
-    char command[512];
-    snprintf(command, sizeof(command), "mkdir -p %s", cache_dir);
-    system(command);
-    
+    // Create the cache directory. NOT `system("mkdir -p ...")`, which is what
+    // this did until 2026-08-14: cache_dir is a public char* field of
+    // ProofGenerationContext, so a ';' or a $(...) in it ran an arbitrary
+    // command, and the 512-byte command buffer truncated a long path in
+    // silence. mkdir(2) takes the path as data, so neither is reachable.
+    //
+    // Testing errno beats stat()-then-mkdir, which races, and which is what
+    // src/package/ai_cache.c and hybrid_registry.c happen to do. EEXIST is
+    // success: `mkdir -p` tolerated an existing directory and the caller in
+    // proof_generation.c relies on that on every run after the first.
+    //
+    // ONE DELIBERATE NARROWING: mkdir(2) does not create parents. The sole
+    // caller passes "/tmp/goo_proof_cache", one level under a directory that
+    // always exists. A caller needing a nested path has to make the parents.
+    //
+    // The mode is spelled with the S_I* macros rather than 0755 because MISRA
+    // Rule 7.1 bans octal constants, and a permission mode is the one place a
+    // C programmer reaches for one by reflex. Same value: 0700|0040|0010|
+    // 0004|0001. Hoisting it also keeps the condition below on ONE line, which
+    // matters: cppcheck attaches a finding to the line the offending token is
+    // on, so a suppression above a wrapped condition suppresses nothing.
+    const mode_t cache_mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+
+    // mkdir(2) IS an errno-setting function under POSIX, and && short-circuits,
+    // so errno is read only once mkdir has already reported failure. cppcheck's
+    // errno model covers the C standard library only, so it does not know that
+    // about mkdir and reports Rule 22.10 here.
+    // cppcheck-suppress misra-c2012-22.10
+    if (mkdir(cache_dir, cache_mode) != 0 && errno != EEXIST) {
+        fprintf(stderr, "goo: cannot create proof cache at %s: %s\n",
+                cache_dir, strerror(errno));
+        return NULL;
+    }
+
     printf("📦 Initialized proof cache at: %s\n", cache_dir);
     
     return NULL;  // Head of linked list starts empty

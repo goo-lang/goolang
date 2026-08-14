@@ -3329,7 +3329,8 @@ VERIFY_ALL_DEPS := \
     far-collective-probe \
     far-jacobi-probe \
     nil-deref-probe \
-    goo-test-probe
+    goo-test-probe \
+    proof-cache-shell-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -5252,6 +5253,16 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 # needed, so it is stable everywhere.
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
+
+# proof_cache_create() must not hand its argument to a shell. It used to build
+# `mkdir -p %s` into a 512-byte buffer and call system(), so a ';' in the path
+# ran an arbitrary command. Found by the MISRA scan, 2026-08-14; see
+# docs/misra/deviations/D-09.md. The probe is two-sided: it also asserts the
+# benign path still creates the directory, because a function that does nothing
+# would pass the injection half by doing nothing.
+.PHONY: proof-cache-shell-probe
+proof-cache-shell-probe:
+	@bash scripts/proof_cache_shell_probe.sh
 
 # ast_node_free() must free the WHOLE tree, not only the spine. The parser
 # fuzzer found on 2026-08-08 that every assignment statement leaked 188 bytes
