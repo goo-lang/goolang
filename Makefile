@@ -1607,6 +1607,16 @@ spec-conformance: $(COMPILER) $(RUNTIME_LIB)
 # cannot half-revive GPU syntax without tripping a gate. Real GPU support is
 # post-v1 (lanes-then-GPU phasing, docs/2026-07-08-v1-roadmap.md).
 .PHONY: gpu-kernel-reject-probe
+# lexer-keyword probe: the 25 words removed from token.c's keyword table on
+# 2026-08-17 must stay ordinary identifiers, and none may return to being
+# silently dropped by lexer_bridge.c's unmapped arm. Two-sided: it also asserts
+# an undeclared name is still rejected, so the identifier half cannot pass
+# vacuously. gpu-kernel-reject-probe does NOT cover this — its fixture omits
+# `func`, so `gpu_kernel func f() {}` compiled silently until this landed.
+lexer-keyword-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/lexer_keyword_probe.sh
+.PHONY: lexer-keyword-probe
+
 gpu-kernel-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== gpu-kernel-reject-probe: gpu_kernel is a clean compile reject (P5 rider) ==="
@@ -3218,6 +3228,7 @@ VERIFY_ALL_DEPS := \
     emit-llvm-probe \
     subcommand-probe \
     gpu-kernel-reject-probe \
+    lexer-keyword-probe \
     spec-conformance \
     blank-lines-probe \
     comment-lines-probe \

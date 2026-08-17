@@ -209,39 +209,38 @@ static const KeywordEntry keywords[] = {
     {"catch", TOKEN_CATCH},
     {"unsafe", TOKEN_UNSAFE},
     {"arena", TOKEN_ARENA},
-    {"asm", TOKEN_ASM},
-    {"extern", TOKEN_EXTERN},
-    {"msg_from", TOKEN_FROM},
-    {"ll_volatile", TOKEN_VOLATILE},
-    {"ll_inline", TOKEN_INLINE},
-    {"no_std", TOKEN_NO_STD},
-    {"par_parallel", TOKEN_PARALLEL},
-    {"par_reduce", TOKEN_REDUCE},
-    {"par_barrier", TOKEN_BARRIER},
-    {"par_atomic", TOKEN_ATOMIC},
-    {"par_thread_local", TOKEN_THREAD_LOCAL},
     {"own_owned", TOKEN_OWNED},
     {"own_borrowed", TOKEN_BORROWED},
     {"own_shared", TOKEN_SHARED},
     {"let", TOKEN_LET},
     {"match", TOKEN_MATCH},
-    {"gpu_kernel", TOKEN_KERNEL},
-    {"gpu_device", TOKEN_DEVICE},
-    {"gpu_host", TOKEN_HOST},
-    {"gpu_global", TOKEN_GLOBAL},
-    {"gpu_shared_mem", TOKEN_SHARED_MEM},
-    {"gpu_constant", TOKEN_CONSTANT},
-    {"gpu_local", TOKEN_LOCAL},
-    
-    // WebAssembly keywords
-    {"wasm", TOKEN_WASM},
-    {"wasm_export", TOKEN_EXPORT},
-    {"wasm_memory", TOKEN_MEMORY},
-    {"wasm_table", TOKEN_TABLE},
-    {"wasm_start", TOKEN_START},
-    {"wasm_elem", TOKEN_ELEM},
-    {"wasm_data", TOKEN_DATA},
-    
+
+    // REMOVED 2026-08-17 — 25 keywords that lexer_bridge.c never mapped to a
+    // bison token. Each was a SILENT HAZARD in two directions:
+    //
+    //   1. The bridge's unmapped arm is `if (bison_token == -1) { /* Skip
+    //      unknown tokens */ return bridge_next_mapped(); }`. So the token
+    //      vanished and the parser never saw it. `gpu_kernel func f() {}`
+    //      compiled as an ordinary function; `wasm_export` alone on a line
+    //      compiled with exit 0. That is the hole P0.4 closed for
+    //      TOKEN_UNKNOWN, reopened by the keyword table.
+    //   2. They were stolen identifiers. `wasm_memory := 3` was a PARSE
+    //      ERROR — the user could not name a variable any of these 25 words,
+    //      for a feature that does not exist.
+    //
+    // The words: asm extern msg_from ll_volatile ll_inline no_std
+    // par_parallel par_reduce par_barrier par_atomic par_thread_local
+    // gpu_kernel gpu_device gpu_host gpu_global gpu_shared_mem gpu_constant
+    // gpu_local wasm wasm_export wasm_memory wasm_table wasm_start wasm_elem
+    // wasm_data.
+    //
+    // The TOKEN_* enum values stay — renumbering mid-enum is the hazard
+    // include/ast.h warns about, and nothing needs them gone. The dead bison
+    // arms (asm_stmt, extern_decl) were already unreachable for the same
+    // reason and are unaffected. GPU and WASM grammar return with their
+    // post-v1 phases; they get keywords back then, WITH a bridge mapping.
+    //
+    // Gated by stolen-identifier-probe and silent-keyword-probe.
     {NULL, TOKEN_UNKNOWN} // Sentinel
 };
 
