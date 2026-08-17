@@ -82,7 +82,7 @@ LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
-CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c $(SRCDIR)/codegen/monomorphize.c
+CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
@@ -3319,6 +3319,7 @@ VERIFY_ALL_DEPS := \
     reldir-import-probe \
     readline-probe \
     stdlib-smoke-coverage \
+    stdlib-coverage-drift \
     far-transport-test \
     far-transport-asan \
     far-shim-probe \
@@ -4354,6 +4355,16 @@ readline-probe: $(COMPILER) $(RUNTIME_LIB)
 # still references it by name.
 stdlib-smoke-coverage:
 	@bash scripts/check_stdlib_coverage.sh
+
+# stdlib-coverage drift gate: docs/stdlib-coverage.json is the number this
+# project quotes, and `make stdlib-coverage` regenerated it by hand. Nothing
+# ran that target, so the file sat at 77 symbols / 8 packages from 2026-07-06
+# until the 2026-08-17 audit, while the tree had moved to 112 / 12. Compares
+# the per-package SUPPORTED-SYMBOL NAMES only (a property of this repo), never
+# the totals or percentages (those follow the developer's Go release). Skips
+# with exit 0 when `go` is absent, so verify-core stays green on a clean box.
+stdlib-coverage-drift:
+	@bash scripts/stdlib_coverage_drift.sh
 
 # Forward references (Go package-scope semantics): a function body may call a
 # function declared LATER in the same file/package. Requires the type checker's
@@ -6299,7 +6310,7 @@ iface-target-assert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # Regenerate the Go-stdlib coverage report (docs/stdlib-coverage.json).
 # Scores supported symbols against $GOROOT/api/go1*.txt. Needs `go` on PATH.
-.PHONY: stdlib-coverage
+.PHONY: stdlib-coverage stdlib-coverage-drift
 stdlib-coverage:
 	python3 scripts/stdlib-coverage.py
 
