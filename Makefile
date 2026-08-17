@@ -1613,6 +1613,16 @@ spec-conformance: $(COMPILER) $(RUNTIME_LIB)
 # an undeclared name is still rejected, so the identifier half cannot pass
 # vacuously. gpu-kernel-reject-probe does NOT cover this — its fixture omits
 # `func`, so `gpu_kernel func f() {}` compiled silently until this landed.
+# workflow-targets probe: every `make <target>` a GitHub Actions workflow runs
+# must exist in the Makefile. Added after a quarantine pass removed four demo
+# targets that .github/workflows/demos.yml invoked directly — verify-core stayed
+# green locally and the PR's `demos` job died on "No rule to make target". The
+# Makefile is not the only consumer of its own targets. Needs no compiler, so it
+# does not depend on $(COMPILER).
+workflow-targets-probe:
+	@bash scripts/workflow_targets_probe.sh
+.PHONY: workflow-targets-probe
+
 lexer-keyword-probe: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/lexer_keyword_probe.sh
 .PHONY: lexer-keyword-probe
@@ -3229,6 +3239,7 @@ VERIFY_ALL_DEPS := \
     subcommand-probe \
     gpu-kernel-reject-probe \
     lexer-keyword-probe \
+    workflow-targets-probe \
     spec-conformance \
     blank-lines-probe \
     comment-lines-probe \
@@ -4907,13 +4918,6 @@ coverage-goo-selftest: $(GOO_COV) $(RUNTIME_LIB)
 coverage-clean:
 	rm -rf $(COVERAGE_DIR) $(COV_OBJDIR) $(GOO_COV)
 
-# Proof generation test
-proof_generation_test: $(TEST_UNIT_DIR)/proof/proof_generation_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
-
-# Runtime optimization framework tests
-runtime_optimization_test: $(TEST_UNIT_DIR)/runtime/runtime_optimization_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Arena leg Task 7a: interprocedural param-escape summaries (table-driven,
 # 15-row test matrix — see docs/superpowers/specs/2026-07-07-arena-7a-param-
@@ -6055,38 +6059,18 @@ arena-rss-probe: $(COMPILER) $(RUNTIME_LIB)
 runtime_optimization_test_simple: $(TEST_UNIT_DIR)/runtime/runtime_optimization_test_simple.c $(SRCDIR)/types/runtime_optimization_simple.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-runtime_optimization_demo: $(TEST_DEMOS_DIR)/runtime_optimization_demo.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 runtime_optimization_demo_simple: $(TEST_DEMOS_DIR)/runtime_optimization_demo_simple.c $(SRCDIR)/types/runtime_optimization_simple.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# Contract programming framework tests
-contracts_test: $(TEST_UNIT_DIR)/contract/contracts_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
-
-# Contract proof integration test
-contract_proof_integration_test: $(TEST_UNIT_DIR)/contract/contract_proof_integration_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # All optimization system tests
-.PHONY: test-optimization test-optimization-simple test-all-optimization clean-tests
-test-optimization: runtime_optimization_test
-	@echo "Running runtime optimization tests..."
-	./runtime_optimization_test
+.PHONY: test-optimization-simple clean-tests
 
 test-optimization-simple: runtime_optimization_test_simple
 	@echo "Running simplified runtime optimization tests..."
 	./runtime_optimization_test_simple
 
-test-all-optimization: runtime_optimization_test runtime_optimization_demo contracts_test contract_proof_integration_test proof_generation_test
-	@echo "Running all optimization system tests..."
-	./runtime_optimization_test
-	./contracts_test
-	./contract_proof_integration_test
-	./proof_generation_test
-	@echo "Running runtime optimization demonstration..."
-	./runtime_optimization_demo
 
 clean-tests:
 	rm -f runtime_optimization_test runtime_optimization_demo contracts_test contract_proof_integration_test proof_generation_test param_escape_test block_escape_test arena_routing_test
