@@ -1265,6 +1265,19 @@ void seed_time_package_exports(TypeChecker* checker, Package* pkg) {
     shim_export_func(pkg, "Sleep", sleep_params, 1, void_t);
     shim_export_func(pkg, "Now", NULL, 0, time_t_ty);
 
+    // time.After(Duration) <-chan Time. Go's return is a RECEIVE-ONLY channel;
+    // this checker has no directional channel type, so it is an ordinary
+    // `chan Time`. The difference only shows if a program sends to the result,
+    // which Go rejects and this accepts — a divergence worth the simplicity
+    // until directional channels exist, and recorded here rather than silently.
+    //
+    // CHAN_PATTERN_BASIC is the pattern make(chan T) uses
+    // (expression_checker.c:2510), so a `case <-time.After(d)` arm reaches the
+    // ordinary select receive path with no special case anywhere.
+    Type* after_params[] = { duration_t };
+    shim_export_func(pkg, "After", after_params, 1,
+                     type_channel(time_t_ty, CHAN_PATTERN_BASIC));
+
     time_export_method(pkg, time_t_ty, "UnixNano", NULL, 0, int64_t_ty);
 
     // Duration constants (Go: Nanosecond=1, Microsecond=1e3, Millisecond=1e6,

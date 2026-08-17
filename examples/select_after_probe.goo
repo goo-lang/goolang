@@ -1,0 +1,59 @@
+// time.After — the select timeout, end to end.
+//
+// Expected output is NOT hand-written: it is what `go run` prints for the
+// byte-identical Go program (the golden rule for new accept behaviour).
+//
+// Every timing margin here is 50ms against 5000ms, a 100x gap, so the result
+// does not depend on scheduler luck or on how loaded the machine is. A gate
+// that flakes is worse than no gate.
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	// 1. The timeout arm fires when no other case is ready.
+	idle := make(chan int)
+	select {
+	case <-idle:
+		fmt.Println("unreachable")
+	case <-time.After(50 * time.Millisecond):
+		fmt.Println("timeout fired")
+	}
+
+	// 2. A ready channel beats a long timeout — no spurious timeout.
+	ready := make(chan int, 1)
+	ready <- 9
+	select {
+	case v := <-ready:
+		fmt.Println("value won", v)
+	case <-time.After(5000 * time.Millisecond):
+		fmt.Println("unreachable")
+	}
+
+	// 3. The timer bound to a variable FIRST, received later. A codegen
+	//    intercept that pattern-matched `case <-time.After(x)` could not do
+	//    this — it is why time.After is a real channel.
+	t := time.After(50 * time.Millisecond)
+	select {
+	case <-idle:
+		fmt.Println("unreachable")
+	case <-t:
+		fmt.Println("bound timer fired")
+	}
+
+	// 4. Two timers in one select. The shorter one wins. A single timeout_ns
+	//    parameter on goo_select cannot express this either.
+	select {
+	case <-time.After(5000 * time.Millisecond):
+		fmt.Println("unreachable")
+	case <-time.After(50 * time.Millisecond):
+		fmt.Println("shorter timer won")
+	}
+
+	// 5. A bare receive with no select at all.
+	<-time.After(50 * time.Millisecond)
+	fmt.Println("bare receive returned")
+}

@@ -2293,6 +2293,45 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, sleep_args, 1, "");
                 return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
             }
+            if (strcmp(dispatch_pkg, "time") == 0 && strcmp(sel->selector, "After") == 0) {
+                // goo_time_after(i64 ns) -> goo_channel_t*. The runtime makes a
+                // capacity-1 channel and spawns the timer goroutine; nothing
+                // about select changes, because the result IS an ordinary
+                // channel and `case <-time.After(d)` takes the ordinary receive
+                // path. See goo_time_after's comment (src/runtime/time_shim.c)
+                // for why this is a real channel rather than goo_select's
+                // timeout_ns.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_after");
+                if (!fn) {
+                    LLVMTypeRef params[] = { LLVMInt64TypeInContext(codegen->context) };
+                    LLVMTypeRef fn_type = LLVMFunctionType(
+                        LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                        params, 1, 0);
+                    fn = LLVMAddFunction(codegen->module, "goo_time_after", fn_type);
+                }
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "time.After: expected a Duration argument");
+                    return NULL;
+                }
+                ValueInfo* dv = codegen_generate_expression(codegen, checker, call->args);
+                if (!dv) return NULL;
+                LLVMValueRef d = dv->llvm_value;
+                if (dv->is_lvalue && dv->goo_type) {
+                    LLVMTypeRef dt = codegen_type_to_llvm(codegen, dv->goo_type);
+                    if (dt) d = LLVMBuildLoad2(codegen->builder, dt, d, "after.d_load");
+                }
+                value_info_free(dv);
+                Type* chan_type = expr->node_type;
+                if (!chan_type) {
+                    codegen_error(codegen, expr->pos,
+                                  "internal: time.After missing resolved channel type");
+                    return NULL;
+                }
+                LLVMValueRef after_args[] = { d };
+                LLVMValueRef ch = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                                 fn, after_args, 1, "time.after_ch");
+                return value_info_new(NULL, ch, chan_type);
+            }
             if (strcmp(dispatch_pkg, "time") == 0 && strcmp(sel->selector, "Now") == 0) {
                 // goo_time_unix_ns() int64 -> wrap into the single-field
                 // Time struct {i64 _nanos}. expr->node_type is already the
