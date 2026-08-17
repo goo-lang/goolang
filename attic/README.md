@@ -62,6 +62,19 @@ tested, or shipped**, and none of it is part of the v1 surface.
   "signing" was a SHA-256 of `"hash:keyid:time"` with no private key anywhere.
   Its last commit with real content was 2025-06-16.
 
+  **Two `system()` calls live in `package/ipfs_client.c`** — `system("ipfs
+  daemon &")` at line 119 and `system("pkill ipfs")` at line 133. Neither is
+  command injection: both strings are fixed literals with nothing interpolated.
+  Both do resolve their binary through `$PATH`, so a writable directory earlier
+  in `$PATH` substitutes the binary — and `pkill` kills by process NAME, so it
+  reaches processes outside this program. They are harmless today only because
+  nothing compiles this file.
+
+  Anything resurrected from here must use `fork()` + `execvp()` on an argv
+  vector, never `system()`. `src/codegen/codegen.c` already holds the worked
+  example and the reasoning (P3.11): the shell also word-splits unquoted paths,
+  which silently broke any output path containing a space.
+
   93 orphan Makefile stanzas (~200 lines) and 24 `.PHONY` names went with them
   — every one a standalone demo or test target that no gate ran, and two of
   which (`lsp-enhanced`, `test-capability-security`) already failed to build.
