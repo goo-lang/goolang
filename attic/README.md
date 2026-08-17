@@ -68,7 +68,32 @@ tested, or shipped**, and none of it is part of the v1 surface.
   The `BLOCKS_CC`/`BLOCKS_CFLAGS`/`BLOCKS_LDFLAGS` clang `-fblocks` path lost
   its last user in the same pass.
 
+  A second pass the same day moved 35 more files (25,348 lines) that compiled
+  into `bin/test_runner` but into no shipped binary: 24 `src/types/` frameworks
+  (constraint inference, concept generics, HKT, type-level programming, flow
+  analysis, reference manager, resource manager, bounds verifier, proof
+  generation, `escape_analysis.c`), the 7-file `src/ide/` tree (REPL, hot
+  reload, time-travel debugger, performance monitor), 5 `src/comptime/`
+  optimisation modules, and the 3 root macro files. `bin/test_runner` itself is
+  gone: its five unit-test files tested exactly those frameworks and never
+  invoked `bin/goo`, so `make test` is now `test-cli` alone. Six standalone
+  targets that broke with them (`test-reference`, `test-flow`,
+  `test-hot-reload`, `test-time-travel-debug`, `test-performance`,
+  `test-hardware-aware`) were removed, and `CLAUDE.md` no longer advertises the
+  first two.
+
+  **The invariant this leaves: `src/` holds what SHIPS, or what a GATE
+  exercises.** `src/` went from 147 `.c` files to 71. Of those, 58 link into
+  `bin/goo`.
+
   **Deliberately NOT moved**, though they meet the same "unlinked" test:
+  - `types/proof_smt.c`, `types/proof_obligations.c`, `types/proof_reporting.c`,
+    `types/contracts.c`, `types/dependent_types.c`,
+    `types/symbolic_expression.c` — compiled by name in
+    `scripts/proof_cache_shell_probe.sh`, a `verify-core` gate that pins the
+    2026-08-14 shell-injection fix in `proof_cache_create`.
+  - `errors/ergonomic_errors.c` — compiled by name in
+    `scripts/ast_free_leak_probe.sh`, also in `verify-core`.
   - `src/ide/lsp_enhanced.c` — the Makefile records repairing its link as the
     open P5.11 decision. That decision is not this pass's to make.
   - `src/main_minimal.c` — builds `bin/goo-analyzer` via `make analyzer`.

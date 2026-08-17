@@ -81,11 +81,10 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
-TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
+TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
-ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
-IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
+ERROR_SRCS = $(SRCDIR)/errors/error.c
 # Only import_resolver.c from package/ is part of the compiler. The rest of
 # the directory (IPFS/registry/p2p modules) is compiled by nothing and has
 # pre-existing build breakage (e.g. gateway_intelligence.c's stale
@@ -95,8 +94,8 @@ IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/perform
 PACKAGE_SRCS = $(SRCDIR)/package/import_resolver.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
-COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/hardware_aware.c $(SRCDIR)/comptime/code_specialization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
-CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(PACKAGE_SRCS) $(COMPTIME_SRCS)
+COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c
+CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(PACKAGE_SRCS) $(COMPTIME_SRCS)
 COMPILER_SRCS = $(COMPILERDIR)/goo.c $(COMPILERDIR)/test_discovery.c
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
@@ -171,7 +170,6 @@ TEST_RUNNER = $(BINDIR)/test_runner
 # real implementation is ever built (see docs/2026-07-08-v1-roadmap.md
 # post-v1 list). lsp-enhanced stays pending the P5.11 open decision.
 LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
-TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
@@ -318,7 +316,7 @@ CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I$(CCOMP_LLVM_INC) -std=c99 -f
 # libjson-c, libz remain trusted external deps.
 CCOMP_LLVM_LIB := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --libdir 2>/dev/null || llvm-config --libdir 2>/dev/null || echo /opt/homebrew/lib)
 CCOMP_LDLIBS = -lm -lpthread -ljson-c -lcurl -lz -L/opt/homebrew/lib -L$(CCOMP_LLVM_LIB) -lLLVM-22
-CCOMP_ESSENTIAL_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS) $(PACKAGE_SRCS) $(COMPILER_SRCS) $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
+CCOMP_ESSENTIAL_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS) $(PACKAGE_SRCS) $(COMPILER_SRCS)
 
 ccomp-build:
 	@command -v $(CCOMP) >/dev/null || (echo "ccomp not installed — see V1-ccomp-install" && exit 1)
@@ -4538,13 +4536,22 @@ test-main: $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
 
 # Test targets
 
-TEST_FLOW_ANALYSIS = $(BINDIR)/test_flow_analysis
-TEST_REFERENCE_MANAGER = $(BINDIR)/test_reference_manager
-TEST_HARDWARE_AWARE = $(BINDIR)/test_hardware_aware
 
 # Tests
-test: $(TEST_RUNNER) test-cli
-	./$(TEST_RUNNER)
+#
+# `test` no longer builds bin/test_runner. That binary ran 77 in-process unit
+# tests, and all five of its test files exercised frameworks that never linked
+# into bin/goo: constraint inference, concept generics, higher-kinded types,
+# concept declaration, advanced constraint inference. It never invoked bin/goo,
+# so a green run said nothing about the compiler — the 2026-07-08 v1 audit had
+# already recorded that the "100% test pass" claim measured exactly this.
+#
+# The five test files and their 35 modules moved to attic/ on 2026-08-17. The
+# visible test count dropped as a result. That is the honest number, not a
+# regression: the real unit suites (param/block/local escape, release decision,
+# obj header, arena routing, AST free-leak) are standalone targets and every one
+# of them is in `make verify-core`.
+test: test-cli
 
 # P5.4: table-driven CLI exit-code and stderr discipline audit. Success=0,
 # parse/type error=1, link failure nonzero, run-failure propagation, all
@@ -4667,20 +4674,10 @@ far-jacobi-probe: $(COMPILER) $(RUNTIME_LIB)
 	@echo "far-jacobi-probe: PASS (distributed convergence, twice, bit-identical)"
 .PHONY: far-jacobi-probe
 
-$(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
+# bin/test_runner was REMOVED on 2026-08-17. Its five unit-test files all
+# tested frameworks that never linked into bin/goo, and it never invoked the
+# compiler. Both the tests and their 35 modules are in attic/. See `test:`.
 
-# Individual test targets
-test-reference: $(TEST_REFERENCE_MANAGER)
-	./$(TEST_REFERENCE_MANAGER)
-
-$(TEST_REFERENCE_MANAGER): $(OBJS) $(TEST_UNIT_DIR)/memory/reference_manager_test.c | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_UNIT_DIR)/memory/reference_manager_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS) -DSTANDALONE_TEST
-
-# Hot reload test
-test-hot-reload: $(OBJS) $(TEST_INTEGRATION_DIR)/hot_reload_test.c | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_INTEGRATION_DIR)/hot_reload_test.c $(OBJS) -o $(BINDIR)/test_hot_reload $(LDFLAGS) $(LLVM_LDFLAGS) -ldl
-	./$(BINDIR)/test_hot_reload
 
 # Install local git hooks (one-time, per clone). Points core.hooksPath at the
 # tracked .githooks/ dir so the scripts are version-controlled and shared.
@@ -4703,19 +4700,6 @@ clean:
 # it exercised is unlinked from bin/goo since P5.6. Recover from git history
 # if the framework is ever revived.)
 
-test-flow: $(TEST_FLOW_ANALYSIS)
-	./$(TEST_FLOW_ANALYSIS)
-
-$(TEST_FLOW_ANALYSIS): $(TEST_UNIT_DIR)/flow/flow_analysis_test.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
-
-test-hardware-aware: $(TEST_HARDWARE_AWARE)
-	./$(TEST_HARDWARE_AWARE)
-
-$(TEST_HARDWARE_AWARE): $(TESTDIR)/test_hardware_aware.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Development Workflow Tools
 PROJECT_WIZARD = $(BINDIR)/goo-wizard
@@ -4793,13 +4777,6 @@ $(LSP_ENHANCED_SERVER): $(SRCDIR)/ide/lsp_enhanced.c $(OBJS)
 # ergonomic errors, actor system).
 
 
-test-performance: $(TEST_PERFORMANCE)
-	./$(TEST_PERFORMANCE)
-
-$(TEST_PERFORMANCE): $(TEST_INTEGRATION_DIR)/performance_monitor_test.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
-
 # DEFERRED (does not build): error_reporting_test.c predates a split of one unified
 # error system into two that now coexist with colliding type names —
 # errors/error.h and error_reporting.h both define ErrorSeverity/ErrorCategory/
@@ -4818,15 +4795,6 @@ $(TEST_ERROR_REPORTING): $(TEST_INTEGRATION_DIR)/error_reporting_test.c $(OBJS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
-# Time-travel debugging test
-TEST_TIME_TRAVEL_DEBUG = $(BINDIR)/test_time_travel_debug
-
-test-time-travel-debug: $(TEST_TIME_TRAVEL_DEBUG)
-	./$(TEST_TIME_TRAVEL_DEBUG)
-
-$(TEST_TIME_TRAVEL_DEBUG): $(TEST_INTEGRATION_DIR)/time_travel_debug_test.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Install
 install: $(COMPILER)
@@ -6076,7 +6044,7 @@ arena-rss-probe: $(COMPILER) $(RUNTIME_LIB)
 runtime_optimization_test_simple: $(TEST_UNIT_DIR)/runtime/runtime_optimization_test_simple.c $(SRCDIR)/types/runtime_optimization_simple.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-runtime_optimization_demo: $(TEST_DEMOS_DIR)/runtime_optimization_demo.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/symbolic_expression.c
+runtime_optimization_demo: $(TEST_DEMOS_DIR)/runtime_optimization_demo.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 runtime_optimization_demo_simple: $(TEST_DEMOS_DIR)/runtime_optimization_demo_simple.c $(SRCDIR)/types/runtime_optimization_simple.c
@@ -6204,11 +6172,11 @@ $(TASK_21_5_DEMO): tests/examples/task_21_5_deadlock_prevention_demo.c
 # `errors/error.c` defines goo_error_new and friends that types.c references.
 # `parser/parser_errors.c` defines parser_error which lexer.c calls via
 # the bridge; otherwise we'd see an undefined-symbol cascade.
-comptime_test: tests/test_comptime.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
+comptime_test: tests/test_comptime.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Compile-time types integration test
-comptime_types_test: tests/test_comptime_types.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
+comptime_types_test: tests/test_comptime_types.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Optimization directives framework test
@@ -6223,13 +6191,13 @@ pgo_test: tests/test_pgo.c $(SRC_OBJS)
 advanced_optimization_test: tests/test_advanced_optimization.c $(SRC_OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
-advanced_macro_test: tests/test_advanced_macro.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+advanced_macro_test: tests/test_advanced_macro.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-derive_macro_test: tests/test_derive_macros.c $(SRCDIR)/derive_macros.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+derive_macro_test: tests/test_derive_macros.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-template_macro_test: tests/test_template_macros.c $(SRCDIR)/template_macros.c $(SRCDIR)/derive_macros.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+template_macro_test: tests/test_template_macros.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Go rejects a CONSTANT out-of-bounds (or negative) array index at COMPILE time.

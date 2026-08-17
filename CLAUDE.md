@@ -75,10 +75,14 @@ only if a probe in `make verify-core` passes on it
 This project uses a Makefile for building:
 
 - `make lexer` - Build the main compiler
-- `make test` - Run tests (in-process unit suite + `test-cli` CLI discipline suite)
+- `make test` - `test-cli` CLI discipline suite (25 cases). The in-process
+  `bin/test_runner` unit suite was REMOVED on 2026-08-17: its 77 tests all
+  exercised frameworks that never linked into `bin/goo` (constraint inference,
+  concept generics, HKT, concept declaration), and it never invoked the
+  compiler. `make test-reference` and `make test-flow` went the same way. The
+  real unit suites (param/block/local escape, release decision, obj header,
+  arena routing, AST free-leak) are standalone targets, all in `verify-core`.
 - `make clean` - Clean build artifacts
-- `make test-reference` - Run reference manager tests
-- `make test-flow` - Run flow analysis tests
 - `make test-golden` / `make test-golden-o2` - Golden fixture suites (-O0/-O2).
   Parallel since P5.8: `GOLDEN_JOBS=<n>` overrides the default of nproc.
 - `make verify-core` - Full probe net, no CompCert required. Authoritative
@@ -86,10 +90,20 @@ This project uses a Makefile for building:
 - `make verify` - `verify-core` plus the CompCert bootstrap pilot
   (`v2-bootstrap-pilot`); requires an opam CompCert switch.
 
-Note: `bin/goo` links only the reachable set (`GOO_OBJS`, P5.6). The full
-`OBJS` list feeds the standalone test targets that exercise unlinked
-frameworks (constraint inference, concept generics, HKT, flow, reference
-manager) — those frameworks are NOT part of the shipped compiler.
+Note: `bin/goo` links only the reachable set (`GOO_OBJS`, P5.6). Since the
+2026-08-17 quarantine, `OBJS` and `GOO_OBJS` are nearly the same set — the
+unlinked frameworks that `OBJS` used to carry (constraint inference, concept
+generics, HKT, flow analysis, reference manager, resource manager, proof
+generation, the macro system, the whole `src/ide` tree) are in `attic/src/`.
+
+**The invariant to hold: `src/` contains what SHIPS, or what a GATE
+exercises — nothing else.** Seven files sit in `src/` under the second half of
+that rule and link into no binary: `types/proof_smt.c`,
+`types/proof_obligations.c`, `types/proof_reporting.c`, `types/contracts.c`,
+`types/dependent_types.c`, `types/symbolic_expression.c` (compiled by name in
+`scripts/proof_cache_shell_probe.sh`) and `errors/ergonomic_errors.c`
+(`scripts/ast_free_leak_probe.sh`). Both probes are in `verify-core`. Do not
+remove those seven without moving the probes first.
 
 ## `goo test`
 
