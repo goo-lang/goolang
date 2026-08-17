@@ -16,6 +16,24 @@ tested, or shipped**, and none of it is part of the v1 surface.
   safety integrations, etc. The 2026-07-08 v1 audit showed the claims false
   or describing frameworks that were never reachable from `bin/goo` (and
   were unlinked in P5.6). Kept verbatim as a record of what was claimed.
+
+  Three subdirectories were added by the 2026-08-17 truth pass. Every file in
+  them advertised a feature that does not reach `bin/goo`:
+
+  - `status-docs/language/` (2 files) — `COMPILATION_STATUS.md` ticked
+    REPL, code completion, VS Code extension, LSP, Debug Adapter Protocol,
+    performance monitoring, time-travel debugging and hot reload as ✅
+    working; all of them are unlinked. `README_GOO_LANGUAGE.md`'s headline
+    examples do not compile: `if user? { ... user!.name }` is a parse error
+    (the live syntax is `if let`), and `!Error` is an unknown type.
+  - `status-docs/features/` (5 files) — `repl.md`, `hot_reload.md`,
+    `time_travel_debugging.md`, `performance_monitoring.md`,
+    `enhanced_error_reporting.md`, for the `src/ide` and `src/errors`
+    modules quarantined in the same pass.
+  - `status-docs/task-reports/` (11 files) — "COMPLETION REPORT" documents
+    for IDE integration, the performance dashboard, LSP navigation, syntax
+    highlighting, dependent types, contract programming and proof
+    generation. None of these ships.
 - `docs/` — the June-2026 aspirational design suite (architecture, safety
   system, performance guarantees, killer features, WebAssembly, stdlib
   guide, developer experience, ...). These describe **intended designs,
