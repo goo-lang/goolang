@@ -150,16 +150,23 @@ $(NNG_LIB): $(NNG_TARBALL)
 	rm -rf build/nng-src $(NNG_BUILD)
 	mkdir -p build/nng-src
 	tar -xzf $(NNG_TARBALL) -C build/nng-src --strip-components=1
-	# CMAKE_C_ARCHIVE_CREATE/FINISH: zero member mtime/uid/gid in libnng.a
-	# itself. Our own $(RUNTIME_LIB) recipe below pulls this archive in with
-	# `addlib`, which copies each member's header VERBATIM from the source
-	# archive rather than regenerating it — so `ar -D` on our own invocation
-	# does not zero a member that arrived this way. Only deterministic at the
-	# source stops the real timestamp from leaking through addlib.
+	# CMAKE_C_ARCHIVE_CREATE/APPEND/FINISH: zero member mtime/uid/gid in
+	# libnng.a itself. Our own $(RUNTIME_LIB) recipe below pulls this archive
+	# in with `addlib`, which copies each member's header VERBATIM from the
+	# source archive rather than regenerating it — so `ar -D` on our own
+	# invocation does not zero a member that arrived this way. Only
+	# deterministic at the source stops the real timestamp from leaking
+	# through addlib. All three rules are required, not just CREATE/FINISH:
+	# CMake splits a long object list into one CREATE batch plus one or more
+	# APPEND batches, and the default APPEND rule (`<CMAKE_AR> q ...`) carries
+	# no `-D`. NNG happens to fit in a single CREATE call today, so leaving
+	# APPEND at its default would close this hole by accident, not by design
+	# — the next object NNG adds could split the batch and reopen it.
 	cmake -S build/nng-src -B $(NNG_BUILD)/cm -DCMAKE_BUILD_TYPE=Release \
 	  -DBUILD_SHARED_LIBS=OFF -DNNG_TESTS=OFF -DNNG_TOOLS=OFF -DNNG_ENABLE_NNGCAT=OFF \
 	  -DCMAKE_INSTALL_PREFIX=$(abspath $(NNG_BUILD)) -DCMAKE_INSTALL_LIBDIR=lib \
 	  -DCMAKE_C_ARCHIVE_CREATE='<CMAKE_AR> Dqc <TARGET> <LINK_FLAGS> <OBJECTS>' \
+	  -DCMAKE_C_ARCHIVE_APPEND='<CMAKE_AR> Dq <TARGET> <LINK_FLAGS> <OBJECTS>' \
 	  -DCMAKE_C_ARCHIVE_FINISH='<CMAKE_RANLIB> -D <TARGET>' >/dev/null
 	cmake --build $(NNG_BUILD)/cm -j$(shell nproc) >/dev/null
 	cmake --install $(NNG_BUILD)/cm >/dev/null
@@ -257,7 +264,11 @@ $(COMPILER): $(GOO_OBJS) $(COMPILER_SRCS) | $(BINDIR)
 # Runtime library
 runtime-lib: $(RUNTIME_LIB)
 
-$(RUNTIME_LIB): $(RUNTIME_OBJS) $(NNG_LIB) | $(LIBDIR)
+# Makefile itself is a prerequisite: this recipe's own flags (the -D fix
+# below) determine the archive's bytes. Without listing it, editing the
+# recipe alone leaves a stale archive on disk and `make runtime-lib` reports
+# "Nothing to be done" instead of re-linking with the corrected flags.
+$(RUNTIME_LIB): $(RUNTIME_OBJS) $(NNG_LIB) Makefile | $(LIBDIR)
 	rm -f $@
 	# -D: zero member mtime/uid/gid/mode. Without it two builds seconds apart
 	# produce archives differing by 206 bytes while every member is identical.

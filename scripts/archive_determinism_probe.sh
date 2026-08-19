@@ -1,25 +1,40 @@
 #!/bin/bash
-# archive-determinism probe — building lib/libgoo_runtime.a twice from the same
-# objects must give a byte-identical archive.
+# archive-determinism probe — lib/libgoo_runtime.a must ship with EVERY
+# member's mtime, uid and gid zeroed, and stay that way across a rebuild.
 #
-# WHAT WENT WRONG. The recipe pipes an MRI script to `ar -M`, which stores each
-# member's real mtime, uid, gid and mode. Two builds seconds apart produced
-# archives differing by 206 bytes, while all 102 members extracted
-# byte-identical. Every compiled object was already deterministic; the wrapper
-# around them was not.
+# WHAT WENT WRONG (round 1). The recipe piped an MRI script to `ar -M`,
+# which stores each member's real mtime, uid, gid and mode. Two builds
+# seconds apart produced archives differing by 206 bytes, while all 102
+# members extracted byte-identical. `ar -D -M` plus `ranlib -D` fixed the
+# members added with `addmod` (our own runtime objects).
 #
-# This probe re-archives the ALREADY-BUILT objects rather than rebuilding them,
-# so it costs seconds and needs no compiler. It sets the objects' mtimes to two
-# clearly distinct fixed timestamps between the two archive builds, which is
-# the condition that made the real builds differ.
+# WHAT WENT WRONG (round 2). That was not the whole fix. The recipe also
+# pulls in the vendored NNG static library with `addlib`, which copies each
+# member's header VERBATIM from the source archive instead of regenerating
+# it — the outer `-D` never reaches a header it does not write. NNG's own
+# CMake build now creates libnng.a with the same `-D` semantics
+# (CMAKE_C_ARCHIVE_CREATE/APPEND/FINISH in the $(NNG_LIB) recipe), so the
+# `addlib` copy inherits zeroed headers instead of leaking real ones.
 #
-# WHY FIXED TIMESTAMPS, NOT A BARE `touch`. `ar`'s member-mtime field has
-# 1-second resolution. `ar x` stamps each extracted object with the CURRENT
-# time, and a bare `touch` right before the second build also stamps "now" —
-# on a fast machine, extract, first build, touch, and second build all land in
-# the SAME wall-clock second, so the mtime never actually changes and the
-# probe passes even with the `-D` fix reverted. Explicit `touch -d` timestamps,
-# one far in the past and one far in the future, remove the race entirely.
+# WHY THIS PROBE READS THE SHIPPED ARCHIVE'S OWN HEADERS DIRECTLY. An
+# earlier version of this probe extracted lib/libgoo_runtime.a's objects and
+# re-archived them ITSELF with `ar -D -M` / `ranlib -D`. That tests whether
+# the LOCAL ar/ranlib honor `-D` at all — it never reads a single byte of
+# the header the shipped file actually carries. Proof: revert `-D` in the
+# Makefile's $(RUNTIME_LIB) recipe, force a rebuild, and the 13 `addmod`
+# members come back with a real mtime and uid/gid 1000/1000 — but that
+# probe still printed PASS, because ITS OWN re-archive step still passed
+# `-D` regardless of what the Makefile did. The mutation changed the test,
+# not the code under test.
+#
+# So the primary check below parses lib/libgoo_runtime.a's raw SysV/GNU ar
+# member headers (16 name + 12 mtime + 6 uid + 6 gid + 8 mode + 10 size + 2
+# magic bytes per member, ar(5)) and asserts every ordinary member — every
+# name except the special `/` symbol-table and `//` extended-name-table
+# entries — carries mtime 0 and uid/gid 0/0. This is a direct property of
+# the file on disk: no rebuild, no invocation of `ar` to interpret it,
+# milliseconds to run, and it catches an `-D` regression in EITHER the
+# $(RUNTIME_LIB) recipe or the $(NNG_LIB) recipe feeding it via `addlib`.
 set -u
 
 PROBE="archive-determinism-probe"
@@ -31,37 +46,109 @@ if [ ! -f "$LIB" ]; then
     exit 1
 fi
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/m"
-( cd "$WORK/m" && ar x "$LIB" ) || { echo "$PROBE: FAIL (could not extract $LIB)"; exit 1; }
+header_report="$(python3 - "$LIB" <<'PY'
+import sys
 
-count=$(find "$WORK/m" -name '*.o' | wc -l)
-if [ "$count" -eq 0 ]; then
-    echo "$PROBE: FAIL (archive extracted zero members — the probe would pass vacuously)"
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+
+if not data.startswith(b"!<arch>\n"):
+    print("BADMAGIC")
+    sys.exit(0)
+
+offset = 8
+count = 0
+bad = []
+while offset + 60 <= len(data):
+    header = data[offset:offset + 60]
+    name = header[0:16].decode("ascii", "replace").strip()
+    mtime = header[16:28].decode("ascii", "replace").strip()
+    uid = header[28:34].decode("ascii", "replace").strip()
+    gid = header[34:40].decode("ascii", "replace").strip()
+    size = header[48:58].decode("ascii", "replace").strip()
+    magic = header[58:60]
+    if magic != b"\x60\n":
+        print(f"BADHEADER@{offset}")
+        sys.exit(0)
+    member_size = int(size)
+    # '/' is the ranlib symbol-table member, '//' the GNU extended-name
+    # table. Neither is one of the archive's real 102 members.
+    if name not in ("/", "//"):
+        count += 1
+        mtime_i = int(mtime) if mtime else -1
+        uid_i = int(uid) if uid else -1
+        gid_i = int(gid) if gid else -1
+        if mtime_i != 0 or uid_i != 0 or gid_i != 0:
+            bad.append(f"{name} mtime={mtime_i} uid={uid_i} gid={gid_i}")
+    offset += 60 + member_size + (member_size % 2)
+
+print(f"COUNT={count}")
+print(f"BADCOUNT={len(bad)}")
+for b in bad[:15]:
+    print(f"BAD:{b}")
+PY
+)"
+
+if echo "$header_report" | grep -q '^BADMAGIC'; then
+    echo "$PROBE: FAIL (lib/libgoo_runtime.a has no ar(5) magic — not a valid archive)"
+    exit 1
+fi
+if echo "$header_report" | grep -q '^BADHEADER'; then
+    echo "$PROBE: FAIL (could not parse an ar member header in lib/libgoo_runtime.a)"
     exit 1
 fi
 
-# Rebuild the archive twice in the recipe's own shape, with each build's
-# objects stamped to a distinct fixed timestamp first.
-mri() {  # $1 = output archive
-    rm -f "$1"
-    { echo "create $1"
-      for o in "$WORK"/m/*.o; do echo "addmod $o"; done
-      echo "save"; echo "end"; } | ar -D -M
-    ranlib -D "$1"
-}
+count=$(echo "$header_report" | sed -n 's/^COUNT=//p')
+badcount=$(echo "$header_report" | sed -n 's/^BADCOUNT=//p')
 
-touch -d '@1000000000' "$WORK"/m/*.o
-mri "$WORK/a1.a"
-touch -d '@2000000000' "$WORK"/m/*.o
-mri "$WORK/a2.a"
-
-if cmp -s "$WORK/a1.a" "$WORK/a2.a"; then
-    echo "$PROBE: PASS ($count members, archive is byte-identical across mtime changes)"
-    exit 0
+if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+    echo "$PROBE: FAIL (lib/libgoo_runtime.a has zero ordinary members — the probe would pass vacuously)"
+    exit 1
 fi
 
-echo "$PROBE: FAIL — two archives of the same $count members differ."
-echo "  \`ar\` is recording member mtime/uid/gid. The recipe needs 'ar -D -M' and 'ranlib -D'."
-exit 1
+if [ -z "$badcount" ] || [ "$badcount" -ne 0 ]; then
+    echo "$PROBE: FAIL — $badcount of $count members in lib/libgoo_runtime.a carry a real mtime/uid/gid."
+    echo "$header_report" | grep '^BAD:' | sed 's/^BAD:/  /'
+    echo "  Every member's header must show mtime 0, uid 0, gid 0. Check the"
+    echo "  Makefile's \$(RUNTIME_LIB) recipe ('ar -D -M', 'ranlib -D') and the"
+    echo "  \$(NNG_LIB) recipe's CMAKE_C_ARCHIVE_CREATE/APPEND/FINISH overrides."
+    exit 1
+fi
+
+# --- Secondary, weaker check: does the LOCAL ar/ranlib honor -D at all? ---
+# This extracts the shipped objects and re-archives them ITSELF, so it
+# tests the toolchain, not the recipe or the shipped file — see the header
+# comment above for why that made an earlier version of this probe blind to
+# a real regression. It is informational only and never changes the exit
+# status set by the primary check above. Flat extraction also collides on
+# any duplicate member basenames (six pairs today, all from NNG), so the
+# count it reports is smaller than the primary check's; that is a known,
+# accepted limit of THIS secondary check only, not of the probe's verdict.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/m"
+toolchain_status="SKIP (could not extract $LIB)"
+if ( cd "$WORK/m" && ar x "$LIB" ) 2>/dev/null; then
+    rt_count=$(find "$WORK/m" -name '*.o' | wc -l)
+    mri() {
+        rm -f "$1"
+        { echo "create $1"
+          for o in "$WORK"/m/*.o; do echo "addmod $o"; done
+          echo "save"; echo "end"; } | ar -D -M
+        ranlib -D "$1"
+    }
+    touch -d '@1000000000' "$WORK"/m/*.o
+    mri "$WORK/a1.a"
+    touch -d '@2000000000' "$WORK"/m/*.o
+    mri "$WORK/a2.a"
+    if cmp -s "$WORK/a1.a" "$WORK/a2.a"; then
+        toolchain_status="PASS ($rt_count of $count members re-archived by this check, see above for why)"
+    else
+        toolchain_status="FAIL (local ar/ranlib did not honor -D on a fresh re-archive)"
+    fi
+fi
+
+echo "$PROBE: PASS ($count members in lib/libgoo_runtime.a all carry mtime 0, uid 0, gid 0)"
+echo "  toolchain round-trip (informational only): $toolchain_status"
+exit 0
