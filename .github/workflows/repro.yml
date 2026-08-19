@@ -1,15 +1,19 @@
 name: repro
 
-# Separate from `tests` on purpose. This job runs two full builds, where
-# verify-core takes about 3.5 minutes, and it needs podman which verify-core
-# deliberately does not assume.
+# Separate from `tests` on purpose. This job runs four full builds (see the
+# self-test step below), where verify-core takes about 3.5 minutes, and it
+# needs podman which verify-core deliberately does not assume.
 on:
   pull_request:
     paths:
       - 'Containerfile'
       - 'scripts/podman_build.sh'
       - 'scripts/repro_build_probe.sh'
+      - 'scripts/record_toolchain.sh'
+      - 'scripts/podman_image_probe.sh'
       - 'Makefile'
+      - 'src/**'
+      - '.github/workflows/repro.yml'
   workflow_dispatch:
 
 concurrency:
