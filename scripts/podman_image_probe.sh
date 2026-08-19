@@ -9,7 +9,31 @@
 set -u
 
 PROBE="podman-image-probe"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${GOO_BUILD_IMAGE:-goolang-build:local}"
+CONTAINERFILE="${GOO_CONTAINERFILE:-$ROOT/Containerfile}"
+
+# The whole reproducible-build approach rests on the base image being pinned
+# by DIGEST, not by tag. A tag such as `ubuntu:24.04` is a moving pointer —
+# today's `ubuntu:24.04` and next month's are different images, and every
+# other gate on this branch would still pass against either one. This check
+# is a static property of the Containerfile, so it runs before, and does not
+# need, podman.
+from_line="$(grep -m1 '^FROM ' "$CONTAINERFILE" 2>/dev/null || true)"
+if [ -z "$from_line" ]; then
+    echo "$PROBE: FAIL (no FROM line found in $CONTAINERFILE)"
+    exit 1
+fi
+case "$from_line" in
+    *@sha256:*)
+        echo "  ok: Containerfile FROM line is digest-pinned"
+        ;;
+    *)
+        echo "  NOT DIGEST-PINNED: $from_line"
+        echo "$PROBE: FAIL (Containerfile's FROM line has no @sha256: digest — a tag is a moving target)"
+        exit 1
+        ;;
+esac
 
 if ! command -v podman >/dev/null 2>&1; then
     echo "$PROBE: SKIPPED (podman not on PATH)"
