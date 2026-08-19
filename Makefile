@@ -6326,3 +6326,12 @@ misra:
 
 misra-baseline:
 	@bash scripts/misra-scan.sh --update-baseline
+
+# Reproducible-build image. Digest-pinned in the Containerfile.
+podman-image:
+	podman build -t goolang-build:local -f Containerfile .
+.PHONY: podman-image
+
+podman-image-probe:
+	@bash scripts/podman_image_probe.sh
+.PHONY: podman-image-probe
