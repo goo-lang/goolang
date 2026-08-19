@@ -48,7 +48,14 @@ if [ -z "$llvmcfg" ]; then
 fi
 record llvm-config "$llvmcfg" --version
 
-if ! dpkg-query -W -f='${Package}=${Version}\n' make gcc-14 bison llvm-dev clang cmake python3 >> "$OUT"; then
+# All twelve packages the Containerfile installs (`apt-get install` list),
+# not a subset — three of the omitted five (libjson-c-dev,
+# libcurl4-openssl-dev, zlib1g-dev) appear in the Makefile's LDFLAGS, so
+# their versions affect bin/goo just as much as the compiler's does.
+if ! dpkg-query -W -f='${Package}=${Version}\n' \
+    make gcc-14 bison llvm-dev clang libblocksruntime-dev \
+    valgrind cmake python3 \
+    libjson-c-dev libcurl4-openssl-dev zlib1g-dev >> "$OUT"; then
     echo "goo-toolchain: dpkg-query failed to resolve one or more packages" >&2
     exit 1
 fi
