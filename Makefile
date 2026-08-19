@@ -150,9 +150,17 @@ $(NNG_LIB): $(NNG_TARBALL)
 	rm -rf build/nng-src $(NNG_BUILD)
 	mkdir -p build/nng-src
 	tar -xzf $(NNG_TARBALL) -C build/nng-src --strip-components=1
+	# CMAKE_C_ARCHIVE_CREATE/FINISH: zero member mtime/uid/gid in libnng.a
+	# itself. Our own $(RUNTIME_LIB) recipe below pulls this archive in with
+	# `addlib`, which copies each member's header VERBATIM from the source
+	# archive rather than regenerating it — so `ar -D` on our own invocation
+	# does not zero a member that arrived this way. Only deterministic at the
+	# source stops the real timestamp from leaking through addlib.
 	cmake -S build/nng-src -B $(NNG_BUILD)/cm -DCMAKE_BUILD_TYPE=Release \
 	  -DBUILD_SHARED_LIBS=OFF -DNNG_TESTS=OFF -DNNG_TOOLS=OFF -DNNG_ENABLE_NNGCAT=OFF \
-	  -DCMAKE_INSTALL_PREFIX=$(abspath $(NNG_BUILD)) -DCMAKE_INSTALL_LIBDIR=lib >/dev/null
+	  -DCMAKE_INSTALL_PREFIX=$(abspath $(NNG_BUILD)) -DCMAKE_INSTALL_LIBDIR=lib \
+	  -DCMAKE_C_ARCHIVE_CREATE='<CMAKE_AR> Dqc <TARGET> <LINK_FLAGS> <OBJECTS>' \
+	  -DCMAKE_C_ARCHIVE_FINISH='<CMAKE_RANLIB> -D <TARGET>' >/dev/null
 	cmake --build $(NNG_BUILD)/cm -j$(shell nproc) >/dev/null
 	cmake --install $(NNG_BUILD)/cm >/dev/null
 
@@ -251,11 +259,13 @@ runtime-lib: $(RUNTIME_LIB)
 
 $(RUNTIME_LIB): $(RUNTIME_OBJS) $(NNG_LIB) | $(LIBDIR)
 	rm -f $@
+	# -D: zero member mtime/uid/gid/mode. Without it two builds seconds apart
+	# produce archives differing by 206 bytes while every member is identical.
 	{ echo "create $@"; \
 	  for o in $(RUNTIME_OBJS); do echo "addmod $$o"; done; \
 	  echo "addlib $(NNG_LIB)"; \
-	  echo "save"; echo "end"; } | ar -M
-	ranlib $@
+	  echo "save"; echo "end"; } | ar -D -M
+	ranlib -D $@
 
 # (P5.7: test-pipeline retired — tests/test_runner.c's assertions were
 # near-vacuous (`tokens_found || exit==0` style escape hatches). The golden
@@ -3349,7 +3359,8 @@ VERIFY_ALL_DEPS := \
     far-jacobi-probe \
     nil-deref-probe \
     goo-test-probe \
-    proof-cache-shell-probe
+    proof-cache-shell-probe \
+    archive-determinism-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -5205,6 +5216,12 @@ alloc-doors-probe:
 .PHONY: proof-cache-shell-probe
 proof-cache-shell-probe:
 	@bash scripts/proof_cache_shell_probe.sh
+
+# The Makefile's own archive step was the only measured nondeterminism in the
+# build. Needs no compiler and no container, so it belongs in verify-core.
+archive-determinism-probe: runtime-lib
+	@bash scripts/archive_determinism_probe.sh
+.PHONY: archive-determinism-probe
 
 # ast_node_free() must free the WHOLE tree, not only the spine. The parser
 # fuzzer found on 2026-08-08 that every assignment statement leaked 188 bytes
