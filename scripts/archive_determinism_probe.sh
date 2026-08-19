@@ -29,12 +29,22 @@
 #
 # So the primary check below parses lib/libgoo_runtime.a's raw SysV/GNU ar
 # member headers (16 name + 12 mtime + 6 uid + 6 gid + 8 mode + 10 size + 2
-# magic bytes per member, ar(5)) and asserts every ordinary member — every
-# name except the special `/` symbol-table and `//` extended-name-table
-# entries — carries mtime 0 and uid/gid 0/0. This is a direct property of
-# the file on disk: no rebuild, no invocation of `ar` to interpret it,
-# milliseconds to run, and it catches an `-D` regression in EITHER the
-# $(RUNTIME_LIB) recipe or the $(NNG_LIB) recipe feeding it via `addlib`.
+# magic bytes per member, ar(5)) and asserts every member except the `//`
+# extended-name-table entry carries mtime 0 and uid/gid 0/0. This is a
+# direct property of the file on disk: no rebuild, no invocation of `ar` to
+# interpret it, milliseconds to run, and it catches an `-D` regression in
+# EITHER the $(RUNTIME_LIB) recipe or the $(NNG_LIB) recipe feeding it via
+# `addlib`.
+#
+# THE `/` SYMBOL-TABLE MEMBER IS CHECKED, NOT SKIPPED. `ranlib -D` writes
+# that member and zeroes its mtime/uid/gid the same as any other; plain
+# `ranlib` (no `-D`) writes a real mtime there and nowhere else changes.
+# An earlier version of this probe excluded `/` from the check on the same
+# line as `//`, so it guarded `ar -D` alone and never noticed a `ranlib -D`
+# regression — proven by running plain `ranlib` on the shipped archive: the
+# `/` member's mtime became a real timestamp, the archive bytes differed,
+# and this probe still printed PASS. `//` stays excluded: its mtime field
+# is BLANK, not zero, on every archive this repository has ever produced.
 set -u
 
 PROBE="archive-determinism-probe"
@@ -72,9 +82,10 @@ while offset + 60 <= len(data):
         print(f"BADHEADER@{offset}")
         sys.exit(0)
     member_size = int(size)
-    # '/' is the ranlib symbol-table member, '//' the GNU extended-name
-    # table. Neither is one of the archive's real 102 members.
-    if name not in ("/", "//"):
+    # '//' is the GNU extended-name table; its mtime/uid/gid fields are
+    # blank, not zero, so it is excluded. '/' is the ranlib symbol-table
+    # member — checked like an ordinary member, see the header comment.
+    if name != "//":
         count += 1
         mtime_i = int(mtime) if mtime else -1
         uid_i = int(uid) if uid else -1
