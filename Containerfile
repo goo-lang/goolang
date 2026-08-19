@@ -17,14 +17,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Record what actually resolved. A build that cannot say what produced it is
 # hard to audit later.
-RUN { echo "# resolved $(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
-      gcc-14 --version | head -1; \
-      clang --version | head -1; \
-      bison --version | head -1; \
-      valgrind --version; \
-      cmake --version | head -1; \
-      ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 | xargs -r -I{} sh -c '{} --version' | sed 's/^/llvm-config /'; \
-      dpkg-query -W -f='${Package}=${Version}\n' make gcc-14 bison llvm-dev clang cmake python3; \
-    } > /etc/goo-toolchain.txt
+#
+# record_toolchain.sh runs under `set -euo pipefail` and checks each command's
+# own exit status, so a broken tool fails THIS BUILD, not just the file it
+# writes. An inline `RUN { cmd1; cmd2; } > file` group has no `set -e` of its
+# own — one broken command inside it used to write nothing for that line, and
+# the build still succeeded with a shorter, plausible-looking file.
+COPY scripts/record_toolchain.sh /usr/local/bin/record_toolchain.sh
+RUN chmod +x /usr/local/bin/record_toolchain.sh \
+    && /usr/local/bin/record_toolchain.sh \
+    && rm -f /usr/local/bin/record_toolchain.sh
 
 WORKDIR /src
