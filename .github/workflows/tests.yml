@@ -91,7 +91,7 @@ jobs:
           bison --version | head -1
           valgrind --version
           cmake --version | head -1
-          (ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 | xargs -r -I{} {} --version) || echo "no llvm-config"
+          (ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 | xargs -r -I{} sh -c '{} --version') || echo "no llvm-config"
 
       - name: make verify-core
         # Pin LLVM_CONFIG to whatever versioned binary llvm-dev provides, since
