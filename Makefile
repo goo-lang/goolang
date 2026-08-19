@@ -3371,13 +3371,20 @@ VERIFY_ALL_DEPS := \
     nil-deref-probe \
     goo-test-probe \
     proof-cache-shell-probe \
-    archive-determinism-probe
+    archive-determinism-probe \
+    repro-build-probe
 
-# verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
-# authoritative ccomp-free gate: green on any machine, no CompCert / opam
-# switch required. Use it for pre-push everywhere; use `verify` (below)
-# only where the CompCert bootstrap pilot toolchain is set up.
-VERIFY_CORE_DEPS := $(filter-out v2-bootstrap-pilot,$(VERIFY_ALL_DEPS))
+# verify-core = VERIFY_ALL_DEPS minus the heavy-toolchain set. This is the
+# authoritative ccomp-free, podman-free gate: green on any machine, no
+# CompCert / opam switch and no container runtime required. Use it for
+# pre-push everywhere; use `verify` (below) only where the CompCert
+# bootstrap pilot toolchain and podman are both set up.
+#
+# Gates that need a toolchain verify-core deliberately does not assume:
+# v2-bootstrap-pilot needs an opam CompCert switch, repro-build-probe needs
+# podman. Both belong in `verify`, never in `verify-core`.
+HEAVY_DEPS       := v2-bootstrap-pilot repro-build-probe
+VERIFY_CORE_DEPS := $(filter-out $(HEAVY_DEPS),$(VERIFY_ALL_DEPS))
 
 .PHONY: verify verify-core
 
@@ -6335,3 +6342,10 @@ podman-image:
 podman-image-probe:
 	@bash scripts/podman_image_probe.sh
 .PHONY: podman-image-probe
+
+# Two full builds in two containers. Costs minutes and needs podman, so it is
+# NOT in verify-core — CLAUDE.md records that target as "safe for pre-push on
+# any machine", and a podman dependency would break that promise.
+repro-build-probe:
+	@bash scripts/repro_build_probe.sh
+.PHONY: repro-build-probe
