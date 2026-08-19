@@ -145,7 +145,12 @@ NNG_SHA256  := 50b7264bd8f0901f7ebdf3ec7c48f4e23dd689bbe7b2917d9d8fad58ffd09e5c
 NNG_BUILD   := build/nng
 NNG_LIB     := $(NNG_BUILD)/lib/libnng.a
 
-$(NNG_LIB): $(NNG_TARBALL)
+# Makefile itself is a prerequisite: the CMAKE_C_ARCHIVE_CREATE/APPEND/
+# FINISH determinism flags below live in this recipe. Without listing it,
+# editing those flags alone leaves a stale libnng.a on disk and a rebuild
+# reuses it instead of picking up the corrected flags — the same reasoning
+# as the $(RUNTIME_LIB) recipe's own Makefile prerequisite, below.
+$(NNG_LIB): $(NNG_TARBALL) Makefile
 	@echo "$(NNG_SHA256)  $(NNG_TARBALL)" | sha256sum -c - >/dev/null || { echo "NNG tarball sha256 MISMATCH — expected $(NNG_SHA256)"; sha256sum $(NNG_TARBALL); exit 1; }
 	rm -rf build/nng-src $(NNG_BUILD)
 	mkdir -p build/nng-src
@@ -3372,7 +3377,8 @@ VERIFY_ALL_DEPS := \
     goo-test-probe \
     proof-cache-shell-probe \
     archive-determinism-probe \
-    repro-build-probe
+    repro-build-probe \
+    podman-image-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the heavy-toolchain set. This is the
 # authoritative ccomp-free, podman-free gate: green on any machine, no
@@ -3381,9 +3387,10 @@ VERIFY_ALL_DEPS := \
 # bootstrap pilot toolchain and podman are both set up.
 #
 # Gates that need a toolchain verify-core deliberately does not assume:
-# v2-bootstrap-pilot needs an opam CompCert switch, repro-build-probe needs
-# podman. Both belong in `verify`, never in `verify-core`.
-HEAVY_DEPS       := v2-bootstrap-pilot repro-build-probe
+# v2-bootstrap-pilot needs an opam CompCert switch, repro-build-probe and
+# podman-image-probe both need podman. All three belong in `verify`, never
+# in `verify-core`.
+HEAVY_DEPS       := v2-bootstrap-pilot repro-build-probe podman-image-probe
 VERIFY_CORE_DEPS := $(filter-out $(HEAVY_DEPS),$(VERIFY_ALL_DEPS))
 
 .PHONY: verify verify-core
