@@ -1,0 +1,5 @@
+timeout fired
+value won 9
+bound timer fired
+shorter timer won
+bare receive returned

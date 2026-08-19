@@ -11,6 +11,32 @@ Methodology note: this codebase has a documented history of claims outrunning re
 we just repaired was "implemented" but bit-rotted). Findings below were verified by reading source and
 inspecting the runtime build, not by trusting comments/docs.
 
+## Status update (2026-08-17) — five blockers in the table below are STALE
+
+The verdict ("not close") still holds, and M5/M6 remain unstarted. But five
+rows of the blocker table are now false. They are corrected here rather than
+edited in place, so the record of what was believed stays readable.
+
+Each correction names the gate that refutes it. All four probes are in
+`make verify-core` and all four PASS on this tree (run 2026-08-17):
+
+| Table row | Was | Is now | Gate |
+|---|---|---|---|
+| Enums / tagged unions | "no grammar rule in `parser.y`" | enum declaration + construction work | `enum-probe` |
+| Tag dispatch (`match`) | "full grammar but **no lowering**; parses then dead-ends" | `match` over an enum tag lowers and runs | `match-probe` |
+| Methods / receivers | "no receiver form `func (r T) M()`" | value AND pointer receivers work end-to-end | `methods-probe` |
+| Slices / general maps | "minimum-viable string→int variant only" | general maps work (`make`, write, read, delete, comma-ok) | `map-probe` |
+| First-class fns / closures | "no closure path" | closures are general — capture by reference through a promoted heap cell, fresh cell per loop iteration | `tests/spec/` closure row |
+
+**Still true from that table:** enum variants reject embedded fields, and
+`match` is proven for an enum tag only. No fixture covers a guard clause
+(`case n if n > 0:`), a binding pattern, or a match over a non-enum value —
+and the guard is exactly what fails in `tests/test_pattern_matching.goo`.
+
+**Also still true:** `extern`/FFI is non-functional (decision #3 below), and
+the `switch` grammar gap named in the table was closed separately (switch,
+switch-init and type switch are all gated).
+
 ## Status update (2026-06-25) — M1 mostly delivered
 
 Execution has begun. **M1's two foundational items are done and merged**, and one roadmap assumption

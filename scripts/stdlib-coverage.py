@@ -29,7 +29,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 GOOSTD = REPO / "goostd"
-OUT = REPO / "docs" / "stdlib-coverage.json"
+# GOO_STDLIB_COVERAGE_OUT redirects the report, so the drift gate
+# (scripts/stdlib_coverage_drift.sh) can regenerate without touching the
+# committed file.
+OUT = Path(os.environ["GOO_STDLIB_COVERAGE_OUT"]) if os.environ.get(
+    "GOO_STDLIB_COVERAGE_OUT") else REPO / "docs" / "stdlib-coverage.json"
 
 # goostd/<dir> -> real Go import path. Test-only packages are excluded.
 GOOSTD_DIRMAP = {
@@ -37,7 +41,19 @@ GOOSTD_DIRMAP = {
     "strconv": "strconv",
     "strings": "strings",
     "utf8": "unicode/utf8",
+    # Added 2026-08-17. These four were vendored and made importable, and the
+    # verify-core gate (scripts/check_stdlib_coverage.sh, GOOSTD_PKG_DIRS) has
+    # asserted they resolve for some time — but this tracker was never told, so
+    # it reported "8/173 packages touched" while the gate knew about 9 dirs.
+    # Two instruments measuring the same tree must not disagree.
+    "bytes": "bytes",
+    "io": "io",
+    "sort": "sort",
+    "filepath": "path/filepath",
 }
+# NOT mapped, deliberately: lanes/ is Goo-specific (no Go counterpart), and
+# cpkg, fwdref, kinds, mypkg, pkgcheck, shapes are test fixtures for the
+# resolver, not stdlib packages.
 
 # Symbols served by the hardcoded C shim (stdlib_package_lookup). Audited by
 # hand against the shim implementation — keep conservative. `fmt.Print` is
@@ -214,7 +230,11 @@ def main():
     print()
     for p in packages:
         print(f"  {p['status']:9} {p['package']:16} {p['supported']:>3}/{p['total']:<4} {p['pct']:>5}%")
-    print(f"\nwrote {OUT.relative_to(REPO)}")
+    try:
+        shown = OUT.relative_to(REPO)
+    except ValueError:
+        shown = OUT          # redirected outside the repo by the drift gate
+    print(f"\nwrote {shown}")
 
 
 if __name__ == "__main__":

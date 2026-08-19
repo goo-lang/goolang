@@ -2589,8 +2589,16 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 // the same arena SSA, but only one return executes per run, and the
 // terminated-block guard in codegen_generate_arena_stmt skips the fall-through
 // free once a return has terminated the block — so no path frees an arena
-// twice. `break`/`continue` do NOT reach here (they are loop exits, not
-// function exits) and still leak their arenas — safe, a documented follow-up.
+// twice.
+//
+// CORRECTED 2026-08-17: the sentence that stood here claimed `break`/`continue`
+// "still leak their arenas — a documented follow-up". That has not been true
+// since the loop-exit arms landed. They call this function directly with the
+// current loop_depth (AST_BREAK_STMT and AST_CONTINUE_STMT above, plus the
+// labelled-break/continue and goto arms), so a loop exit frees the arenas
+// pushed inside the loop it leaves. The parameter contract below is the
+// accurate description.
+//
 // Emit goo_arena_free for every active arena whose push-time loop_depth is
 // >= min_loop_depth, innermost first. `return` passes min_loop_depth 0 to free
 // ALL active arenas (it exits the whole function); `break`/`continue` pass the

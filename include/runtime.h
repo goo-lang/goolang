@@ -903,6 +903,12 @@ void goo_sync_wg_wait(void** slot);
 // function's doc comment for why UnixNano needs the distinction.
 void goo_time_sleep_ns(int64_t ns);
 int64_t goo_time_unix_ns(void);
+// time.After(d): a capacity-1 channel of time.Time (one int64 of wall-clock
+// nanoseconds) that a timer goroutine sends to once d has passed. Capacity 1
+// so an abandoned timer never blocks — the usual case is that another select
+// arm wins and nobody ever receives. Returns NULL if the goroutine cannot
+// start. The channel is not freed, exactly as make(chan T)'s is not.
+goo_channel_t* goo_time_after(int64_t ns);
 
 goo_runtime_stats_t goo_get_runtime_stats(void);
 
