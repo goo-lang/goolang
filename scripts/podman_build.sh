@@ -29,44 +29,54 @@ case "$MODE" in
     OUT="${2:-}"
     if [ -z "$OUT" ]; then echo "usage: $0 gate <outdir>" >&2; exit 2; fi
     mkdir -p "$OUT"
+    # Resolve to an absolute path BEFORE any podman call. A relative <outdir>
+    # is a valid podman NAMED VOLUME name, so `--volume "$OUT:/out:z"` with a
+    # relative $OUT silently creates (or reuses) a volume of that name instead
+    # of bind-mounting the host directory. The run then still exits 0, the
+    # host directory stays empty, and the artifacts land inside the volume
+    # where nothing later looks for them.
+    OUT="$(cd "$OUT" && pwd)"
     TAR="$(mktemp)"; trap 'rm -f "$TAR"' EXIT
     ( cd "$ROOT" && git archive HEAD ) > "$TAR"
 
-    # `podman cp` feeds the tarball in, so the container's own stdin stays free.
-    # Piping the script to `sh -s` AND the tar to stdin cannot both work.
+    # A single `podman run`, with the tar piped straight to the container's
+    # stdin. An earlier version of this script used `podman create` /
+    # `podman cp` / `podman start` instead, on the belief that stdin was
+    # needed for a piped setup script and so was unavailable for the tar
+    # stream. That belief was wrong: the `sh -c` payload below is an
+    # ARGUMENT, not something read from stdin, so stdin was free the whole
+    # time and the four-command sequence bought nothing. `--rm` removes the
+    # container on every exit path, including a SIGINT, so no separate
+    # `podman rm` is needed either.
     #
     # $MAKEVARS is not used here even though it holds the same two tokens: it
     # is a shell variable, and this payload is single-quoted so it reaches the
     # container literally, unexpanded. Quoting it in a way that would expand
     # inside a single-quoted string hurts readability for a two-token literal,
     # so the flags are written out again below instead.
-    CID="$(podman create \
+    podman run --rm -i \
       --env SOURCE_DATE_EPOCH="$(cd "$ROOT" && git log -1 --format=%ct)" \
       --volume "$OUT:/out:z" \
       "$IMAGE" sh -c '
+        mkdir -p /src
+        tar -x -C /src || { echo "archive extraction FAILED" >&2; exit 1; }
         cd /src
         make CCACHE= CC=gcc-14 -j"$(nproc)" bin/goo lib/libgoo_runtime.a >/tmp/build.log 2>&1 || {
           echo "build FAILED"; tail -40 /tmp/build.log; exit 1; }
         cp bin/goo /out/goo
-        cp lib/libgoo_runtime.a /out/libgoo_runtime.a')"
-    # A container fresh from `podman create` sits in state "created": its
-    # storage layer is not mounted yet, and on this podman (5.8.4, rootless)
-    # `podman cp` into it fails with "could not be found on container" for
-    # any destination, even an existing directory. `container init` mounts
-    # the layer without running the entrypoint, which is exactly what a copy
-    # target needs. Confirmed by direct test: `podman cp` to a freshly
-    # created container fails every time without this line, and succeeds
-    # every time with it.
-    podman container init "$CID"
-    podman cp - "$CID:/src" < "$TAR"
-    podman start -a "$CID"; rc=$?
-    podman rm -f "$CID" >/dev/null 2>&1
+        cp lib/libgoo_runtime.a /out/libgoo_runtime.a' < "$TAR"
+    rc=$?
     exit $rc
     ;;
 
   dev)
     shift
-    podman run --rm -it \
+    # -i keeps stdin open; -t allocates a pty only when the caller has one, so
+    # a non-interactive caller (a script, a CI step) does not trip podman's
+    # "input device is not a TTY" warning.
+    TTY_FLAG=""
+    [ -t 0 ] && TTY_FLAG="-t"
+    podman run --rm -i $TTY_FLAG \
       --volume "$ROOT:/src:z" \
       --userns=keep-id \
       --env SOURCE_DATE_EPOCH="$(cd "$ROOT" && git log -1 --format=%ct)" \
