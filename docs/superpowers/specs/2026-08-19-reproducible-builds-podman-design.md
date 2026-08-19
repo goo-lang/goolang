@@ -214,6 +214,29 @@ valgrind and tsan gates.
 4. **Nothing here detects a stale `parser.tab.c`.** Bison is pinned inside the
    container, so the generated parser is reproducible there. A native build with
    a different bison is not covered.
+5. **THE MOST IMPORTANT LIMIT. The gate proves SAME-HOST, SAME-IMAGE
+   determinism only.** It does not prove the cross-machine byte identity that
+   the opening problem statement of this document describes. No expected hash
+   is published anywhere, and no step compares a CI hash against a local one.
+   `-j$(nproc)` also differs between machines, which is itself an untested
+   source of difference.
+6. **The gate builds `git archive HEAD`, never the working tree.** A modified
+   working tree still returns PASS, about different source, with no warning.
+7. **The image itself is not reproducible, and a PASS names no image.**
+   `scripts/record_toolchain.sh:35` stamps a build date into the toolchain
+   record. apt is not version-pinned. `scripts/repro_build_probe.sh` records
+   no image ID in its PASS line. So a PASS carries no evidence of which
+   toolchain produced it.
+8. **CI runs the gate on a path filter, not on every change.** The filter now
+   covers `src/**`, `scripts/record_toolchain.sh`, `scripts/podman_image_probe.sh`,
+   and the workflow file itself, in addition to the four paths it started
+   with. A change under `include/` or a script outside this list can still
+   alter the build without starting the gate.
+9. **The digest pin is enforced now, not merely documented.**
+   `scripts/podman_image_probe.sh` reads the Containerfile's `FROM` line and
+   fails the probe if it lacks `@sha256:`. Before this fix, nothing enforced
+   the pin, and swapping the digest for a plain tag passed every gate on this
+   branch.
 
 ## How to verify the claim
 
