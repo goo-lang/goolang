@@ -1,6 +1,9 @@
 # Reproducible builds with podman
 
-Status: design, approved 2026-08-19. Implementation not started.
+Status: **IMPLEMENTED** 2026-08-20 on `docs/repro-builds-podman`. The gate is
+`repro-build-probe` in `make verify`, with `podman-image-probe` beside it.
+Limits 10 and 11 were found by the implementation's own review and are parked,
+not fixed.
 
 ## The problem, measured before it was designed for
 
@@ -237,6 +240,19 @@ valgrind and tsan gates.
    fails the probe if it lacks `@sha256:`. Before this fix, nothing enforced
    the pin, and swapping the digest for a plain tag passed every gate on this
    branch.
+
+10. **The image probe checks seven of the twelve recorded packages by name.**
+    `scripts/podman_image_probe.sh:75` walks `gcc-14 clang bison valgrind
+    cmake python3 llvm-config`. The five library packages have no binary to
+    interrogate, so a future edit that drops one from the Containerfile would
+    shrink the toolchain record with no probe going red. The build would
+    still fail, so this is narrow rather than severe.
+
+11. **Any `Makefile` edit now re-runs the vendored NNG cmake build.**
+    `Makefile:153` lists `Makefile` as a prerequisite of `$(NNG_LIB)`. That
+    was a deliberate correctness choice during review, and it costs minutes on
+    every `verify-core` after any Makefile change. A stamp file, or a
+    narrower prerequisite, would keep the correctness and drop the cost.
 
 ## How to verify the claim
 

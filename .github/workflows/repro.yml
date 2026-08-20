@@ -38,6 +38,22 @@ jobs:
       - name: Prove the image is right
         run: bash scripts/podman_image_probe.sh | tee image.log
 
+      # Same reason as the guard below, and this step needed it most: the
+      # probe prints "SKIPPED (podman not on PATH)" and exits 0, and the
+      # `| tee` above discards its status in any case. So the job's own
+      # anti-silent-skip check had a silent-skip path of its own. Without
+      # this, a runner lacking podman reports green having verified nothing —
+      # including the ccache check the design calls the trap it had to bypass.
+      - name: Prove the image probe did not skip
+        if: always()
+        run: |
+          if grep -q "^podman-image-probe: PASS" image.log; then
+            echo "ok: podman-image-probe ran and passed"
+          else
+            echo "::error::podman-image-probe did not report PASS — it skipped or never ran"
+            exit 1
+          fi
+
       - name: repro-build-probe
         run: bash scripts/repro_build_probe.sh 2>&1 | tee repro.log
 
