@@ -23,6 +23,36 @@ BASELINE="${BASELINE:-$REPO_ROOT/scripts/safety-baseline.txt}"
 SCAN_ROOT="${SCAN_ROOT:-$REPO_ROOT}"
 SCAN_DIRS="${SCAN_DIRS:-src include lib kernel}"
 
+# --check-baseline: assert every baselined path still exists.
+#
+# A baseline is a SUPPRESSION list, so an entry naming a deleted file
+# suppresses nothing. It cannot fail and it cannot be noticed, so it rots in
+# silence. This tree reached 139 stale entries out of 218 -- 64% -- entirely
+# from the P5.5 and 2026-08-17 quarantines moving sources into attic/.
+#
+# Deliberately runs BEFORE the snare requirement below: it needs only the
+# filesystem, so it works on a machine that cannot run the scan at all.
+#
+# The principle worth keeping: if quarantined code ever returns, its findings
+# must be REVIEWED again, not pre-suppressed by an entry nobody has read.
+if [[ "${1:-}" == "--check-baseline" ]]; then
+	stale=0
+	while IFS= read -r line; do
+		[[ -z "$line" ]] && continue
+		f="${line#*:}"; f="${f%%:*}"
+		if [[ ! -e "$REPO_ROOT/$f" ]]; then
+			echo "stale baseline entry (file does not exist): $line" >&2
+			stale=$((stale+1))
+		fi
+	done < "$BASELINE"
+	if (( stale > 0 )); then
+		echo "safety-baseline-check: FAIL ($stale stale entries -- prune them, or restore the files)" >&2
+		exit 1
+	fi
+	echo "safety-baseline-check: PASS ($(wc -l < "$BASELINE" | tr -d ' ') entries, every path present)"
+	exit 0
+fi
+
 if [[ -z "$SNARE_DIR" || ! -d "$SNARE_DIR" ]]; then
 	echo "error: snare not found (set SNARE_DIR; tried ../semgrep-competitor)" >&2
 	exit 2
