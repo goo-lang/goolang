@@ -3192,6 +3192,7 @@ VERIFY_ALL_DEPS := \
     doc-claims-probe \
     probe-teeth-probe \
     goo-check-probe \
+    goo-testcase-probe \
     release-package-probe \
     baseline-probe \
     lvalue-probe \
@@ -4600,6 +4601,19 @@ goo-check-probe:
 	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_check_probe.sh
 	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_check_probe.sh --self-test
 
+# The contract of GOO_TESTCASE (include/goo_assert.h), the boundary marker, and
+# of scripts/testcase_report.sh which reads gcov's branch counters back for it.
+#
+# GATED even though `coverage-goo` is not, and the distinction is the point: a
+# coverage PERCENTAGE invites tests that raise the number, while a MARKER is a
+# specific claim that cannot be inflated by a shallow test. This target proves
+# the MECHANISM on a fixture in seconds; the marker report itself rides the
+# coverage run, which is minutes and serial.
+.PHONY: goo-testcase-probe
+goo-testcase-probe:
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_testcase_probe.sh
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_testcase_probe.sh --self-test
+
 # Unit tests
 # Link against $(SRC_OBJS), NOT $(OBJS): the latter adds the test framework
 # object, which no suite here calls. It compiles fine — the older version of
@@ -5006,6 +5020,9 @@ $(GOO_COV): $(GOO_SRCS) $(COMPILER_SRCS) | $(BINDIR)
 coverage-goo: $(GOO_COV) $(RUNTIME_LIB)
 	@COMPILER=$(GOO_COV) COV_OBJDIR=$(COV_OBJDIR) COVERAGE_DIR=$(COVERAGE_DIR) \
 	  bash scripts/coverage_corpus.sh
+	@echo ""
+	@bash scripts/testcase_report.sh --gcov-dir $(COV_OBJDIR) --cc "$(COV_CC)" \
+	  $(foreach f,$(GOO_SRCS),--source $(f)) || true
 
 # Instrument check: halve the corpus and confirm the number FALLS. A coverage
 # script that reports the same percentage with less input measures nothing.

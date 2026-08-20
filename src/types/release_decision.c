@@ -1426,15 +1426,27 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
                             const ParamEscapeResult* pe,
                             const LocalEscapeResult* le,
                             const char* fn) {
+    GOO_TESTCASE(c->unreadable);
     if (c->unreadable) return RELEASE_NO_UNKNOWN;
+    GOO_TESTCASE(!r->declared);
     if (!r->declared) return RELEASE_NO_NO_BINDING;
 
+    // NO GOO_TESTCASE ON THE FOUR CALL-BASED REFUSALS in this function
+    // (local_escape_local_escapes, all_values_release_safe, has_alias,
+    // binding_is_owned). A marker re-evaluates its expression, and none of
+    // those four is PROVEN side-effect free -- marking them would trade a
+    // measurement for a behaviour risk. Giving them markers means hoisting
+    // each call into a local first, which is a change to this function's shape
+    // rather than an observation of it. The seven marked above are field
+    // reads, so they cost nothing and can change nothing.
+    //
     // Condition 1 first: it is the cheapest, and local_escape is conservative on
     // a miss so an unknown name refuses here.
     if (local_escape_local_escapes(le, fn, r->name)) return RELEASE_NO_ESCAPES;
 
     // Condition 3 before 4: an arena local inside a loop is refused for the
     // reason that actually makes it dangerous rather than merely wasteful.
+    GOO_TESTCASE(r->arena_depth > 0);
     if (r->arena_depth > 0) return RELEASE_NO_ARENA;
 
     // CONDITION 4's LOOP HALF IS RELAXED, and conditions 6 and the loop-header
@@ -1455,11 +1467,15 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     //                 docs/adr/0002-measurements/loop_carried_store_findings.md,
     //                 where this shape and a plain dead local were shown to be
     //                 INDISTINGUISHABLE under the old condition 4.
+    GOO_TESTCASE(r->block_depth > 0);
     if (r->block_depth > 0) {
+        GOO_TESTCASE(r->loop_header);
         if (r->loop_header) return RELEASE_NO_LOOP_SCOPE;
         // The scanner met an expression it could not descend somewhere in this
         // function, so no loop-declared local here has a trustworthy answer.
+        GOO_TESTCASE(c->loop_locals_unreadable);
         if (c->loop_locals_unreadable) return RELEASE_NO_BLOCK_ESCAPE;
+        GOO_TESTCASE(r->block_escapes);
         if (r->block_escapes) return RELEASE_NO_BLOCK_ESCAPE;
     }
 
