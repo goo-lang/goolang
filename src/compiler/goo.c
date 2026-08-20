@@ -23,8 +23,13 @@
 #include "import_resolver.h"
 #include "test_discovery.h"
 
-// Compiler version
+// Compiler version. The build can stamp a real one with
+// -DGOO_VERSION='"x.y.z"' (see the Makefile's GOO_VERSION), which is how a
+// release carries its tag. The literal below is the developer-build fallback
+// and MUST stay, so an ordinary `make` needs no version plumbing.
+#ifndef GOO_VERSION
 #define GOO_VERSION "0.1.0"
+#endif
 
 // P5.3: invocation surface. LEGACY is the original `goo [options] <file>`
 // flag form and must stay byte-compatible; BUILD/RUN are the Go-parity
