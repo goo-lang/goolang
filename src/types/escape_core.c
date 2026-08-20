@@ -43,6 +43,11 @@ void escape_taint_free(TaintSet* t) {
 }
 
 bool escape_taint_empty(const TaintSet* t) {
+    // escape_taint_new uses a bare calloc, so a non-empty set CAN carry a NULL
+    // bits pointer if that allocation failed. Every reader below indexes it
+    // unconditionally. The loop is safe when n is 0; it is the n > 0 case with
+    // no storage that reads through NULL.
+    GOO_ASSERT(t->n == 0 || t->bits != NULL);
     for (size_t i = 0; i < t->n; i++) {
         if (t->bits[i]) return false;
     }
@@ -50,6 +55,13 @@ bool escape_taint_empty(const TaintSet* t) {
 }
 
 bool escape_taint_union_into(TaintSet* dst, const TaintSet* src) {
+    // "Sized to the CURRENT unit's slot count and never resized, so every taint
+    // set within one unit's analysis shares that width" -- include/escape_core.h.
+    // The min() below is the production fallback that keeps a violation from
+    // running off the end. It is ALSO what makes a violation invisible: two sets
+    // of different widths union silently and lose the tail. The assert is what
+    // notices, and the min is what still protects when it is compiled out.
+    GOO_ASSERT(dst->n == src->n);
     bool changed = false;
     size_t n = dst->n < src->n ? dst->n : src->n;
     for (size_t i = 0; i < n; i++) {
@@ -69,6 +81,7 @@ TaintSet escape_taint_copy(const TaintSet* src) {
 
 TaintSet escape_taint_all(size_t n) {
     TaintSet t = escape_taint_new(n);
+    GOO_ASSERT(n == 0 || t.bits != NULL);
     for (size_t i = 0; i < n; i++) t.bits[i] = true;
     return t;
 }
@@ -190,6 +203,11 @@ void escape_mark(EscapeCtx* ctx, const TaintSet* t, EscapeReasons why) {
     // output would undercount in a way no row check can see.
     GOO_ASSERT((why & ~ESCAPE_REASON_ALL) == 0);
     why = reason_or_unclassified(why);
+    // Same width invariant as escape_taint_union_into, and the same trade: the
+    // assert notices, the min still protects. A taint set narrower than the
+    // context means some slot silently never gets marked, which is the
+    // unsound direction -- a missed escape, not a false one.
+    GOO_ASSERT(t->n == ctx->slot_count);
     size_t n = t->n < ctx->slot_count ? t->n : ctx->slot_count;
     for (size_t i = 0; i < n; i++) {
         if (t->bits[i]) ctx->reasons[i] |= why;

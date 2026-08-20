@@ -93,11 +93,22 @@ static bool registry_add(Registry* reg, FuncDeclNode* decl) {
             if (p->type != AST_VAR_DECL) continue;
             VarDeclNode* vd = (VarDeclNode*)p;
             for (size_t i = 0; i < vd->name_count; i++) {
+                // TWO WALKS OF ONE LIST, and nothing states they must agree.
+                // The loop above sized param_names by counting; this one fills
+                // it by counting again. If the two ever disagree -- a filter
+                // added to one and not the other, an AST mutated in between --
+                // this write goes past the end of a calloc'd array. A heap
+                // overflow, silent, and shaped like nothing in particular.
+                GOO_ASSERT(idx < count);
                 info->param_names[idx] = xstrdup(vd->names[i]);
                 if (!info->param_names[idx]) return false;
                 idx++;
             }
         }
+        // The postcondition of the pair: both walks reached the same total.
+        // Short is as wrong as long -- it leaves NULL names that every later
+        // strcmp reads through.
+        GOO_ASSERT(idx == count);
     }
     info->return_escapes = false;
     reg->count++;
@@ -235,6 +246,9 @@ static void analyze_function_body(Registry* reg, FuncInfo* f, EscapeReasons* loc
     LocalEnv env = {0};
     for (size_t i = 0; i < f->param_count; i++) {
         TaintSet seed = escape_taint_new(f->param_count);
+        // escape_taint_new uses a bare calloc and can hand back a NULL bits
+        // with a non-zero n. param_count is > 0 here, because this loop ran.
+        GOO_ASSERT(seed.bits != NULL);
         seed.bits[i] = true;
         escape_env_add_or_union(&env, f->param_names[i], &seed);
         escape_taint_free(&seed);
