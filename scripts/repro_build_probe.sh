@@ -15,6 +15,32 @@ set -u
 PROBE="repro-build-probe"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# THE VERDICT MUST NAME WHAT IT TESTED.
+#
+# This probe builds `git archive HEAD`, never the working tree. That is Limit 6
+# of the design doc, it was documented and unenforced, and it produced a real
+# false conclusion on 2026-08-20: a change sat uncommitted, the probe passed,
+# and the PASS was read as evidence about the change. It was evidence about
+# HEAD.
+#
+# A banner at the top would have scrolled past. The commit and the dirty count
+# therefore go in the VERDICT LINE -- the one line a person reads, copies into
+# a report, and quotes. `git diff --stat HEAD` covers tracked modifications;
+# untracked files cannot reach `git archive HEAD` either, so they are counted
+# too.
+tested_what() {
+	local sha dirty untracked
+	sha="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+	dirty="$(git -C "$ROOT" diff --name-only HEAD 2>/dev/null | grep -c . || true)"
+	untracked="$(git -C "$ROOT" ls-files --others --exclude-standard 2>/dev/null | grep -c . || true)"
+	local excluded=$(( ${dirty:-0} + ${untracked:-0} ))
+	if [ "$excluded" -gt 0 ]; then
+		printf 'tested %s; WARNING %s local change(s) were NOT in this build' "$sha" "$excluded"
+	else
+		printf 'tested %s, worktree clean' "$sha"
+	fi
+}
+
 if [ "${1:-}" = "--self-test" ]; then
     # TEETH. Inject real nondeterminism and require this probe to notice.
     # A mutation that fails to apply reads exactly like a passing probe, so the
@@ -111,7 +137,7 @@ CFRAG
         sed 's/^/    /' "$ST/out.log"
         exit 1
     fi
-    echo "$PROBE --self-test: PASS (nonce-driven rebuild was reported DIFFER; probe can go red)"
+    echo "$PROBE --self-test: PASS (nonce-driven rebuild was reported DIFFER; probe can go red) [$(tested_what)]"
     exit 0
 fi
 
@@ -173,5 +199,5 @@ if [ "$rc" -ne 0 ]; then
     echo "$PROBE: FAIL — the build is not reproducible."
     exit 1
 fi
-echo "$PROBE: PASS (bin/goo and lib/libgoo_runtime.a byte-identical across two containers)"
+echo "$PROBE: PASS (bin/goo and lib/libgoo_runtime.a byte-identical across two containers) [$(tested_what)]"
 exit 0
