@@ -39,8 +39,16 @@ relevant, because they fix a name rather than a design:
   `registry_url` of `https://registry.goolang.org`. The Makefile does not
   build it.
 
-Header contracts may be reused where they are sound. **The implementations
-must not be.**
+**Superseded, 2026-08-20.** This paragraph originally read "Header contracts
+may be reused where they are sound." Having read them, they are not.
+`goo_mod.h` declares `IntelligenceConfig` with `semantic_caching` and
+`predict_compatibility`. `package_manager.h` declares `check_version_conflicts`
+— a concept MVS does not have — and puts a `time_t` in the lock file, which
+defeats byte-comparison. Write the contracts fresh. See
+`docs/superpowers/specs/2026-08-20-package-manager-design.md`.
+
+**The implementations must not be reused either**, which was always this
+paragraph's point and still stands.
 
 ### 2. There is no release process at all
 
