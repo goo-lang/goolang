@@ -3170,6 +3170,7 @@ goostd-resolver-probe:
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
 VERIFY_ALL_DEPS := \
+    safety-baseline-check \
     baseline-probe \
     lvalue-probe \
     file-io-probe \
@@ -6326,6 +6327,18 @@ stdlib-coverage:
 .PHONY: safety
 safety:
 	@bash scripts/safety-scan.sh
+
+# Assert every path in scripts/safety-baseline.txt still exists. A baseline is
+# a SUPPRESSION list, so an entry naming a deleted file suppresses nothing --
+# it cannot fail and it cannot be noticed. The list had rotted to 139 stale
+# entries out of 218 before this check existed, all from the P5.5 and
+# 2026-08-17 quarantines moving sources into attic/.
+#
+# Unlike `safety` itself this needs NO snare and no jq -- only the filesystem
+# -- so it belongs in verify-core, which must stay runnable on any machine.
+.PHONY: safety-baseline-check
+safety-baseline-check:
+	@bash scripts/safety-scan.sh --check-baseline
 
 # Scan the C compiler/runtime source against the adopted MISRA C:2012 subset and
 # fail on any violation not in scripts/misra-baseline.txt. Local-only gate (see
