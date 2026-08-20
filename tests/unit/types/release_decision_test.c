@@ -21,6 +21,7 @@
 #include "ast.h"
 #include "types.h"
 #include "release_decision.h"
+#include "../goo_check.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -1478,68 +1479,57 @@ static ElemRow elem_rows[] = {
     },
 };
 
-static int failures = 0;
-static int checks = 0;
-
 int main(void) {
-    printf("Running T4 release-decision tests...\n");
-    size_t nrows = sizeof(rows) / sizeof(rows[0]);
+    // Three row populations, not one: verdicts, map keys, slice elements.
+    // The declaration adds all three, so dropping a whole loop reports BROKEN
+    // rather than a quietly smaller test.
+    size_t nrows  = sizeof(rows) / sizeof(rows[0]);
+    size_t nkeys  = sizeof(key_rows) / sizeof(key_rows[0]);
+    size_t nelems = sizeof(elem_rows) / sizeof(elem_rows[0]);
+    goo_check_expect((int)(nrows + nkeys + nelems));
+
+    char ctx[320];
 
     for (size_t i = 0; i < nrows; i++) {
         TestRow* row = &rows[i];
-        printf("\n=== Row %d: %s ===\n", row->row, row->description);
+        goo_check_row(row->row, row->description);
 
-        if (parse_input(row->src, "row.goo") != 0 || !ast_root) {
-            printf("  FAIL: parse failed\n");
-            failures++;
-            continue;
-        }
+        int parse_rc = parse_input(row->src, "row.goo");
+        snprintf(ctx, sizeof(ctx), "row %d: the fixture parses (rc=%d)", row->row, parse_rc);
+        goo_check(parse_rc == 0 && ast_root != NULL, ctx);
+        if (parse_rc != 0 || !ast_root) continue;
         TypeChecker* checker = type_checker_new();
         if (checker) type_check_program(checker, ast_root);  // rc ignored, as the siblings do
 
         ReleasePlan* plan = release_plan_analyze(ast_root);
+        goo_check(plan != NULL, "release_plan_analyze returned a plan");
         if (!plan) {
-            printf("  FAIL: release_plan_analyze returned NULL\n");
-            failures++;
             if (checker) type_checker_free(checker);
             ast_node_free(ast_root);
             ast_root = NULL;
             continue;
         }
 
-        int row_failed = 0;
         for (int j = 0; j < row->expect_count; j++) {
             ReleaseVerdict got = release_plan_verdict(plan, row->fn, row->expect[j].local);
             ReleaseVerdict want = row->expect[j].verdict;
-            checks++;
-            if (got != want) {
-                printf("  FAIL: local '%s' verdict=%s, expected %s\n",
-                       row->expect[j].local,
-                       release_verdict_name(got), release_verdict_name(want));
-                failures++;
-                row_failed = 1;
-            }
+            snprintf(ctx, sizeof(ctx), "row %d: local '%s' verdict=%s, expected %s",
+                     row->row, row->expect[j].local,
+                     release_verdict_name(got), release_verdict_name(want));
+            goo_check(got == want, ctx);
+
             // The boolean and the verdict must never disagree, or a caller and a
             // test could read different answers from the same plan.
             bool should = release_plan_should_release(plan, row->fn, row->expect[j].local);
-            checks++;
-            if (should != (want == RELEASE_OK)) {
-                printf("  FAIL: local '%s' should_release=%d disagrees with verdict %s\n",
-                       row->expect[j].local, (int)should, release_verdict_name(want));
-                failures++;
-                row_failed = 1;
-            }
+            snprintf(ctx, sizeof(ctx),
+                     "row %d: local '%s' should_release=%d disagrees with verdict %s",
+                     row->row, row->expect[j].local, (int)should, release_verdict_name(want));
+            goo_check(should == (want == RELEASE_OK), ctx);
         }
 
         // A miss must be conservative, checked once per row rather than assumed.
-        checks++;
-        if (release_plan_should_release(plan, "__no_such_function__", "x")) {
-            printf("  FAIL: unknown function returned should_release=true\n");
-            failures++;
-            row_failed = 1;
-        }
-
-        printf("  Row %d: %s\n", row->row, row_failed ? "FAIL" : "PASS");
+        snprintf(ctx, sizeof(ctx), "row %d: unknown function returned should_release=true", row->row);
+        goo_check(!release_plan_should_release(plan, "__no_such_function__", "x"), ctx);
 
         release_plan_free(plan);
         if (checker) type_checker_free(checker);
@@ -1548,23 +1538,21 @@ int main(void) {
     }
 
     // ---------------- map key ownership ----------------
-    size_t nkeys = sizeof(key_rows) / sizeof(key_rows[0]);
     for (size_t i = 0; i < nkeys; i++) {
         KeyRow* row = &key_rows[i];
-        printf("\n=== Key row %d: %s ===\n", row->row, row->description);
+        snprintf(ctx, sizeof(ctx), "key row: %s", row->description);
+        goo_check_row(row->row, ctx);
 
-        if (parse_input(row->src, "keyrow.goo") != 0 || !ast_root) {
-            printf("  FAIL: parse failed\n");
-            failures++;
-            continue;
-        }
+        int parse_rc = parse_input(row->src, "keyrow.goo");
+        snprintf(ctx, sizeof(ctx), "key row %d: the fixture parses (rc=%d)", row->row, parse_rc);
+        goo_check(parse_rc == 0 && ast_root != NULL, ctx);
+        if (parse_rc != 0 || !ast_root) continue;
         TypeChecker* checker = type_checker_new();
         if (checker) type_check_program(checker, ast_root);
 
         ReleasePlan* plan = release_plan_analyze(ast_root);
+        goo_check(plan != NULL, "release_plan_analyze returned a plan");
         if (!plan) {
-            printf("  FAIL: release_plan_analyze returned NULL\n");
-            failures++;
             if (checker) type_checker_free(checker);
             ast_node_free(ast_root);
             ast_root = NULL;
@@ -1581,29 +1569,23 @@ int main(void) {
             }
         }
 
-        int row_failed = 0;
-        checks++;
+        // One check, two ways to fail: the function must be in the plan AND
+        // carry the expected count. Kept as one so the count matches the
+        // pre-goo_check.h suite exactly.
         if (!found_fn) {
-            printf("  FAIL: function '%s' absent from the plan\n", row->fn);
-            failures++;
-            row_failed = 1;
-        } else if (got != row->expect_owned_keys) {
-            printf("  FAIL: owned keys = %zu, expected %zu\n", got, row->expect_owned_keys);
-            failures++;
-            row_failed = 1;
+            snprintf(ctx, sizeof(ctx), "key row %d: function '%s' absent from the plan",
+                     row->row, row->fn);
+        } else {
+            snprintf(ctx, sizeof(ctx), "key row %d: owned keys = %zu, expected %zu",
+                     row->row, got, row->expect_owned_keys);
         }
+        goo_check(found_fn && got == row->expect_owned_keys, ctx);
 
         // A miss must be conservative. Asserted on every row, because "returns
         // false on an unknown function" is the property the whole two-layer
         // guard leans on.
-        checks++;
-        if (release_plan_key_is_owned(plan, "__no_such_function__", (ASTNode*)plan)) {
-            printf("  FAIL: unknown function returned key_is_owned=true\n");
-            failures++;
-            row_failed = 1;
-        }
-
-        printf("  Key row %d: %s\n", row->row, row_failed ? "FAIL" : "PASS");
+        snprintf(ctx, sizeof(ctx), "key row %d: unknown function returned key_is_owned=true", row->row);
+        goo_check(!release_plan_key_is_owned(plan, "__no_such_function__", (ASTNode*)plan), ctx);
 
         release_plan_free(plan);
         if (checker) type_checker_free(checker);
@@ -1612,48 +1594,35 @@ int main(void) {
     }
 
     // ---------------- slice element ownership ----------------
-    size_t nelems = sizeof(elem_rows) / sizeof(elem_rows[0]);
     for (size_t i = 0; i < nelems; i++) {
         ElemRow* row = &elem_rows[i];
-        printf("\n=== Elem row %d: %s ===\n", row->row, row->description);
+        snprintf(ctx, sizeof(ctx), "elem row: %s", row->description);
+        goo_check_row(row->row, ctx);
 
-        if (parse_input(row->src, "elemrow.goo") != 0 || !ast_root) {
-            printf("  FAIL: parse failed\n");
-            failures++;
-            continue;
-        }
+        int parse_rc = parse_input(row->src, "elemrow.goo");
+        snprintf(ctx, sizeof(ctx), "elem row %d: the fixture parses (rc=%d)", row->row, parse_rc);
+        goo_check(parse_rc == 0 && ast_root != NULL, ctx);
+        if (parse_rc != 0 || !ast_root) continue;
         TypeChecker* checker = type_checker_new();
         if (checker) type_check_program(checker, ast_root);
 
         ReleasePlan* plan = release_plan_analyze(ast_root);
+        goo_check(plan != NULL, "release_plan_analyze returned a plan");
         if (!plan) {
-            printf("  FAIL: release_plan_analyze returned NULL\n");
-            failures++;
             if (checker) type_checker_free(checker);
             ast_node_free(ast_root);
             ast_root = NULL;
             continue;
         }
 
-        int row_failed = 0;
-        checks++;
         bool got = release_plan_slice_owns_elems(plan, row->fn, row->local);
-        if (got != row->expect_owns_elems) {
-            printf("  FAIL: local '%s' owns_elems=%d, expected %d\n",
-                   row->local, (int)got, (int)row->expect_owns_elems);
-            failures++;
-            row_failed = 1;
-        }
+        snprintf(ctx, sizeof(ctx), "elem row %d: local '%s' owns_elems=%d, expected %d",
+                 row->row, row->local, (int)got, (int)row->expect_owns_elems);
+        goo_check(got == row->expect_owns_elems, ctx);
 
         // A miss must be conservative, asserted on every row.
-        checks++;
-        if (release_plan_slice_owns_elems(plan, "__no_such_function__", row->local)) {
-            printf("  FAIL: unknown function returned owns_elems=true\n");
-            failures++;
-            row_failed = 1;
-        }
-
-        printf("  Elem row %d: %s\n", row->row, row_failed ? "FAIL" : "PASS");
+        snprintf(ctx, sizeof(ctx), "elem row %d: unknown function returned owns_elems=true", row->row);
+        goo_check(!release_plan_slice_owns_elems(plan, "__no_such_function__", row->local), ctx);
 
         release_plan_free(plan);
         if (checker) type_checker_free(checker);
@@ -1661,8 +1630,5 @@ int main(void) {
         ast_root = NULL;
     }
 
-    printf("\n=================================================\n");
-    printf("release_decision_test summary: %d assertions passed, %d failed\n",
-           checks - failures, failures);
-    return failures ? 1 : 0;
+    return goo_check_done("release-decision-test");
 }

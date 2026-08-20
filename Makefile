@@ -5020,8 +5020,8 @@ coverage-clean:
 # Arena leg Task 7a: interprocedural param-escape summaries (table-driven,
 # 15-row test matrix — see docs/superpowers/specs/2026-07-07-arena-7a-param-
 # escape-summaries-design.md). Modeled on runtime_optimization_test above.
-param_escape_test: $(TEST_UNIT_DIR)/types/param_escape_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+param_escape_test: $(TEST_UNIT_DIR)/types/param_escape_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 param-escape-test: param_escape_test
 	@echo "Running param-escape summary tests..."
@@ -5030,7 +5030,7 @@ param-escape-test: param_escape_test
 # ARC step 1: the object header. Pins goo_alloc/goo_realloc/goo_free plus the
 # retain/release primitives BEFORE codegen emits any of them, so the allocator
 # change can be proven invisible on its own. Links the runtime only — no LLVM.
-obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(RUNTIME_LIB)
+obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(TEST_UNIT_DIR)/goo_check.h $(RUNTIME_LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(RUNTIME_LIB) -lm -pthread
 
 obj-header-test: obj_header_test
@@ -5070,8 +5070,8 @@ obj-header-tsan:
 # Arena leg Task 7b: per-alloc-site block-escape decisions (table-driven,
 # 15-row test matrix — see docs/superpowers/specs/2026-07-07-arena-7b-
 # block-escape-decision-design.md). Modeled on param_escape_test above.
-local_escape_test: $(TEST_UNIT_DIR)/types/local_escape_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+local_escape_test: $(TEST_UNIT_DIR)/types/local_escape_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 local-escape-test: local_escape_test
 	@echo "Running per-local escape summary tests..."
@@ -5079,8 +5079,8 @@ local-escape-test: local_escape_test
 
 # T4: the release decision — the first ARC verdict a consumer acts on by
 # FREEING. Modelled on local_escape_test above.
-release_decision_test: $(TEST_UNIT_DIR)/types/release_decision_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+release_decision_test: $(TEST_UNIT_DIR)/types/release_decision_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 release-decision-test: release_decision_test
 	@echo "Running T4 release-decision tests..."
@@ -5215,8 +5215,8 @@ escape-arm-coverage-selftest: $(COMPILER)
 	@echo "Running escape-arm-coverage self-test (7 controls)..."
 	./scripts/escape_arm_coverage.sh --self-test
 
-block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 block-escape-test: block_escape_test
 	@echo "Running block-escape decision tests..."

@@ -26,9 +26,12 @@
 #
 # THE FAILURE MODE THIS SCRIPT GUARDS. A mutation that does not COMPILE looks
 # exactly like a covered arm: the suite did not pass. So does a crash. Every
-# verdict below is read from the suite's own `summary:` line, never from an
-# exit status alone, and a run with no summary line is INCONCLUSIVE rather than
-# COVERED. Run --self-test first; it proves this script can report both a
+# verdict below is read from the suite's own VERDICT LINE, never from an exit
+# status alone, and a run with no verdict line is INCONCLUSIVE rather than
+# COVERED. Since 2026-08-20 that line comes from tests/unit/goo_check.h and
+# reads `<suite>-escape-test: PASS (N checks, R rows)`, or `: FAIL (F of N
+# checks, R rows)`, or `: BROKEN -- ...` when the suite did not run its
+# declared rows. BROKEN joins CRASH as inconclusive, for the same reason. Run --self-test first; it proves this script can report both a
 # positive and a negative before any cell of the matrix is believed.
 #
 # NOT IN verify-core, AND THE REASON IS RUN TIME RATHER THAN SAFETY (2026-08-02).
@@ -292,8 +295,8 @@ reach() {
     build "$WORK/build_reach.log" || die "reach build failed; see $WORK/build_reach.log"
     for s in "${SUITES[@]}"; do
         "./${s}_core_teeth_test" > "$WORK/reach_${s}.out" 2> "$WORK/reach_${s}.err"
-        grep -q "${s}_escape_test summary:" "$WORK/reach_${s}.out" \
-            || die "$s produced no summary line under the reach probe"
+        grep -qE "^${s}-escape-test: (PASS|FAIL|BROKEN)" "$WORK/reach_${s}.out" \
+            || die "$s produced no verdict line under the reach probe"
     done
     restore_engine
 
@@ -306,26 +309,33 @@ reach() {
     done
 }
 
-# Verdict for one suite, read from its own summary line.
-#   PASS  - ran, summary present, zero assertion failures
-#   FAIL  - ran, summary present, at least one assertion failure
-#   CRASH - binary produced no summary line (signal, abort, early exit)
-#   PARSE - summary line present but not in the expected shape
+# Verdict for one suite, read from its own verdict line.
+#   PASS   - ran, verdict present, zero check failures
+#   FAIL   - ran, verdict present, at least one check failure
+#   CRASH  - binary produced no verdict line (signal, abort, early exit)
+#   BROKEN - the suite did not run its declared rows, so it measured nothing
+#   PARSE  - verdict line present but not in the expected shape
 suite_status() {
-    local s="$1" log="$2" failed
+    local s="$1" log="$2" line failed
     "./${s}_core_teeth_test" > "$log" 2>&1
-    if ! grep -q "${s}_escape_test summary:" "$log"; then echo CRASH; return; fi
-    failed=$(grep -oP "${s}_escape_test summary: [0-9]+ assertions passed, \K[0-9]+" "$log")
+    line="$(grep -E "^${s}-escape-test: (PASS|FAIL|BROKEN)" "$log" | tail -1)"
+    [ -n "$line" ] || { echo CRASH; return; }
+    case "$line" in
+        *": BROKEN"*) echo BROKEN; return ;;
+        *": PASS"*)   echo PASS;   return ;;
+    esac
+    failed=$(printf '%s' "$line" | grep -oP 'FAIL \(\K[0-9]+')
     [ -n "$failed" ] || { echo PARSE; return; }
     [ "$failed" -gt 0 ] && echo FAIL || echo PASS
 }
 
 status_to_verdict() {
     case "$1" in
-        FAIL)  echo "COVERED" ;;
-        PASS)  echo "GAP" ;;
-        CRASH) echo "INCONCLUSIVE-crash" ;;
-        *)     echo "INCONCLUSIVE-parse" ;;
+        FAIL)   echo "COVERED" ;;
+        PASS)   echo "GAP" ;;
+        CRASH)  echo "INCONCLUSIVE-crash" ;;
+        BROKEN) echo "INCONCLUSIVE-broken" ;;
+        *)      echo "INCONCLUSIVE-parse" ;;
     esac
 }
 
@@ -567,10 +577,14 @@ matrix() {
     # never affected -- they come from real mutation runs -- but a decorative
     # number in a measurement record is a claim, and this one was false.
     # Take the counts from the suites themselves:
-    #   ./param_core_teeth_test -> "166 assertions passed, 0 failed, 0/27 rows failed"
-    #   ./block_core_teeth_test -> the same shape, 34 rows
-    #   ./local_core_teeth_test -> assertions ONLY; it prints no row count, so
-    #     local's 51 comes from counting the initialisers in its `rows[]` table.
+    #   ./param_core_teeth_test -> "param-escape-test: PASS (193 checks, 27 rows)"
+    #   ./block_core_teeth_test -> the same shape, 35 rows (34 table + 1 for the
+    #     conservative-miss section that follows the table)
+    #   ./local_core_teeth_test -> the same shape, 51 rows (50 table + 1 for the
+    #     reason-decoder row that runs before the table). Every suite prints its
+    #     own row count since 2026-08-20, so none of these is a hand count any
+    #     more -- which is what made the previous version of this note wrong by
+    #     4, 3 and 35.
     printf '| Arm | param | block | local |\n|---|---|---|---|\n'
     for arm in "${arms[@]}"; do
         if is_equivalent_mutant "$arm" "$mode"; then

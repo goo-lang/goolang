@@ -243,15 +243,42 @@ assert_sources_untouched() {
 # ---------------------------------------------------------------------------
 # One build/run/verdict cycle.
 #
-# Every verdict is read from the suite's own `summary:` line, never from an exit
+# Every verdict is read from the suite's own VERDICT LINE, never from an exit
 # status alone. A mutation that does not compile, and one that crashes, both
 # look exactly like a caught condition if only the status is read — and a run
-# with no summary line at all is INCONCLUSIVE, not a pass.
+# with no verdict line at all is INCONCLUSIVE, not a pass.
+#
+# The suites report through tests/unit/goo_check.h since 2026-08-20, so that
+# line now reads `<artifact>: PASS (N checks, R rows)` or `: FAIL (F of N
+# checks, R rows)` or `: BROKEN -- ...`. BROKEN is INCONCLUSIVE here and not
+# CAUGHT: it means the table did not run as declared, so the mutation was
+# never put to the rows that were supposed to catch it.
 #
 # Sets VERDICT and DETAIL. Returns 0 always; the caller judges.
 # ---------------------------------------------------------------------------
 VERDICT=""
 DETAIL=""
+
+# Reads one suite run. Sets VERDICT/DETAIL, or leaves VERDICT empty if the log
+# carries no verdict line at all (caller turns that into INCONCLUSIVE-crash).
+read_verdict() {  # logfile, artifact, unguarded-wording
+    local log="$1" artifact="$2" wording="$3" line failed
+    line="$(grep -E "^${artifact}: (PASS|FAIL|BROKEN)" "$log" | tail -1)"
+    if [ -z "$line" ]; then VERDICT=""; DETAIL="see $log"; return 0; fi
+    case "$line" in
+        *": BROKEN"*)
+            VERDICT="INCONCLUSIVE-broken"
+            DETAIL="the suite did not run its declared rows; see $log" ;;
+        *": FAIL"*)
+            failed=$(printf '%s' "$line" | grep -oP 'FAIL \(\K[0-9]+')
+            VERDICT="CAUGHT"
+            DETAIL="${failed:-?} of $(grep -c '^  FAIL: ' "$log") reported check failures" ;;
+        *)
+            VERDICT="UNGUARDED"
+            DETAIL="$wording" ;;
+    esac
+    return 0
+}
 
 build_from() {  # module, source-to-compile, logfile
     local m="$1" src="$2" log="$3"
@@ -290,21 +317,9 @@ PY
         return 0
     fi
     "$bin" > "$WORK/run_${m}_${label}.log" 2>&1
-    if ! grep -q "${m}_escape_test summary:" "$WORK/run_${m}_${label}.log"; then
-        VERDICT="INCONCLUSIVE-crash"
-        DETAIL="see $WORK/run_${m}_${label}.log"
-        return 0
-    fi
-    local failed rows
-    failed=$(grep -oP "summary: [0-9]+ assertions passed, \K[0-9]+" "$WORK/run_${m}_${label}.log")
-    rows=$(grep -c "^  Row .*: FAIL" "$WORK/run_${m}_${label}.log")
-    if [ "${failed:-0}" -gt 0 ]; then
-        VERDICT="CAUGHT"
-        DETAIL="$failed assertions, $rows rows"
-    else
-        VERDICT="UNGUARDED"
-        DETAIL="no row notices this condition missing"
-    fi
+    read_verdict "$WORK/run_${m}_${label}.log" "${m}-escape-test" \
+                 "no row notices this condition missing"
+    if [ -z "$VERDICT" ]; then VERDICT="INCONCLUSIVE-crash"; fi
     return 0
 }
 
@@ -340,20 +355,9 @@ PY
         return 0
     fi
     "$bin" > "$WORK/run_core_${label}.log" 2>&1
-    if ! grep -q "local_escape_test summary:" "$WORK/run_core_${label}.log"; then
-        VERDICT="INCONCLUSIVE-crash"
-        DETAIL="see $WORK/run_core_${label}.log"
-        return 0
-    fi
-    local failed rows
-    failed=$(grep -oP "summary: [0-9]+ assertions passed, \K[0-9]+" "$WORK/run_core_${label}.log")
-    rows=$(grep -c "^  Row .*: FAIL" "$WORK/run_core_${label}.log")
-    if [ "${failed:-0}" -gt 0 ]; then
-        VERDICT="CAUGHT"
-        DETAIL="$failed assertions, $rows rows"
-    else
-        VERDICT="UNGUARDED"
-        DETAIL="no row notices this reason being wrong"
+    read_verdict "$WORK/run_core_${label}.log" "local-escape-test" \
+                 "no row notices this reason being wrong"
+    if [ -z "$VERDICT" ]; then VERDICT="INCONCLUSIVE-crash"
     fi
     return 0
 }
@@ -423,11 +427,11 @@ run_module() {
         || die "$m baseline build failed; see $WORK/build_${m}_base.log"
     "./${m}_escape_teeth_test" > "$WORK/run_${m}_base.log" 2>&1
     local base_rc=$?
-    grep -q "${m}_escape_test summary:" "$WORK/run_${m}_base.log" \
-        || die "$m baseline produced no summary line"
+    grep -qE "^${m}-escape-test: (PASS|FAIL|BROKEN)" "$WORK/run_${m}_base.log" \
+        || die "$m baseline produced no verdict line"
     [ "$base_rc" -eq 0 ] || die "$m baseline is RED; fix that before reading any mutation"
     echo "== $m =="
-    echo "baseline: PASS ($(grep -o 'summary:.*' "$WORK/run_${m}_base.log"))"
+    echo "baseline: $(grep -E "^${m}-escape-test: " "$WORK/run_${m}_base.log" | tail -1)"
 
     local entry label rest line replacement
     for entry in "${table[@]}"; do
@@ -483,11 +487,11 @@ run_reasons() {
         || die "core baseline build failed; see $WORK/build_core_base.log"
     ./local_core_teeth_test > "$WORK/run_core_base.log" 2>&1
     local base_rc=$?
-    grep -q "local_escape_test summary:" "$WORK/run_core_base.log" \
-        || die "core baseline produced no summary line"
+    grep -qE "^local-escape-test: (PASS|FAIL|BROKEN)" "$WORK/run_core_base.log" \
+        || die "core baseline produced no verdict line"
     [ "$base_rc" -eq 0 ] || die "core baseline is RED; fix that before reading any mutation"
     echo "== reasons (shared engine) =="
-    echo "baseline: PASS ($(grep -o 'summary:.*' "$WORK/run_core_base.log"))"
+    echo "baseline: $(grep -E "^local-escape-test: " "$WORK/run_core_base.log" | tail -1)"
 
     local entry label rest line replacement
     for entry in "${CORE_MUTATIONS[@]}"; do
