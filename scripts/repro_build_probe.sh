@@ -71,8 +71,34 @@ CFRAG
 
     # The gate builds from `git archive HEAD`, so the mutation must be committed
     # to reach the container. --no-verify skips the clone's pre-commit hook.
+    #
+    # The identity is passed EXPLICITLY rather than inherited. A CI runner has
+    # no user.email, and git then refuses with "empty ident name". This script
+    # runs under `set -u` and not `set -e`, so that refusal was silent: HEAD
+    # kept the clean tree, the inner probe honestly reported IDENTICAL, and the
+    # self-test reported FAIL. That reads as "the probe cannot go red" when the
+    # truth is "the self-test never ran". Measured on this workflow's first CI
+    # run, which is also the first time it ever executed off this machine.
     git -C "$CLONE" add Makefile "$VICTIM"
-    git -C "$CLONE" -c commit.gpgsign=false commit -q --no-verify -m "TEMP: self-test injection"
+    if ! git -C "$CLONE" \
+            -c commit.gpgsign=false \
+            -c user.email=repro-probe@localhost \
+            -c user.name='repro-build-probe self-test' \
+            commit -q --no-verify -m "TEMP: self-test injection"; then
+        echo "$PROBE --self-test: FAIL (could not commit the injection)"
+        exit 1
+    fi
+
+    # VERIFY THE INJECTION REACHED THE SURFACE THE PROBE ACTUALLY READS.
+    # The work-tree grep above is necessary and NOT sufficient, and the gap
+    # between the two is exactly what hid this bug: the probe builds
+    # `git archive HEAD`, so a mutation that is in the tree but not in the
+    # commit leaves the tree looking correct and the archive clean.
+    if ! git -C "$CLONE" show 'HEAD:Makefile' 2>/dev/null | grep -q 'GOO_SELFTEST_NONCE' \
+       || ! git -C "$CLONE" show "HEAD:$VICTIM" 2>/dev/null | grep -q 'goo_selftest_nonce'; then
+        echo "$PROBE --self-test: FAIL (injection is in the work tree but not in HEAD, which is what the probe builds)"
+        exit 1
+    fi
 
     ( cd "$CLONE" && ./scripts/repro_build_probe.sh ) >"$ST/out.log" 2>&1
     st=$?

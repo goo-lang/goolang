@@ -193,10 +193,25 @@ to date — reproducing the same false pass inside the container.
 The failure this gate is most likely to have is that both builds write the same
 path and the script hashes one file twice. That passes forever.
 
-`--self-test` therefore injects real nondeterminism — a source touched to
-contain `__TIME__` — and asserts the probe reports DIFFER. It greps that the
+`--self-test` therefore injects real nondeterminism — a nonce compiled into
+`runtime.o` — and asserts the probe reports DIFFER. It greps that the
 injection landed before trusting the red result, because a mutation that fails
 to apply reads exactly like a passing probe.
+
+**Grep the surface the probe READS, not the one you WROTE.** The first version
+of that check grepped the work tree while the probe builds `git archive HEAD`.
+Those differ whenever the commit does not land, which is exactly the case the
+check exists to catch — so the guard against a non-landing injection could not
+see one. Found on this workflow's first CI run: the runner has no
+`user.email`, git refused the commit with "empty ident name", and because the
+script runs `set -u` without `set -e` the refusal was silent. `HEAD` kept the
+clean tree, the probe honestly reported IDENTICAL, and the self-test reported
+FAIL — which reads as "the probe cannot go red" when the truth was "the
+self-test never ran".
+
+The self-test now passes its git identity explicitly, checks that the commit
+succeeded, and verifies the injection in `HEAD`. It therefore depends on no
+ambient git configuration.
 
 ### Skips are loud
 
