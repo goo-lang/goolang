@@ -260,9 +260,14 @@ $(BUILDDIR)/framework/%.o: $(TEST_FRAMEWORK_DIR)/%.c | $(BUILDDIR)
 goo: $(COMPILER)
 
 # Compiler binary does not link the test framework — it's a runtime concern
-# for test runners. The test framework's header (test/test_framework.h) is
-# missing from include/, so building TEST_FRAMEWORK_OBJ fails; that breakage
-# belongs to task #33 and shouldn't gate compiler builds.
+# for test runners.
+#
+# This comment used to say include/test/test_framework.h was missing and that
+# TEST_FRAMEWORK_OBJ therefore failed to build. Both halves are false: the
+# header was reconstructed and `make build/framework/test_framework.o` exits 0.
+# The framework is unused because nothing calls it, not because it is broken —
+# see the note on the unit-test link set below, and the header comment in
+# tests/unit/goo_check.h for why auto-discovery is not wanted here.
 # Version stamped into bin/goo. Override for a release: make GOO_VERSION=0.2.0
 #
 # DELIBERATELY NOT DERIVED HERE, and not from `git describe`. The
@@ -4596,13 +4601,15 @@ goo-check-probe:
 	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_check_probe.sh --self-test
 
 # Unit tests
-# Link against $(SRC_OBJS), NOT $(OBJS): the latter includes the test
-# framework object, whose source `tests/framework/test_framework.c`
-# #includes a missing header `test/test_framework.h`. The framework is
-# unused by these unit tests (they use plain assert + stdio), so linking
-# the compiler objects directly is correct and sidesteps the broken
-# include. Restoring the framework header is its own task; this target
-# does not need to wait on that work.
+# Link against $(SRC_OBJS), NOT $(OBJS): the latter adds the test framework
+# object, which no suite here calls. It compiles fine — the older version of
+# this comment claiming it fails on a missing header was wrong — but linking
+# an unused xUnit runtime into every unit-test binary buys nothing.
+#
+# The suites report through tests/unit/goo_check.h instead. That header is
+# deliberately NOT tests/framework/test_framework.c: constructor-based
+# auto-discovery runs tests nobody listed, which is how 77 tests passed on
+# 2026-08-17 against frameworks that never linked into bin/goo.
 test-lexer: $(SRC_OBJS)
 	@mkdir -p tests/unit/lexer
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) tests/unit/lexer/test_lexer_basic.c $(SRC_OBJS) -o tests/test_lexer $(LDFLAGS) $(LLVM_LDFLAGS)
