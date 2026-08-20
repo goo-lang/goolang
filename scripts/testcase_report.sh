@@ -26,6 +26,13 @@
 # distinction is the whole point. A run that never happened must not read the
 # same as a run in which every boundary was reached, which is the failure mode
 # coverage_corpus.sh spends six separate assertions avoiding.
+# TEETH: scripts/goo_testcase_probe.sh
+#
+# This file holds no --self-test of its own, and it is not unguarded. Two of the
+# three mutations in goo_testcase_probe.sh --self-test edit the logic below --
+# the completeness test and the no-gcov-output guard -- and each must turn that
+# probe red. probe-teeth-probe VERIFIES the line above rather than believing it:
+# the named script has to exist and has to mention this file.
 set -u
 
 PROG="testcase-report"
