@@ -175,11 +175,20 @@ Every error message should:
 
 ## Ecosystem Strategy
 
-### 1. Rust Crate Compatibility
+### 1. Toolchain distribution and a package registry
 
-- Import existing Rust crates directly
-- Gradual migration from Rust projects
-- Leverage existing ecosystem
+- `goop` installs, verifies and switches compiler versions
+- `goo.mod` and `goo.lock` pin source dependencies by checksum
+- A registry whose read path is static objects behind a CDN
+
+Designed in `docs/adr/0006-toolchain-distribution-and-package-ecosystem.md`.
+
+**Rust crate compatibility is not a goal.** An earlier version of this
+document claimed Goo would "import existing Rust crates directly". Nothing in
+the compiler supports it, no design accommodates it, and it contradicts
+ADR 0003, which concedes the ecosystem axis openly rather than borrowing
+another language's. Goo has no separate compilation, so a foreign compiled
+artifact has nowhere to link into.
 
 ### 2. Go-Style Standard Library
 
