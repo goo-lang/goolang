@@ -29,6 +29,84 @@
 # as the old serial runner and computes the counts — pass/fail semantics,
 # per-fixture messages, and the summary line are unchanged.
 set -u
+
+# ---------------------------------------------------------------------------
+# --self-test: prove this runner can report the OPPOSITE result.
+#
+# It guards 495 fixtures and, until 2026-08-20, had never been shown able to
+# fail. It was also invisible to probe-teeth-probe, which scanned
+# scripts/*probe*.sh and cannot see a name without "probe" in it.
+#
+# REAL FIXTURES AND THE REAL COMPILER, not a stub. The unit under test is the
+# whole per-fixture verdict chain -- compile, run, diff, timeout, .exit
+# sidecar, .stderr sidecar -- and a stub compiler would only test the parts
+# that do not involve compiling. Six tiny programs cost about two seconds.
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "--self-test" ]; then
+    SELF="run-golden --self-test"
+    CC_GOO="${COMPILER:-bin/goo}"
+    [ -x "$CC_GOO" ] || { echo "$SELF: BROKEN — $CC_GOO is not built"; exit 1; }
+    W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+    bad_self=0
+    checks_run=0
+
+    prog() { printf 'package main\n\nimport "fmt"\n\nfunc main() {\n    fmt.Println("ok")\n}\n' > "$1"; }
+
+    # One fixture dir per row, so a row can never inherit another's sidecars.
+    new_dir() { d="$W/$1"; rm -rf "$d"; mkdir -p "$d"; }
+
+    run_golden_on() {  # dir -> writes $W/out.log, echoes the exit status
+        GOLDEN_RESULTS_DIR="$W/results" EX_DIR="$1" COMPILER="$CC_GOO" \
+            "$0" > "$W/out.log" 2>&1
+        echo $?
+    }
+
+    row() {  # name, dir, want_status, want_grep
+        checks_run=$((checks_run + 1))
+        local got; got="$(run_golden_on "$2")"
+        if [ "$got" != "$3" ]; then
+            echo "$SELF: FAIL ($1: exit $got, expected $3)"
+            sed 's/^/        /' "$W/out.log"; bad_self=1; return
+        fi
+        if [ -n "$4" ] && ! grep -qF -- "$4" "$W/out.log"; then
+            echo "$SELF: FAIL ($1: output does not contain '$4')"
+            sed 's/^/        /' "$W/out.log"; bad_self=1; return
+        fi
+        echo "    ok: $1"
+    }
+
+    # CONTROL. Without it, a temp tree the compiler cannot read turns every row
+    # red and reads as five successes.
+    new_dir control; prog "$d/gt_ok.goo"; printf 'ok\n' > "$d/gt_ok.expected.txt"
+    row "control: a matching fixture passes" "$d" 0 "1 passed, 0 failed"
+
+    new_dir mismatch; prog "$d/gt_mismatch.goo"; printf 'NOT ok\n' > "$d/gt_mismatch.expected.txt"
+    row "a wrong .expected.txt is caught, and named" "$d" 1 "FAIL  gt_mismatch (output mismatch)"
+
+    new_dir exitcode; prog "$d/gt_exit.goo"; printf 'ok\n' > "$d/gt_exit.expected.txt"
+    printf '7\n' > "$d/gt_exit.exit"
+    row "an .exit sidecar mismatch is caught" "$d" 1 "gt_exit (exit code: got 0, want 7)"
+
+    new_dir malformed; prog "$d/gt_bad_exit.goo"; printf 'ok\n' > "$d/gt_bad_exit.expected.txt"
+    printf 'seven\n' > "$d/gt_bad_exit.exit"
+    row "a malformed .exit sidecar is caught" "$d" 1 "malformed .exit sidecar"
+
+    new_dir stderrmiss; prog "$d/gt_stderr.goo"; printf 'ok\n' > "$d/gt_stderr.expected.txt"
+    printf 'this string never appears\n' > "$d/gt_stderr.stderr.txt"
+    row "a missing .stderr substring is caught" "$d" 1 "gt_stderr (stderr mismatch)"
+
+    # THE ROW THIS WAS WRITTEN FOR. A directory with no fixture at all must not
+    # be a clean pass. Before 2026-08-20 it printed "0 passed, 0 failed" and
+    # exited 0 -- one number away from "495 passed, 0 failed", in a line
+    # nobody diffs.
+    new_dir empty
+    row "an empty corpus is refused, not reported as a clean sweep" "$d" 1 "BROKEN"
+
+    [ "$bad_self" -ne 0 ] && exit 1
+    echo "$SELF: PASS (control green; $((checks_run - 1)) failure modes independently turn it red)"
+    exit 0
+fi
+
 COMPILER="${COMPILER:-bin/goo}"
 EX_DIR="${EX_DIR:-examples}"
 GOLDEN_TIMEOUT="${GOLDEN_TIMEOUT:-10}"
@@ -37,7 +115,7 @@ GOLDEN_JOBS="${GOLDEN_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 # differential optimizer gate; default empty = today's behavior, unchanged.
 GOOFLAGS="${GOOFLAGS:-}"
 
-RESULTS_DIR="build/golden_results"
+RESULTS_DIR="${GOLDEN_RESULTS_DIR:-build/golden_results}"
 rm -rf "$RESULTS_DIR"
 mkdir -p build "$RESULTS_DIR"
 
@@ -131,10 +209,27 @@ for goo in "$EX_DIR"/*.goo; do
     fixtures+=("$goo")
 done
 
-if [ "${#fixtures[@]}" -gt 0 ]; then
-    printf '%s\0' "${fixtures[@]}" | xargs -0 -P "$GOLDEN_JOBS" -n 1 \
-        bash -c 'run_one_fixture "$1"' _
+# Instrument check. A corpus of nothing fails nothing, so the aggregation
+# below would print "0 passed, 0 failed" and the final `[ "$fail" -eq 0 ]`
+# would exit 0. Against the real "495 passed, 0 failed" that is one number in
+# a line nobody diffs.
+#
+# The path that gets here is not a mistyped EX_DIR. It is the filter above: a
+# .goo with no .expected.txt sibling is dropped SILENTLY and by design, because
+# not every example is a golden fixture. So a renamed sidecar convention drops
+# all 495 one at a time and leaves a clean sweep behind. coverage_corpus.sh has
+# guarded exactly this since it was written; the runner that matters more never
+# did.
+if [ "${#fixtures[@]}" -eq 0 ]; then
+    echo "run-golden: BROKEN — no fixture found in '$EX_DIR'."
+    echo "  Nothing was compared. A '0 passed, 0 failed' verdict here would mean"
+    echo "  the suite did not run, not that every fixture matched."
+    echo "  A .goo is only a fixture if a sibling .expected.txt exists."
+    exit 1
 fi
+
+printf '%s\0' "${fixtures[@]}" | xargs -0 -P "$GOLDEN_JOBS" -n 1 \
+    bash -c 'run_one_fixture "$1"' _
 
 # Serial aggregation in the original order: identical output stream and
 # counts to the pre-P5.8 runner. A missing result file means the fixture's
