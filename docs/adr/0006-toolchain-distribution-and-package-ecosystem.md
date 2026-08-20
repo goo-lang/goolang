@@ -5,13 +5,6 @@ Status: **accepted** (2026-08-20). Design only, no code in this pass.
 Sub-project A is specified in
 `docs/superpowers/specs/2026-08-20-toolchain-distribution-design.md`.
 
-**Prerequisite, not yet on `main`.** This document cites `Containerfile`,
-`scripts/podman_build.sh`, `scripts/record_toolchain.sh`,
-`scripts/repro_build_probe.sh` and
-`docs/superpowers/specs/2026-08-19-reproducible-builds-podman-design.md`.
-Every one of them lives on the `docs/repro-builds-podman` branch and lands
-with it. **Sub-project A cannot start until that branch merges.**
-
 ## Context
 
 ADR 0003 grades Goo on eight axes against Rust. Seven carry a "win" or a
@@ -245,6 +238,54 @@ where most installer bugs live. It does **not** reduce untrusted-parsing risk.
 tar, gzip and Ed25519 stay in C either way, and that risk is answered by
 keeping those parsers small and under the existing ASan, valgrind and MISRA
 gates.
+
+## Sub-project B: two decisions taken, 2026-08-20
+
+The ADR left B undesigned. These two are now settled, because both change what
+sub-project A's manifest has to leave room for.
+
+### Version resolution: minimal version selection (MVS)
+
+Go's algorithm. Pick the **oldest** version that satisfies every requirement in
+the graph. Resolution is a graph walk, with no solver and no backtracking, and
+it is deterministic given the manifests — so `goo.lock` records what was chosen
+rather than being the thing that makes the build reproducible. An upgrade is
+always explicit (`goo get -u`), never a side effect of building.
+
+**Why not SemVer ranges with a solver** (the cargo and npm shape): it needs a
+real solver with backtracking, and it makes the lock file load-bearing rather
+than a convenience. It buys implicit security upgrades, which MVS gives up
+deliberately.
+
+**Why not exact pins only:** trivial to implement and completely predictable,
+but every transitive bump becomes manual work. It does not survive a deep
+graph.
+
+### Name collision: Go-style rename imports
+
+`import foo "host/a/pkg"` binds an explicit local name, which resolves the
+short-name collision recorded in item 2 below.
+
+**The syntax already parses. The rename is then discarded.** This was measured
+rather than assumed:
+
+- `parser.y:368` builds the `ImportSpecNode` with the alias.
+- `include/ast.h:319` stores it, commented *"Optional alias"*.
+- **No file in `src/` ever reads that field.**
+
+| Program | Result |
+|---|---|
+| `import str "strings"` then `str.ToUpper(…)` | exit 1 — `Undefined variable 'str'` |
+| `import str "strings"` then `strings.ToUpper(…)` | **exit 0** — the original name is still bound |
+
+So this is not a missing feature behind unwritten syntax. It is **accepted
+syntax that silently does not work**, and the second row is the dangerous one:
+a program keeps building under the name its author explicitly renamed away
+from. That is a live divergence from Go today, independent of whether
+sub-project B ever starts.
+
+The work is therefore in the driver and the type checker, not the parser: read
+`spec->alias`, and seed the marker under it when present.
 
 ## What sub-project B will cost
 

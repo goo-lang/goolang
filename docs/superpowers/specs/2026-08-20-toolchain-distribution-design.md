@@ -3,13 +3,6 @@
 Status: design, approved 2026-08-20. Implementation not started.
 Sub-project A of `docs/adr/0006-toolchain-distribution-and-package-ecosystem.md`.
 
-**Prerequisite, not yet on `main`.** This document cites `Containerfile`,
-`scripts/podman_build.sh`, `scripts/record_toolchain.sh`,
-`scripts/repro_build_probe.sh` and
-`docs/superpowers/specs/2026-08-19-reproducible-builds-podman-design.md`.
-Every one of them lives on the `docs/repro-builds-podman` branch and lands
-with it. **Sub-project A cannot start until that branch merges.**
-
 ## The problem, measured before it was designed for
 
 Nobody can install Goo. That is not an overstatement of a rough edge — it is
