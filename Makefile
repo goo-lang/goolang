@@ -3185,6 +3185,7 @@ goostd-resolver-probe:
 VERIFY_ALL_DEPS := \
     safety-baseline-check \
     doc-claims-probe \
+    probe-teeth-probe \
     release-package-probe \
     baseline-probe \
     lvalue-probe \
@@ -6392,6 +6393,14 @@ safety-baseline-check:
 .PHONY: doc-claims-probe
 doc-claims-probe:
 	@bash scripts/doc_claims_probe.sh
+# Every probe must be able to report the OPPOSITE result. A probe with no
+# negative control has never shown it can go red, and it can pass forever while
+# testing nothing -- green is exactly what you expect to see. Existing probes
+# are grandfathered in a SHRINK-ONLY baseline; a NEW probe cannot enter without
+# teeth. Filesystem only, so it belongs in verify-core.
+.PHONY: probe-teeth-probe
+probe-teeth-probe:
+	@bash scripts/probe_teeth_probe.sh
 
 # Scan the C compiler/runtime source against the adopted MISRA C:2012 subset and
 # fail on any violation not in scripts/misra-baseline.txt. Local-only gate (see

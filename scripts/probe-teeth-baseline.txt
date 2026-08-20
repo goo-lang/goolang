@@ -1,0 +1,35 @@
+# Probes that do NOT yet prove they can fail. SHRINK-ONLY.
+#
+# A probe with no negative control has never been shown capable of going red.
+# It can pass forever while testing nothing, and that is not hypothetical: on
+# 2026-08-20 repro_build_probe.sh's own self-test could not run on CI at all,
+# and doc_claims_probe.sh's shim assertion stayed green under the exact
+# mutation it was written to catch. Both were found only by running the
+# negative case.
+#
+# probe-teeth-probe FAILS when a name appears here that is not a real probe,
+# when a listed probe has since gained teeth (remove it from this list in the
+# same commit), or when a probe exists that is neither toothed nor listed.
+# That last rule is the point: a NEW probe cannot be added without teeth.
+#
+# A "teeth mechanism" is --self-test, SELFTEST, or MUTATE.
+#
+# Removing a line here means adding a negative control to that probe. That is
+# the intended direction of travel; this list must never grow.
+arc_concat_operand_probe.sh
+arc_map_key_local_probe.sh
+arc_multi_assign_probe.sh
+arc_reassign_probe.sh
+archive_determinism_probe.sh
+arena_rss_probe.sh
+dead_package_code_probe.sh
+exit_code_probe.sh
+far-probe.sh
+goo_assert_probe.sh
+goo_test_probe.sh
+lexer_keyword_probe.sh
+nil_deref_probe.sh
+podman_image_probe.sh
+proof_cache_shell_probe.sh
+string_literal_header_probe.sh
+workflow_targets_probe.sh
