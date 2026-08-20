@@ -3186,6 +3186,7 @@ VERIFY_ALL_DEPS := \
     safety-baseline-check \
     doc-claims-probe \
     probe-teeth-probe \
+    goo-check-probe \
     release-package-probe \
     baseline-probe \
     lvalue-probe \
@@ -4585,6 +4586,15 @@ comptime-block-probe: $(COMPILER) $(RUNTIME_LIB)
 	    exit 1; \
 	  fi
 
+# The contract of tests/unit/goo_check.h, the header every C unit suite below
+# reports through. It decides their exit status, so a wrong exit status has
+# exactly one place left to hide. --self-test mutates the header one line at a
+# time and requires each mutation to turn the probe red.
+.PHONY: goo-check-probe
+goo-check-probe:
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_check_probe.sh
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_check_probe.sh --self-test
+
 # Unit tests
 # Link against $(SRC_OBJS), NOT $(OBJS): the latter includes the test
 # framework object, whose source `tests/framework/test_framework.c`
@@ -5211,8 +5221,12 @@ block-escape-test: block_escape_test
 # Modeled on block_escape_test above; links the full SRC_OBJS like the other
 # codegen-adjacent unit tests since it pulls in codegen.o for
 # codegen_arena_eligible.
-arena_routing_test: $(TEST_UNIT_DIR)/codegen/arena_routing_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+# goo_check.h is a prerequisite so a change to the shared header rebuilds the
+# suite, but it must be filtered OUT of the compiler's input list: $^ would
+# hand gcc a .h to compile, which emits a precompiled header instead of
+# participating in the link.
+arena_routing_test: $(TEST_UNIT_DIR)/codegen/arena_routing_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 arena-routing-test: arena_routing_test
 	@echo "Running arena-routing predicate tests..."
