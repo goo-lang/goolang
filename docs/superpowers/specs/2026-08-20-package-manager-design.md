@@ -26,7 +26,7 @@ a grep that had died on a shell error and printed nothing.
 So the pieces missing are: a manifest reader, a version algorithm, a fetch
 path, a cache, and one resolver tier.
 
-## BLOCKING HAZARD: `examples/goo.mod` already exists, and all 495 goldens sit beside it
+## BLOCKING HAZARD — CLEARED 2026-08-20: `examples/goo.mod` sat beside all 495 goldens
 
 Two `goo.mod` files are in the tree today, in two different and incompatible
 formats.
@@ -46,10 +46,15 @@ becomes a file inside a module whose manifest is unparseable — and 495
 fixtures fail at once, for a reason that has nothing to do with what they
 test.
 
-**Deleting `examples/goo.mod` is therefore a PREREQUISITE task of this
-sub-project, not a cleanup.** It must land, on its own, before the reader
-exists. Nothing reads the file, so removing it is inert today and impossible
-to do safely later.
+**Deleting `examples/goo.mod` was therefore a PREREQUISITE task of this
+sub-project, not a cleanup.** It had to land on its own, before the reader
+exists: nothing read the file, so removing it was inert then and would have
+been impossible to do safely later.
+
+**Done.** The file is gone, and `demo-project/goo.mod` — the wizard's
+line-based format, which this document adopts — is now the only manifest in
+the tree. Goldens measured at 495 immediately before and after the removal,
+which is the point: the deletion had to be provably inert.
 
 Check it has not come back before believing any manifest work:
 
