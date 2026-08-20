@@ -262,12 +262,19 @@ than an earlier draft of this ADR claimed.
    through unchanged"*. So `github.com/user/pkg` survives intact. The problem
    is only what it is then joined onto, which is item 1.
 
-   One question here is open and is **not** asserted, because it was not
-   checked: `resolve_package_dir()` sets `out->name` to the LAST path segment
-   and `out->import_path` to the full path verbatim. Whether two packages
-   both named `pkg`, from different hosts, can coexist therefore depends on
-   which of the two the driver keys on. Answer that before designing the
-   manifest.
+   **The open question in the first draft is now answered.** The package
+   graph keys on the FULL path: `PkgEntry.import_path` is commented
+   *"registry key"* (`src/compiler/goo.c:589`) and `pkg_graph_find` compares
+   it with `strcmp` (line 631). Two packages from different hosts therefore
+   do not collide in the graph.
+
+   They collide one layer later. `compile_resolved_packages` seeds the
+   selector-resolution marker by **short name**, into the global scope:
+   `type_checker_seed_package_marker(checker, e->name, p)` (line 970). Two
+   packages both named `pkg` seed the same marker. Go avoids this with
+   per-file import scope and rename imports (`import foo "host/a/pkg"`);
+   Goo seeds globally and has neither. **So item 2 is a type-checker change,
+   not a resolver change** — which is not where the first draft looked.
 3. Nothing reads `goo.mod`. A parser and a resolver are new.
 4. Eight package names resolve through a hardcoded C shim
    (`is_stdlib_shim_import()`, `src/compiler/goo.c:719-732`). A fetched
