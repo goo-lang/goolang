@@ -263,6 +263,19 @@ goo: $(COMPILER)
 # for test runners. The test framework's header (test/test_framework.h) is
 # missing from include/, so building TEST_FRAMEWORK_OBJ fails; that breakage
 # belongs to task #33 and shouldn't gate compiler builds.
+# Version stamped into bin/goo. Override for a release: make GOO_VERSION=0.2.0
+#
+# DELIBERATELY NOT DERIVED HERE, and not from `git describe`. The
+# reproducible-build gate builds `git archive HEAD`, which carries no .git, so
+# anything derived inside the build resolves differently in and out of the
+# container and breaks byte identity. A caller passes the value in, exactly as
+# scripts/podman_build.sh already does for SOURCE_DATE_EPOCH.
+GOO_VERSION ?= 0.1.0
+
+# Target-specific, so changing the version relinks bin/goo and rebuilds nothing
+# else. The value must match src/compiler/goo.c's #ifndef fallback when unset,
+# which release-package-probe's determinism assertion would catch if it drifted.
+$(COMPILER): CFLAGS += -DGOO_VERSION='"$(GOO_VERSION)"'
 $(COMPILER): $(GOO_OBJS) $(COMPILER_SRCS) | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(COMPILER_SRCS) $(GOO_OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
 

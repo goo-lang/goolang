@@ -23,6 +23,17 @@ MODE="${1:-}"
 # `CCACHE ?= $(shell command -v ccache)`, so a future image that gained ccache
 # would silently start replaying cached objects.
 MAKEVARS='CCACHE= CC=gcc-14'
+# GOO_VERSION is computed on the HOST and forwarded with --env below, never
+# derived inside the container: the gate builds `git archive HEAD`, which has
+# no .git, so anything derived in there resolves differently from a host build
+# and breaks byte identity. Same reasoning as SOURCE_DATE_EPOCH.
+#
+# It needs NO place on any make command line. make imports environment
+# variables as variables, and the Makefile declares `GOO_VERSION ?= 0.1.0`, so
+# an --env value wins and an unset one leaves the default. Verified, because
+# an earlier attempt put `$MAKEVARS` into the gate payload below -- which is
+# SINGLE-QUOTED, as the comment there says, so it expanded to nothing inside
+# the container, silently dropped CC=gcc-14, and the build failed.
 
 case "$MODE" in
   gate)
@@ -56,6 +67,7 @@ case "$MODE" in
     # so the flags are written out again below instead.
     podman run --rm -i \
       --env SOURCE_DATE_EPOCH="$(cd "$ROOT" && git log -1 --format=%ct)" \
+      ${GOO_VERSION:+--env GOO_VERSION="$GOO_VERSION"} \
       --volume "$OUT:/out:z" \
       "$IMAGE" sh -c '
         mkdir -p /src
@@ -80,6 +92,7 @@ case "$MODE" in
       --volume "$ROOT:/src:z" \
       --userns=keep-id \
       --env SOURCE_DATE_EPOCH="$(cd "$ROOT" && git log -1 --format=%ct)" \
+      ${GOO_VERSION:+--env GOO_VERSION="$GOO_VERSION"} \
       "$IMAGE" make $MAKEVARS "$@"
     ;;
 

@@ -46,7 +46,11 @@ done
 PKGS="$(sed -n 's/^GOOSTD_PKG_DIRS="\(.*\)"$/\1/p' "$ROOT/scripts/check_stdlib_coverage.sh")"
 [ -n "$PKGS" ] || { echo "package_toolchain: could not read GOOSTD_PKG_DIRS" >&2; exit 1; }
 
-VERSION="$("$COMPILER" version 2>/dev/null | sed -n 's/.*v\([0-9][0-9.]*\).*/\1/p' | head -1)"
+# Capture the WHOLE version token, not just digits and dots. A `[0-9.]*`
+# pattern silently truncated "9.9.9-rc1" to "9.9.9", so a pre-release and its
+# final would collide on one tarball name. Found by testing with a realistic
+# pre-release string instead of a tidy one.
+VERSION="$("$COMPILER" version 2>/dev/null | sed -n 's/^Goo Compiler v\([^ ]*\).*/\1/p' | head -1)"
 [ -n "$VERSION" ] || { echo "package_toolchain: could not read the compiler version" >&2; exit 1; }
 TRIPLE="$(uname -m)-unknown-linux-gnu"
 NAME="goo-$VERSION-$TRIPLE"
