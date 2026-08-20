@@ -249,15 +249,25 @@ gates.
 ## What sub-project B will cost
 
 Recorded here so this ADR does not imply the package manager is as cheap as
-`goop`. Sub-project A needs no compiler change. **B needs four.**
+`goop`. Sub-project A needs no compiler change. **B needs four**, and one is smaller
+than an earlier draft of this ADR claimed.
 
 1. `resolve_import()` (`import_resolver.c:248-292`) has **no tier for a
    fetched module cache**. One must be added, after GOOROOT and before the
    source-directory fallback.
-2. `normalize_import_path()` (lines 142-150) flattens nested import paths
-   through **three hardcoded cases** — `unicode/utf8`, `math/bits`,
-   `path/filepath`. Registry names look like `github.com/user/pkg`. This
-   function is incompatible with them as written.
+2. **A nested registry path is not mangled, and an earlier draft of this ADR
+   said it was.** `normalize_import_path()` (lines 142-150) maps three Go
+   stdlib spellings onto flat `goostd` directory names and returns everything
+   else unchanged — its own comment reads *"flat/unaliased spellings pass
+   through unchanged"*. So `github.com/user/pkg` survives intact. The problem
+   is only what it is then joined onto, which is item 1.
+
+   One question here is open and is **not** asserted, because it was not
+   checked: `resolve_package_dir()` sets `out->name` to the LAST path segment
+   and `out->import_path` to the full path verbatim. Whether two packages
+   both named `pkg`, from different hosts, can coexist therefore depends on
+   which of the two the driver keys on. Answer that before designing the
+   manifest.
 3. Nothing reads `goo.mod`. A parser and a resolver are new.
 4. Eight package names resolve through a hardcoded C shim
    (`is_stdlib_shim_import()`, `src/compiler/goo.c:719-732`). A fetched
