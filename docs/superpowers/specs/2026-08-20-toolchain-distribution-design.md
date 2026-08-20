@@ -1,6 +1,9 @@
 # Toolchain distribution: `goop` and the release pipeline
 
-Status: design, approved 2026-08-20. Implementation not started.
+Status: **PARTLY IMPLEMENTED** 2026-08-20. Packaging, `make install`, and
+`release-package-probe` have landed and are in `verify-core`. Still design
+only: channel manifests, the R2 layout, the release workflow, signing, and
+`goop` itself.
 Sub-project A of `docs/adr/0006-toolchain-distribution-and-package-ecosystem.md`.
 
 ## The problem, measured before it was designed for
@@ -273,17 +276,15 @@ update`, no proxy or mirror configuration, no nightly channel.
 
 ## The gate, with teeth
 
-`release-package-probe`, in `verify` beside the other podman-dependent gates
-— **not** in `verify-core`, which CLAUDE.md promises is "safe for pre-push on
-any machine". It costs a full build and it would make `verify-core` depend on
-podman.
+**Corrected on implementation, 2026-08-20.** This section originally put
+`release-package-probe` in `verify` beside the podman gates, reasoning that "it
+costs a full build and it would make `verify-core` depend on podman". **Both
+halves are wrong.** The probe packages artifacts `verify-core` has already
+built and never invokes podman. Measured end to end: **4.8 seconds.**
 
-It adds to `HEAVY_DEPS`, the set the repro design introduced:
-
-```make
-HEAVY_DEPS       := v2-bootstrap-pilot repro-build-probe release-package-probe
-VERIFY_CORE_DEPS := $(filter-out $(HEAVY_DEPS),$(VERIFY_ALL_DEPS))
-```
+It is therefore in **`verify-core`**, which is where it belongs — the tier-2
+path it exercises should be checked on every pre-push, not only on a machine
+with a container runtime.
 
 ### What it asserts
 
@@ -335,12 +336,12 @@ valgrind and tsan gates.
 2. **The pipeline's first real run is its first test.** It cannot be exercised
    without R2 credentials and a tag push. `release-package-probe` covers
    packaging and the layout, and covers neither upload nor signing.
-3. **`.tar.gz` determinism is unproven.** It is a new input to a
-   reproducibility claim. gzip stamps an mtime unless given `-n`, and tar
-   records mtime, uid, gid and member order. Measure it **in the recipe's own
-   shape** — the repro design found `ar -D` behaved differently under `ar rcs`
-   than under the MRI `ar -M` form actually used, and assumed transfer was the
-   trap.
+3. ~~**`.tar.gz` determinism is unproven.**~~ **CLOSED 2026-08-20.**
+   `tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@$EPOCH` piped
+   through `gzip -n` is byte-identical across runs, and
+   `release-package-probe` asserts it by packaging twice and comparing.
+   Negative control run first: a naive `tar -czf` DIFFERS under the same
+   conditions, so the assertion has teeth rather than being vacuously true.
 4. **A signed artifact is not a reproducible one.** The signature proves who
    published; it does not prove the bytes match the source. The `build` block
    lets a third party check the second claim, and nothing forces them to.

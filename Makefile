@@ -3171,6 +3171,7 @@ goostd-resolver-probe:
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
 VERIFY_ALL_DEPS := \
     safety-baseline-check \
+    release-package-probe \
     baseline-probe \
     lvalue-probe \
     file-io-probe \
@@ -4855,9 +4856,37 @@ $(TEST_ERROR_REPORTING): $(TEST_INTEGRATION_DIR)/error_reporting_test.c $(OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 
-# Install
-install: $(COMPILER)
-	cp $(COMPILER) /usr/local/bin/
+# Install the SAME layout a released tarball carries -- <prefix>/bin/goo plus
+# <prefix>/lib/{goostd,libgoo_runtime.a} -- so the installed compiler resolves
+# through goo_gooroot_dir() tier 2 with no environment variable.
+#
+# This target used to be `cp $(COMPILER) /usr/local/bin/` and nothing else. It
+# copied neither goostd/ nor the runtime archive, so /usr/local/lib/goostd never
+# existed, both lookups fell through to their cwd fallbacks, and the installed
+# compiler worked ONLY when invoked from the repository root. ADR 0006 records
+# that as defect 1. It shares scripts/package_toolchain.sh with `dist`, so an
+# installed tree and a released tarball cannot drift apart.
+PREFIX ?= /usr/local
+.PHONY: install
+install: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/package_toolchain.sh --stage "$(PREFIX)"
+
+# Build a distributable toolchain tarball into build/dist/.
+.PHONY: dist
+dist: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/package_toolchain.sh $(BUILDDIR)/dist
+
+# FIRST AUTOMATED EXECUTION of resolver tier 2. Extracts a packaged toolchain,
+# unsets GOOROOT and GOO_RUNTIME, runs from an unrelated cwd, and builds a
+# fixture that imports a VENDORED package -- a fmt-only fixture passes with
+# lib/goostd deleted, because the shim packages live inside bin/goo. Also
+# asserts the packaging is byte-deterministic across two runs.
+#
+# In verify-core, not the heavy set: it needs no podman and no network, only
+# the two artifacts verify-core already builds.
+.PHONY: release-package-probe
+release-package-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/release_package_probe.sh
 
 # Development helpers
 # -DGOO_DEBUG is what actually turns the asserts on. -DDEBUG was here from the
