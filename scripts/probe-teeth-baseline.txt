@@ -16,20 +16,43 @@
 #
 # Removing a line here means adding a negative control to that probe. That is
 # the intended direction of travel; this list must never grow.
+#
+# IT GREW ONCE, ON PURPOSE, on 2026-08-20: from 17 to 32. The scan was widened
+# from scripts/*probe*.sh to scripts/*.sh, which made 15 scripts visible that
+# had always been exempt by filename rather than by decision. Recording them is
+# not a loss of coverage -- nothing was being checked before either. It turns an
+# accidental exemption into a counted one, and the count can only fall from here.
+# assert_corpus.sh is deliberately NOT among them: it gained a --self-test in
+# the same commit.
 arc_concat_operand_probe.sh
 arc_map_key_local_probe.sh
 arc_multi_assign_probe.sh
+arc_reason_census.sh
 arc_reassign_probe.sh
 archive_determinism_probe.sh
 arena_rss_probe.sh
+check_stdlib_coverage.sh
+daemon_alloc_attribution.sh
 dead_package_code_probe.sh
 exit_code_probe.sh
 far-probe.sh
 goo_assert_probe.sh
 goo_test_probe.sh
+grammar-tripwire.sh
 lexer_keyword_probe.sh
+misra-scan.sh
 nil_deref_probe.sh
+package_toolchain.sh
+podman_build.sh
 podman_image_probe.sh
 proof_cache_shell_probe.sh
+record_toolchain.sh
+run_golden.sh
+run_golden_reject.sh
+run_spec_conformance.sh
+rust_compare_bench.sh
+safety-scan.sh
+stdlib_coverage_drift.sh
 string_literal_header_probe.sh
+wasm_examples.sh
 workflow_targets_probe.sh

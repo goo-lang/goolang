@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# MUTATION-HARNESS: every run of this script IS its own negative control. It
+# deletes one condition from src/types/release_decision.c at a time and requires
+# a row of the suite to go RED for each; a mutation that stays green is reported
+# UNGUARDED and fails the run. There is no --self-test because there is no mode
+# in which it does not mutate.
+#
+# The marker is here because probe-teeth-probe used to match this file on the
+# letters "MUTATE" inside the word "UNMUTATED", in a comment on line 153. The
+# file had real teeth and the detector had never once seen them.
+#
 # Does release_decision_test actually catch a missing condition?
 #
 # The suite passed on its FIRST run, which proves nothing: a test that has never

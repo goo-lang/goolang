@@ -36,14 +36,108 @@ trap 'rm -rf "$WORK"' EXIT
 TIMEOUT="${FIXTURE_TIMEOUT:-30}"
 MAX_REPORT="${MAX_REPORT:-10}"
 
+# Overrides, used only by --self-test below. The default path is unchanged:
+# build the real compiler with GOO_DEBUG and sweep the real corpus.
+GOO_BIN="${ASSERT_CORPUS_BIN:-./bin/goo}"
+SKIP_BUILD="${ASSERT_CORPUS_SKIP_BUILD:-0}"
+FIXTURE_GLOB="${ASSERT_CORPUS_FIXTURES:-}"
+
+# ---------------------------------------------------------------------------
+# --self-test. This script had NO negative control until 2026-08-20, and it was
+# invisible to probe-teeth-probe, which scanned scripts/*probe*.sh and cannot
+# see a name without "probe" in it. So the rule "a new probe cannot enter this
+# tree without teeth" did not reach the sweep that guards 754 fixtures.
+#
+# A STUB COMPILER, NOT A MUTATED SOURCE. release_decision_teeth.sh mutates a .c
+# file and rebuilds, which works because that suite links one object. The unit
+# under test HERE is the sweep -- "does this script notice a fixture that
+# aborted" -- and the compiler is only what produces the abort. Rebuilding the
+# real compiler three times to prove a return-code comparison costs about twelve
+# minutes and tests the comparison no harder than a stub does.
+#
+# The build path is not left unguarded by that choice: the `asserts: on` check
+# below is what proves GOO_DEBUG reached the objects, and its comment records
+# two earlier versions of that check that were both wrong and both confident.
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "--self-test" ]; then
+    SELF="assert-corpus --self-test"
+    W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+    bad_self=0
+
+    mkdir -p "$W/fixtures" "$W/empty"
+    for i in 1 2 3; do echo 'package main' > "$W/fixtures/f$i.goo"; done
+
+    make_stub() {  # abort-on-suffix ("none" for clean), version line
+        cat > "$W/goo" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "--version" ]; then echo "Goo Compiler v0.0.0-stub"; echo "$2"; exit 0; fi
+for a in "\$@"; do case "\$a" in *"$1") exit 134 ;; esac; done
+exit 0
+EOF
+        chmod +x "$W/goo"
+    }
+    run_sweep() {  # fixture glob
+        ASSERT_CORPUS_BIN="$W/goo" ASSERT_CORPUS_SKIP_BUILD=1 \
+        ASSERT_CORPUS_FIXTURES="$1" "$0" > "$W/out.log" 2>&1
+    }
+
+    # CONTROL. Without it, a stub that cannot execute turns every row red and
+    # reads as three successes.
+    make_stub none "asserts: on"
+    if run_sweep "$W/fixtures/*.goo"; then
+        echo "    ok: control (clean stub, asserts on) is GREEN"
+    else
+        echo "$SELF: FAIL (control already red -- the harness is broken)"
+        sed 's/^/        /' "$W/out.log"; exit 1
+    fi
+
+    make_stub "f2.goo" "asserts: on"
+    if run_sweep "$W/fixtures/*.goo"; then
+        echo "$SELF: FAIL (a fixture that aborted did not turn the sweep red)"
+        sed 's/^/        /' "$W/out.log"; bad_self=1
+    elif ! grep -q "f2.goo" "$W/out.log"; then
+        echo "$SELF: FAIL (went red without naming the fixture that aborted)"
+        sed 's/^/        /' "$W/out.log"; bad_self=1
+    else
+        echo "    ok: an aborting fixture turns it red, and is named"
+    fi
+
+    # The one that matters most: every assert compiled out means every fixture
+    # passes and the verdict reads exactly like success.
+    make_stub none "asserts: off"
+    if run_sweep "$W/fixtures/*.goo"; then
+        echo "$SELF: FAIL (a compiler with asserts OFF reported a clean sweep)"
+        sed 's/^/        /' "$W/out.log"; bad_self=1
+    elif ! grep -q "BROKEN" "$W/out.log"; then
+        echo "$SELF: FAIL (asserts OFF went red, but not as BROKEN)"
+        sed 's/^/        /' "$W/out.log"; bad_self=1
+    else
+        echo "    ok: a compiler with asserts off is BROKEN, not a clean sweep"
+    fi
+
+    make_stub none "asserts: on"
+    if run_sweep "$W/empty/*.goo"; then
+        echo "$SELF: FAIL (an empty corpus reported a clean sweep)"
+        sed 's/^/        /' "$W/out.log"; bad_self=1
+    else
+        echo "    ok: an empty corpus is refused"
+    fi
+
+    [ "$bad_self" -ne 0 ] && exit 1
+    echo "$SELF: PASS (control green; 3 failure modes independently turn it red)"
+    exit 0
+fi
+
 echo "=== assert-corpus: the fixture corpus against a GOO_DEBUG compiler ==="
 
-echo "--- building with -DGOO_DEBUG (asserts ON, ~4x slower) ---"
-make clean >/dev/null 2>&1
-if ! make debug >"$WORK/build.log" 2>&1; then
-    echo "assert-corpus: FAIL — the debug build did not compile"
-    grep -E "error:" "$WORK/build.log" | head -10
-    exit 1
+if [ "$SKIP_BUILD" != "1" ]; then
+    echo "--- building with -DGOO_DEBUG (asserts ON, ~4x slower) ---"
+    make clean >/dev/null 2>&1
+    if ! make debug >"$WORK/build.log" 2>&1; then
+        echo "assert-corpus: FAIL — the debug build did not compile"
+        grep -E "error:" "$WORK/build.log" | head -10
+        exit 1
+    fi
 fi
 
 # Instrument check. If GOO_DEBUG did not actually reach the compiler's objects,
@@ -62,23 +156,27 @@ fi
 #      distinguish anything.
 #
 # `goo --version` reports the build directly, so there is nothing to infer.
-if ! ./bin/goo --version 2>/dev/null | grep -q "^asserts: on"; then
-    echo "assert-corpus: BROKEN — bin/goo reports:"
-    ./bin/goo --version 2>&1 | sed 's/^/      /'
+if ! "$GOO_BIN" --version 2>/dev/null | grep -q "^asserts: on"; then
+    echo "assert-corpus: BROKEN — $GOO_BIN reports:"
+    "$GOO_BIN" --version 2>&1 | sed 's/^/      /'
     echo "  GOO_DEBUG did not reach the build, so every assert is compiled out."
     echo "  A clean sweep here would mean nothing."
     exit 1
 fi
-echo "  bin/goo reports: $(./bin/goo --version | grep '^asserts:')"
+echo "  $GOO_BIN reports: $("$GOO_BIN" --version | grep '^asserts:')"
 
-mapfile -t FIXTURES < <(ls examples/*.goo tests/golden/reject/*.goo 2>/dev/null)
+if [ -n "$FIXTURE_GLOB" ]; then
+    mapfile -t FIXTURES < <(ls $FIXTURE_GLOB 2>/dev/null)
+else
+    mapfile -t FIXTURES < <(ls examples/*.goo tests/golden/reject/*.goo 2>/dev/null)
+fi
 [ "${#FIXTURES[@]}" -gt 0 ] || { echo "assert-corpus: BROKEN — empty corpus"; exit 1; }
 
 echo "--- compiling ${#FIXTURES[@]} fixtures ---"
 aborted=0
 ran=0
 for f in "${FIXTURES[@]}"; do
-    timeout "$TIMEOUT" ./bin/goo -o "$WORK/out" "$f" >/dev/null 2>"$WORK/err"
+    timeout "$TIMEOUT" "$GOO_BIN" -o "$WORK/out" "$f" >/dev/null 2>"$WORK/err"
     rc=$?
     ran=$((ran + 1))
     # 128+SIGABRT(6)=134. A reject fixture exits 1 by design, and that is not a

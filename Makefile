@@ -3191,6 +3191,7 @@ VERIFY_ALL_DEPS := \
     safety-baseline-check \
     doc-claims-probe \
     probe-teeth-probe \
+    assert-corpus-selftest \
     goo-check-probe \
     goo-testcase-probe \
     release-package-probe \
@@ -5455,6 +5456,14 @@ goo-assert-probe:
 # (void)0.
 assert-corpus:
 	@bash scripts/assert_corpus.sh
+
+# The sweep's negative control, and it IS in verify-core even though the sweep
+# is not. It runs against a stub compiler in seconds, so it costs nothing, and
+# it is what stops assert-corpus from becoming a target that reports a clean
+# number forever. Same split as ast-free-leak-selftest and alloc-doors-selftest.
+.PHONY: assert-corpus-selftest
+assert-corpus-selftest:
+	@bash scripts/assert_corpus.sh --self-test
 
 # A Goo string literal must be a real ARC object: { header, bytes } with the
 # count set to GOO_RC_IMMORTAL. Asserts the IR shape, the 16-byte alignment,
