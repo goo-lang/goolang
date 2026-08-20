@@ -1,0 +1,15 @@
+package main
+
+import (
+	"fmt"
+	str "strings"
+)
+
+// Go semantics: `import str "strings"` DECLARES str and does NOT declare
+// strings. Using the original name after renaming it away is an error.
+// Before this fix Goo accepted this and printed the answer, which is the
+// dangerous half of the bug: the program keeps building under the name its
+// author explicitly renamed away from.
+func main() {
+	fmt.Println(strings.ToUpper("the original name must not resolve"))
+}

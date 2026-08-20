@@ -1,0 +1,13 @@
+package main
+
+import (
+	"fmt"
+	str "strings"
+)
+
+// A renamed import must bind the NEW name. Go spells this
+// `import str "strings"`, and Goo has parsed it since the grammar was
+// written -- it just discarded the name.
+func main() {
+	fmt.Println(str.ToUpper("rename import"))
+}

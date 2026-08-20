@@ -266,26 +266,40 @@ graph.
 `import foo "host/a/pkg"` binds an explicit local name, which resolves the
 short-name collision recorded in item 2 below.
 
-**The syntax already parses. The rename is then discarded.** This was measured
-rather than assumed:
+**The syntax already parses, and HALF the compiler honoured it.** Corrected
+below, because the first version of this section got it wrong.
 
-- `parser.y:368` builds the `ImportSpecNode` with the alias.
-- `include/ast.h:319` stores it, commented *"Optional alias"*.
-- **No file in `src/` ever reads that field.**
+> **Correction, 2026-08-20.** This section originally said "No file in `src/`
+> ever reads that field." That is false — **six sites read `spec->alias`**,
+> including `goo.c:769` and four in `type_checker.c`. The claim came from a
+> grep that failed with a shell glob error and printed nothing, which was read
+> as absence rather than as a broken command. The bug was real but narrower
+> than stated.
 
-| Program | Result |
-|---|---|
-| `import str "strings"` then `str.ToUpper(…)` | exit 1 — `Undefined variable 'str'` |
-| `import str "strings"` then `strings.ToUpper(…)` | **exit 0** — the original name is still bound |
+The measured split, before the fix:
 
-So this is not a missing feature behind unwritten syntax. It is **accepted
-syntax that silently does not work**, and the second row is the dangerous one:
-a program keeps building under the name its author explicitly renamed away
-from. That is a live divergence from Go today, independent of whether
-sub-project B ever starts.
+| Package kind | Alias binds | Original name unbound |
+|---|---|---|
+| Shim — `fmt`, `os`, `math`, `errors`, `sync`, `time`, `far`, `testing` | yes | yes — correct Go semantics |
+| **Source and vendored** — `strings`, `io`, `bytes`, … and local packages | **no** | **no** |
 
-The work is therefore in the driver and the type checker, not the parser: read
-`spec->alias`, and seed the marker under it when present.
+`seed_imported_stdlib_markers` had honoured the alias since it was written
+(`const char* short_name = spec->alias ? spec->alias : spec->path;`). The
+source-package path in `compile_resolved_packages` never did, and seeded by
+`e->name` instead. So the second row was accepted syntax that silently did not
+work, and its second column was the dangerous half: a program kept building
+under the name its author explicitly renamed away from.
+
+**FIXED.** `PkgEntry` now carries the alias, and the source path uses the same
+expression the shim path always used. Gated by `examples/rename_import.goo`
+and `tests/golden/reject/rename_import_original_unbound_reject.goo`.
+
+One constraint remains, and it is the reason per-file import scope stays on
+the list above. The alias binds only for the ENTRY program's own imports —
+`walk_program_imports` carries a `top_level` flag and transitive imports pass
+`NULL`, because a dependency must not rename anything for the program that
+pulled it in. Markers are seeded into one global scope, so where a diamond
+reaches the same package both aliased and plain, the first alias wins.
 
 ## What sub-project B will cost
 

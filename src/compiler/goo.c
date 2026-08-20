@@ -588,6 +588,11 @@ typedef enum { PKG_UNVISITED = 0, PKG_IN_PROGRESS = 1, PKG_DONE = 2 } PkgState;
 typedef struct {
     char* import_path;   // registry key (owned)
     char* name;          // package short name (owned)
+    // The local name a TOP-LEVEL `import foo "path"` binds, or NULL (owned).
+    // Only the entry package's own imports set this: an alias is the importing
+    // file's business, so a transitive import must not rename anything for the
+    // program that pulled it in. See walk_program_imports' top_level flag.
+    char* alias;
     // One parsed ProgramNode per FILE of the package (owned). A package is the
     // union of its files, and each file is parsed separately under its own real
     // filename — the filename reaches every diagnostic raised while checking
@@ -690,6 +695,7 @@ static void pkg_graph_free(PkgGraph* g) {
         free(e->file_names);
         free(e->import_path);
         free(e->name);
+        free(e->alias);
         free(e);
     }
     free(g->entries);
@@ -707,7 +713,7 @@ static void pkg_graph_free(PkgGraph* g) {
 // walk_import now parses each file under its own real filename.
 
 // Forward decl for mutual recursion.
-static int walk_import(PkgGraph* g, const char* import_path);
+static int walk_import(PkgGraph* g, const char* import_path, const char* alias);
 
 // The stdlib packages served by the hardcoded C shim (stdlib_package_lookup +
 // the codegen goo_* if-chain). These have NO source under GOOROOT, so the
@@ -785,22 +791,31 @@ static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports)
 }
 
 // Walk every import spec in a ProgramNode's import list.
-static int walk_program_imports(PkgGraph* g, ASTNode* imports) {
+// `top_level` marks the entry program's own import list. Only there does an
+// alias bind a name, matching seed_imported_stdlib_markers, which has honoured
+// `spec->alias` for shim packages since it was written. A transitive import's
+// alias belongs to the file that wrote it, never to the whole program.
+static int walk_program_imports(PkgGraph* g, ASTNode* imports, bool top_level) {
     for (ASTNode* imp = imports; imp; imp = imp->next) {
         if (imp->type != AST_IMPORT_SPEC) continue;
         ImportSpecNode* spec = (ImportSpecNode*)imp;
         if (!spec->path) continue;
         if (is_stdlib_shim_import(spec->path)) continue;  // handled by the shim
-        if (walk_import(g, spec->path) != 0) return -1;
+        if (walk_import(g, spec->path, top_level ? spec->alias : NULL) != 0) return -1;
     }
     return 0;
 }
 
 // Resolve, parse, and topologically place `import_path`. Returns 0 on success,
 // -1 on cycle / resolve / parse failure (message already printed to stderr).
-static int walk_import(PkgGraph* g, const char* import_path) {
+static int walk_import(PkgGraph* g, const char* import_path, const char* alias) {
     PkgEntry* existing = pkg_graph_find(g, import_path);
     if (existing) {
+        // A diamond can reach the same package twice, once aliased and once
+        // not. FIRST alias wins, because the marker is seeded once into a
+        // single global scope and cannot hold two names (see the limit
+        // recorded in ADR 0006 on per-file import scope).
+        if (alias && !existing->alias) existing->alias = str_dup(alias);
         if (existing->state == PKG_DONE) return 0;        // diamond: already placed
         if (existing->state == PKG_IN_PROGRESS) {
             fprintf(stderr,
@@ -812,6 +827,10 @@ static int walk_import(PkgGraph* g, const char* import_path) {
 
     PkgEntry* e = pkg_graph_add(g, import_path);
     if (!e) { fprintf(stderr, "Error: out of memory resolving imports\n"); return -1; }
+    if (alias) {
+        e->alias = str_dup(alias);
+        if (!e->alias) { fprintf(stderr, "Error: out of memory resolving imports\n"); return -1; }
+    }
     e->state = PKG_IN_PROGRESS;
 
     // P4.5 review fix: a ".." segment is an explicit rejection, not a
@@ -910,7 +929,7 @@ static int walk_import(PkgGraph* g, const char* import_path) {
     for (size_t fi = 0; fi < e->ast_count; fi++) {
         if (e->asts[fi]->type != AST_PROGRAM) continue;
         ProgramNode* prog = (ProgramNode*)e->asts[fi];
-        if (walk_program_imports(g, prog->imports) != 0) return -1;
+        if (walk_program_imports(g, prog->imports, false) != 0) return -1;
     }
 
     e->state = PKG_DONE;
@@ -931,7 +950,9 @@ static bool dump_package_graph(ProgramNode* main_prog, const char* source_dir) {
     memset(&g, 0, sizeof(g));
     g.source_dir = source_dir;
 
-    bool ok = (walk_program_imports(&g, main_prog->imports) == 0);
+    // top_level: this mirrors the real compile path so --dump-packages
+    // reports the same graph it would build.
+    bool ok = (walk_program_imports(&g, main_prog->imports, true) == 0);
     if (ok) {
         for (size_t i = 0; i < g.ordered_count; i++) {
             printf("%s\n", g.ordered[i]->import_path);
@@ -955,7 +976,10 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
                                       CodeGenerator* codegen) {
     for (size_t i = 0; i < g->ordered_count; i++) {
         PkgEntry* e = g->ordered[i];
-        Package* p = type_checker_add_package(checker, e->import_path, e->name);
+        // Go binds the LOCAL name: `import str "strings"` declares str and
+        // does not declare strings. Same expression the shim path uses.
+        const char* short_name = e->alias ? e->alias : e->name;
+        Package* p = type_checker_add_package(checker, e->import_path, short_name);
         if (!p) {
             fprintf(stderr, "Error: out of memory registering package \"%s\"\n",
                     e->import_path);
@@ -967,7 +991,7 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
         // resolution can reach p->exports. Conditional on a REAL import (only
         // resolved packages reach here). Uses the same single seeding path as
         // the stdlib-shim markers (see seed_imported_stdlib_markers).
-        type_checker_seed_package_marker(checker, e->name, p);
+        type_checker_seed_package_marker(checker, short_name, p);
 
         // type_check_package leaves the package scope pushed and current_package
         // set (its LIFETIME CONTRACT) so codegen can recover each function's
@@ -1417,7 +1441,8 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         bool pkgs_ok = true;
         for (size_t fi = 0; pkgs_ok && fi < nfiles; fi++) {
             pkgs_ok = (walk_program_imports(&pkg_graph,
-                                            ((ProgramNode*)asts[fi])->imports) == 0);
+                                            ((ProgramNode*)asts[fi])->imports,
+                                            true) == 0);
         }
         pkgs_ok = pkgs_ok
             && compile_resolved_packages(&pkg_graph, type_checker, codegen);
