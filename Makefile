@@ -3184,6 +3184,7 @@ goostd-resolver-probe:
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
 VERIFY_ALL_DEPS := \
     safety-baseline-check \
+    doc-claims-probe \
     release-package-probe \
     baseline-probe \
     lvalue-probe \
@@ -6381,6 +6382,16 @@ safety:
 .PHONY: safety-baseline-check
 safety-baseline-check:
 	@bash scripts/safety-scan.sh --check-baseline
+
+# The factual claims our DOCUMENTS make about this tree, as assertions. An ADR
+# that states "goostd has 9 stdlib packages" or "/proc/self/exe lives in two
+# files" is making a checkable claim, and nothing re-checked those until now --
+# four such claims went into ADR 0006 from inference on 2026-08-20 and three
+# were merged wrong. Needs nothing but the filesystem, so it belongs in
+# verify-core.
+.PHONY: doc-claims-probe
+doc-claims-probe:
+	@bash scripts/doc_claims_probe.sh
 
 # Scan the C compiler/runtime source against the adopted MISRA C:2012 subset and
 # fail on any violation not in scripts/misra-baseline.txt. Local-only gate (see
