@@ -156,10 +156,10 @@ build_from "$SRC" "$WORK/build_base.log" \
     || die "baseline build failed; see $WORK/build_base.log"
 "$BIN" > "$WORK/run_base.log" 2>&1
 base_rc=$?
-grep -q "release_decision_test summary:" "$WORK/run_base.log" \
-    || die "baseline produced no summary line"
+grep -qE "^release-decision-test: (PASS|FAIL|BROKEN)" "$WORK/run_base.log" \
+    || die "baseline produced no verdict line"
 [ "$base_rc" -eq 0 ] || die "baseline is RED; fix that before reading any mutation"
-echo "baseline: PASS ($(grep -o 'summary:.*' "$WORK/run_base.log"))"
+echo "baseline: $(grep -E "^release-decision-test: " "$WORK/run_base.log" | tail -1)"
 echo
 
 rc=0
@@ -192,18 +192,25 @@ PY
         continue
     fi
     "$BIN" > "$WORK/run_$label.log" 2>&1
-    if ! grep -q "release_decision_test summary:" "$WORK/run_$label.log"; then
+    verdict_line="$(grep -E "^release-decision-test: (PASS|FAIL|BROKEN)" "$WORK/run_$label.log" | tail -1)"
+    if [ -z "$verdict_line" ]; then
         printf '%-18s INCONCLUSIVE-crash\n' "$label"
         rc=1
         continue
     fi
-    failed=$(grep -oP "summary: [0-9]+ assertions passed, \K[0-9]+" "$WORK/run_$label.log")
-    # THREE row populations, not one. The suite prints "Row", "Key row" and
-    # "Elem row", and counting only the first reported "0 rows" for a caught
-    # key-row mutation -- a detail line that reads like a fault in the gate.
-    rows=$(grep -cE "^  (Key row|Elem row|Row) .*: FAIL" "$WORK/run_$label.log")
+    # BROKEN is NOT caught. It means the suite did not run its declared rows,
+    # so the mutation was never put to the rows meant to catch it -- the same
+    # reason a build failure and a crash are inconclusive here.
+    case "$verdict_line" in
+        *": BROKEN"*)
+            printf '%-18s INCONCLUSIVE-broken (the suite did not run its declared rows)\n' "$label"
+            rc=1
+            continue ;;
+    esac
+    failed=$(printf '%s' "$verdict_line" | grep -oP 'FAIL \(\K[0-9]+')
     if [ "${failed:-0}" -gt 0 ]; then
-        printf '%-18s CAUGHT   (%s assertions, %s rows)\n' "$label" "$failed" "$rows"
+        printf '%-18s CAUGHT   (%s of %s reported check failures)\n' \
+            "$label" "$failed" "$(grep -c '^  FAIL: ' "$WORK/run_$label.log")"
         caught=$((caught + 1))
     else
         printf '%-18s UNGUARDED -- no row notices this condition missing\n' "$label"

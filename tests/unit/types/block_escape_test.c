@@ -28,6 +28,7 @@
 #include "types.h"
 #include "param_escape.h"
 #include "block_escape.h"
+#include "../goo_check.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -588,17 +589,7 @@ static TestRow rows[] = {
     },
 };
 
-static int g_pass = 0;
-static int g_fail = 0;
 
-static void check(bool cond, const char* fmt_ctx) {
-    if (cond) {
-        g_pass++;
-    } else {
-        g_fail++;
-        printf("    FAIL: %s\n", fmt_ctx);
-    }
-}
 
 // Recursively finds the first `new(...)` call expression reachable from a
 // statement list — used only by row 14, to obtain a real (but
@@ -651,21 +642,20 @@ static ASTNode* find_first_new_call(ASTNode* node) {
 
 int main(void) {
     size_t n = sizeof(rows) / sizeof(rows[0]);
-    int row_failed_count = 0;
+    goo_check_expect((int)n + 1);
 
     for (size_t r = 0; r < n; r++) {
         TestRow* row = &rows[r];
-        printf("=== Row %d: %s ===\n", row->row, row->description);
+        goo_check_row(row->row, row->description);
 
-        int before_fail = g_fail;
-
+        char parsebuf[128];
         int parse_rc = parse_input(row->src, "test.goo");
+        snprintf(parsebuf, sizeof(parsebuf),
+                 "row %d: the fixture parses (rc=%d, ast_root=%p)",
+                 row->row, parse_rc, (void*)ast_root);
+        goo_check(parse_rc == 0 && ast_root != NULL, parsebuf);
         if (parse_rc != 0 || !ast_root) {
-            printf("    FAIL: parse_input failed (rc=%d, ast_root=%p)\n", parse_rc, (void*)ast_root);
-            g_fail++;
             if (ast_root) { ast_node_free(ast_root); ast_root = NULL; }
-            printf("  Row %d: FAIL\n\n", row->row);
-            row_failed_count++;
             continue;
         }
 
@@ -682,19 +672,17 @@ int main(void) {
 
         ParamEscapeResult* summaries = param_escape_analyze(ast_root);
         if (!summaries) {
-            printf("    FAIL: param_escape_analyze returned NULL (allocation failure)\n");
-            g_fail++;
+            goo_check(false, "param_escape_analyze returned NULL (allocation failure)");
         } else {
             BlockEscapeResult* result = block_escape_analyze(ast_root, summaries);
             if (!result) {
-                printf("    FAIL: block_escape_analyze returned NULL (allocation failure)\n");
-                g_fail++;
+                goo_check(false, "block_escape_analyze returned NULL (allocation failure)");
             } else {
                 char ctxbuf[256];
 
                 snprintf(ctxbuf, sizeof(ctxbuf), "row %d: decision count == %zu (got %zu)",
                          row->row, row->expected_count, result->count);
-                check(result->count == row->expected_count, ctxbuf);
+                goo_check(result->count == row->expected_count, ctxbuf);
 
                 size_t check_n = row->expected_count < result->count ? row->expected_count : result->count;
                 for (size_t i = 0; i < check_n; i++) {
@@ -703,7 +691,7 @@ int main(void) {
                              row->row, i,
                              row->expected_escapes[i] ? "true" : "false",
                              result->decisions[i].escapes_block ? "true" : "false");
-                    check(result->decisions[i].escapes_block == row->expected_escapes[i], ctxbuf);
+                    goo_check(result->decisions[i].escapes_block == row->expected_escapes[i], ctxbuf);
 
                     // Cross-check the lookup helper agrees with the
                     // decisions array it was derived from.
@@ -711,7 +699,7 @@ int main(void) {
                     snprintf(ctxbuf, sizeof(ctxbuf),
                              "row %d: block_escape_site_escapes(decisions[%zu].site) matches decisions[%zu].escapes_block",
                              row->row, i, i);
-                    check(via_helper == result->decisions[i].escapes_block, ctxbuf);
+                    goo_check(via_helper == result->decisions[i].escapes_block, ctxbuf);
                 }
 
                 if (row->row == 14) {
@@ -720,13 +708,13 @@ int main(void) {
                     // lies outside every arena block.
                     ASTNode* outside_site = find_first_new_call(ast_root);
                     snprintf(ctxbuf, sizeof(ctxbuf), "row %d: found the out-of-arena new(int) node to probe", row->row);
-                    check(outside_site != NULL, ctxbuf);
+                    goo_check(outside_site != NULL, ctxbuf);
                     if (outside_site) {
                         bool escapes = block_escape_site_escapes(result, outside_site);
                         snprintf(ctxbuf, sizeof(ctxbuf),
                                  "row %d: block_escape_site_escapes(un-recorded out-of-arena site) == true (conservative miss)",
                                  row->row);
-                        check(escapes == true, ctxbuf);
+                        goo_check(escapes == true, ctxbuf);
                     }
                 }
 
@@ -739,20 +727,21 @@ int main(void) {
         ast_node_free(ast_root);
         ast_root = NULL;
 
-        bool row_ok = (g_fail == before_fail);
-        printf("  Row %d: %s\n\n", row->row, row_ok ? "PASS" : "FAIL");
-        if (!row_ok) row_failed_count++;
     }
 
     // Conservative-miss contract for an unknown/NULL site, independent of
     // any specific row's AST (block_escape_analyze(NULL,...) yields a
-    // valid, empty result per the header contract).
+    // valid, empty result per the header contract). Counted as one more row
+    // than the table holds -- goo_check_expect() above says (int)n + 1 for
+    // exactly this section, so dropping it reports BROKEN rather than a
+    // quietly smaller test.
+    goo_check_row((int)n + 1, "conservative-miss contract for an unknown or NULL site");
     {
         BlockEscapeResult* empty = block_escape_analyze(NULL, NULL);
-        check(empty != NULL, "block_escape_analyze(NULL, NULL) returns a valid (non-NULL) empty result");
+        goo_check(empty != NULL, "block_escape_analyze(NULL, NULL) returns a valid (non-NULL) empty result");
         if (empty) {
-            check(empty->count == 0, "block_escape_analyze(NULL, NULL) result has count == 0");
-            check(block_escape_site_escapes(empty, NULL) == true,
+            goo_check(empty->count == 0, "block_escape_analyze(NULL, NULL) result has count == 0");
+            goo_check(block_escape_site_escapes(empty, NULL) == true,
                   "block_escape_site_escapes(_, NULL) == true (conservative miss)");
             // A bogus/unknown site pointer (never produced by any
             // analysis) must also miss conservatively -- use the address
@@ -760,15 +749,11 @@ int main(void) {
             // "ASTNode*".
             ASTNode bogus;
             memset(&bogus, 0, sizeof(bogus));
-            check(block_escape_site_escapes(empty, &bogus) == true,
+            goo_check(block_escape_site_escapes(empty, &bogus) == true,
                   "block_escape_site_escapes(_, <unknown node>) == true (conservative miss)");
             block_escape_result_free(empty);
         }
     }
 
-    printf("=================================================\n");
-    printf("block_escape_test summary: %d assertions passed, %d failed, %d/%zu rows failed\n",
-           g_pass, g_fail, row_failed_count, n);
-
-    return g_fail ? 1 : 0;
+    return goo_check_done("block-escape-test");
 }

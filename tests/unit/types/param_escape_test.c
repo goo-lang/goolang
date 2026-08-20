@@ -24,6 +24,7 @@
 #include "ast.h"
 #include "types.h"
 #include "param_escape.h"
+#include "../goo_check.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -439,35 +440,24 @@ static TestRow rows[] = {
     },
 };
 
-static int g_pass = 0;
-static int g_fail = 0;
 
-static void check(bool cond, const char* fmt_ctx) {
-    if (cond) {
-        g_pass++;
-    } else {
-        g_fail++;
-        printf("    FAIL: %s\n", fmt_ctx);
-    }
-}
 
 int main(void) {
     size_t n = sizeof(rows) / sizeof(rows[0]);
-    int row_failed_count = 0;
+    goo_check_expect((int)n);
 
     for (size_t r = 0; r < n; r++) {
         TestRow* row = &rows[r];
-        printf("=== Row %d: %s ===\n", row->row, row->description);
+        goo_check_row(row->row, row->description);
 
-        int before_fail = g_fail;
-
+        char parsebuf[128];
         int parse_rc = parse_input(row->src, "test.goo");
+        snprintf(parsebuf, sizeof(parsebuf),
+                 "row %d: the fixture parses (rc=%d, ast_root=%p)",
+                 row->row, parse_rc, (void*)ast_root);
+        goo_check(parse_rc == 0 && ast_root != NULL, parsebuf);
         if (parse_rc != 0 || !ast_root) {
-            printf("    FAIL: parse_input failed (rc=%d, ast_root=%p)\n", parse_rc, (void*)ast_root);
-            g_fail++;
             if (ast_root) { ast_node_free(ast_root); ast_root = NULL; }
-            printf("  Row %d: FAIL\n\n", row->row);
-            row_failed_count++;
             continue;
         }
 
@@ -485,8 +475,7 @@ int main(void) {
 
         ParamEscapeResult* result = param_escape_analyze(ast_root);
         if (!result) {
-            printf("    FAIL: param_escape_analyze returned NULL (allocation failure)\n");
-            g_fail++;
+            goo_check(false, "param_escape_analyze returned NULL (allocation failure)");
         } else {
             for (int e = 0; e < row->expect_count; e++) {
                 FuncExpectation* fe = &row->expect[e];
@@ -494,12 +483,12 @@ int main(void) {
 
                 char ctxbuf[256];
                 snprintf(ctxbuf, sizeof(ctxbuf), "row %d: summary for '%s' found", row->row, fe->fn_name);
-                check(summary != NULL, ctxbuf);
+                goo_check(summary != NULL, ctxbuf);
                 if (!summary) continue;
 
                 snprintf(ctxbuf, sizeof(ctxbuf), "row %d: '%s' param_count == %zu (got %zu)",
                          row->row, fe->fn_name, fe->param_count, summary->param_count);
-                check(summary->param_count == fe->param_count, ctxbuf);
+                goo_check(summary->param_count == fe->param_count, ctxbuf);
 
                 size_t check_n = fe->param_count < summary->param_count ? fe->param_count : summary->param_count;
                 for (size_t i = 0; i < check_n; i++) {
@@ -507,7 +496,7 @@ int main(void) {
                              row->row, fe->fn_name, i,
                              fe->expected_escapes[i] ? "true" : "false",
                              summary->escapes[i] ? "true" : "false");
-                    check(summary->escapes[i] == fe->expected_escapes[i], ctxbuf);
+                    goo_check(summary->escapes[i] == fe->expected_escapes[i], ctxbuf);
                 }
 
                 if (fe->check_return_escapes) {
@@ -515,7 +504,7 @@ int main(void) {
                              row->row, fe->fn_name,
                              fe->expected_return_escapes ? "true" : "false",
                              summary->return_escapes ? "true" : "false");
-                    check(summary->return_escapes == fe->expected_return_escapes, ctxbuf);
+                    goo_check(summary->return_escapes == fe->expected_return_escapes, ctxbuf);
                 }
 
                 // Also exercise the param_escape_param_escapes lookup helper
@@ -525,7 +514,7 @@ int main(void) {
                     snprintf(ctxbuf, sizeof(ctxbuf),
                              "row %d: param_escape_param_escapes('%s', %zu) matches summary->escapes[%zu]",
                              row->row, fe->fn_name, i, i);
-                    check(via_helper == summary->escapes[i], ctxbuf);
+                    goo_check(via_helper == summary->escapes[i], ctxbuf);
                 }
             }
 
@@ -533,7 +522,7 @@ int main(void) {
             // that can never be registered.
             {
                 bool miss = param_escape_param_escapes(result, "__no_such_function__", 0);
-                check(miss == true, "unknown function name conservatively returns true");
+                goo_check(miss == true, "unknown function name conservatively returns true");
             }
 
             param_escape_result_free(result);
@@ -543,14 +532,7 @@ int main(void) {
         ast_node_free(ast_root);
         ast_root = NULL;
 
-        bool row_ok = (g_fail == before_fail);
-        printf("  Row %d: %s\n\n", row->row, row_ok ? "PASS" : "FAIL");
-        if (!row_ok) row_failed_count++;
     }
 
-    printf("=================================================\n");
-    printf("param_escape_test summary: %d assertions passed, %d failed, %d/%zu rows failed\n",
-           g_pass, g_fail, row_failed_count, n);
-
-    return g_fail ? 1 : 0;
+    return goo_check_done("param-escape-test");
 }

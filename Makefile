@@ -260,9 +260,14 @@ $(BUILDDIR)/framework/%.o: $(TEST_FRAMEWORK_DIR)/%.c | $(BUILDDIR)
 goo: $(COMPILER)
 
 # Compiler binary does not link the test framework — it's a runtime concern
-# for test runners. The test framework's header (test/test_framework.h) is
-# missing from include/, so building TEST_FRAMEWORK_OBJ fails; that breakage
-# belongs to task #33 and shouldn't gate compiler builds.
+# for test runners.
+#
+# This comment used to say include/test/test_framework.h was missing and that
+# TEST_FRAMEWORK_OBJ therefore failed to build. Both halves are false: the
+# header was reconstructed and `make build/framework/test_framework.o` exits 0.
+# The framework is unused because nothing calls it, not because it is broken —
+# see the note on the unit-test link set below, and the header comment in
+# tests/unit/goo_check.h for why auto-discovery is not wanted here.
 # Version stamped into bin/goo. Override for a release: make GOO_VERSION=0.2.0
 #
 # DELIBERATELY NOT DERIVED HERE, and not from `git describe`. The
@@ -3186,6 +3191,7 @@ VERIFY_ALL_DEPS := \
     safety-baseline-check \
     doc-claims-probe \
     probe-teeth-probe \
+    goo-check-probe \
     release-package-probe \
     baseline-probe \
     lvalue-probe \
@@ -4585,14 +4591,25 @@ comptime-block-probe: $(COMPILER) $(RUNTIME_LIB)
 	    exit 1; \
 	  fi
 
+# The contract of tests/unit/goo_check.h, the header every C unit suite below
+# reports through. It decides their exit status, so a wrong exit status has
+# exactly one place left to hide. --self-test mutates the header one line at a
+# time and requires each mutation to turn the probe red.
+.PHONY: goo-check-probe
+goo-check-probe:
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_check_probe.sh
+	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_check_probe.sh --self-test
+
 # Unit tests
-# Link against $(SRC_OBJS), NOT $(OBJS): the latter includes the test
-# framework object, whose source `tests/framework/test_framework.c`
-# #includes a missing header `test/test_framework.h`. The framework is
-# unused by these unit tests (they use plain assert + stdio), so linking
-# the compiler objects directly is correct and sidesteps the broken
-# include. Restoring the framework header is its own task; this target
-# does not need to wait on that work.
+# Link against $(SRC_OBJS), NOT $(OBJS): the latter adds the test framework
+# object, which no suite here calls. It compiles fine — the older version of
+# this comment claiming it fails on a missing header was wrong — but linking
+# an unused xUnit runtime into every unit-test binary buys nothing.
+#
+# The suites report through tests/unit/goo_check.h instead. That header is
+# deliberately NOT tests/framework/test_framework.c: constructor-based
+# auto-discovery runs tests nobody listed, which is how 77 tests passed on
+# 2026-08-17 against frameworks that never linked into bin/goo.
 test-lexer: $(SRC_OBJS)
 	@mkdir -p tests/unit/lexer
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) tests/unit/lexer/test_lexer_basic.c $(SRC_OBJS) -o tests/test_lexer $(LDFLAGS) $(LLVM_LDFLAGS)
@@ -5003,8 +5020,8 @@ coverage-clean:
 # Arena leg Task 7a: interprocedural param-escape summaries (table-driven,
 # 15-row test matrix — see docs/superpowers/specs/2026-07-07-arena-7a-param-
 # escape-summaries-design.md). Modeled on runtime_optimization_test above.
-param_escape_test: $(TEST_UNIT_DIR)/types/param_escape_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+param_escape_test: $(TEST_UNIT_DIR)/types/param_escape_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 param-escape-test: param_escape_test
 	@echo "Running param-escape summary tests..."
@@ -5013,7 +5030,7 @@ param-escape-test: param_escape_test
 # ARC step 1: the object header. Pins goo_alloc/goo_realloc/goo_free plus the
 # retain/release primitives BEFORE codegen emits any of them, so the allocator
 # change can be proven invisible on its own. Links the runtime only — no LLVM.
-obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(RUNTIME_LIB)
+obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(TEST_UNIT_DIR)/goo_check.h $(RUNTIME_LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(RUNTIME_LIB) -lm -pthread
 
 obj-header-test: obj_header_test
@@ -5053,8 +5070,8 @@ obj-header-tsan:
 # Arena leg Task 7b: per-alloc-site block-escape decisions (table-driven,
 # 15-row test matrix — see docs/superpowers/specs/2026-07-07-arena-7b-
 # block-escape-decision-design.md). Modeled on param_escape_test above.
-local_escape_test: $(TEST_UNIT_DIR)/types/local_escape_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+local_escape_test: $(TEST_UNIT_DIR)/types/local_escape_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 local-escape-test: local_escape_test
 	@echo "Running per-local escape summary tests..."
@@ -5062,8 +5079,8 @@ local-escape-test: local_escape_test
 
 # T4: the release decision — the first ARC verdict a consumer acts on by
 # FREEING. Modelled on local_escape_test above.
-release_decision_test: $(TEST_UNIT_DIR)/types/release_decision_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+release_decision_test: $(TEST_UNIT_DIR)/types/release_decision_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 release-decision-test: release_decision_test
 	@echo "Running T4 release-decision tests..."
@@ -5198,8 +5215,8 @@ escape-arm-coverage-selftest: $(COMPILER)
 	@echo "Running escape-arm-coverage self-test (7 controls)..."
 	./scripts/escape_arm_coverage.sh --self-test
 
-block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+block_escape_test: $(TEST_UNIT_DIR)/types/block_escape_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 block-escape-test: block_escape_test
 	@echo "Running block-escape decision tests..."
@@ -5211,8 +5228,12 @@ block-escape-test: block_escape_test
 # Modeled on block_escape_test above; links the full SRC_OBJS like the other
 # codegen-adjacent unit tests since it pulls in codegen.o for
 # codegen_arena_eligible.
-arena_routing_test: $(TEST_UNIT_DIR)/codegen/arena_routing_test.c $(SRC_OBJS)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
+# goo_check.h is a prerequisite so a change to the shared header rebuilds the
+# suite, but it must be filtered OUT of the compiler's input list: $^ would
+# hand gcc a .h to compile, which emits a precompiled header instead of
+# participating in the link.
+arena_routing_test: $(TEST_UNIT_DIR)/codegen/arena_routing_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 arena-routing-test: arena_routing_test
 	@echo "Running arena-routing predicate tests..."

@@ -16,6 +16,7 @@
 #include "ast.h"
 #include "types.h"
 #include "local_escape.h"
+#include "../goo_check.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -890,8 +891,6 @@ static TestRow rows[] = {
     },
 };
 
-static int failures = 0;
-static int checks = 0;
 
 // A failing reason row must say WHICH reason differs. `reasons=48, expected 16`
 // sends the reader to the header to decode two bit patterns by hand, and the
@@ -901,11 +900,6 @@ static int checks = 0;
 // here, and codegen's GOO_ARC_DEBUG line needed the same thing -- two copies of
 // a table keyed on an enum drift the moment a reason is added, which is exactly
 // the #274 class. One table, two readers.
-static void print_reasons(EscapeReasons why) {
-    char buf[ESCAPE_REASON_NAMES_MAX];
-    printf("%s", escape_reason_names(why, buf, sizeof buf));
-}
-
 // The name table is now shared with codegen, so it needs its own assertions
 // rather than being exercised only as failure decoration. These run BEFORE the
 // row loop: a broken decoder makes every row's failure output a lie, so it must
@@ -959,23 +953,23 @@ static int check_reason_names(void) {
 }
 
 int main(void) {
-    printf("Running per-local escape summary tests...\n");
+    size_t nrows = sizeof(rows) / sizeof(rows[0]);
+    goo_check_expect((int)nrows + 1);   // the table, plus row 0 below
 
     // Before any row: prove the decoder. Every FAIL line below is printed
     // through it, so a broken decoder turns each failure into a wrong claim.
-    checks++;
-    if (check_reason_names() != 0) failures++;
-
-    size_t nrows = sizeof(rows) / sizeof(rows[0]);
+    goo_check_row(0, "the escape-reason name decoder, before anything reads it");
+    goo_check(check_reason_names() == 0, "escape_reason_names decodes every case");
 
     for (size_t r = 0; r < nrows; r++) {
         TestRow* row = &rows[r];
-        printf("=== Row %d: %s ===\n", row->row, row->description);
+        goo_check_row(row->row, row->description);
 
+        char ctxbuf[320];
         int parse_rc = parse_input(row->src, "test.goo");
+        snprintf(ctxbuf, sizeof(ctxbuf), "row %d: the fixture parses (rc=%d)", row->row, parse_rc);
+        goo_check(parse_rc == 0 && ast_root != NULL, ctxbuf);
         if (parse_rc != 0 || !ast_root) {
-            printf("  FAIL: parse error (rc=%d)\n", parse_rc);
-            failures++;
             if (ast_root) { ast_node_free(ast_root); ast_root = NULL; }
             continue;
         }
@@ -992,38 +986,28 @@ int main(void) {
 
         ParamEscapeResult* summaries = param_escape_analyze(ast_root);
         LocalEscapeResult* result = local_escape_analyze(ast_root, summaries);
-        if (!result) {
-            printf("  FAIL: local_escape_analyze returned NULL\n");
-            failures++;
-            continue;
-        }
+        goo_check(result != NULL, "local_escape_analyze returned a result");
+        if (!result) continue;
 
-        int row_failed = 0;
         for (int i = 0; i < row->expect_count; i++) {
-            checks++;
             bool got = local_escape_local_escapes(result, row->fn, row->expect[i].name);
-            if (got != row->expect[i].expected_escapes) {
-                printf("  FAIL: local '%s' escapes=%d, expected %d\n",
-                       row->expect[i].name, (int)got,
-                       (int)row->expect[i].expected_escapes);
-                failures++;
-                row_failed = 1;
-            }
+            snprintf(ctxbuf, sizeof(ctxbuf), "row %d: local '%s' escapes=%d, expected %d",
+                     row->row, row->expect[i].name, (int)got,
+                     (int)row->expect[i].expected_escapes);
+            goo_check(got == row->expect[i].expected_escapes, ctxbuf);
+
             if (!row->expect[i].check_reasons) continue;
-            checks++;
             EscapeReasons why =
                 local_escape_local_reasons(result, row->fn, row->expect[i].name);
-            if (why != row->expect[i].expected_reasons) {
-                printf("  FAIL: local '%s' reasons=", row->expect[i].name);
-                print_reasons(why);
-                printf(", expected ");
-                print_reasons(row->expect[i].expected_reasons);
-                printf("\n");
-                failures++;
-                row_failed = 1;
-            }
+            // Both reason sets go through the decoder proved in row 0, so the
+            // label states what was observed and not merely what was wanted.
+            char gotbuf[ESCAPE_REASON_NAMES_MAX], wantbuf[ESCAPE_REASON_NAMES_MAX];
+            snprintf(ctxbuf, sizeof(ctxbuf), "row %d: local '%s' reasons=%s, expected %s",
+                     row->row, row->expect[i].name,
+                     escape_reason_names(why, gotbuf, sizeof gotbuf),
+                     escape_reason_names(row->expect[i].expected_reasons, wantbuf, sizeof wantbuf));
+            goo_check(why == row->expect[i].expected_reasons, ctxbuf);
         }
-        printf("  Row %d: %s\n", row->row, row_failed ? "FAIL" : "PASS");
 
         local_escape_result_free(result);
         param_escape_result_free(summaries);
@@ -1031,8 +1015,5 @@ int main(void) {
         if (ast_root) { ast_node_free(ast_root); ast_root = NULL; }
     }
 
-    printf("\n=================================================\n");
-    printf("local_escape_test summary: %d assertions passed, %d failed\n",
-           checks - failures, failures);
-    return failures ? 1 : 0;
+    return goo_check_done("local-escape-test");
 }
