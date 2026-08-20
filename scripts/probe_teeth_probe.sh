@@ -16,6 +16,20 @@
 # grandfathered in a SHRINK-ONLY baseline, which this probe also keeps honest --
 # a stale baseline is the failure mode scripts/safety-baseline.txt reached at
 # 139 dead entries out of 218 before anyone noticed.
+#
+# IT SCANS scripts/*.sh, AND IT USED TO SCAN scripts/*probe*.sh. That glob was
+# the rule as implemented, and it was not the rule as written. 20 of the 44
+# scripts here do not have "probe" in the name, 16 of those had no teeth, and
+# 11 of those are wired into the Makefile as real gates -- including
+# run_golden.sh, which runs the 495-fixture golden suite this project leans on
+# hardest, and assert_corpus.sh, which sweeps 754 fixtures through an
+# assert-enabled compiler. None of them was listed as an exemption, because the
+# scan never considered them at all.
+#
+# That is the worse kind of gap: the baseline showed 17 grandfathered entries,
+# which made the exemption set look deliberate and bounded, while 16 further
+# scripts were exempt by filename. An absence nobody chose reads exactly like
+# an absence somebody did.
 set -u
 
 PROBE="probe-teeth-probe"
@@ -30,7 +44,12 @@ bad() { echo "  FAIL: $*"; fails=$((fails+1)); }
 if [ "${1:-}" = "--self-test" ]; then
 	SELF="$PROBE --self-test"
 	W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
-	mk() { rm -rf "$W/t"; mkdir -p "$W/t/scripts"; cp "$ROOT"/scripts/*probe*.sh "$W/t/scripts/" 2>/dev/null
+	# Copies EVERY script, not just *probe*.sh. The scan was widened to
+	# scripts/*.sh on 2026-08-20 and this line was not: the baseline then named
+	# 15 files the temp tree did not contain, and the control went red with
+	# "baseline names run_golden.sh, which is not in scripts/". What the
+	# self-test copies has to match what the scan covers.
+	mk() { rm -rf "$W/t"; mkdir -p "$W/t/scripts"; cp "$ROOT"/scripts/*.sh "$W/t/scripts/" 2>/dev/null
 	       cp "$BASELINE" "$W/t/scripts/probe-teeth-baseline.txt"; }
 	run() { PROBE_TEETH_ROOT="$W/t" PROBE_TEETH_BASELINE="$W/t/scripts/probe-teeth-baseline.txt" \
 	        "$0" >"$W/out.log" 2>&1; }
@@ -64,7 +83,7 @@ has_teeth() { grep -qE -- '--self-test|SELFTEST|MUTATE' "$1"; }
 listed() { grep -v '^#' "$BASELINE" | grep -qx "$1"; }
 
 toothed=0; grandfathered=0
-for f in "$ROOT"/scripts/*probe*.sh; do
+for f in "$ROOT"/scripts/*.sh; do
 	[ -f "$f" ] || continue
 	b="$(basename "$f")"
 	if has_teeth "$f"; then
