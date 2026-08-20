@@ -91,4 +91,38 @@ static void goo_assert_fail(const char* kind, const char* expr,
 #  define GOO_ALWAYS(x) (x)
 #endif
 
+// ---------------------------------------------------------------------------
+// GOO_TESTCASE — a boundary marker.
+//
+// `GOO_TESTCASE(x)` is a CLAIM by the author: this boundary matters, and some
+// test must drive `x` both true and false. SQLite carries 1,184 of them, and
+// that is the mechanism by which it HOLDS 100% MC/DC rather than merely
+// measuring it (https://sqlite.org/testing.html).
+//
+// WHY THIS IS GATED WHEN COVERAGE IS NOT. scripts/coverage_corpus.sh refuses
+// to be a gate on purpose, and its reason is sound: "a coverage target invites
+// tests that raise the number instead of tests that find bugs". That is true
+// of a PERCENTAGE. It is false of a MARKER. A percentage can be inflated by
+// shallow tests; "this specific boundary was driven both ways" cannot be --
+// either a test reached it or none did.
+//
+// In a coverage build the marker is a real branch, so gcov records each
+// direction; scripts/testcase_report.sh reads those counters back. The write
+// to a volatile is what stops the optimiser folding the branch away at any
+// -O level, which would erase the very record being asked for.
+//
+// Everywhere else it expands to `(void)sizeof(x)`: no code, but the expression
+// stays TYPE-CHECKED, so a marker whose expression rotted cannot hide in the
+// build where it does nothing.
+#if defined(GOO_COVERAGE)
+static volatile int goo_testcase_sink;
+static inline void goo_testcase_hit(const char* file, int line) {
+    (void)file;
+    goo_testcase_sink = line;
+}
+#  define GOO_TESTCASE(x) ((void)((x) ? (goo_testcase_hit(__FILE__, __LINE__), 1) : 0))
+#else
+#  define GOO_TESTCASE(x) ((void)sizeof(x))
+#endif
+
 #endif // GOO_ASSERT_H
