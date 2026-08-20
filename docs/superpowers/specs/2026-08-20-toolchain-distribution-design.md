@@ -29,7 +29,7 @@ the measured state of the tree.
 both of the compiler's lookups fall to their cwd fallbacks. The installed
 compiler works only when it is invoked from the repository root.
 
-## What already works, and what has never run
+## What already works, and what had never run
 
 Verified against source before this design was written, because the whole
 layout rests on it.
@@ -72,7 +72,8 @@ switching needs no compiler change.**
    dev tree resolves through **tier 3**. No probe in `verify-core` builds a
    tier-2 layout.
 
-So the gate below is not a regression net — **it is the first execution.**
+So the gate below is not a regression net — **it is the first automated
+execution.**
 That made the layout the one assumption worth measuring before writing any
 code, and it was measured. See the next section.
 
