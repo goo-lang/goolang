@@ -175,7 +175,11 @@ cov_run() {  # extra-argv ("" or "both")
 	# No gcov call here on purpose. The report runs gcov itself, with the same
 	# --json-format invocation coverage_corpus.sh uses, so this probe exercises
 	# the real reading path rather than a text format nothing else produces.
-	bash "$REPORT" --gcov-dir "$WORK/cov" --source "$WORK/cov/fixture.c" 2>&1
+	# --cc is not decoration: gcov refuses a .gcno from a different major gcc,
+	# and refuses it silently. CI runs `make CC=gcc-14` while plain gcov there
+	# is gcov-13, which is how this probe failed on CI after passing twice
+	# locally. The report derives the matching gcov from what it is told here.
+	bash "$REPORT" --gcov-dir "$WORK/cov" --cc "$CC_PROBE" --source "$WORK/cov/fixture.c" 2>&1
 }
 
 # --- Row 3: driven ONE way -> the report names it -------------------------
@@ -183,6 +187,12 @@ out="$(cov_run "")"
 if [ "$out" = "BUILD_FAILED" ]; then
 	bad "the coverage build of the fixture failed"
 	sed 's/^/      /' "$WORK/cov.log"
+elif printf '%s' "$out" | grep -q "BROKEN"; then
+	# NOT a marker defect. The report could not measure at all, and saying
+	# "N problem(s) in GOO_TESTCASE" here is what sent the CI failure of
+	# 2026-08-20 looking for a bug in the macro instead of at the toolchain.
+	bad "could not measure: the report refused before judging any marker"
+	printf '%s\n' "$out" | sed 's/^/      /'
 elif ! printf '%s' "$out" | grep -q "1 not exercised both ways"; then
 	bad "a marker driven only one way was not reported"
 	printf '%s\n' "$out" | sed 's/^/      /'
@@ -197,6 +207,9 @@ fi
 out="$(cov_run both)"
 if [ "$out" = "BUILD_FAILED" ]; then
 	bad "the coverage build of the fixture failed"
+elif printf '%s' "$out" | grep -q "BROKEN"; then
+	bad "could not measure: the report refused before judging any marker"
+	printf '%s\n' "$out" | sed 's/^/      /'
 elif ! printf '%s' "$out" | grep -q "0 not exercised both ways"; then
 	bad "a marker driven both ways is still reported as incomplete"
 	printf '%s\n' "$out" | sed 's/^/      /'
@@ -227,9 +240,33 @@ else
 	echo "    ok: no gcov data is refused by name, not reported as zero incomplete"
 fi
 
+# --- Row 6: a gcov that emits nothing must read as a toolchain mismatch ----
+# The CI failure this row exists for: gcov-13 silently refused gcc-14's .gcno,
+# the report said "no JSON", and the probe reported it as a defect in the
+# marker. A wrong tool must accuse the tool, by name and version.
+rm -rf "$WORK/mm"; mkdir -p "$WORK/mm"
+write_fixture "$WORK/mm/fixture.c"
+( cd "$WORK/mm" && $CC_PROBE $CSTD_PROBE -I"$INC_DIR" -DGOO_COVERAGE --coverage \
+    fixture.c -o fixture >/dev/null 2>&1 && ./fixture >/dev/null 2>&1 )
+GCOV=/bin/true bash "$REPORT" --gcov-dir "$WORK/mm" --cc "$CC_PROBE" \
+    --source "$WORK/mm/fixture.c" > "$WORK/mm.out" 2>&1
+rc=$?
+if [ "$rc" -ne 2 ]; then
+	bad "a gcov that emits nothing exited $rc; expected 2 (could not measure)"
+	sed 's/^/      /' "$WORK/mm.out"
+elif ! grep -qF "VERSION MISMATCH" "$WORK/mm.out"; then
+	bad "the refusal does not name a version mismatch as the usual cause"
+	sed 's/^/      /' "$WORK/mm.out"
+elif ! grep -qF "gcov:" "$WORK/mm.out"; then
+	bad "the refusal does not name the gcov binary it used"
+	sed 's/^/      /' "$WORK/mm.out"
+else
+	echo "    ok: a gcov that emits nothing accuses the toolchain, by name"
+fi
+
 if [ "$fails" -ne 0 ]; then
 	echo "$PROBE: FAIL ($fails problem(s) in GOO_TESTCASE or $REPORT)"
 	exit 1
 fi
-echo "$PROBE: PASS (5 contract rows over $INC_DIR/goo_assert.h)"
+echo "$PROBE: PASS (6 contract rows over $INC_DIR/goo_assert.h)"
 exit 0

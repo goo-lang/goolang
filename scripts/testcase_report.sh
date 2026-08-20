@@ -30,22 +30,44 @@ set -u
 
 PROG="testcase-report"
 GCOV_DIR=""
+CC_USED=""
 SOURCES=()
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--gcov-dir) GCOV_DIR="${2:-}"; shift 2 ;;
 		--source)   SOURCES+=("${2:-}"); shift 2 ;;
+		--cc)       CC_USED="${2:-}"; shift 2 ;;
 		*) echo "$PROG: unknown argument '$1'" >&2; exit 2 ;;
 	esac
 done
+
+# GCOV MUST MATCH THE GCC THAT WROTE THE NOTES. gcov refuses a .gcno from a
+# different major version, and it refuses it QUIETLY -- empty output, exit 0.
+#
+# This is not hypothetical. CI runs `make CC=gcc-14` because the ubuntu-24.04
+# default rejects -std=c23, while plain `gcov` on that image is gcov-13. The
+# first version of this script hardcoded `gcov`, passed twice locally where
+# gcc and gcov are the same version, and failed on CI with "no JSON emitted" --
+# which the probe then reported as a defect in the marker mechanism. Derive the
+# tool from the compiler that produced the data, and name BOTH in any failure
+# so the next mismatch reads as a mismatch.
+if [ -z "${GCOV:-}" ]; then
+	cc_last="${CC_USED##* }"              # "ccache gcc-14" -> "gcc-14"
+	cc_base="$(basename "${cc_last:-gcc}")"
+	case "$cc_base" in
+		*gcc-*) cand="gcov-${cc_base##*gcc-}" ;;
+		*)      cand="gcov" ;;
+	esac
+	if command -v "$cand" >/dev/null 2>&1; then GCOV="$cand"; else GCOV="gcov"; fi
+fi
 
 if [ -z "$GCOV_DIR" ] || [ "${#SOURCES[@]}" -eq 0 ]; then
 	echo "$PROG: usage: $0 --gcov-dir DIR --source FILE [--source FILE ...]" >&2
 	exit 2
 fi
 
-command -v gcov    >/dev/null || { echo "$PROG: BROKEN -- gcov is not installed" >&2; exit 2; }
+command -v "$GCOV" >/dev/null || { echo "$PROG: BROKEN -- '$GCOV' is not installed" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "$PROG: BROKEN -- python3 is not installed" >&2; exit 2; }
 
 WORK="$(mktemp -d)"
@@ -57,13 +79,13 @@ emitted=0
 for gcno in "$GCOV_DIR"/*.gcno; do
 	[ -e "$gcno" ] || continue
 	base="$(basename "$gcno" .gcno)"
-	if gcov --json-format --stdout -b --conditions -o "$GCOV_DIR" "$gcno" \
+	if "$GCOV" --json-format --stdout -b --conditions -o "$GCOV_DIR" "$gcno" \
 	        > "$JSON_DIR/$base.json" 2>/dev/null && [ -s "$JSON_DIR/$base.json" ]; then
 		emitted=$((emitted + 1))
 	else
 		# --conditions is rejected by gcc 13 and older, exactly as
 		# coverage_corpus.sh documents. Retry without it.
-		gcov --json-format --stdout -b -o "$GCOV_DIR" "$gcno" \
+		"$GCOV" --json-format --stdout -b -o "$GCOV_DIR" "$gcno" \
 			> "$JSON_DIR/$base.json" 2>/dev/null && [ -s "$JSON_DIR/$base.json" ] \
 			&& emitted=$((emitted + 1))
 	fi
@@ -73,6 +95,10 @@ if [ "$emitted" -eq 0 ]; then
 	echo "$PROG: BROKEN -- gcov emitted no JSON for any object in $GCOV_DIR."
 	echo "  Nothing was measured. A count of 0 incomplete markers here would"
 	echo "  mean the run did not happen, not that every boundary was reached."
+	echo "  THE USUAL CAUSE IS A VERSION MISMATCH: gcov refuses a .gcno written"
+	echo "  by a different major gcc, and it refuses it silently."
+	echo "    compiler: ${CC_USED:-<not given>}"
+	echo "    gcov:     $GCOV ($("$GCOV" --version 2>/dev/null | head -1))"
 	exit 2
 fi
 

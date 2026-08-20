@@ -5021,7 +5021,7 @@ coverage-goo: $(GOO_COV) $(RUNTIME_LIB)
 	@COMPILER=$(GOO_COV) COV_OBJDIR=$(COV_OBJDIR) COVERAGE_DIR=$(COVERAGE_DIR) \
 	  bash scripts/coverage_corpus.sh
 	@echo ""
-	@bash scripts/testcase_report.sh --gcov-dir $(COV_OBJDIR) \
+	@bash scripts/testcase_report.sh --gcov-dir $(COV_OBJDIR) --cc "$(COV_CC)" \
 	  $(foreach f,$(GOO_SRCS),--source $(f)) || true
 
 # Instrument check: halve the corpus and confirm the number FALLS. A coverage
