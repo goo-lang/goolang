@@ -145,14 +145,34 @@ NNG_SHA256  := 50b7264bd8f0901f7ebdf3ec7c48f4e23dd689bbe7b2917d9d8fad58ffd09e5c
 NNG_BUILD   := build/nng
 NNG_LIB     := $(NNG_BUILD)/lib/libnng.a
 
-$(NNG_LIB): $(NNG_TARBALL)
+# Makefile itself is a prerequisite: the CMAKE_C_ARCHIVE_CREATE/APPEND/
+# FINISH determinism flags below live in this recipe. Without listing it,
+# editing those flags alone leaves a stale libnng.a on disk and a rebuild
+# reuses it instead of picking up the corrected flags — the same reasoning
+# as the $(RUNTIME_LIB) recipe's own Makefile prerequisite, below.
+$(NNG_LIB): $(NNG_TARBALL) Makefile
 	@echo "$(NNG_SHA256)  $(NNG_TARBALL)" | sha256sum -c - >/dev/null || { echo "NNG tarball sha256 MISMATCH — expected $(NNG_SHA256)"; sha256sum $(NNG_TARBALL); exit 1; }
 	rm -rf build/nng-src $(NNG_BUILD)
 	mkdir -p build/nng-src
 	tar -xzf $(NNG_TARBALL) -C build/nng-src --strip-components=1
+	# CMAKE_C_ARCHIVE_CREATE/APPEND/FINISH: zero member mtime/uid/gid in
+	# libnng.a itself. Our own $(RUNTIME_LIB) recipe below pulls this archive
+	# in with `addlib`, which copies each member's header VERBATIM from the
+	# source archive rather than regenerating it — so `ar -D` on our own
+	# invocation does not zero a member that arrived this way. Only
+	# deterministic at the source stops the real timestamp from leaking
+	# through addlib. All three rules are required, not just CREATE/FINISH:
+	# CMake splits a long object list into one CREATE batch plus one or more
+	# APPEND batches, and the default APPEND rule (`<CMAKE_AR> q ...`) carries
+	# no `-D`. NNG happens to fit in a single CREATE call today, so leaving
+	# APPEND at its default would close this hole by accident, not by design
+	# — the next object NNG adds could split the batch and reopen it.
 	cmake -S build/nng-src -B $(NNG_BUILD)/cm -DCMAKE_BUILD_TYPE=Release \
 	  -DBUILD_SHARED_LIBS=OFF -DNNG_TESTS=OFF -DNNG_TOOLS=OFF -DNNG_ENABLE_NNGCAT=OFF \
-	  -DCMAKE_INSTALL_PREFIX=$(abspath $(NNG_BUILD)) -DCMAKE_INSTALL_LIBDIR=lib >/dev/null
+	  -DCMAKE_INSTALL_PREFIX=$(abspath $(NNG_BUILD)) -DCMAKE_INSTALL_LIBDIR=lib \
+	  -DCMAKE_C_ARCHIVE_CREATE='<CMAKE_AR> Dqc <TARGET> <LINK_FLAGS> <OBJECTS>' \
+	  -DCMAKE_C_ARCHIVE_APPEND='<CMAKE_AR> Dq <TARGET> <LINK_FLAGS> <OBJECTS>' \
+	  -DCMAKE_C_ARCHIVE_FINISH='<CMAKE_RANLIB> -D <TARGET>' >/dev/null
 	cmake --build $(NNG_BUILD)/cm -j$(shell nproc) >/dev/null
 	cmake --install $(NNG_BUILD)/cm >/dev/null
 
@@ -249,13 +269,19 @@ $(COMPILER): $(GOO_OBJS) $(COMPILER_SRCS) | $(BINDIR)
 # Runtime library
 runtime-lib: $(RUNTIME_LIB)
 
-$(RUNTIME_LIB): $(RUNTIME_OBJS) $(NNG_LIB) | $(LIBDIR)
+# Makefile itself is a prerequisite: this recipe's own flags (the -D fix
+# below) determine the archive's bytes. Without listing it, editing the
+# recipe alone leaves a stale archive on disk and `make runtime-lib` reports
+# "Nothing to be done" instead of re-linking with the corrected flags.
+$(RUNTIME_LIB): $(RUNTIME_OBJS) $(NNG_LIB) Makefile | $(LIBDIR)
 	rm -f $@
+	# -D: zero member mtime/uid/gid/mode. Without it two builds seconds apart
+	# produce archives differing by 206 bytes while every member is identical.
 	{ echo "create $@"; \
 	  for o in $(RUNTIME_OBJS); do echo "addmod $$o"; done; \
 	  echo "addlib $(NNG_LIB)"; \
-	  echo "save"; echo "end"; } | ar -M
-	ranlib $@
+	  echo "save"; echo "end"; } | ar -D -M
+	ranlib -D $@
 
 # (P5.7: test-pipeline retired — tests/test_runner.c's assertions were
 # near-vacuous (`tokens_found || exit==0` style escape hatches). The golden
@@ -3349,13 +3375,23 @@ VERIFY_ALL_DEPS := \
     far-jacobi-probe \
     nil-deref-probe \
     goo-test-probe \
-    proof-cache-shell-probe
+    proof-cache-shell-probe \
+    archive-determinism-probe \
+    repro-build-probe \
+    podman-image-probe
 
-# verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
-# authoritative ccomp-free gate: green on any machine, no CompCert / opam
-# switch required. Use it for pre-push everywhere; use `verify` (below)
-# only where the CompCert bootstrap pilot toolchain is set up.
-VERIFY_CORE_DEPS := $(filter-out v2-bootstrap-pilot,$(VERIFY_ALL_DEPS))
+# verify-core = VERIFY_ALL_DEPS minus the heavy-toolchain set. This is the
+# authoritative ccomp-free, podman-free gate: green on any machine, no
+# CompCert / opam switch and no container runtime required. Use it for
+# pre-push everywhere; use `verify` (below) only where the CompCert
+# bootstrap pilot toolchain and podman are both set up.
+#
+# Gates that need a toolchain verify-core deliberately does not assume:
+# v2-bootstrap-pilot needs an opam CompCert switch, repro-build-probe and
+# podman-image-probe both need podman. All three belong in `verify`, never
+# in `verify-core`.
+HEAVY_DEPS       := v2-bootstrap-pilot repro-build-probe podman-image-probe
+VERIFY_CORE_DEPS := $(filter-out $(HEAVY_DEPS),$(VERIFY_ALL_DEPS))
 
 .PHONY: verify verify-core
 
@@ -5206,6 +5242,12 @@ alloc-doors-probe:
 proof-cache-shell-probe:
 	@bash scripts/proof_cache_shell_probe.sh
 
+# The Makefile's own archive step was the only measured nondeterminism in the
+# build. Needs no compiler and no container, so it belongs in verify-core.
+archive-determinism-probe: runtime-lib
+	@bash scripts/archive_determinism_probe.sh
+.PHONY: archive-determinism-probe
+
 # ast_node_free() must free the WHOLE tree, not only the spine. The parser
 # fuzzer found on 2026-08-08 that every assignment statement leaked 188 bytes
 # because there was no `case AST_EXPR_STMT`, so the node reached `default:` and
@@ -6298,3 +6340,19 @@ misra:
 
 misra-baseline:
 	@bash scripts/misra-scan.sh --update-baseline
+
+# Reproducible-build image. Digest-pinned in the Containerfile.
+podman-image:
+	podman build -t goolang-build:local -f Containerfile .
+.PHONY: podman-image
+
+podman-image-probe:
+	@bash scripts/podman_image_probe.sh
+.PHONY: podman-image-probe
+
+# Two full builds in two containers. Costs minutes and needs podman, so it is
+# NOT in verify-core — CLAUDE.md records that target as "safe for pre-push on
+# any machine", and a podman dependency would break that promise.
+repro-build-probe:
+	@bash scripts/repro_build_probe.sh
+.PHONY: repro-build-probe

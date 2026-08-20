@@ -88,7 +88,9 @@ This project uses a Makefile for building:
 - `make verify-core` - Full probe net, no CompCert required. Authoritative
   ccomp-free gate; safe for pre-push on any machine.
 - `make verify` - `verify-core` plus the CompCert bootstrap pilot
-  (`v2-bootstrap-pilot`); requires an opam CompCert switch.
+  (`v2-bootstrap-pilot`) plus the podman reproducible-build gates
+  (`repro-build-probe`, `podman-image-probe`); requires an opam CompCert
+  switch and podman.
 
 Note: `bin/goo` links only the reachable set (`GOO_OBJS`, P5.6). Since the
 2026-08-17 quarantine, `OBJS` and `GOO_OBJS` are nearly the same set — the

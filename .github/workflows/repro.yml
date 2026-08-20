@@ -1,0 +1,102 @@
+name: repro
+
+# Separate from `tests` on purpose. This job runs four full builds (see the
+# self-test step below), where verify-core takes about 3.5 minutes, and it
+# needs podman which verify-core deliberately does not assume.
+on:
+  pull_request:
+    paths:
+      - 'Containerfile'
+      - 'scripts/podman_build.sh'
+      - 'scripts/repro_build_probe.sh'
+      - 'scripts/record_toolchain.sh'
+      - 'scripts/podman_image_probe.sh'
+      - 'Makefile'
+      - 'src/**'
+      - '.github/workflows/repro.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  repro-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the probe builds from `git archive HEAD`
+
+      - name: Tool versions
+        run: podman --version
+
+      - name: Build the pinned image
+        run: make podman-image
+
+      - name: Prove the image is right
+        run: bash scripts/podman_image_probe.sh | tee image.log
+
+      # Same reason as the guard below, and this step needed it most: the
+      # probe prints "SKIPPED (podman not on PATH)" and exits 0, and the
+      # `| tee` above discards its status in any case. So the job's own
+      # anti-silent-skip check had a silent-skip path of its own. Without
+      # this, a runner lacking podman reports green having verified nothing —
+      # including the ccache check the design calls the trap it had to bypass.
+      - name: Prove the image probe did not skip
+        if: always()
+        run: |
+          if grep -q "^podman-image-probe: PASS" image.log; then
+            echo "ok: podman-image-probe ran and passed"
+          else
+            echo "::error::podman-image-probe did not report PASS — it skipped or never ran"
+            exit 1
+          fi
+
+      - name: repro-build-probe
+        run: bash scripts/repro_build_probe.sh 2>&1 | tee repro.log
+
+      # A GATE THAT SILENTLY SKIPS IS NOT A GATE. The probe returns 0 when
+      # podman is absent, so a runner without it would report green while
+      # testing nothing. Require a positive PASS line.
+      #
+      # Runs before the (more expensive) self-test below, so a plain
+      # reproducibility regression is reported, and the job stops, without
+      # first paying for two more container builds to check the checker.
+      - name: Prove the probe did not skip
+        if: always()
+        run: |
+          if grep -q "^repro-build-probe: PASS" repro.log; then
+            echo "ok: repro-build-probe ran and passed"
+          else
+            echo "::error::repro-build-probe did not report PASS — it skipped or never ran"
+            exit 1
+          fi
+
+      # TEETH CHECK, not the reproducibility check itself. Confirms the probe
+      # above can actually go red, by injecting real nondeterminism and
+      # requiring the probe to report DIFFER on it (see the comment at the top
+      # of scripts/repro_build_probe.sh).
+      #
+      # COST: the probe step above is already two full container builds. This
+      # self-test clones the repository, commits an injected mutation, and
+      # runs the probe again on that clone — two MORE container builds. This
+      # job therefore does four container builds in total. It runs only when
+      # the plain probe step above already passed, so a plain regression is
+      # never masked by, or made to wait behind, this more expensive check.
+      - name: repro-build-probe --self-test
+        run: bash scripts/repro_build_probe.sh --self-test 2>&1 | tee selftest.log
+
+      # Same anti-vacuity reasoning as the plain probe above: a self-test that
+      # reports green without ever printing its own PASS line has proved
+      # nothing about whether the probe can go red.
+      - name: Prove the self-test did not skip
+        if: always()
+        run: |
+          if grep -q "^repro-build-probe --self-test: PASS" selftest.log; then
+            echo "ok: repro-build-probe --self-test ran and passed"
+          else
+            echo "::error::repro-build-probe --self-test did not report PASS — it skipped or never ran"
+            exit 1
+          fi
