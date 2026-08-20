@@ -33,6 +33,18 @@
 // MANDATORY -- a suite that never declares a count is BROKEN, because opting
 // out would otherwise cost one omitted line and be invisible in review.
 //
+// ONE KNOWN LIMIT, recorded so it is not rediscovered. The row count is per
+// PROCESS, not per pass over the table. SQLite's anomaly testing
+// (https://sqlite.org/testing.html) re-runs one test body in a loop with a
+// fault counter advanced each time, twice over -- once failing a single
+// operation and once failing all of them. Under any such loop the rows here
+// would run N times and trip a false BROKEN. The fix is to count rows per
+// pass and declare the pass count separately. It is NOT built, because the
+// technique that needs it is deferred: include/xalloc.h decided that this
+// compiler does not recover from OOM but exits, so injecting allocation
+// failures would only prove the process exits. Build the pass scoping when
+// something actually re-runs a body, not before.
+//
 // Gated by scripts/goo_check_probe.sh in make verify-core: it asserts this
 // contract against fixtures, and its --self-test mutates this file one line at
 // a time to prove each rule above can still go red. No count is quoted here on
