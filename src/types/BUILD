@@ -42,3 +42,40 @@ goo_cc_library(
     srcs = ["escape_core.c"],
     visibility = ["//visibility:public"],
 )
+
+# The full front-end type checker: Makefile:119 GOO_TYPES_SRCS, minus the five
+# units already declared above as their own libraries, which are picked up as
+# deps instead. Splitting them out is deliberate -- it is the fine-grained
+# boundary the Makefile's single $(SRC_OBJS) link hides.
+#
+# No LLVM. Every LLVM identifier in type_checker.c, expression_checker.c and
+# shim_signatures.c is inside a // comment; the includes are types.h,
+# comptime.h, embedding.h and lane_ownership.h.
+goo_cc_library(
+    name = "frontend",
+    srcs = [
+        "embedding.c",
+        "expression_checker.c",
+        "expression_helpers.c",
+        "lane_ownership.c",
+        "nonretaining.c",
+        "ownership_checker.c",
+        "shim_signatures.c",
+        "tc_fctx.c",
+        "terminating_stmt.c",
+        "type_checker.c",
+        "types.c",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":block_escape",
+        ":escape_core",
+        ":local_escape",
+        ":param_escape",
+        ":release_decision",
+        "//src/ast",
+        "//src/comptime",
+        "//src/errors",
+        "//src/package",
+    ],
+)
