@@ -36,3 +36,22 @@ sh_test(
         "no-sandbox",
     ],
 )
+
+# The grammar conflict baseline, as a Bazel test.
+#
+# CLAUDE.md and the goo-grammar skill both make a conflict-count delta
+# stop-the-line, so this is a gate rather than a report. Before this target
+# nothing ran it: no Makefile rule, absent from VERIFY_ALL_DEPS, no workflow.
+#
+# It runs bison itself, on a scratch copy, and never consumes
+# //src/parser/gen -- the baseline must be checked against the grammar as
+# written, not against whatever the genrule last produced.
+sh_test(
+    name = "grammar_tripwire_test",
+    size = "small",
+    srcs = ["grammar_tripwire_test.sh"],
+    data = [
+        "//:grammar_tripwire_script",
+        "//src/parser:parser.y",
+    ],
+)
