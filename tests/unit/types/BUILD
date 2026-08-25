@@ -16,3 +16,41 @@ goo_cc_test(
         "//tests/unit:goo_check",
     ],
 )
+
+goo_cc_test(
+    name = "param_escape_test",
+    size = "small",
+    srcs = ["param_escape_test.c"],
+    deps = [
+        "//src/parser",
+        "//src/types:frontend",
+        "//src/types:param_escape",
+        "//tests/unit:goo_check",
+    ],
+)
+
+# block_escape_test.c includes param_escape.h as well as block_escape.h.
+goo_cc_test(
+    name = "block_escape_test",
+    size = "small",
+    srcs = ["block_escape_test.c"],
+    deps = [
+        "//src/parser",
+        "//src/types:block_escape",
+        "//src/types:frontend",
+        "//src/types:param_escape",
+        "//tests/unit:goo_check",
+    ],
+)
+
+goo_cc_test(
+    name = "local_escape_test",
+    size = "small",
+    srcs = ["local_escape_test.c"],
+    deps = [
+        "//src/parser",
+        "//src/types:frontend",
+        "//src/types:local_escape",
+        "//tests/unit:goo_check",
+    ],
+)
