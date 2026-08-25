@@ -25,7 +25,7 @@ set -uo pipefail
 
 COMPILER=""; ARCHIVE=""; GOOROOT_DIR=""; SRC=""
 EXPECTED=""; WANT_RC=""; STDERR_HAS=""; STDOUT_HAS=""
-GOOFLAGS_IN=""; TIMEOUT=10
+GOOFLAGS_IN=""; TIMEOUT=10; REJECT=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,6 +39,7 @@ while [ $# -gt 0 ]; do
         --stdout-contains) STDOUT_HAS="$2"; shift 2 ;;
         --gooflags)        GOOFLAGS_IN="$2"; shift 2 ;;
         --timeout)         TIMEOUT="$2"; shift 2 ;;
+        --reject)          REJECT=1; shift ;;
         *) echo "run_probe: unknown argument '$1'"; exit 2 ;;
     esac
 done
@@ -50,8 +51,17 @@ done
 [ -r "$ARCHIVE" ]  || { echo "run_probe: archive '$ARCHIVE' is not readable"; exit 2; }
 [ -r "$SRC" ]      || { echo "run_probe: source '$SRC' is not readable"; exit 2; }
 
+# A reject probe must name the diagnostic it expects. "the compile failed" is
+# satisfied by a compiler that crashes, a missing file, or a typo in the
+# fixture name -- naming the message is what makes it an assertion about the
+# language rather than about the build.
+if [ "$REJECT" -eq 1 ] && [ -z "$STDERR_HAS" ]; then
+    echo "run_probe: --reject requires --stderr-contains"
+    exit 2
+fi
+
 # A probe that asserts nothing passes vacuously. Refuse it.
-if [ -z "$EXPECTED" ] && [ -z "$WANT_RC" ] && [ -z "$STDERR_HAS" ] && [ -z "$STDOUT_HAS" ]; then
+if [ "$REJECT" -eq 0 ] && [ -z "$EXPECTED" ] && [ -z "$WANT_RC" ] && [ -z "$STDERR_HAS" ] && [ -z "$STDOUT_HAS" ]; then
     echo "run_probe: no assertion given (need --expected, --exit, --stdout-contains or --stderr-contains)"
     exit 2
 fi
@@ -76,7 +86,35 @@ export GOO_RUNTIME="$ARCHIVE"
 [ -n "$GOOROOT_DIR" ] && export GOOROOT="$GOOROOT_DIR"
 
 # shellcheck disable=SC2086
-if ! "$COMPILER" "$SRC" -o "$work/$base" $GOOFLAGS_IN >/dev/null 2>"$work/cerr"; then
+"$COMPILER" "$SRC" -o "$work/$base" $GOOFLAGS_IN >"$work/cout" 2>"$work/cerr"
+crc=$?
+
+if [ "$REJECT" -eq 1 ]; then
+    # Four assertions, and the fourth is the one that distinguishes a language
+    # rejection from a compiler crash. Both give a non-zero exit.
+    if [ "$crc" -eq 0 ]; then
+        echo "run_probe: FAIL $base (compiled cleanly; it must be rejected)"
+        exit 1
+    fi
+    if [ -e "$work/$base" ]; then
+        echo "run_probe: FAIL $base (emitted a binary despite the error)"
+        exit 1
+    fi
+    if grep -qiE "Module verification failed|LLVM ERROR" "$work/cerr"; then
+        echo "run_probe: FAIL $base (invalid IR reached the LLVM verifier instead of a clean rejection)"
+        head -20 "$work/cerr"
+        exit 1
+    fi
+    if ! grep -qF -- "$STDERR_HAS" "$work/cerr"; then
+        echo "run_probe: FAIL $base (wrong or missing diagnostic; wanted '"'"'$STDERR_HAS'"'"')"
+        head -20 "$work/cerr"
+        exit 1
+    fi
+    echo "run_probe: PASS $base (rejected cleanly)"
+    exit 0
+fi
+
+if [ "$crc" -ne 0 ]; then
     echo "run_probe: FAIL $base (compile/link)"
     head -20 "$work/cerr"
     exit 1

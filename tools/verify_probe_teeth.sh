@@ -52,6 +52,8 @@ check "output defect"   //testing/teeth:probe_output_defect  fail
 check "exit control"    //testing/teeth:probe_exit_control   pass
 check "exit defect"     //testing/teeth:probe_exit_defect    fail
 check "stderr defect"   //testing/teeth:probe_stderr_defect  fail
+check "reject control"  //testing/teeth:probe_reject_control pass
+check "reject defect"   //testing/teeth:probe_reject_defect  fail
 
 if [ "$rc_overall" -eq 0 ]; then
     echo "verify_probe_teeth: PASS both macros report failures and their controls pass"

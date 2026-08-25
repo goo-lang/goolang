@@ -1,4 +1,4 @@
-load("//tools:goo_probe.bzl", "goo_expect_probe", "goo_probe")
+load("//tools:goo_probe.bzl", "goo_expect_probe", "goo_probe", "goo_reject_probe")
 
 # Deliberate defects that prove the probe macros can report a failure.
 #
@@ -48,5 +48,23 @@ goo_expect_probe(
     src = "probe_exit_defect.goo",
     exit_code = 2,
     stderr_contains = "THIS STRING NEVER APPEARS",
+    tags = ["manual"],
+)
+
+# A program that compiles CLEANLY, declared as a reject. The reject macro must
+# refuse it: "the compile failed" is also satisfied by a crash or a typo, so
+# the control here is a fixture that does not fail at all.
+goo_reject_probe(
+    name = "probe_reject_defect",
+    src = "probe_defect.goo",
+    stderr_contains = "any diagnostic at all",
+    tags = ["manual"],
+)
+
+# The control: a fixture that IS rejected, with its real diagnostic.
+goo_reject_probe(
+    name = "probe_reject_control",
+    src = "//examples:constint8_reject.goo",
+    stderr_contains = "overflows int8",
     tags = ["manual"],
 )

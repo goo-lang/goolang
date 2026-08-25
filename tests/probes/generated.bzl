@@ -7,10 +7,100 @@ Regenerate with:
 tests/probes/targets_current.sh gates that this file is current.
 """
 
-load("//tools:goo_probe.bzl", "goo_probe")
+load("//tools:goo_probe.bzl", "goo_probe", "goo_reject_probe")
 
 def generated_probes():
-    """45 probes generated from the Makefile."""
+    """63 probes generated from the Makefile."""
+    goo_reject_probe(
+        name = "baremod_reject_probe",
+        src = "//examples:baremod_reject.goo",
+        stderr_contains = "no implicit int/float conversion",
+    )
+    goo_reject_probe(
+        name = "cascade_binop_reject_probe",
+        src = "//examples:cascade_binop_reject.goo",
+        stderr_contains = "Undefined variable 'undefinedFn'",
+    )
+    goo_reject_probe(
+        name = "cascade_reject_probe",
+        src = "//examples:cascade_reject.goo",
+        stderr_contains = "overflows int8",
+    )
+    goo_reject_probe(
+        name = "constconv_reject_probe",
+        src = "//examples:constconv_reject.goo",
+        stderr_contains = "overflows int8",
+    )
+    goo_reject_probe(
+        name = "constelem_reject_probe",
+        src = "//examples:constelem_reject.goo",
+        stderr_contains = "overflows int8",
+    )
+    goo_reject_probe(
+        name = "constf32_reject_probe",
+        src = "//examples:constf32_reject.goo",
+        stderr_contains = "overflows float32",
+    )
+    goo_reject_probe(
+        name = "constf64_reject_probe",
+        src = "//examples:constf64_reject.goo",
+        stderr_contains = "overflows float64",
+    )
+    goo_reject_probe(
+        name = "constint8_reject_probe",
+        src = "//examples:constint8_reject.goo",
+        stderr_contains = "overflows int8",
+    )
+    goo_reject_probe(
+        name = "constmod_reject_probe",
+        src = "//examples:constmod_reject.goo",
+        stderr_contains = "no implicit int/float conversion",
+    )
+    goo_reject_probe(
+        name = "constnul_reject_probe",
+        src = "//examples:constnul_reject.goo",
+        stderr_contains = "overflows int8",
+    )
+    goo_reject_probe(
+        name = "consttrunc_reject_probe",
+        src = "//examples:consttrunc_reject.goo",
+        stderr_contains = "truncated to integer",
+    )
+    goo_reject_probe(
+        name = "constuint8_reject_probe",
+        src = "//examples:constuint8_reject.goo",
+        stderr_contains = "overflows uint8",
+    )
+    goo_reject_probe(
+        name = "floatmod_reject_probe",
+        src = "//examples:floatmod_reject.goo",
+        stderr_contains = "not defined on float",
+    )
+    goo_reject_probe(
+        name = "loopcapture_reject_probe",
+        src = "//examples:loopcapture_reject.goo",
+        stderr_contains = "cannot capture loop variable",
+    )
+    goo_reject_probe(
+        name = "multivar_reject_probe",
+        src = "//examples:multivar_reject.goo",
+        stderr_contains = "syntax error",
+    )
+    goo_reject_probe(
+        name = "nonconst_arraylen_reject_probe",
+        src = "//examples:nonconst_arraylen_reject.goo",
+        stderr_contains = "array length must be a constant expression",
+    )
+    goo_reject_probe(
+        name = "variadic_range_reject_probe",
+        src = "//examples:variadic_range_reject.goo",
+        stderr_contains = "overflows int8",
+    )
+    goo_reject_probe(
+        name = "variadic_reject_probe",
+        src = "//examples:variadic_reject.goo",
+        stderr_contains = "variadic parameter must be the final parameter",
+    )
     goo_probe(
         name = "append_probe",
         src = "//examples:append_probe.goo",

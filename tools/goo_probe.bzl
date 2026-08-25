@@ -12,9 +12,23 @@ the Make side and the Bazel side agree.
 
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+# Bazel shell-tokenizes sh_test args, so any value containing a space arrives
+# as several arguments. A diagnostic like "overflows int8" split into two and
+# the runner rejected 'int8' as an unknown argument -- loudly, which is why the
+# strict parser is worth having. Every free-text value below is single-quoted.
+#
+# _shq escapes embedded single quotes with the '\'' idiom, because at least one
+# diagnostic is itself quoted -- "Undefined variable 'undefinedFn'" -- and naive
+# wrapping closed the quote early.
+
+
 _COMPILER = "//src/compiler:goo"
 _ARCHIVE = "//src/runtime:goo_runtime_archive"
 _RUNNER = "//tools:run_probe.sh"
+
+def _shq(v):
+    """Single-quote a value for a shell-tokenized sh_test arg."""
+    return "'" + v.replace("'", "'\\''") + "'"
 
 def _probe(name, src, expected, exit_code, stdout_contains, stderr_contains,
            gooflags, timeout_s, size, tags, extra_data):
@@ -32,9 +46,9 @@ def _probe(name, src, expected, exit_code, stdout_contains, stderr_contains,
     if exit_code != None:
         args += ["--exit", str(exit_code)]
     if stdout_contains:
-        args += ["--stdout-contains", stdout_contains]
+        args += ["--stdout-contains", _shq(stdout_contains)]
     if stderr_contains:
-        args += ["--stderr-contains", stderr_contains]
+        args += ["--stderr-contains", _shq(stderr_contains)]
     if gooflags:
         args += ["--gooflags", gooflags]
 
@@ -66,3 +80,35 @@ def goo_expect_probe(name, src, exit_code = None, stdout_contains = None,
         fail("goo_expect_probe(%s) asserts nothing" % name)
     _probe(name, src, expected, exit_code, stdout_contains, stderr_contains,
            gooflags, timeout_s, size, tags, extra_data)
+
+def goo_reject_probe(name, src, stderr_contains, gooflags = None,
+                     timeout_s = 10, size = "small", tags = [], extra_data = []):
+    """A fixture the compiler must REJECT, cleanly and with a named diagnostic.
+
+    Four assertions, and the fourth is why this is not just an exit-code check:
+    the compile must fail, no binary may be emitted, the named diagnostic must
+    appear, and stderr must NOT carry "Module verification failed" or
+    "LLVM ERROR" -- which would mean invalid IR reached the verifier instead of
+    the compiler producing a diagnostic. Both give a non-zero exit, and only
+    one of them is the language behaving correctly.
+
+    stderr_contains is mandatory. "The compile failed" is also satisfied by a
+    crash, a missing file, or a typo in the fixture name.
+    """
+    if not stderr_contains:
+        fail("goo_reject_probe(%s) needs stderr_contains" % name)
+    sh_test(
+        name = name,
+        srcs = [_RUNNER],
+        args = [
+            "--compiler", "$(rootpath %s)" % _COMPILER,
+            "--archive", "$(rootpath %s)" % _ARCHIVE,
+            "--src", "$(rootpath %s)" % src,
+            "--timeout", str(timeout_s),
+            "--reject",
+            "--stderr-contains", _shq(stderr_contains),
+        ] + (["--gooflags", gooflags] if gooflags else []),
+        data = [src, _COMPILER, _ARCHIVE, "//goostd:files"] + extra_data,
+        size = size,
+        tags = tags,
+    )

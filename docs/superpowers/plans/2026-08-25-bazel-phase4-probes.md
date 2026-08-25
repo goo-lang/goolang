@@ -55,6 +55,15 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 - [ ] **7. Prove the regeneration gate can fail.**
       *Accepts:* editing one line turns it red; restoring turns it green; the tree is clean afterwards.
 
+### B2. The reject probes (added while executing)
+
+- [x] **4b. The reject macro.** `goo_reject_probe()` -- the compile must fail, no binary may be emitted, a named diagnostic must appear, and stderr must NOT carry "Module verification failed" or "LLVM ERROR".
+      *Why it was added:* the census's `example` category turned out to be 18 compile-reject probes and 14 run-shaped ones. A reject probe's fourth assertion distinguishes a language rejection from a compiler crash, and BOTH give a non-zero exit. The approved two-macro design had nowhere to put it.
+      *Accepts:* `stderr_contains` is mandatory -- "the compile failed" is also satisfied by a crash, a missing file, or a typo in the fixture name.
+
+- [x] **4c. Prove the reject macro can fail.**
+      *Accepts:* a program that compiles cleanly, declared as a reject, goes red; a genuinely-rejected fixture with its real diagnostic goes green.
+
 ### C. The 69 extracted probes
 
 - [ ] **8. The assertion macro.** `goo_expect_probe()` -- exit code, stderr substring, stdout substring. A thin wrapper over `goo_probe`, not a forked runner.

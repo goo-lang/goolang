@@ -61,7 +61,16 @@ def parse(gate, body):
     src = srcs[0]
 
     if re.search(r"rc -eq 0|-x build/", body):
-        return None, "compile-reject shape: needs a third macro (see below)"
+        # A compile-reject probe. Extract the diagnostic it demands: the
+        # grep -q that is NOT the LLVM-verifier guard.
+        msgs = re.findall(r'grep -q[iEF]* +"([^"]+)"', body)
+        msgs = [m for m in msgs
+                if "Module verification" not in m and "LLVM ERROR" not in m]
+        msgs = [m for m in msgs if "|" not in m]  # a regex alternation is not a fixed string
+        if len(msgs) != 1:
+            return None, "reject probe with %d extractable diagnostics" % len(msgs)
+        return {"gate": gate, "name": gate.replace("-", "_"), "src": src,
+                "reject": True, "stderr": msgs[0], "nng": False}, None
 
     exps = sorted(set(re.findall(r"examples/([a-z0-9_.]+\.txt)", body)))
     exps = [e for e in exps if e.endswith("expected.txt")]
@@ -80,7 +89,7 @@ def parse(gate, body):
         return None, "passes arguments to the built binary"
 
     return {"gate": gate, "name": gate.replace("-", "_"), "src": src,
-            "expected": exp,
+            "expected": exp, "reject": False,
             "nng": src in NNG_FIXTURES}, None
 
 
@@ -106,11 +115,18 @@ def main():
     print("tests/probes/targets_current.sh gates that this file is current.")
     print('"""')
     print("")
-    print('load("//tools:goo_probe.bzl", "goo_probe")')
+    print('load("//tools:goo_probe.bzl", "goo_probe", "goo_reject_probe")')
     print("")
     print("def generated_probes():")
     print('    """%d probes generated from the Makefile."""' % len(targets))
     for t in targets:
+        if t.get("reject"):
+            print("    goo_reject_probe(")
+            print('        name = "%s",' % t["name"])
+            print('        src = "//examples:%s.goo",' % t["src"])
+            print('        stderr_contains = "%s",' % t["stderr"].replace('"', '\\"'))
+            print("    )")
+            continue
         print("    goo_probe(")
         print('        name = "%s",' % t["name"])
         print('        src = "//examples:%s.goo",' % t["src"])
