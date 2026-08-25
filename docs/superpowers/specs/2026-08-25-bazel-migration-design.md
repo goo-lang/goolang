@@ -181,8 +181,8 @@ tools/
     BUILD
 
 testing/
-    check.c check.h   assertion library
-    BUILD
+    BUILD             (no assertion library: tests/unit/goo_check.h already
+                       exists and is stronger -- see 4.5)
 testing/teeth/
     asan_defect.c ubsan_defect.c tsan_defect.c msan_defect.c
     probe_defect.goo  probe_defect.expected.txt
@@ -244,8 +244,17 @@ llvm-config --version --includedir --libdir --libs core
 ```
 
 It calls `fail()` when the version does not begin with `22.`, then writes a
-`cc_library` exposed as `@llvm//:llvm_c` carrying the include path and the link
-options. Only `src/codegen`, `src/compiler` and three files in `src/types`
+`cc_library` exposed as `@llvm//:llvm_c`.
+
+**The headers must be SYMLINKED into the repository, not referenced by an
+absolute `-isystem` path.** Verified on 2026-08-25: the absolute form fails with
+`The include path '/usr/lib64/llvm22/include' references a path outside of the
+execution root`. `repository_ctx.symlink(includedir, "include")` plus
+`includes = ["include"]` compiles and links.
+
+The whole rule was proven end to end on 2026-08-25, including its teeth: with
+the assertion set to `99.`, `bazel test` exits 1 with `goolang requires LLVM
+99.x, llvm-config reports 22.1.8`, and restoring it to `22.` returns exit 0. Only `src/codegen`, `src/compiler` and three files in `src/types`
 depend on it.
 
 ### 4.4 The probe macro
@@ -262,7 +271,31 @@ difference.
 `run_probe.sh` must never mask a failure behind a pipe. Per `CLAUDE.md`, a
 pipeline reports only its last stage's status.
 
-### 4.5 The parity script
+### 4.5 The assertion library stays
+
+orca's `testing/check.c` is **not** ported. `tests/unit/goo_check.h` already
+exists here and carries a third outcome orca's does not: `BROKEN` (exit 2) when
+a suite's executed row count disagrees with the count it declared. Its own
+comment records why that matters -- `scripts/safety-baseline.txt` reached 139
+dead entries out of 218 before anyone noticed, because a table whose rows stop
+executing prints nothing and exits 0.
+
+Replacing it with orca's would be a regression. `goo_check.h` becomes a
+`cc_library` at `//tests/unit:goo_check` and every `cc_test` depends on it.
+
+### 4.6 Unit-test dependency discovery
+
+Every unit suite except `obj_header_test` links `$(SRC_OBJS)`, which is the
+whole source tree, and therefore links LLVM whether or not the unit under test
+needs it. `obj_header_test` is the only one that already links narrowly, to
+`$(RUNTIME_LIB)`.
+
+Bazel requires the real dependency set per target. Phase 1 therefore discovers
+it per suite rather than assuming it, starting from `obj_header_test` (already
+narrow) and widening. A suite that will not link against a narrow dep set has
+revealed a genuine coupling, which is information the Makefile currently hides.
+
+### 4.7 The parity script
 
 ```
 $ tools/parity.sh
@@ -292,8 +325,21 @@ indistinguishable from one reporting success.
 
 `.bazelrc` follows orca's structure: a `san-base` config carrying
 `-fno-omit-frame-pointer`, `-g` and `--strip=never`, with `asan`, `ubsan`,
-`tsan` and `msan` layered on top. `valgrind` is a `--run_under` config. GCC is
-available as `--config=gcc`.
+`tsan` and `msan` layered on top. `valgrind` is a `--run_under` config.
+
+**The default compiler is GCC here, which inverts orca's choice.** orca pins
+clang and offers `--config=gcc`. This repo does the opposite, because the
+Makefile builds with gcc and phase 3 compares the Bazel-built compiler against
+the Make-built one. Pinning clang would change the build system and the
+compiler in the same step, so a behavioural difference would have two candidate
+causes and neither could be attributed. Clang is available as
+`--config=clang`, and the sanitizer configs select it explicitly, because this
+machine's gcc has a broken libasan (a linker script with no matching `.so`).
+
+The pin must be an ABSOLUTE path. Verified on 2026-08-25: `/usr/lib64/ccache/gcc`
+precedes `/usr/bin/gcc` on PATH, and the ccache shim cannot write to
+`~/.cache/ccache` inside Bazel's read-only sandbox, so every compile fails with
+`Read-only file system`.
 
 `msan` is declared but **not claimed to work** until a red and green run is
 recorded, because MSan needs an instrumented libc to avoid reporting glibc
@@ -326,7 +372,7 @@ Each phase is one PR. `parity.sh` runs from phase 0 and counts down from 217.
 | # | Content | Exit criterion |
 |---|---|---|
 | 0 | Skeleton, `.bazelrc`, LLVM rule, `parity.sh` + its positive control | `parity.sh` reports 217 unmapped and its control passes |
-| 1 | Leaf libraries and their unit tests. No LLVM, no bison. Resolve `main_simple.c` / `main_minimal.c`. | Unit suites green under Bazel and Make; `src/` holds nothing ungated |
+| 1 | `//tests/unit:goo_check`, then per-suite dependency discovery (4.6) starting from `obj_header_test`. Resolve `main_simple.c` / `main_minimal.c`. | Each ported suite green under Bazel and Make; `src/` holds nothing ungated |
 | 2 | bison genrule, tripwire `sh_test`, lexer/parser/ast | Tripwire reports 31 S/R, 0 R/R |
 | 3 | types, codegen, `//src/compiler:goo` | Bazel-built `goo` passes the same golden suite as `make bin/goo` |
 | 4 | `goo_probe` macro, its teeth fixture, 155 inline probes | Teeth fixture goes RED; 155 probes green |
