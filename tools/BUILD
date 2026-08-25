@@ -94,3 +94,5 @@ sh_test(
         "no-sandbox",
     ],
 )
+
+exports_files(["run_probe.sh"])

@@ -16,3 +16,13 @@ sh_test(
         "no-sandbox",
     ],
 )
+
+load("//tools:goo_probe.bzl", "goo_probe")
+
+# The macro's acceptance test: one hand-written probe over a known-good
+# fixture. The generated ones come later; this proves the wiring first.
+goo_probe(
+    name = "switch_probe",
+    src = "//examples:switch_probe.goo",
+    expected = "//examples:switch_probe.expected.txt",
+)
