@@ -17,12 +17,9 @@ sh_test(
     ],
 )
 
-load("//tools:goo_probe.bzl", "goo_probe")
 
-# The macro's acceptance test: one hand-written probe over a known-good
-# fixture. The generated ones come later; this proves the wiring first.
-goo_probe(
-    name = "switch_probe",
-    src = "//examples:switch_probe.goo",
-    expected = "//examples:switch_probe.expected.txt",
-)
+load(":generated.bzl", "generated_probes")
+
+# 45 of the 80 fixture-shaped probes, emitted by tools/gen_probe_targets.py.
+# The other 35 are omitted with a printed reason -- see the generator's header.
+generated_probes()
