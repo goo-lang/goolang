@@ -1789,7 +1789,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Tasks 13 and 14: SUPERSEDED — the four suites move to phase 3
+### Tasks 13 and 14: SUPERSEDED — the four suites move to phase 2
 
 **Executed 2026-08-25. The dependency-discovery loop hit its documented stop
 condition on the first iteration, and the answer moves work between phases.**
@@ -1807,10 +1807,19 @@ ld.lld: error: undefined symbol: type_checker_free
 All four `tests/unit/types/*_test.c` suites `#include "parser.h"` and call
 `parse_input()` and `type_check()`. They parse real Goo source and type-check
 it before asserting on the analysis, so each transitively needs the
-bison-generated parser (phase 2) and `src/types/type_checker.c`, which carries
-7 LLVM references against a control of 0 for `arena.c` (phase 3). They are
-integration tests of the front end wearing the shape of unit tests, and the
-Makefile hid that by linking `$(SRC_OBJS)` for all of them.
+bison-generated parser (phase 2). They are integration tests of the front end
+wearing the shape of unit tests, and the Makefile hid that by linking
+`$(SRC_OBJS)` for all of them.
+
+**Corrected later the same day.** This task first sent the four suites to
+phase 3, citing "7 LLVM references" in `src/types/type_checker.c`. Every one of
+those is inside a `//` comment. `type_checker.c` includes only `types.h`,
+`comptime.h`, `embedding.h` and `lane_ownership.h`, and reaches no LLVM header
+at all. The four suites need the parser and nothing else, so they are **phase
+2** work -- see `docs/superpowers/plans/2026-08-25-bazel-phase2-frontend.md`.
+The claim came from a grep count that was never opened, which is the exact
+failure mode `CLAUDE.md` records as "a claim about code requires opening the
+code".
 
 **What phase 1 ships instead:** `src/types/BUILD` with the five analysis units
 as libraries — `release_decision`, `param_escape`, `block_escape`,
@@ -1820,11 +1829,11 @@ empty, against a positive control on `//third_party/llvm:llvm_smoke` that
 returns a two-node path — so the empty result is a real absence rather than a
 broken query.
 
-**What phase 3 must now do:** port the four suites once the parser and
-`@llvm//:llvm_c` are available, each with its dependency set discovered the
-same way, and each proven to keep its teeth by mutation. Four gates
-(`release-decision-test`, `param-escape-test`, `block-escape-test`,
-`local-escape-test`) stay unmapped until then.
+**What phase 2 must now do:** port the four suites once the bison genrule
+exists, each with its dependency set discovered the same way, and each proven
+to keep its teeth by mutation. Four gates (`release-decision-test`,
+`param-escape-test`, `block-escape-test`, `local-escape-test`) stay unmapped
+until then.
 
 **Note on the discovery loop's instrument.** The link errors were nearly missed:
 the plan's grep looked for GNU ld's `undefined reference to \`sym'`, and this

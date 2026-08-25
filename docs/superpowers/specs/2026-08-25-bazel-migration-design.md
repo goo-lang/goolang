@@ -300,9 +300,22 @@ showed `obj_header_test` is the ONLY unit suite that belongs in phase 1. All
 four `tests/unit/types/*_test.c` suites -- `release_decision`, `param_escape`,
 `block_escape`, `local_escape` -- `#include "parser.h"` and call `parse_input()`
 and `type_check()`. They parse real Goo source and type-check it before
-asserting on the analysis, so each needs the bison-generated parser (phase 2)
-and `src/types/type_checker.c`, which carries 7 LLVM references (phase 3).
-They are integration tests of the front end wearing the shape of unit tests.
+asserting on the analysis, so each needs the bison-generated parser. They are
+integration tests of the front end wearing the shape of unit tests.
+
+**Correction, same day.** These four were first assigned to phase 3, on the
+grounds that `src/types/type_checker.c` "carries 7 LLVM references". That was
+wrong: every one of those references is inside a `//` comment, and
+`type_checker.c` includes only `types.h`, `comptime.h`, `embedding.h` and
+`lane_ownership.h`. The claim came from a grep count that was never opened.
+The four suites need the parser and nothing else, so they belong in **phase 2**.
+
+The real LLVM boundary is narrow and worth stating exactly: LLVM enters through
+two headers only, `include/codegen.h` and `include/codegen_cfctx.h`, and
+reaches exactly 15 `.c` files -- the 14 in `src/codegen/` plus
+`src/compiler/goo.c`. `include/value_scope.h` also includes `codegen.h`, which
+pulls `src/codegen/value_scope.c` in transitively. Nothing under `src/lexer`,
+`src/parser`, `src/ast` or `src/types` touches it.
 
 The analysis units themselves are clean: `release_decision.c`, `param_escape.c`,
 `block_escape.c`, `local_escape.c` and `escape_core.c` all compile with no LLVM
@@ -388,8 +401,8 @@ Each phase is one PR. `parity.sh` runs from phase 0 and counts down from 217.
 |---|---|---|
 | 0 | Skeleton, `.bazelrc`, LLVM rule, `parity.sh` + its positive control | `parity.sh` reports 217 unmapped and its control passes |
 | 1 | `//tests/unit:goo_check`, `//src/runtime`, `obj_header_test`, the five LLVM-free analysis libraries. Resolve `main_simple.c` / `main_minimal.c`. | `obj_header_test` green under both; `src/` holds nothing ungated |
-| 2 | bison genrule, tripwire `sh_test`, lexer/parser/ast | Tripwire reports 31 S/R, 0 R/R |
-| 3 | types, codegen, `//src/compiler:goo`, **and the four `tests/unit/types` suites moved here from phase 1** | Bazel-built `goo` passes the same golden suite as `make bin/goo`; the four escape/release suites green |
+| 2 | bison genrule, tripwire `sh_test`, lexer/parser/ast/types, **and the four `tests/unit/types` suites** | Tripwire reports 31 S/R, 0 R/R; the four escape/release suites green under both build systems |
+| 3 | codegen and `//src/compiler:goo` — the 15 `.c` files that actually reach LLVM | Bazel-built `goo` passes the same golden suite as `make bin/goo` |
 | 4 | `goo_probe` macro, its teeth fixture, 155 inline probes | Teeth fixture goes RED; 155 probes green |
 | 5 | 28 script probes, golden suites, `goostd` filegroup | — |
 | 6 | Sanitizer configs, `testing/teeth`, coverage gate | `verify_sanitizers.sh` exits 0 |
