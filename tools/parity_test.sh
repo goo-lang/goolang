@@ -53,7 +53,35 @@ if printf '%s\n' "$gates" | grep -qx 'm12-probe'; then
     fail=1
 fi
 
+# The mapping logic, exercised against an INJECTED target list. bazel is never
+# invoked here: this script runs inside a Bazel sandbox and a nested query
+# would contend on the output-base lock rather than returning.
+tmp_targets="$(mktemp)"
+printf 'm10_probe\nswitch_probe\n' > "$tmp_targets"
+
+report="$(PARITY_BAZEL_TESTS="$tmp_targets" ./tools/parity.sh 2>&1)"
+rc=$?
+if [ "$rc" -ne 1 ]; then
+    echo "parity_test: FAIL report exited $rc, expected 1 (gates remain)"
+    fail=1
+fi
+
+m="$(printf '%s\n' "$report" | sed -n 's/^make gates:[[:space:]]*//p')"
+u="$(printf '%s\n' "$report" | sed -n 's/^unmapped:[[:space:]]*//p')"
+mapped="$(printf '%s\n' "$report" | sed -n 's/^mapped:[[:space:]]*//p')"
+
+# Exactly two gates were offered a counterpart, so exactly two must map.
+if [ "$mapped" -ne 2 ]; then
+    echo "parity_test: FAIL injected 2 targets, mapped $mapped"
+    fail=1
+fi
+if [ "$((m - mapped))" -ne "$u" ]; then
+    echo "parity_test: FAIL arithmetic: $m - $mapped != $u"
+    fail=1
+fi
+rm -f "$tmp_targets"
+
 if [ "$fail" -eq 0 ]; then
-    echo "parity_test: PASS $count gates (baseline $expected), controls both correct"
+    echo "parity_test: PASS $count gates (baseline $expected), mapping and arithmetic correct"
 fi
 exit "$fail"

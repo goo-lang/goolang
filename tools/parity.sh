@@ -37,13 +37,73 @@ list_make_gates() {
         | sort -u
 }
 
+# Every test target Bazel knows about, as a bare target name.
+#
+# PARITY_BAZEL_TESTS overrides the query with a file of target names. This is
+# not a convenience: tools/parity_test.sh runs INSIDE a Bazel sandbox, and a
+# nested bazel query contends on the output-base lock rather than returning.
+# The override lets the mapping logic be tested hermetically. The real query
+# path runs from tools/parity_selftest.sh, which is tagged no-sandbox.
+list_bazel_tests() {
+    if [ -n "${PARITY_BAZEL_TESTS:-}" ]; then
+        if [ ! -r "$PARITY_BAZEL_TESTS" ]; then
+            echo "parity: cannot read PARITY_BAZEL_TESTS=$PARITY_BAZEL_TESTS" >&2
+            return 2
+        fi
+        sort -u < "$PARITY_BAZEL_TESTS"
+        return 0
+    fi
+    local out
+    out="$("${BAZEL:-bazel}" query 'tests(//...)' --output label 2>/dev/null)"
+    if [ $? -ne 0 ]; then
+        echo "parity: bazel query failed" >&2
+        return 2
+    fi
+    printf '%s\n' "$out" | sed 's|.*:||' | sort -u
+}
+
+# switch-probe is claimed by a target named switch_probe.
+gate_to_target() {
+    printf '%s\n' "$1" | tr '-' '_'
+}
+
+report() {
+    local gates targets unmapped=() mapped=0
+    gates="$(list_make_gates)" || return 2
+    targets="$(list_bazel_tests)" || return 2
+
+    while IFS= read -r gate; do
+        [ -z "$gate" ] && continue
+        if printf '%s\n' "$targets" | grep -qx "$(gate_to_target "$gate")"; then
+            mapped=$((mapped + 1))
+        else
+            unmapped+=("$gate")
+        fi
+    done <<< "$gates"
+
+    echo "make gates: $(printf '%s\n' "$gates" | grep -c .)"
+    echo "mapped:     $mapped"
+    echo "unmapped:   ${#unmapped[@]}"
+
+    if [ "${#unmapped[@]}" -gt 0 ]; then
+        echo
+        echo "UNMAPPED (${#unmapped[@]}):"
+        printf '  %s\n' "${unmapped[@]}"
+        echo
+        echo "parity: ${#unmapped[@]} gates have no Bazel test"
+        return 1
+    fi
+    echo
+    echo "parity: every gate has a Bazel test"
+    return 0
+}
+
 case "${1:-}" in
-    --list-make-gates)
-        list_make_gates
-        exit $?
-        ;;
+    --list-make-gates)  list_make_gates; exit $? ;;
+    --list-bazel-tests) list_bazel_tests; exit $? ;;
+    "")                 report; exit $? ;;
     *)
-        echo "usage: parity.sh --list-make-gates" >&2
+        echo "usage: parity.sh [--list-make-gates|--list-bazel-tests]" >&2
         exit 2
         ;;
 esac
