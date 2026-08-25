@@ -3198,6 +3198,7 @@ VERIFY_ALL_DEPS := \
     doc-claims-probe \
     probe-teeth-probe \
     assert-corpus-selftest \
+    golden-selftest \
     goo-check-probe \
     goo-testcase-probe \
     release-package-probe \
@@ -5470,6 +5471,14 @@ assert-corpus:
 # is not. It runs against a stub compiler in seconds, so it costs nothing, and
 # it is what stops assert-corpus from becoming a target that reports a clean
 # number forever. Same split as ast-free-leak-selftest and alloc-doors-selftest.
+# The golden runner's negative control. It guards 495 fixtures and had never
+# been shown able to fail; it also had no empty-corpus guard, so a run that
+# compared NOTHING printed "0 passed, 0 failed" and exited 0. Six rows against
+# six tiny real fixtures and the real compiler, about two seconds.
+.PHONY: golden-selftest
+golden-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@COMPILER=$(COMPILER) bash scripts/run_golden.sh --self-test
+
 .PHONY: assert-corpus-selftest
 assert-corpus-selftest:
 	@bash scripts/assert_corpus.sh --self-test

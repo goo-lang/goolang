@@ -47,7 +47,6 @@ podman_build.sh
 podman_image_probe.sh
 proof_cache_shell_probe.sh
 record_toolchain.sh
-run_golden.sh
 run_golden_reject.sh
 run_spec_conformance.sh
 rust_compare_bench.sh
