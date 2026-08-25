@@ -1,0 +1,9 @@
+# Gates that will NOT get a Bazel test, one per line, as: <gate> <reason>
+#
+# A reason is MANDATORY. An entry without one is a hard error (exit 2), so this
+# file cannot quietly become the place gates go to be forgotten. Every entry
+# here is a gate that parity.sh will stop counting, which is exactly the power
+# that needs a written justification next to it.
+#
+# Empty today. Phase 7 is expected to add the podman and CompCert gates, which
+# stay in their own CI workflow rather than moving to Bazel.

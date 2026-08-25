@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# Compiler
+#
+# GCC, by an ABSOLUTE path, and this is deliberate on both counts.
+#
+# Absolute: Fedora puts ccache shims (/usr/lib64/ccache) ahead of gcc on PATH.
+# The shims cannot write to ~/.cache/ccache inside Bazel's read-only sandbox,
+# so every compile fails with "Read-only file system". Bazel keeps its own
+# action cache, so ccache buys nothing here anyway. Verified 2026-08-25.
+#
+# GCC rather than clang: orca pins clang, and copying that here would be wrong.
+# Phase 3 compares the Bazel-built compiler against the Make-built one, and the
+# Makefile uses gcc. Pinning clang would change the build system AND the
+# compiler in one step, so any behavioural difference would have two candidate
+# causes and neither could be attributed.
+#
+# Clang is still built and tested, via --config=clang. The sanitizer configs
+# added in phase 6 select it explicitly, because this machine's gcc has a
+# broken libasan (a linker script with no matching .so).
+# ---------------------------------------------------------------------------
+build --repo_env=CC=/usr/bin/gcc
+build:clang --repo_env=CC=/usr/bin/clang
+
+# ---------------------------------------------------------------------------
+# Language standard. Matches Makefile:23.
+# ---------------------------------------------------------------------------
+build --copt=-std=c23
+
+# ---------------------------------------------------------------------------
+# Warnings. Matches Makefile:23's -Wall -Wextra. Vendored or generated code is
+# exempted per-target with copts = ["-w"], never by relaxing this set.
+# ---------------------------------------------------------------------------
+build --copt=-Wall
+build --copt=-Wextra
+
+test --test_output=errors

@@ -204,10 +204,16 @@ all: lexer
 # Listing it here makes `make` (= all = lexer) build both.
 lexer: $(COMPILER) $(RUNTIME_LIB)
 
-# Minimal analyzer (lexer only)
+# Minimal analyzer (lexer only).
+#
+# main_minimal.c lives in attic/src/, not src/. CLAUDE.md states the invariant
+# that src/ holds what SHIPS or what a GATE exercises, and this file did
+# neither: it is in no *_SRCS list that feeds GOO_SRCS, and `analyzer` is not
+# in VERIFY_ALL_DEPS, so nothing ever built it under verify-core. The target
+# still works; the source just no longer claims to be shipped code.
 analyzer: $(ANALYZER)
 
-$(ANALYZER): $(LEXER_SRCS) $(SRCDIR)/main_minimal.c | $(BINDIR)
+$(ANALYZER): $(LEXER_SRCS) attic/src/main_minimal.c | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Create directories
@@ -4638,9 +4644,12 @@ test-codegen: $(SRC_OBJS)
 
 test-units: test-lexer test-codegen
 
-# Test main (for running tests)
-test-main: $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(SRCDIR)/main_simple.c $(OBJS) -o $(BINDIR)/test-main $(LDFLAGS) $(LLVM_LDFLAGS)
+# Test main (for running tests).
+#
+# main_simple.c lives in attic/src/, for the same reason as main_minimal.c
+# above: not in GOO_SRCS, and `test-main` is not in VERIFY_ALL_DEPS.
+test-main: $(OBJS) attic/src/main_simple.c | $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) attic/src/main_simple.c $(OBJS) -o $(BINDIR)/test-main $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Test targets
 
