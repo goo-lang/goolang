@@ -1,0 +1,9 @@
+module(
+    name = "goolang",
+    version = "0.1.0",
+)
+
+# Verified on Bazel 9.2.0, 2026-08-25. Bazel 9 removed the native sh_* rules,
+# so rules_shell is required for every probe test, not optional.
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_shell", version = "0.6.1")

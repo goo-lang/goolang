@@ -162,9 +162,14 @@ Append:
 
 Run:
 ```bash
-bazel query //... 2>&1 | tail -5; echo "exit=$?"
+bazel query //... --noshow_progress 2>/dev/null; echo "exit=$?"
+bazel query //:Makefile --noshow_progress 2>/dev/null; echo "exit=$?"
 ```
-Expected: exit 0. The only target listed is `//:Makefile`.
+Expected: the first exits 0 and lists NOTHING. `exports_files` declares a
+source file, not a rule, and `//...` enumerates rules — an empty list is
+correct here, not a failure. The second must print `//:Makefile` and exit 0,
+which is what Task 4 depends on. A bogus label such as `//:NoSuchFile` exits 7,
+so the check can report the negative.
 
 - [ ] **Step 9: Verify the Makefile is untouched**
 

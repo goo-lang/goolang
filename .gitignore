@@ -111,3 +111,6 @@ coverage/
 build/misra-scan.txt
 # byte-code from the MISRA tools in docs/misra/tools/
 __pycache__/
+
+# Bazel convenience symlinks
+/bazel-*
