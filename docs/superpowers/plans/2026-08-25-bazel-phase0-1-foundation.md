@@ -397,14 +397,24 @@ Create `tools/prelude_probe.c`. It calls `xmalloc` and `GOO_ASSERT` without incl
 
 ```c
 // Proves the prelude reaches a translation unit that includes neither header.
-// Makefile:23 forces both with -include; this file is the Bazel-side check
-// that goo_cc_library does the same.
+// Makefile:23 forces xalloc.h and goo_assert.h in with -include; this file is
+// the Bazel-side check that goo_cc_library/goo_cc_test do the same.
+//
+// Three things are asserted at once, and all three fail loudly under C23,
+// which removed implicit function declarations:
+//   xmalloc     -- comes from xalloc.h
+//   GOO_ASSERT  -- comes from goo_assert.h, and takes ONE argument
+//   free        -- comes from <stdlib.h>, which xalloc.h includes, so this
+//                  also pins that the prelude arrives with its own includes.
+//
+// NOTE: there is no xfree. xalloc.h exports xmalloc, xcalloc, xrealloc and
+// xstrdup only; memory is released with plain free().
 #include <stddef.h>
 
 int main(void) {
     void *p = xmalloc(16);
-    GOO_ASSERT(p != NULL, "xmalloc must not return NULL");
-    xfree(p);
+    GOO_ASSERT(p != NULL);
+    free(p);
     return 0;
 }
 ```
@@ -522,13 +532,31 @@ Expected: `//tools:prelude_probe  PASSED`.
 
 - [ ] **Step 7: Prove the header is a real input, not just a flag**
 
-This is the whole reason the macro exists. Run:
+This is the whole reason the macro exists. Ask the action graph directly rather
+than inferring it from rebuild behaviour:
+
 ```bash
-bazel build //tools:prelude_probe > /dev/null 2>&1
-touch include/goo_assert.h
-bazel build //tools:prelude_probe 2>&1 | grep -cE 'Compiling tools/prelude_probe.c'
+bazel aquery 'mnemonic("CppCompile", //tools:prelude_probe)' --output=text > /tmp/aq.log 2>&1
+echo "goo_assert.h: $(grep -c 'goo_assert\.h' /tmp/aq.log)"   # expect 2
+echo "xalloc.h:     $(grep -c 'xalloc\.h' /tmp/aq.log)"       # expect 2
+echo "control:      $(grep -c 'llvm-c/Core\.h' /tmp/aq.log)"  # expect 0
 ```
-Expected: `1`. A `0` means the header is not an input and the prelude is wired wrongly — stop and fix `include/BUILD` before continuing.
+
+Expected: each prelude header appears twice — once as the `-include` argument
+and once in the action's `Inputs` — and the control is 0, proving the grep
+discriminates. A `0` for either header means it is not an input and
+`include/BUILD` is wired wrongly.
+
+**Do NOT test this by touching a header and grepping for a rebuild.** Both
+halves of that check are broken, and both were tried on 2026-08-25:
+
+- Bazel digests file CONTENT, not mtime, so `touch` correctly changes nothing.
+- Bazel prints no `Compiling ...` line in the default output mode, only an
+  `INFO: N processes` summary, so the grep string never matches and the check
+  returns 0 whether the wiring is right or wrong.
+
+A check that returns 0 in both cases cannot tell you anything. `aquery` states
+the input set instead of inferring it.
 
 - [ ] **Step 8: Commit**
 
