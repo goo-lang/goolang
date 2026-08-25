@@ -74,3 +74,23 @@ sh_test(
         "no-sandbox",
     ],
 )
+
+# The golden suite against the Bazel-built compiler and archive.
+#
+# Tagged manual and no-sandbox: it runs 495 fixtures, each compiling and
+# executing a binary, which is neither fast nor sandbox-friendly. CI runs it
+# explicitly, the way it runs parity_selftest.sh and compiler_differential.sh.
+#
+# It asserts 486 passed / 9 failed EXACTLY. The 9 reach the far transport and
+# need NNG (phase 3c). When 3c lands, EXPECT_PASS/EXPECT_FAIL become 495/0 and
+# this becomes the test-golden gate's Bazel counterpart.
+sh_test(
+    name = "golden_bazel",
+    size = "large",
+    srcs = ["golden_bazel.sh"],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+)
