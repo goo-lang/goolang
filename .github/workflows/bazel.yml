@@ -72,11 +72,6 @@ jobs:
   parity:
     runs-on: ubuntu-24.04
     name: gate parity (informational until phase 7)
-    # parity.sh exits 1 by design until every gate is migrated. This job
-    # publishes the number so the count is visible on every PR; it becomes
-    # blocking in phase 7, when reaching zero is what licenses deleting the
-    # Makefile.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: bazel-contrib/setup-bazel@0.19.0
@@ -84,5 +79,42 @@ jobs:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}
           repository-cache: true
+
+      # parity.sh exits 1 by design until every gate is migrated, so this job
+      # PUBLISHES the count rather than gating on it, and exits 0.
+      #
+      # It deliberately does NOT use continue-on-error. That leaves a red X on
+      # every single PR for the length of the migration, and a check that is
+      # always red trains reviewers to ignore red checks -- which costs more
+      # than this number is worth. The count goes to the job summary instead,
+      # where it is visible without being alarming.
+      #
+      # PHASE 7: delete the `|| true` and the `exit 0` below. From that point a
+      # non-zero parity.sh must fail this job, because reaching zero is what
+      # licenses deleting the Makefile.
       - name: Report unmapped gates
-        run: ./tools/parity.sh
+        run: |
+          set +e
+          out="$(./tools/parity.sh)"
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          unmapped="$(printf '%s\n' "$out" | sed -n 's/^unmapped:[[:space:]]*//p')"
+          mapped="$(printf '%s\n' "$out" | sed -n 's/^mapped:[[:space:]]*//p')"
+          total="$(printf '%s\n' "$out" | sed -n 's/^make gates:[[:space:]]*//p')"
+          {
+            echo "### Gate parity"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Make gates | ${total:-?} |"
+            echo "| Mapped to a Bazel test | ${mapped:-?} |"
+            echo "| **Unmapped** | **${unmapped:-?}** |"
+            echo ""
+            if [ "$rc" -eq 0 ]; then
+              echo "Every gate has a Bazel test. Phase 7 may delete the Makefile."
+            else
+              echo "Informational until phase 7. The Makefile stays until this reaches 0."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
