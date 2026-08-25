@@ -81,7 +81,31 @@ if [ "$((m - mapped))" -ne "$u" ]; then
 fi
 rm -f "$tmp_targets"
 
+# An allowlisted gate must leave the unmapped count, and an entry with no
+# reason must be refused rather than silently accepted.
+tmp_allow="$(mktemp)"
+tmp_empty="$(mktemp)"
+: > "$tmp_empty"   # no Bazel targets at all, so only the allowlist can move it
+
+# A gate NOT mapped by the fixture above, so the delta is attributable to the
+# allowlist alone.
+echo "enum-probe covered elsewhere, see spec 4.7" > "$tmp_allow"
+base_u="$(PARITY_BAZEL_TESTS="$tmp_empty" ./tools/parity.sh 2>/dev/null | sed -n 's/^unmapped:[[:space:]]*//p')"
+allow_u="$(PARITY_BAZEL_TESTS="$tmp_empty" PARITY_ALLOWLIST="$tmp_allow" ./tools/parity.sh 2>/dev/null | sed -n 's/^unmapped:[[:space:]]*//p')"
+if [ "$((base_u - allow_u))" -ne 1 ]; then
+    echo "parity_test: FAIL allowlisting one gate moved unmapped $base_u -> $allow_u (want -1)"
+    fail=1
+fi
+
+echo "enum-probe" > "$tmp_allow"
+PARITY_BAZEL_TESTS="$tmp_empty" PARITY_ALLOWLIST="$tmp_allow" ./tools/parity.sh >/dev/null 2>&1
+if [ $? -ne 2 ]; then
+    echo "parity_test: FAIL an allowlist entry with no reason was accepted"
+    fail=1
+fi
+rm -f "$tmp_allow" "$tmp_empty"
+
 if [ "$fail" -eq 0 ]; then
-    echo "parity_test: PASS $count gates (baseline $expected), mapping and arithmetic correct"
+    echo "parity_test: PASS $count gates (baseline $expected), mapping, arithmetic and allowlist correct"
 fi
 exit "$fail"

@@ -67,14 +67,38 @@ gate_to_target() {
     printf '%s\n' "$1" | tr '-' '_'
 }
 
+ALLOWLIST="${PARITY_ALLOWLIST:-$root/tools/parity-allowlist.txt}"
+
+# Prints the allowlisted gate names. Refuses an entry with no reason: a bare
+# gate name would silently drop a gate from the count, which is the one thing
+# this whole script exists to prevent.
+list_allowlisted() {
+    [ -r "$ALLOWLIST" ] || return 0
+    local line name rest
+    while IFS= read -r line; do
+        case "$line" in ''|'#'*) continue ;; esac
+        name="${line%% *}"
+        rest="${line#"$name"}"
+        rest="${rest# }"
+        if [ -z "$rest" ]; then
+            echo "parity: allowlist entry '$name' has no reason" >&2
+            return 2
+        fi
+        printf '%s\n' "$name"
+    done < "$ALLOWLIST"
+}
+
 report() {
-    local gates targets unmapped=() mapped=0
+    local gates targets allowed unmapped=() mapped=0
     gates="$(list_make_gates)" || return 2
     targets="$(list_bazel_tests)" || return 2
+    allowed="$(list_allowlisted)" || return 2
 
     while IFS= read -r gate; do
         [ -z "$gate" ] && continue
         if printf '%s\n' "$targets" | grep -qx "$(gate_to_target "$gate")"; then
+            mapped=$((mapped + 1))
+        elif printf '%s\n' "$allowed" | grep -qx "$gate"; then
             mapped=$((mapped + 1))
         else
             unmapped+=("$gate")
