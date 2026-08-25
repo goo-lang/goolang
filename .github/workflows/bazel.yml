@@ -118,3 +118,56 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0
+
+  differential:
+    runs-on: ubuntu-24.04
+    name: both compilers emit identical IR
+    # Builds BOTH build systems, because comparing them is the whole point.
+    # This job is migration-time only: phase 7 deletes it along with the
+    # Makefile and tools/compiler_differential.sh.
+    steps:
+      - uses: actions/checkout@v4
+
+      # bin/goo's link line is `-lm -pthread -ljson-c -lcurl -lz`, so the
+      # make build needs those dev packages. The first version of this job
+      # omitted them and died on "cannot find -ljson-c". tests.yml installs the
+      # same set.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make gcc-14 bison llvm-dev clang \
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      # Both compilers, then the comparison, in ONE step.
+      #
+      # The llvm-config path is resolved into a SHELL variable here rather than
+      # a step output, and that is deliberate. scripts/workflow_targets_probe.sh
+      # parses every `make <target>` a workflow runs and asserts the target
+      # exists; it cannot parse a ${{ }} expression, so
+      # `make ... LLVM_CONFIG="${{ steps.tc.outputs.llvm_config }}" bin/goo`
+      # made it read the expression itself as a target name and fail. The line
+      # would have expanded correctly on the runner, but a gate that cannot
+      # verify a line cannot protect it. tests.yml already uses this shell-var
+      # form; matching it keeps both workflows checkable.
+      - name: Build both compilers and compare their IR
+        run: |
+          test -x /usr/bin/gcc-14 || { echo "::error::gcc-14 missing"; exit 1; }
+          LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$LLVMCFG" ]; then LLVMCFG="$(command -v llvm-config || true)"; fi
+          if [ -z "$LLVMCFG" ]; then echo "::error::no llvm-config found"; exit 1; fi
+          echo "Using $LLVMCFG ($($LLVMCFG --version))"
+
+          make CC=gcc-14 LLVM_CONFIG="${LLVMCFG:-llvm-config}" bin/goo
+
+          bazel build //src/compiler:goo \
+            --repo_env=CC=/usr/bin/gcc-14 \
+            --repo_env=GOO_LLVM_CONFIG="$LLVMCFG"
+
+          ./tools/compiler_differential.sh

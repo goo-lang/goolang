@@ -312,10 +312,20 @@ The four suites need the parser and nothing else, so they belong in **phase 2**.
 
 The real LLVM boundary is narrow and worth stating exactly: LLVM enters through
 two headers only, `include/codegen.h` and `include/codegen_cfctx.h`, and
-reaches exactly 15 `.c` files -- the 14 in `src/codegen/` plus
-`src/compiler/goo.c`. `include/value_scope.h` also includes `codegen.h`, which
-pulls `src/codegen/value_scope.c` in transitively. Nothing under `src/lexer`,
-`src/parser`, `src/ast` or `src/types` touches it.
+reaches exactly **16** `.c` files -- all 15 in `src/codegen/` plus
+`src/compiler/goo.c`. Fourteen of the codegen files include one of those two
+headers directly; `value_scope.c` reaches them through
+`include/value_scope.h`, which is why an earlier wording of this said 14 and
+undercounted by one. Nothing under `src/lexer`, `src/parser`, `src/ast` or
+`src/types` touches it.
+
+**Re-measured from the build graph on 2026-08-25**, once phase 3 produced one
+to measure: `bazel query 'rdeps(//..., @llvm//:llvm_c)'` returns
+`//src/codegen:codegen`, `//src/compiler:goo` and
+`//third_party/llvm:llvm_smoke`, and nothing else. That is the stronger
+instrument -- it states the dependency rather than inferring it from
+`#include` text, and the text-based inference is what produced the
+off-by-one.
 
 The analysis units themselves are clean: `release_decision.c`, `param_escape.c`,
 `block_escape.c`, `local_escape.c` and `escape_core.c` all compile with no LLVM

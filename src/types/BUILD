@@ -13,27 +13,29 @@ load("//tools:defs.bzl", "goo_cc_library")
 # through include/codegen.h and include/codegen_cfctx.h only, and reaches the
 # 14 files in src/codegen/ plus src/compiler/goo.c -- nothing here.
 
-goo_cc_library(
-    name = "release_decision",
-    srcs = ["release_decision.c"],
-    visibility = ["//visibility:public"],
-)
+# The escape/release analysis units, with their REAL dependency edges.
+#
+# Measured with nm on the Make-built objects, 2026-08-25:
+#
+#   nonretaining      (leaf)
+#   escape_core       -> nonretaining
+#   param_escape      -> escape_core
+#   block_escape      -> escape_core, param_escape
+#   local_escape      -> escape_core, param_escape
+#   release_decision  -> param_escape, local_escape
+#
+# Acyclic, and none of it is visible in the Makefile, which links $(SRC_OBJS)
+# as one flat set. Phase 1 declared all five as leaves with no deps and put
+# nonretaining.c inside :frontend; that linked locally only because Bazel's
+# lld path passes --start-lib, which makes archive order irrelevant. CI's
+# gcc-14 does not, and reported undefined references to
+# goo_callee_is_non_retaining and the local_escape_* family.
+#
+# None of these compile with LLVM or the parser.
 
 goo_cc_library(
-    name = "param_escape",
-    srcs = ["param_escape.c"],
-    visibility = ["//visibility:public"],
-)
-
-goo_cc_library(
-    name = "block_escape",
-    srcs = ["block_escape.c"],
-    visibility = ["//visibility:public"],
-)
-
-goo_cc_library(
-    name = "local_escape",
-    srcs = ["local_escape.c"],
+    name = "nonretaining",
+    srcs = ["nonretaining.c"],
     visibility = ["//visibility:public"],
 )
 
@@ -41,6 +43,44 @@ goo_cc_library(
     name = "escape_core",
     srcs = ["escape_core.c"],
     visibility = ["//visibility:public"],
+    deps = [":nonretaining"],
+)
+
+goo_cc_library(
+    name = "param_escape",
+    srcs = ["param_escape.c"],
+    visibility = ["//visibility:public"],
+    deps = [":escape_core"],
+)
+
+goo_cc_library(
+    name = "block_escape",
+    srcs = ["block_escape.c"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":escape_core",
+        ":param_escape",
+    ],
+)
+
+goo_cc_library(
+    name = "local_escape",
+    srcs = ["local_escape.c"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":escape_core",
+        ":param_escape",
+    ],
+)
+
+goo_cc_library(
+    name = "release_decision",
+    srcs = ["release_decision.c"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":local_escape",
+        ":param_escape",
+    ],
 )
 
 # The full front-end type checker: Makefile:119 GOO_TYPES_SRCS, minus the five
@@ -58,7 +98,6 @@ goo_cc_library(
         "expression_checker.c",
         "expression_helpers.c",
         "lane_ownership.c",
-        "nonretaining.c",
         "ownership_checker.c",
         "shim_signatures.c",
         "tc_fctx.c",
@@ -71,6 +110,7 @@ goo_cc_library(
         ":block_escape",
         ":escape_core",
         ":local_escape",
+        ":nonretaining",
         ":param_escape",
         ":release_decision",
         "//src/ast",

@@ -55,3 +55,22 @@ sh_test(
         "//src/parser:parser.y",
     ],
 )
+
+# Compares the Bazel-built compiler against the Make-built one on emitted IR.
+#
+# Tagged manual and no-sandbox because it needs BOTH build systems, so it can
+# never be hermetic and `bazel test //...` must not try to run it. CI runs it
+# explicitly, the way it runs parity_selftest.sh.
+#
+# PHASE 7 DELETES THIS TARGET AND ITS SCRIPT. Once the Makefile is gone the
+# question it answers no longer exists.
+sh_test(
+    name = "compiler_differential",
+    size = "large",
+    srcs = ["compiler_differential.sh"],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+)
