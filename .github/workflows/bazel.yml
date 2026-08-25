@@ -1,0 +1,88 @@
+name: bazel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # ubuntu-24.04, not ubuntu-latest, to match tests.yml. The environment here
+    # deliberately mirrors that workflow: the same distro, the same gcc-14, and
+    # the same "whatever llvm-dev gave us" llvm-config.
+    runs-on: ubuntu-24.04
+    name: bazel test //...
+    steps:
+      - uses: actions/checkout@v4
+
+      # gcc-14: the code is -std=c23 and gcc-13, the distro default, rejects it.
+      # llvm-dev: codegen links against the LLVM C API.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-14 bison llvm-dev clang
+          gcc-14 --version | head -1
+
+      # The .bazelrc pins /usr/bin/gcc, which is correct on the development
+      # workstation and WRONG here: this runner's /usr/bin/gcc is gcc-13 and
+      # rejects -std=c23. The override below is the whole reason CC is a
+      # --repo_env setting rather than a hard-coded toolchain.
+      #
+      # llvm-dev installs a VERSIONED llvm-config and no unversioned one, so
+      # the path is discovered rather than assumed. Fail loudly here if neither
+      # exists, rather than inside a repository rule.
+      - name: Resolve the toolchain paths
+        id: tc
+        run: |
+          test -x /usr/bin/gcc-14 || { echo "::error::gcc-14 missing"; exit 1; }
+          LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$LLVMCFG" ]; then
+            LLVMCFG="$(command -v llvm-config || true)"
+          fi
+          if [ -z "$LLVMCFG" ]; then
+            echo "::error::no llvm-config found after installing llvm-dev"
+            exit 1
+          fi
+          echo "Using $LLVMCFG ($($LLVMCFG --version))"
+          echo "llvm_config=$LLVMCFG" >> "$GITHUB_OUTPUT"
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      - name: bazel test //...
+        run: |
+          bazel test //... \
+            --repo_env=CC=/usr/bin/gcc-14 \
+            --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }} \
+            --test_output=errors
+
+      # Writes a package into the tree, so it is tagged manual and skipped by
+      # //... above. It must be run explicitly or it never runs at all, and a
+      # self-test that never runs is indistinguishable from one that passes.
+      - name: Prove parity.sh can report a change
+        run: ./tools/parity_selftest.sh
+
+  parity:
+    runs-on: ubuntu-24.04
+    name: gate parity (informational until phase 7)
+    # parity.sh exits 1 by design until every gate is migrated. This job
+    # publishes the number so the count is visible on every PR; it becomes
+    # blocking in phase 7, when reaching zero is what licenses deleting the
+    # Makefile.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+      - name: Report unmapped gates
+        run: ./tools/parity.sh

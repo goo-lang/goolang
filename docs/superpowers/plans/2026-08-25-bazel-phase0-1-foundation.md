@@ -16,6 +16,8 @@
 - **Dependencies are exactly `rules_cc` 0.2.17 and `rules_shell` 0.6.1.** Both were resolved and run green on Bazel 9.2.0 on 2026-08-25. Do not add a dependency without recording why.
 - **`sh_test` must be loaded from `@rules_shell//shell:sh_test.bzl`.** Bazel 9 removed the native rule.
 - **The compiler pin is `/usr/bin/gcc`, an ABSOLUTE path, and GCC is the default — not clang.** `/usr/lib64/ccache/gcc` precedes `/usr/bin/gcc` on PATH, and the ccache shim cannot write to `~/.cache/ccache` inside Bazel's read-only sandbox, so every compile fails with `Read-only file system`. GCC rather than clang because phase 3 compares the Bazel-built compiler against the Make-built one, and the Makefile uses GCC. Changing the build system and the compiler together would make that comparison unattributable.
+- **That pin is correct locally and WRONG on CI, which is why it is a `--repo_env` setting and not a hard-coded toolchain.** `.github/workflows/tests.yml` runs `ubuntu-24.04`, whose `/usr/bin/gcc` is gcc-13 and rejects `-std=c23`; it installs and uses gcc-14. Every CI invocation must pass `--repo_env=CC=/usr/bin/gcc-14`.
+- **The LLVM version check is a FLOOR (`GOO_LLVM_MIN_MAJOR`, default 18), not an equality.** The workstation has llvm-config 22.1.8 as the unversioned binary; ubuntu-24.04's `llvm-dev` provides only a VERSIONED one (`llvm-config-18` and similar). An exact-major assert would refuse to configure on CI. A floor keeps the property that matters — a missing or too-old LLVM stops the build loudly — without pinning CI to a version its distribution does not ship. `GOO_LLVM_CONFIG` pins an explicit path when the unversioned binary is absent.
 - **The language standard is C23** (`build --copt=-std=c23`), matching `Makefile:23`.
 - **Commits MUST use `git -c commit.gpgsign=false commit`.** The 1Password SSH signing agent fails in this environment.
 - **Every git write operation must be backgrounded with a 600s window.** A pre-commit hook runs `make test` and a pre-push hook runs `make verify-core`; both exceed a 2-minute foreground window. Verify the result with `git log -1`, never the exit code alone.
@@ -265,7 +267,7 @@ as Makefile:50 does. What it adds is refusal: the Makefile prints a warning and
 builds with LLVM_AVAILABLE=0, so a build with no code generator still exits 0.
 """
 
-_REQUIRED_MAJOR = "22."
+_REQUIRED_MAJOR = "22."   # superseded: see the note after this task
 
 def _run(rctx, args):
     res = rctx.execute(args)
@@ -337,26 +339,38 @@ bazel test //third_party/llvm:llvm_smoke 2>&1 | tail -5
 ```
 Expected: `//third_party/llvm:llvm_smoke  PASSED`.
 
+> **Note added while executing (2026-08-25).** The rule shipped is a version
+> FLOOR, not the exact-major assert written above. `ubuntu-24.04` — the distro
+> `tests.yml` already uses — ships LLVM 18 via `llvm-dev`, and only as a
+> VERSIONED binary, so `startswith("22.")` refused to configure on CI and
+> `rctx.which("llvm-config")` found nothing. The shipped rule searches
+> `llvm-config`, then `llvm-config-22` down to `-18`, honours `GOO_LLVM_CONFIG`
+> for an explicit path, and compares against `GOO_LLVM_MIN_MAJOR` (default 18).
+> Read `third_party/llvm/llvm.bzl` for the version in the tree; the teeth check
+> below still applies, with the floor raised instead of the major changed.
+
 - [ ] **Step 6: Prove the version assertion has teeth**
 
 A rule that cannot refuse is indistinguishable from no rule. Run:
 ```bash
-cp third_party/llvm/llvm.bzl /tmp/llvm.bzl.bak
-sed -i 's/_REQUIRED_MAJOR = "22."/_REQUIRED_MAJOR = "99."/' third_party/llvm/llvm.bzl
-bazel test //third_party/llvm:llvm_smoke > /tmp/red.log 2>&1; echo "RED exit=$?"
-grep -c 'goolang requires LLVM 99.x, llvm-config reports 22' /tmp/red.log
-cp /tmp/llvm.bzl.bak third_party/llvm/llvm.bzl
+# No file edit needed: the floor is an env var, so the mutation is a flag.
+bazel test //third_party/llvm:llvm_smoke --repo_env=GOO_LLVM_MIN_MAJOR=99 \
+    > /tmp/red.log 2>&1; echo "RED exit=$?"
+grep -oE 'goolang requires LLVM 99 or newer[^"]*' /tmp/red.log | head -1
 bazel test //third_party/llvm:llvm_smoke > /tmp/green.log 2>&1; echo "GREEN exit=$?"
 ```
 Expected: `RED exit=1`, the grep prints `1`, `GREEN exit=0`. Do not take the exit status through a pipe.
 
-- [ ] **Step 7: Confirm the source file is restored**
+- [ ] **Step 7: Confirm the CI override path also works**
 
-Run:
+CI cannot rely on an unversioned `llvm-config`, so the explicit-path override
+must be exercised too:
 ```bash
-grep -n '_REQUIRED_MAJOR = ' third_party/llvm/llvm.bzl
+bazel test //third_party/llvm:llvm_smoke \
+    --repo_env=GOO_LLVM_CONFIG=/usr/bin/llvm-config > /tmp/ci.log 2>&1; echo "exit=$?"
 ```
-Expected: exactly one line, reading `"22."`. A mutation left in the tree would silently disarm the assertion.
+Expected: exit 0. Because the floor lives in an env var rather than the source,
+no mutation is left in the tree to clean up.
 
 - [ ] **Step 8: Commit**
 
