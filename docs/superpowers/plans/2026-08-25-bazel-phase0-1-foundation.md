@@ -985,8 +985,19 @@ GATE="m10-probe"
 TARGET="m10_probe"
 PKG="tools/parity_selftest_tmp"
 
+# parity.sh exits 1 by design while gates remain. Under `set -o pipefail` that
+# status becomes the PIPELINE's status, so `parity.sh | grep -q ...` reports
+# failure even when grep matches. Every reader below therefore captures the
+# report into a variable first and inspects it separately, never through a pipe
+# whose status is tested. This bit on 2026-08-25: the guard below wrongly
+# reported "m10-probe is not currently unmapped" while all 216 were unmapped.
+parity_report() {
+    ./tools/parity.sh 2>/dev/null
+    return 0
+}
+
 unmapped_count() {
-    ./tools/parity.sh 2>/dev/null | sed -n 's/^unmapped:[[:space:]]*//p'
+    parity_report | sed -n 's/^unmapped:[[:space:]]*//p'
 }
 
 cleanup() { rm -rf "$root/$PKG"; }
@@ -1001,7 +1012,8 @@ fi
 # Confirm the gate really is unmapped right now. Without this, a gate that was
 # already mapped would make the delta 0 and the test would report lost teeth
 # when the truth is a bad fixture.
-if ! ./tools/parity.sh 2>/dev/null | grep -qx "  $GATE"; then
+report="$(parity_report)"
+if ! printf '%s\n' "$report" | grep -qx "  $GATE"; then
     echo "parity_selftest: TOOL FAILURE $GATE is not currently unmapped; pick another"
     exit 2
 fi

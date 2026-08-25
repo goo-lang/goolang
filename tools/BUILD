@@ -20,3 +20,18 @@ sh_test(
         "//:Makefile",
     ],
 )
+
+# Writes a Bazel package into the source tree, so it cannot run inside the
+# sandbox. Tagged so `bazel test //...` skips it; CI runs it explicitly, the
+# way tools/verify_sanitizers.sh will be run in phase 6. A self-test that never
+# runs is indistinguishable from one that passes.
+sh_test(
+    name = "parity_selftest",
+    size = "medium",
+    srcs = ["parity_selftest.sh"],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+)
