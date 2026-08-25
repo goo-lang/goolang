@@ -128,11 +128,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # bin/goo's link line is `-lm -pthread -ljson-c -lcurl -lz`, so the
+      # make build needs those dev packages. The first version of this job
+      # omitted them and died on "cannot find -ljson-c". tests.yml installs the
+      # same set.
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-14 bison llvm-dev clang make
+            make gcc-14 bison llvm-dev clang \
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev
 
       - uses: bazel-contrib/setup-bazel@0.19.0
         with:
