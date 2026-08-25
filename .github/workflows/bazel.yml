@@ -171,3 +171,12 @@ jobs:
             --repo_env=GOO_LLVM_CONFIG="$LLVMCFG"
 
           ./tools/compiler_differential.sh
+
+          # The golden suite on a fully Bazel-built toolchain. Asserts
+          # 486 passed / 9 failed exactly -- the 9 reach the far transport and
+          # need NNG, which is phase 3c.
+          bazel build //src/runtime:goo_runtime_archive \
+            --repo_env=CC=/usr/bin/gcc-14 \
+            --repo_env=GOO_LLVM_CONFIG="$LLVMCFG"
+
+          ./tools/golden_bazel.sh
