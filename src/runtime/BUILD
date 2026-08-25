@@ -71,3 +71,26 @@ goo_cc_library(
     ],
     visibility = ["//visibility:public"],
 )
+
+# The runtime archive under the name the compiler expects, so it can be handed
+# over with GOO_RUNTIME.
+#
+# A COPY, not a rebuild. The plan called for an explicit `ar -D rcs` to
+# guarantee determinism, and that was wrong on both counts. Bazel's own archive
+# is already deterministic -- it links with ZERO_AR_DATE=1, and every member
+# reads uid 0, gid 0, epoch 0, which is exactly what archive-determinism-probe
+# asserts. And `ar rcs out.a in.a` would have added the input archive as a
+# MEMBER rather than extracting its objects, producing a nested archive that
+# links nothing.
+#
+# The Makefile's recipe additionally does `addlib` on libnng.a. That is phase
+# 3c, and it is the hard half: addlib copies each member's header VERBATIM, so
+# determinism cannot be imposed at this level and has to be achieved in NNG's
+# own build. That is why the Makefile passes three CMAKE_C_ARCHIVE_* overrides.
+genrule(
+    name = "goo_runtime_archive",
+    srcs = [":runtime_full"],
+    outs = ["libgoo_runtime.a"],
+    cmd = "for f in $(SRCS); do case $$f in *.a) cp $$f $@ ;; esac; done",
+    visibility = ["//visibility:public"],
+)

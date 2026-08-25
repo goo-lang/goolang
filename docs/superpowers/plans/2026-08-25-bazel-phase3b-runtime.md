@@ -154,40 +154,30 @@ bazel cquery //src/runtime:runtime_full --output=files 2>/dev/null
 ```
 Record what it prints. If it names a `.a`, a `filegroup` over the target may be enough; if it names several files, the archive must be built explicitly.
 
-- [ ] **Step 2: Build the archive explicitly, so determinism is ours to control**
+- [ ] **Step 2: Expose the archive under the name the compiler expects**
 
-Append to `src/runtime/BUILD`:
+**Corrected while executing, 2026-08-25.** This step originally called for an
+explicit `ar -D rcs` to guarantee determinism. That was wrong on both counts:
+
+- Bazel's own archive is **already deterministic**. It links with
+  `ZERO_AR_DATE=1`, and every member reads `uid 0, gid 0, epoch 0` -- exactly
+  what `archive-determinism-probe` asserts. Measured against a control: an
+  ordinary `ar rcs` produces `1000/1000` and a real date.
+- `ar rcs out.a in.a` would have added the input archive as a **member**, not
+  extracted its objects, producing a nested archive that links nothing.
+
+So this is a copy. Append to `src/runtime/BUILD`:
 ```python
-# The runtime archive, as one file the compiler can be handed via GOO_RUNTIME.
-#
-# Built explicitly with `ar -D` and `ranlib -D` rather than reusing the
-# cc_library's own archive, because archive-determinism-probe (a gate in
-# VERIFY_ALL_DEPS) asserts every member carries mtime 0, uid 0 and gid 0.
-# Owning the ar invocation is what makes that assertable.
-#
-# The Makefile's recipe additionally does `addlib` on libnng.a. That is phase
-# 3c, and it is the hard half: addlib copies each member's header VERBATIM, so
-# `ar -D` here would NOT zero a member that arrived from NNG. Determinism has
-# to be achieved in NNG's own build, which is why the Makefile passes three
-# CMAKE_C_ARCHIVE_* overrides.
 genrule(
     name = "goo_runtime_archive",
     srcs = [":runtime_full"],
     outs = ["libgoo_runtime.a"],
-    cmd = """
-        objs=""
-        for f in $(SRCS); do
-            case "$$f" in *.a) objs="$$objs $$f" ;; esac
-        done
-        rm -f $@
-        ar -D rcs $@ $$objs
-        ranlib -D $@
-    """,
+    cmd = "for f in $(SRCS); do case $$f in *.a) cp $$f $@ ;; esac; done",
     visibility = ["//visibility:public"],
 )
 ```
 
-**If Step 1 showed the `cc_library` does not hand over a usable `.a`,** build the archive from the object files instead — declare the 13 `.c` files in a second `cc_library` with `linkstatic`, or add a `cc_binary(linkshared=False)` shim. Report which shape was needed and why; do not paper over it with `alwayslink`.
+The `case` filter matters: `cc_library` hands over both a `.a` and a `.so`.
 
 - [ ] **Step 3: Verify the archive's contents and determinism**
 
@@ -196,9 +186,12 @@ bazel build //src/runtime:goo_runtime_archive > /tmp/ar.log 2>&1; echo "EXIT=$?"
 A=bazel-bin/src/runtime/libgoo_runtime.a
 ar t "$A" | wc -l                       # expect 12
 ar tv "$A" | head -3                    # expect mtime/uid/gid all zero
-ar tv "$A" | grep -vcE '0/0 +[0-9]+ +Jan  1 00:00 1970|1970' || true
+ar tv "$A" | grep -vcE '^rw-r--r-- 0/0 .* 1970'   # expect 0
+ar t  "$A" | grep -c '\.a$'                        # expect 0, no nested archive
 ```
-Every member must show a zeroed timestamp. A non-zero one means `-D` did not apply and `archive-determinism-probe` would fail in phase 3c.
+Every member must read `0/0` and a 1970 timestamp, which is what
+`archive-determinism-probe` asserts. The nested-archive check exists because
+the original `ar rcs` formulation would have produced exactly that.
 
 - [ ] **Step 4: Commit**
 
