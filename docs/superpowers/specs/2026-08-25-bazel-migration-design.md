@@ -295,6 +295,21 @@ it per suite rather than assuming it, starting from `obj_header_test` (already
 narrow) and widening. A suite that will not link against a narrow dep set has
 revealed a genuine coupling, which is information the Makefile currently hides.
 
+**Measured 2026-08-25, and it moved work between phases.** Running that loop
+showed `obj_header_test` is the ONLY unit suite that belongs in phase 1. All
+four `tests/unit/types/*_test.c` suites -- `release_decision`, `param_escape`,
+`block_escape`, `local_escape` -- `#include "parser.h"` and call `parse_input()`
+and `type_check()`. They parse real Goo source and type-check it before
+asserting on the analysis, so each needs the bison-generated parser (phase 2)
+and `src/types/type_checker.c`, which carries 7 LLVM references (phase 3).
+They are integration tests of the front end wearing the shape of unit tests.
+
+The analysis units themselves are clean: `release_decision.c`, `param_escape.c`,
+`block_escape.c`, `local_escape.c` and `escape_core.c` all compile with no LLVM
+and no parser, confirmed by `bazel query somepath(//src/types:all,
+@llvm//:llvm_c)` returning empty against a positive control that returns a path.
+So phase 1 ships the libraries and phase 3 ships their tests.
+
 ### 4.7 The parity script
 
 ```
@@ -372,9 +387,9 @@ Each phase is one PR. `parity.sh` runs from phase 0 and counts down from 217.
 | # | Content | Exit criterion |
 |---|---|---|
 | 0 | Skeleton, `.bazelrc`, LLVM rule, `parity.sh` + its positive control | `parity.sh` reports 217 unmapped and its control passes |
-| 1 | `//tests/unit:goo_check`, then per-suite dependency discovery (4.6) starting from `obj_header_test`. Resolve `main_simple.c` / `main_minimal.c`. | Each ported suite green under Bazel and Make; `src/` holds nothing ungated |
+| 1 | `//tests/unit:goo_check`, `//src/runtime`, `obj_header_test`, the five LLVM-free analysis libraries. Resolve `main_simple.c` / `main_minimal.c`. | `obj_header_test` green under both; `src/` holds nothing ungated |
 | 2 | bison genrule, tripwire `sh_test`, lexer/parser/ast | Tripwire reports 31 S/R, 0 R/R |
-| 3 | types, codegen, `//src/compiler:goo` | Bazel-built `goo` passes the same golden suite as `make bin/goo` |
+| 3 | types, codegen, `//src/compiler:goo`, **and the four `tests/unit/types` suites moved here from phase 1** | Bazel-built `goo` passes the same golden suite as `make bin/goo`; the four escape/release suites green |
 | 4 | `goo_probe` macro, its teeth fixture, 155 inline probes | Teeth fixture goes RED; 155 probes green |
 | 5 | 28 script probes, golden suites, `goostd` filegroup | — |
 | 6 | Sanitizer configs, `testing/teeth`, coverage gate | `verify_sanitizers.sh` exits 0 |

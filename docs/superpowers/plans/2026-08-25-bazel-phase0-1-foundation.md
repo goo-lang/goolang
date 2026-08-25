@@ -1789,244 +1789,48 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 13: Dependency discovery, and the release_decision suite
+### Tasks 13 and 14: SUPERSEDED — the four suites move to phase 3
 
-**Files:**
-- Create: `src/types/BUILD`, `tests/unit/types/BUILD`
+**Executed 2026-08-25. The dependency-discovery loop hit its documented stop
+condition on the first iteration, and the answer moves work between phases.**
 
-**Interfaces:**
-- Consumes: `//tests/unit:goo_check`, `//tools:defs.bzl`.
-- Produces: `//src/types:release_decision` and `//tests/unit/types:release_decision_test`. Task 14 follows the same procedure for three more suites.
+`release_decision_test` linked against `release_decision.c` alone fails with:
 
-**Background.** Every suite except `obj_header_test` links `$(SRC_OBJS)` — the whole source tree, LLVM included — so the Makefile does not state what any of them actually needs. Bazel requires the real set. The procedure below discovers it rather than guessing it.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `tests/unit/types/BUILD`:
-```python
-load("//tools:defs.bzl", "goo_cc_test")
-
-# Dependency set discovered, not copied. The Makefile links $(SRC_OBJS) for
-# this suite -- the whole tree -- so it states nothing about what the unit
-# under test actually needs. Start narrow and widen on real link errors only.
-goo_cc_test(
-    name = "release_decision_test",
-    size = "small",
-    srcs = ["release_decision_test.c"],
-    deps = [
-        "//src/types:release_decision",
-        "//tests/unit:goo_check",
-    ],
-)
+```
+ld.lld: error: undefined symbol: parse_input
+ld.lld: error: undefined symbol: ast_root
+ld.lld: error: undefined symbol: type_checker_new
+ld.lld: error: undefined symbol: type_check_program
+ld.lld: error: undefined symbol: type_checker_free
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+All four `tests/unit/types/*_test.c` suites `#include "parser.h"` and call
+`parse_input()` and `type_check()`. They parse real Goo source and type-check
+it before asserting on the analysis, so each transitively needs the
+bison-generated parser (phase 2) and `src/types/type_checker.c`, which carries
+7 LLVM references against a control of 0 for `arena.c` (phase 3). They are
+integration tests of the front end wearing the shape of unit tests, and the
+Makefile hid that by linking `$(SRC_OBJS)` for all of them.
 
-Run:
-```bash
-bazel test //tests/unit/types:release_decision_test 2>&1 | tail -5
-```
-Expected: FAIL — `//src/types:release_decision` does not exist.
+**What phase 1 ships instead:** `src/types/BUILD` with the five analysis units
+as libraries — `release_decision`, `param_escape`, `block_escape`,
+`local_escape`, `escape_core`. All five compile with no LLVM and no parser.
+Verified by `bazel query 'somepath(//src/types:all, @llvm//:llvm_c)'` returning
+empty, against a positive control on `//third_party/llvm:llvm_smoke` that
+returns a two-node path — so the empty result is a real absence rather than a
+broken query.
 
-- [ ] **Step 3: Create the narrowest plausible library**
+**What phase 3 must now do:** port the four suites once the parser and
+`@llvm//:llvm_c` are available, each with its dependency set discovered the
+same way, and each proven to keep its teeth by mutation. Four gates
+(`release-decision-test`, `param-escape-test`, `block-escape-test`,
+`local-escape-test`) stay unmapped until then.
 
-Create `src/types/BUILD`:
-```python
-load("//tools:defs.bzl", "goo_cc_library")
-
-goo_cc_library(
-    name = "release_decision",
-    srcs = ["release_decision.c"],
-    visibility = ["//visibility:public"],
-)
-```
-
-- [ ] **Step 4: Run the discovery loop**
-
-Run:
-```bash
-bazel test //tests/unit/types:release_decision_test 2>&1 | grep -E 'undefined reference|error:' | head -20
-```
-
-For each `undefined reference to 'symbol'`, find the file that defines it:
-```bash
-grep -rln '^[a-zA-Z_].*\bSYMBOL\s*(' src/ --include='*.c'
-```
-Add that file to the `srcs` of a `goo_cc_library` — a new one if it is a separable unit, or this one if it is genuinely part of the same unit. Re-run. Repeat until the link succeeds.
-
-**Stop conditions.** Report to the user rather than continuing if either occurs:
-- The loop pulls in a file under `src/codegen/`, which means the suite transitively needs LLVM and does not belong in phase 1.
-- The loop exceeds six iterations, which means the unit is not separable and the coupling is worth discussing before encoding it in a BUILD file.
-
-- [ ] **Step 5: Record what was discovered**
-
-Add a comment to the final `goo_cc_library` naming the symbols that forced each addition, in this form:
-```python
-goo_cc_library(
-    name = "release_decision",
-    srcs = [
-        "release_decision.c",
-        # Added for: <symbol>, referenced by release_decision.c
-        "escape_core.c",
-    ],
-    visibility = ["//visibility:public"],
-)
-```
-
-- [ ] **Step 6: Verify it passes and agrees with make**
-
-Run:
-```bash
-bazel test //tests/unit/types:release_decision_test > /tmp/bz.log 2>&1; echo "bazel exit=$?"
-make release-decision-test > /tmp/mk.log 2>&1; echo "make exit=$?"
-```
-Expected: both 0.
-
-- [ ] **Step 7: Prove the ported suite has teeth**
-
-Repeat Task 11's mutation procedure against `src/types/release_decision.c`. The Makefile side already has a mutation harness at `scripts/release_decision_teeth.sh`; read it for a predicate known to be covered:
-```bash
-head -30 scripts/release_decision_teeth.sh
-```
-Mutate that predicate, confirm RED, restore, confirm GREEN, and confirm `git diff --stat` is empty.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add src/types/BUILD tests/unit/types/BUILD
-git -c commit.gpgsign=false commit -m "build(bazel): port release_decision_test with a discovered dependency set
-
-The Makefile links \$(SRC_OBJS) for this suite -- the whole source tree,
-LLVM included -- so it states nothing about what the unit under test needs.
-The Bazel target starts at release_decision.c alone and widens only on a real
-undefined reference, with a comment naming the symbol that forced each
-addition.
-
-Teeth confirmed by mutating a predicate that scripts/release_decision_teeth.sh
-already covers: RED, restored, GREEN, clean tree.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
-```
-
----
-
-### Task 14: The three escape suites
-
-**Files:**
-- Modify: `src/types/BUILD`, `tests/unit/types/BUILD`
-
-**Interfaces:**
-- Consumes: Task 13's discovery procedure.
-- Produces: `//tests/unit/types:param_escape_test`, `:block_escape_test`, `:local_escape_test`.
-
-- [ ] **Step 1: Add the three test targets**
-
-Append to `tests/unit/types/BUILD`:
-```python
-goo_cc_test(
-    name = "param_escape_test",
-    size = "small",
-    srcs = ["param_escape_test.c"],
-    deps = [
-        "//src/types:param_escape",
-        "//tests/unit:goo_check",
-    ],
-)
-
-goo_cc_test(
-    name = "block_escape_test",
-    size = "small",
-    srcs = ["block_escape_test.c"],
-    deps = [
-        "//src/types:block_escape",
-        "//tests/unit:goo_check",
-    ],
-)
-
-goo_cc_test(
-    name = "local_escape_test",
-    size = "small",
-    srcs = ["local_escape_test.c"],
-    deps = [
-        "//src/types:local_escape",
-        "//tests/unit:goo_check",
-    ],
-)
-```
-
-- [ ] **Step 2: Run all three to verify they fail**
-
-Run:
-```bash
-bazel test //tests/unit/types:all 2>&1 | tail -8
-```
-Expected: three failures naming the three missing libraries.
-
-- [ ] **Step 3: Add the three libraries, narrowest first**
-
-Append to `src/types/BUILD`:
-```python
-goo_cc_library(
-    name = "param_escape",
-    srcs = ["param_escape.c"],
-    visibility = ["//visibility:public"],
-)
-
-goo_cc_library(
-    name = "block_escape",
-    srcs = ["block_escape.c"],
-    visibility = ["//visibility:public"],
-)
-
-goo_cc_library(
-    name = "local_escape",
-    srcs = ["local_escape.c"],
-    visibility = ["//visibility:public"],
-)
-```
-
-- [ ] **Step 4: Run Task 13's discovery loop for each**
-
-Run:
-```bash
-bazel test //tests/unit/types:all 2>&1 | grep -E 'undefined reference' | sort -u
-```
-Resolve each as in Task 13 Step 4, with the same two stop conditions. `escape_core.c` is the likely shared dependency — if two or more libraries need it, give it its own `goo_cc_library(name = "escape_core", srcs = ["escape_core.c"])` and depend on that rather than listing the file twice.
-
-- [ ] **Step 5: Verify all four suites pass under both build systems**
-
-Run:
-```bash
-bazel test //tests/unit/... > /tmp/bz.log 2>&1; echo "bazel exit=$?"
-for t in param-escape-test block-escape-test local-escape-test release-decision-test; do
-    make "$t" > "/tmp/mk-$t.log" 2>&1; echo "$t make exit=$?"
-done
-```
-Expected: every status 0.
-
-- [ ] **Step 6: Confirm no LLVM leaked into the leaf**
-
-Phase 1 is defined as the LLVM-free leaf. Run:
-```bash
-bazel query 'somepath(//tests/unit/..., @llvm//:llvm_c)' 2>/dev/null | head
-```
-Expected: no output. Any path means a suite in this phase depends on LLVM and belongs in phase 3.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src/types/BUILD tests/unit/types/BUILD
-git -c commit.gpgsign=false commit -m "build(bazel): port the three escape suites
-
-Same discovery procedure as release_decision_test: start at the single .c file
-and widen only on a real undefined reference. escape_core.c is shared, so it
-gets its own target rather than being listed in three srcs lists.
-
-Confirmed no path from //tests/unit/... to @llvm//:llvm_c, which is what makes
-this the LLVM-free leaf rather than an assertion that it is.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
-```
+**Note on the discovery loop's instrument.** The link errors were nearly missed:
+the plan's grep looked for GNU ld's `undefined reference to \`sym'`, and this
+toolchain uses `ld.lld`, which prints `undefined symbol: sym`. The first
+iteration reported "no undefined refs" while the link had in fact failed. Grep
+for `ERROR` first and read the real text before pattern-matching it.
 
 ---
 
