@@ -997,4 +997,4 @@ The open questions this phase will answer, which the phase 3 plan needs:
 
 - Does `//src/types:frontend` link without any `src/codegen` symbol? If the discovery loop in Task 5 pulls one in, the LLVM boundary is not where the spec says it is, and phase 3's scope grows.
 - How many gates does one ported suite claim? Task 9 Step 1 measures it, which is what makes the phase 4 estimate for the 155 inline probes real rather than assumed.
-- Does the bison genrule's output differ byte-for-byte from Make's? If it does, phase 3's `goo`-versus-`goo` comparison has a second variable in it and must control for that first.
+- ~~Does the bison genrule's output differ byte-for-byte from Make's?~~ **Answered in Task 1, 2026-08-25: no.** The two differ by exactly 14,105 bytes, and that is entirely the embedded output path: 455 `#line` directives name the generated file, and `bazel-out/k8-fastbuild/bin/src/parser/gen/parser.tab.c` is 31 characters longer than `src/parser/parser.tab.c`. 455 x 31 = 14,105, matching the measured difference exactly, and the files are byte-identical once that path is normalised. Phase 3's compiler comparison has one fewer variable in it.
