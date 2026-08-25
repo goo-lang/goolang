@@ -4,7 +4,7 @@
 
 **Goal:** Stand up a Bazel workspace that builds and tests the LLVM-free leaf of the goolang compiler, plus `tools/parity.sh` — the gate-parity tool that must reach zero before the Makefile may be deleted in phase 7.
 
-**Architecture:** Bazel and Make coexist. Nothing is removed from the Makefile in these two phases. `parity.sh` reads `VERIFY_ALL_DEPS` from the Makefile and the test list from `bazel query`, and reports gates with no Bazel counterpart. It starts at 217 and is expected to stay red for the whole migration; its own positive control proves it can move.
+**Architecture:** Bazel and Make coexist. Nothing is removed from the Makefile in these two phases. `parity.sh` reads `VERIFY_ALL_DEPS` from the Makefile and the test list from `bazel query`, and reports gates with no Bazel counterpart. It starts at the recorded baseline (216 on main) and is expected to stay red for the whole migration; its own positive control proves it can move.
 
 **Tech Stack:** Bazel 9.2.0 (bzlmod), `rules_cc` 0.2.17, `rules_shell` 0.6.1, GCC 16.2.1, LLVM 22.1.8 via the host `llvm-config`, C23.
 
@@ -580,7 +580,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ### Task 4: parity.sh — read the gates out of the Makefile
 
 **Files:**
-- Create: `tools/parity.sh`, `tools/parity_test.sh`
+- Create: `tools/parity.sh`, `tools/parity_test.sh`, `tools/parity-gate-count.txt`
 - Modify: `tools/BUILD`
 
 **Interfaces:**
@@ -612,9 +612,22 @@ fi
 
 fail=0
 
+# The count is a RECORDED BASELINE, not a constant, because it moves with the
+# branch: golden-selftest is in VERIFY_ALL_DEPS on test/golden-runner-teeth
+# (5c633f6) and not on main, so main reads 216 and that branch reads 217.
+# Same idiom as scripts/grammar-tripwire.sh's EXPECTED_SR and
+# scripts/probe-teeth-baseline.txt: a changed count is stop-the-line, and
+# bumping it is a deliberate one-line edit rather than silent drift.
+expected="$(grep -oE '^[0-9]+' tools/parity-gate-count.txt 2>/dev/null | head -1)"
+if [ -z "$expected" ]; then
+    echo "parity_test: TOOL FAILURE cannot read tools/parity-gate-count.txt"
+    exit 2
+fi
 count="$(printf '%s\n' "$gates" | grep -c .)"
-if [ "$count" -ne 217 ]; then
-    echo "parity_test: FAIL expected 217 gates, got $count"
+if [ "$count" -ne "$expected" ]; then
+    echo "parity_test: FAIL gate count moved: baseline $expected, read $count"
+    echo "  If a gate was added or removed on purpose, update"
+    echo "  tools/parity-gate-count.txt in the same commit."
     fail=1
 fi
 
@@ -634,7 +647,7 @@ if printf '%s\n' "$gates" | grep -qx 'm12-probe'; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-    echo "parity_test: PASS 217 gates, controls both correct"
+    echo "parity_test: PASS $count gates (baseline $expected), controls both correct"
 fi
 exit "$fail"
 ```
@@ -655,11 +668,19 @@ sh_test(
     size = "small",
     srcs = ["parity_test.sh"],
     data = [
+        "parity-gate-count.txt",
         "parity.sh",
         "//:Makefile",
     ],
 )
 ```
+
+Also create `tools/parity-gate-count.txt` holding the current baseline:
+```
+216
+```
+216 is the count on `main`. The `test/golden-runner-teeth` branch adds
+`golden-selftest`, so it reads 217 there — bump this file in the merge commit.
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -676,8 +697,10 @@ Create `tools/parity.sh`:
 #!/usr/bin/env bash
 # Gate parity between the Makefile and Bazel.
 #
-# The Makefile is this project's gate net: VERIFY_ALL_DEPS names 217 gates and
-# verify-core runs 214 of them. The migration deletes that file in phase 7, and
+# The Makefile is this project's gate net: VERIFY_ALL_DEPS names every gate and
+# verify-core runs all but the three in HEAVY_DEPS. The exact count moves with
+# the branch, so it lives in tools/parity-gate-count.txt rather than here.
+# The migration deletes the Makefile in phase 7, and
 # this script is the only thing standing between "deleted" and "silently lost
 # a gate". It must reach zero unmapped before the Makefile may be removed.
 #
@@ -730,7 +753,7 @@ Run:
 ```bash
 bazel test //tools:parity_test --test_output=all 2>&1 | grep -E 'parity_test:|PASSED|FAILED'
 ```
-Expected: `parity_test: PASS 217 gates, controls both correct`.
+Expected: `parity_test: PASS 216 gates (baseline 216), controls both correct`.
 
 - [ ] **Step 5: Commit**
 
@@ -898,7 +921,8 @@ call `bazel query`:
 ```bash
 ./tools/parity.sh; echo "exit=$?"
 ```
-Expected: `make gates: 217`, `mapped: 0`, `unmapped: 217`, `exit=1`. Record the number in the commit message.
+Expected: `make gates:` and `unmapped:` both equal the baseline in
+`tools/parity-gate-count.txt` (216 on main), `mapped: 0`, `exit=1`. Record the number in the commit message.
 
 - [ ] **Step 6: Commit**
 
@@ -910,7 +934,7 @@ parity.sh now reads both sides and prints the unmapped list. It exits 1 while
 any gate is unmapped, which is the expected state for the whole migration --
 it reaches 0 in phase 7 and that is what licenses deleting the Makefile.
 
-Baseline today: 217 make gates, 0 mapped, 217 unmapped.
+Baseline today: 216 make gates on main, 0 mapped, 216 unmapped.
 
 A test claims a gate by being named after it with hyphens turned into
 underscores. Exceptions go in an allowlist, never a special case here.
@@ -939,7 +963,8 @@ Create `tools/parity_selftest.sh`:
 #!/usr/bin/env bash
 # Proves parity.sh can report the OPPOSITE result.
 #
-# parity.sh will print "unmapped: 217" and exit 1 for most of this migration.
+# parity.sh will print a large "unmapped:" count and exit 1 for most of this
+# migration.
 # A script hard-wired to do exactly that would look identical, and would still
 # look identical on the day it wrongly reported zero and licensed deleting the
 # Makefile. So: add one target that claims a real gate, assert the count drops
@@ -1024,7 +1049,7 @@ The self-test writes a Bazel package, so it cannot run inside the Bazel sandbox.
 ```bash
 ./tools/parity_selftest.sh; echo "exit=$?"
 ```
-Expected: `parity_selftest: HAS TEETH 217 -> 216 -> 217`, `exit=0`.
+Expected: `parity_selftest: HAS TEETH 216 -> 215 -> 216`, `exit=0`.
 
 If it reports `NO TEETH`, `parity.sh` cannot see new targets and Task 5 is wrong — fix that before continuing.
 
@@ -1033,7 +1058,7 @@ If it reports `NO TEETH`, `parity.sh` cannot see new targets and Task 5 is wrong
 Break `parity.sh` deliberately and confirm the self-test notices:
 ```bash
 cp tools/parity.sh /tmp/parity.sh.bak
-sed -i 's/^    echo "unmapped:   ${#unmapped\[@\]}"/    echo "unmapped:   217"/' tools/parity.sh
+sed -i 's/^    echo "unmapped:   ${#unmapped\[@\]}"/    echo "unmapped:   216"/' tools/parity.sh
 ./tools/parity_selftest.sh; echo "expect 1, got exit=$?"
 cp /tmp/parity.sh.bak tools/parity.sh
 ./tools/parity_selftest.sh; echo "expect 0, got exit=$?"
@@ -1081,7 +1106,7 @@ The self-test adds one target claiming a real gate, asserts the unmapped count
 drops by EXACTLY one, removes it and asserts it returns. Exactly one, so an
 off-by-one or a substring match fails here rather than passing quietly.
 
-Verified in both directions: 217 -> 216 -> 217, and a deliberately hard-wired
+Verified in both directions: 216 -> 215 -> 216, and a deliberately hard-wired
 count is caught.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
@@ -1208,7 +1233,7 @@ The shipped allowlist is empty, so it must not move anything. Run:
 ```bash
 ./tools/parity.sh | head -3
 ```
-Expected: still `unmapped:   217`.
+Expected: still `unmapped:   216`.
 
 - [ ] **Step 7: Commit**
 
@@ -1223,7 +1248,7 @@ An entry is '<gate> <reason>' and a missing reason is exit 2, not a warning.
 An allowlist that accepts a bare name is a place gates go to be forgotten,
 which is the single thing parity.sh exists to prevent.
 
-Shipped empty, so the count stays at 217.
+Shipped empty, so the count stays at 216.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1372,11 +1397,11 @@ This adds a Bazel workspace beside the Makefile. It removes nothing. `make verif
 - Workspace pinned to Bazel 9.2.0, with `rules_cc` 0.2.17 and `rules_shell` 0.6.1
 - `@llvm//:llvm_c` from the host `llvm-config`, which refuses any version that is not 22.x
 - `goo_cc_library` / `goo_cc_test`, which force the `xalloc.h` + `goo_assert.h` prelude in as a real dependency
-- `tools/parity.sh`, which reports how many of the 217 gates have no Bazel test
+- `tools/parity.sh`, which reports how many of the 216 gates have no Bazel test
 
 ## The number
 
-`parity.sh` reports **217 unmapped** and exits 1. That is the expected state and it stays red until phase 7. Reaching zero is what licenses deleting the Makefile.
+`parity.sh` reports **216 unmapped** and exits 1. That is the expected state and it stays red until phase 7. Reaching zero is what licenses deleting the Makefile.
 
 ## Teeth
 
@@ -2044,7 +2069,7 @@ Each ported suite was mutated and confirmed to report RED, then restored and con
 
 ## Parity
 
-`parity.sh` moved from 217 unmapped to <N>. It stays red until phase 7.
+`parity.sh` moved from 216 unmapped to <N>. It stays red until phase 7.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
