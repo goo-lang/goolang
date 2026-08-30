@@ -50,3 +50,47 @@ goo_cc_test(
         "//tests/unit:goo_check",
     ],
 )
+
+goo_cc_test(
+    name = "io_test",
+    size = "small",
+    srcs = ["io_test.c"],
+    deps = [
+        "//include:runtime_h",
+        "//src/runtime:io",
+        "//tests/unit:goo_check",
+    ],
+)
+
+goo_cc_test(
+    name = "sync_shim_test",
+    size = "small",
+    srcs = ["sync_shim_test.c"],
+    deps = [
+        "//include:runtime_h",
+        "//src/runtime:sync_shim",
+        "//tests/unit:goo_check",
+    ],
+)
+
+goo_cc_test(
+    name = "testing_test",
+    size = "small",
+    srcs = ["testing_test.c"],
+    deps = [
+        "//include:runtime_h",
+        "//src/runtime:testing",
+        "//tests/unit:goo_check",
+    ],
+)
+
+goo_cc_test(
+    name = "time_shim_test",
+    size = "small",
+    srcs = ["time_shim_test.c"],
+    deps = [
+        "//include:runtime_h",
+        "//src/runtime:time_shim",
+        "//tests/unit:goo_check",
+    ],
+)

@@ -113,6 +113,7 @@ goo_cc_library(
 goo_cc_library(
     name = "sync_shim",
     srcs = ["sync_shim.c"],
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
         ":platform_h",
@@ -123,6 +124,7 @@ goo_cc_library(
 goo_cc_library(
     name = "testing",
     srcs = ["testing.c"],
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
         "//include:runtime_h",
@@ -132,6 +134,7 @@ goo_cc_library(
 goo_cc_library(
     name = "time_shim",
     srcs = ["time_shim.c"],
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":channels",
         ":core",
@@ -145,6 +148,7 @@ goo_cc_library(
 goo_cc_library(
     name = "io",
     srcs = ["io.c"],
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = ["//include:runtime_h"],
 )
 
