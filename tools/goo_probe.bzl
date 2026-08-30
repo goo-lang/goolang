@@ -31,7 +31,8 @@ def _shq(v):
     return "'" + v.replace("'", "'\\''") + "'"
 
 def _probe(name, src, expected, exit_code, stdout_contains, stderr_contains,
-           gooflags, timeout_s, size, tags, extra_data):
+           gooflags, timeout_s, size, tags, extra_data,
+           stderr_ignorecase = False):
     args = [
         "--compiler", "$(rootpath %s)" % _COMPILER,
         "--archive", "$(rootpath %s)" % _ARCHIVE,
@@ -49,6 +50,8 @@ def _probe(name, src, expected, exit_code, stdout_contains, stderr_contains,
         args += ["--stdout-contains", _shq(stdout_contains)]
     if stderr_contains:
         args += ["--stderr-contains", _shq(stderr_contains)]
+        if stderr_ignorecase:
+            args.append("--stderr-ignorecase")
     if gooflags:
         args += ["--gooflags", gooflags]
 
@@ -70,7 +73,8 @@ def goo_probe(name, src, expected, exit_code = None, stderr_contains = None,
 
 def goo_expect_probe(name, src, exit_code = None, stdout_contains = None,
                      stderr_contains = None, expected = None, gooflags = None,
-                     timeout_s = 10, size = "small", tags = [], extra_data = []):
+                     timeout_s = 10, size = "small", tags = [], extra_data = [],
+                     stderr_ignorecase = False):
     """Compile a fixture and assert an exit code and/or a diagnostic.
 
     At least one assertion is required. The runner refuses a probe with none,
@@ -79,10 +83,11 @@ def goo_expect_probe(name, src, exit_code = None, stdout_contains = None,
     if exit_code == None and not stdout_contains and not stderr_contains and not expected:
         fail("goo_expect_probe(%s) asserts nothing" % name)
     _probe(name, src, expected, exit_code, stdout_contains, stderr_contains,
-           gooflags, timeout_s, size, tags, extra_data)
+           gooflags, timeout_s, size, tags, extra_data, stderr_ignorecase)
 
 def goo_reject_probe(name, src, stderr_contains, gooflags = None,
-                     timeout_s = 10, size = "small", tags = [], extra_data = []):
+                     timeout_s = 10, size = "small", tags = [], extra_data = [],
+                     stderr_ignorecase = False):
     """A fixture the compiler must REJECT, cleanly and with a named diagnostic.
 
     Four assertions, and the fourth is why this is not just an exit-code check:
@@ -107,7 +112,8 @@ def goo_reject_probe(name, src, stderr_contains, gooflags = None,
             "--timeout", str(timeout_s),
             "--reject",
             "--stderr-contains", _shq(stderr_contains),
-        ] + (["--gooflags", gooflags] if gooflags else []),
+        ] + (["--stderr-ignorecase"] if stderr_ignorecase else [])
+          + (["--gooflags", gooflags] if gooflags else []),
         data = [src, _COMPILER, _ARCHIVE, "//goostd:files"] + extra_data,
         size = size,
         tags = tags,
