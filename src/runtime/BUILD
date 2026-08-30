@@ -1,6 +1,16 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//tools:defs.bzl", "goo_cc_library")
 
+# EVERY TARGET HERE OPTS OUT OF THE SANITIZERS, and it is not optional.
+# src/codegen/codegen.c hardcodes `gcc` to link a compiled Goo program and
+# passes no sanitizer flag, so an instrumented libgoo_runtime.a fails that
+# link with undefined __asan_report_* symbols. Measured 2026-08-30: without
+# this, 46 of 81 tests go red, every one of them a link failure rather than a
+# defect. `-fno-sanitize=all` is appended after the global --copt, so it wins.
+#
+# Removing this is safe only after codegen learns to pass link flags through.
+NO_SANITIZE_COPTS = ["-fno-sanitize=all"]
+
 # src/runtime is 12 files and 21 inter-file edges. Measured with nm on the built
 # objects, 2026-08-30: only FIVE of them are in a cycle. The other seven were
 # acyclic all along, and the two coarse targets below were the only thing
@@ -63,6 +73,7 @@ cc_library(
 # start it as a side effect of tidying targets.
 goo_cc_library(
     name = "core",
+    visibility = ["//tests/unit/runtime:__pkg__"],
     srcs = [
         "concurrency.c",
         "deadlock.c",
@@ -70,6 +81,7 @@ goo_cc_library(
         "runtime.c",
         "sync.c",
     ],
+    copts = NO_SANITIZE_COPTS,
     linkopts = [
         "-lm",
         "-pthread",
@@ -83,6 +95,8 @@ goo_cc_library(
 goo_cc_library(
     name = "arena",
     srcs = ["arena.c"],
+    copts = NO_SANITIZE_COPTS,
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
         "//include:runtime_h",
@@ -92,6 +106,7 @@ goo_cc_library(
 goo_cc_library(
     name = "channels",
     srcs = ["channels.c"],
+    copts = NO_SANITIZE_COPTS,
     deps = [
         ":core",
         ":platform_h",
@@ -102,6 +117,8 @@ goo_cc_library(
 goo_cc_library(
     name = "defer",
     srcs = ["defer.c"],
+    copts = NO_SANITIZE_COPTS,
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
         "//include:runtime_h",
@@ -111,6 +128,8 @@ goo_cc_library(
 goo_cc_library(
     name = "sync_shim",
     srcs = ["sync_shim.c"],
+    copts = NO_SANITIZE_COPTS,
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
         ":platform_h",
@@ -121,6 +140,8 @@ goo_cc_library(
 goo_cc_library(
     name = "testing",
     srcs = ["testing.c"],
+    copts = NO_SANITIZE_COPTS,
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
         "//include:runtime_h",
@@ -130,6 +151,8 @@ goo_cc_library(
 goo_cc_library(
     name = "time_shim",
     srcs = ["time_shim.c"],
+    copts = NO_SANITIZE_COPTS,
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":channels",
         ":core",
@@ -140,10 +163,21 @@ goo_cc_library(
 
 # io.c is in the archive and NOT in the Makefile's RUNTIME_SRCS, which is why
 # it sits outside RUNTIME_UNITS and is named separately by the genrule.
+#
+# IT STOPPED BEING A LEAF on 2026-08-30. io.c used to allocate every returned
+# string with plain malloc, which reached nothing in this package. It now uses
+# goo_alloc, because a string handed to Goo code must carry an ARC object
+# header or goo_free will release a pointer 16 bytes before the block. That
+# edge to :core is real, and the link named it the moment the change landed.
 goo_cc_library(
     name = "io",
     srcs = ["io.c"],
-    deps = ["//include:runtime_h"],
+    copts = NO_SANITIZE_COPTS,
+    visibility = ["//tests/unit/runtime:__pkg__"],
+    deps = [
+        ":core",
+        "//include:runtime_h",
+    ],
 )
 
 # The 11 files of the Makefile's RUNTIME_SRCS, as an aggregate. io.c and
@@ -152,31 +186,10 @@ goo_cc_library(
 # //tests/unit/runtime:obj_header_test, its only consumer.
 cc_library(
     name = "runtime",
-    visibility = ["//visibility:public"],
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = RUNTIME_UNITS,
 )
 
-# The archive's contents: Makefile:137 RUNTIME_OBJS, minus far_transport.c.
-#
-# This is NOT :runtime above. That one carries the 11 of RUNTIME_SRCS and
-# exists for obj_header_test, which is the only unit suite the Makefile links
-# narrowly. This one adds io.c, which is in the archive and not in
-# RUNTIME_SRCS.
-#
-# far_transport.c is DELIBERATELY EXCLUDED, so this is 12 files and not 13.
-# It includes <nng/nng.h>, and Makefile:179-180 gives it
-# -I$(NNG_BUILD)/include plus a dependency on $(NNG_LIB): it cannot compile
-# without NNG, let alone link. Phase 3c adds it back.
-#
-# Measured 2026-08-25: a 12-object archive built exactly this way passes 486
-# of 495 golden fixtures, the identical split a 13-object one gives, with the
-# same nine failures -- far_shim_probe and eight lanes_* probes, which are the
-# only fixtures that reach the far transport.
-cc_library(
-    name = "runtime_full",
-    visibility = ["//visibility:public"],
-    deps = RUNTIME_UNITS + [":io"],
-)
 
 # The runtime archive under the name the compiler expects, so it can be handed
 # over with GOO_RUNTIME.
@@ -193,6 +206,21 @@ cc_library(
 # 3c, and it is the hard half: addlib copies each member's header VERBATIM, so
 # determinism cannot be imposed at this level and has to be achieved in NNG's
 # own build. That is why the Makefile passes three CMAKE_C_ARCHIVE_* overrides.
+# far_transport.c is DELIBERATELY EXCLUDED from RUNTIME_UNITS and from :io, so
+# the archive is 12 objects and not 13. It includes <nng/nng.h>, and
+# Makefile:179-180 gives it -I$(NNG_BUILD)/include plus a dependency on
+# $(NNG_LIB): it cannot compile without NNG, let alone link. Phase 3c adds it
+# back.
+#
+# Measured 2026-08-25: a 12-object archive built exactly this way passes 486 of
+# 495 golden fixtures, the identical split a 13-object one gives, with the same
+# nine failures -- far_shim_probe and eight lanes_* probes, which are the only
+# fixtures that reach the far transport.
+#
+# :runtime_full is GONE. It was an aggregate with no consumers once the genrule
+# started naming RUNTIME_UNITS directly -- `bazel query rdeps(//..., it)`
+# returned nothing, against a positive control on :runtime that returned
+# obj_header_test.
 genrule(
     name = "goo_runtime_archive",
     srcs = RUNTIME_UNITS + [":io"],

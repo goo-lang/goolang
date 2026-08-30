@@ -14,14 +14,14 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "token",
     srcs = ["token.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/ast:__pkg__"],
     deps = ["//include:token_h"],
 )
 
 goo_cc_library(
     name = "lexer_impl",
     srcs = ["lexer.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [
         ":token",
         "//include:lexer_h",
@@ -32,7 +32,7 @@ goo_cc_library(
 # The name the rest of the tree already uses.
 cc_library(
     name = "lexer",
-    visibility = ["//visibility:public"],
+    visibility = ["//src/parser:__pkg__"],
     deps = [
         ":lexer_impl",
         ":token",

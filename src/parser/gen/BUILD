@@ -28,7 +28,7 @@ cc_library(
     name = "parser_tab",
     hdrs = ["parser.tab.h"],
     includes = ["."],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/parser:__pkg__"],
 )
 
 # The generated implementation, exposed as a source for //src/parser to
@@ -36,5 +36,5 @@ cc_library(
 filegroup(
     name = "parser_tab_c",
     srcs = ["parser.tab.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/parser:__pkg__"],
 )

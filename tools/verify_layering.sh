@@ -85,6 +85,26 @@ else
     printf '  OK    //include:headers is gone, so no target can opt out\n'
 fi
 
+# THE SECOND RATCHET. Every cc_library outside //include is reachable only by
+# the packages that were measured to need it. //include is exempt on purpose:
+# a header library IS the interface, and narrowing those would only move the
+# list of consumers from one file to another.
+#
+# A new //visibility:public in src/, tests/ or tools/ is almost always someone
+# routing around a boundary rather than declaring one. If it is genuinely
+# right, re-measure with `bazel query "rdeps(//..., <target>, 1)"` and name the
+# packages instead.
+echo "no public targets outside //include:"
+# shellcheck disable=SC2086
+pub=$("$BAZEL" query 'attr(visibility, "//visibility:public", kind("cc_library", //src/... + //tests/... + //tools/...))' \
+      $BAZEL_EXTRA 2>/dev/null | tr '\n' ' ')
+if [ -n "${pub// /}" ]; then
+    printf '  WRONG these are public and were not measured: %s\n' "$pub"
+    rc=1
+else
+    printf '  OK    every cc_library outside //include names its consumers\n'
+fi
+
 # The header libraries that replaced it. Printed rather than asserted: the
 # right number is whatever the includes require, and it moves with the code.
 # shellcheck disable=SC2086

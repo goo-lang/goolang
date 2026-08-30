@@ -6,7 +6,7 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "test_discovery",
     srcs = ["test_discovery.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [
         "//include:import_resolver_h",
         "//include:test_discovery_h",

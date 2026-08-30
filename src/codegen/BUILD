@@ -69,7 +69,7 @@ goo_cc_library(
         "statement_codegen.c",
         "value_scope.c",
     ],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/compiler:__pkg__"],
     deps = [
         ":cfctx",
         ":codegen_context",

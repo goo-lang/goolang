@@ -188,6 +188,58 @@ jobs:
           bazel build //... --config=layering \
             --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
 
+  sanitizers:
+    runs-on: ubuntu-24.04
+    name: sanitizers (${{ matrix.config }})
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [asan, ubsan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+
+      # NO gcc-14 HERE, exactly as in the boundaries job. Every sanitizer
+      # config pins clang, because this runner's gcc cannot link -fsanitize=
+      # address. Overriding CC would silently disarm the whole matrix.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison llvm-dev clang
+
+      - name: Check the pinned clang and resolve llvm-config
+        id: tc
+        run: |
+          test -x /usr/bin/clang || { echo "::error::/usr/bin/clang missing"; exit 1; }
+          /usr/bin/clang --version
+          major="$(/usr/bin/clang -dumpversion | cut -d. -f1)"
+          if [ "${major:-0}" -lt 18 ]; then
+            echo "::error::clang $major is too old for -std=c23 (need >= 18)"; exit 1
+          fi
+          LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$LLVMCFG" ]; then LLVMCFG="$(command -v llvm-config || true)"; fi
+          if [ -z "$LLVMCFG" ]; then echo "::error::no llvm-config found"; exit 1; fi
+          echo "llvm_config=$LLVMCFG" >> "$GITHUB_OUTPUT"
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      # FIRST, because a sanitizer that cannot report a failure is worth
+      # nothing. Asserts each deliberate defect turns its OWN config red and
+      # leaves the build green without it. Exit 1 = a config lost its teeth,
+      # exit 2 = bazel itself failed.
+      - name: Verify every sanitizer can report a failure
+        env:
+          BAZEL_EXTRA: --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
+        run: ./tools/verify_sanitizers.sh
+
+      - name: bazel test //... --config=${{ matrix.config }}
+        run: |
+          bazel test //... --config=${{ matrix.config }} \
+            --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
+
   differential:
     runs-on: ubuntu-24.04
     name: both compilers emit identical IR

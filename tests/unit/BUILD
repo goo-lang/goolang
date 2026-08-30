@@ -14,5 +14,8 @@ cc_library(
     name = "goo_check",
     hdrs = ["goo_check.h"],
     includes = ["."],
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//tests/unit/runtime:__pkg__",
+        "//tests/unit/types:__pkg__",
+    ],
 )

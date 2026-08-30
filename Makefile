@@ -3389,6 +3389,7 @@ VERIFY_ALL_DEPS := \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
+	test-golden-poison \
     test-golden-reject \
     spmd-bench-probe \
     stencil-race-runbook-probe \
