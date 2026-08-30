@@ -42,7 +42,7 @@ phase 4 tasks 6 to 17 still ahead of it.
 
 ## In Progress
 
-- [ ] Nothing from this arc. #329 merged 9/9. The open PR is #330, which is
+- [ ] Nothing from this arc. #329 merged 9/9. #330 and #331 merged too, both
       Bazel phase 4 work — see `HANDOFF-bazel-migration.md`.
 
       Keep the CI-reading rule: do NOT wait on `.conclusion == null`. An

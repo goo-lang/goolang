@@ -9,38 +9,56 @@
 | 3 codegen + compiler | #323 | merged |
 | 3b runtime archive (no NNG) | #324 | merged |
 | 4 probe gates, tasks 1–5 of 17 | **#325** | **open, green, CLEAN** |
-| 4 probe gates, tasks 6–7 (the two derivation gates) | **#330** | **open** |
+| 4 probe gates, tasks 6–7 (the two derivation gates) | #330 | merged |
+| 4 probe gates, tasks 8–12 (extracted sources, drift gate) | **#331** | **merged** |
 
-**Parity: 222 gates** as of #330 (was 217). `make verify-core` and
+**Parity: 224 gates** as of #331 (was 217). `make verify-core` and
 `bazel test //...` are both green. `bazel test //...` runs 82 tests.
+`verify-core` now carries three DERIVATION gates — census, generated.bzl and
+the extracted sources — which together cost about 110 s, most of it the
+source-drift self-test.
 
 ## Pick up here
 
-`docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **tasks 8 onward**.
-Tasks 1–7 and the two added ones (4b, 4c) are done. WARNING: the 1–5 checkboxes
+`docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **task 13 onward**.
+Tasks 1–12 and the two added ones (4b, 4c) are done. WARNING: the 1–5 checkboxes
 in that file were never ticked, though every artefact is present — do not read
-an empty box there as open work. 6 and 7 are ticked.
+an empty box there as open work. 6 to 12 are ticked, with evidence.
 
-Tasks 6 and 7 are done in #330: `tests/probes/targets_current.sh`, in make as
-`targets-current-probe` AND under `bazel test //...`, with a `--self-test` whose
-three mutations each run on a COPY of the tree.
-
-**Next is tasks 8–13** (the 69 printf-generated probes, extracted to real files
-behind a drift gate), then 14 (the 28 script-backed), 15 (the bespoke EIGHT, up
-from six — the two new derivation gates classify there, correctly: they are
+**Next is task 13**, then 14 (the 28 script-backed), 15 (the bespoke EIGHT, up
+from six — the derivation gates classify there, correctly: they are
 hand-written sh_tests), 16–17 (CI, close).
 
-**Read this before task 8.** `census_current` — the pattern task 6 was told to
-copy — had NEVER RUN. It is tagged `manual`, so `bazel test //...` skips it, and
-it had no Makefile target and no workflow. Its first execution found the census
-stale: `link-flags-probe` had landed in #329 through nine green CI checks
-without it. Two lessons for the remaining tasks:
+**Task 13 is bigger than it reads, and #331 measured why.** It is not 69
+targets. 159 sources are committed under `tests/probes/src/<gate>/`, each
+needing its own assertions, and the recipes interleave those assertions per
+source. Some cannot be expressed at all: `asi-hardening-probe` asserts *"if exit
+is 0 AND stdout is 5, FAIL"*, a negative compound condition `goo_expect_probe`
+has no form for. **Expect the generator to refuse a large fraction, and treat
+the refusal count as the deliverable.** Its refusals are what found three wrong
+parse rules and a missing category the first time.
 
-- A `manual` tag is not a wiring plan. If you tag a gate `manual` because of
-  nested bazel, add the make-side target in the SAME commit.
-- `probe-teeth-probe` scans `scripts/*.sh` only, so nothing under
-  `tests/probes/` is checked for teeth. `census_current.sh` still has no
-  `--self-test`. Widening that scan is unclaimed work.
+**Three gates were found never to have run, in three sessions.**
+`test-golden-poison`, then `census_current`, then `verify_probe_teeth.sh`. The
+last is the worst of the three: `testing/teeth/BUILD` calls it the most
+important check in the phase, because one macro generates ~150 targets and if
+it cannot fail they all pass while asserting nothing. Lessons:
+
+- **A `manual` tag is not a wiring plan.** If you tag a gate `manual` for nested
+  bazel, add its runner in the SAME commit — a make target if it needs no
+  bazel, a CI step if it does. `verify_probe_teeth.sh` drives bazel, so it is a
+  step in the bazel job; `census_current` needs none, so it is a make gate.
+- **`probe-teeth-probe` scans `scripts/*.sh` ONLY.** Measured 2026-08-30: 14
+  shell files sit outside that glob (12 in `tools/`, 2 in `tests/probes/`) and
+  **12 of them have no `--self-test`**, including the gates `verify_layering.sh`,
+  `golden_bazel.sh` and `compiler_differential.sh`. The scan never considers
+  them, so their absence of teeth was never a decision. Widening it is unclaimed
+  work, and it will go red until those files get teeth or a baseline entry.
+- **Read `git log --stat` before pushing generated output.** The first
+  extraction faithfully collected `comment_lines_probe.goo` (2 MB) and
+  `blank_lines_probe.goo` (1 MB), both `yes '' | head -n 1000000`. Every gate
+  passed — the files matched the derivation exactly. They are REFUSED now, with
+  the reason printed and `EXPECTED_REFUSED` asserted.
 
 ## What is still refused, and why
 
