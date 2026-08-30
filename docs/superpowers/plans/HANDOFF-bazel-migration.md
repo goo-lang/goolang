@@ -10,7 +10,9 @@
 | 3b runtime archive (no NNG) | #324 | merged |
 | 4 probe gates, tasks 1–5 of 17 | **#325** | **open, green, CLEAN** |
 | 4 probe gates, tasks 6–7 (the two derivation gates) | #330 | merged |
-| 4 probe gates, tasks 8–12 (extracted sources, drift gate) | **#331** | **merged** |
+| 4 probe gates, tasks 8–12 (extracted sources, drift gate) | #331 | merged |
+| 4 probe gates, task 13 (printf targets) | #332 | merged |
+| 4 probe gates, task 14 in part, 6 of 29 | **#333** | **merged** |
 
 **Parity: 224 gates** as of #331 (was 217). `make verify-core` and
 `bazel test //...` are both green. `bazel test //...` runs 82 tests.
@@ -20,8 +22,10 @@ source-drift self-test.
 
 ## Pick up here
 
-`docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **task 13 onward**.
-Tasks 1–12 and the two added ones (4b, 4c) are done. WARNING: the 1–5 checkboxes
+`docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **the task 14 tail,
+then 15 onward**. Tasks 1–13 and the two added ones (4b, 4c) are done. Task 14
+is a PARTIAL pass — 6 of 29 script gates — and the plan holds the measured
+cause for each of the other 23. WARNING: the 1–5 checkboxes
 in that file were never ticked, though every artefact is present — do not read
 an empty box there as open work. 6 to 12 are ticked, with evidence.
 
@@ -29,7 +33,18 @@ an empty box there as open work. 6 to 12 are ticked, with evidence.
 from six — the derivation gates classify there, correctly: they are
 hand-written sh_tests), 16–17 (CI, close).
 
-**Task 13 is bigger than it reads, and #331 measured why.** It is not 69
+**Task 14's tail is the cheapest work left.** Seven script gates are green
+under make and red in a sandbox, each needing ONE data list: four do not find
+their fixture in runfiles, one reads `tests/examples/` (a second fixture tree),
+one needs whole test packages with sidecars, and one imports `strings` so it
+needs a GOOROOT the macro cannot name. Ten per-package filegroups under `src/`
+would unlock five more — a glob does not cross a package boundary, so there
+cannot be a `//:c_sources`. Eight stay out permanently, recorded.
+
+**Task 13 is done. #332 delivered 136 targets and 100 refusals**, and the
+refusal count is the deliverable there, not a shortfall.
+
+**How task 13 was scoped, kept for the next re-scope:** It is not 69
 targets. 159 sources are committed under `tests/probes/src/<gate>/`, each
 needing its own assertions, and the recipes interleave those assertions per
 source. Some cannot be expressed at all: `asi-hardening-probe` asserts *"if exit
