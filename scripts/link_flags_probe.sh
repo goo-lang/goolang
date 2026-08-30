@@ -119,6 +119,19 @@ expect_link_failure() {
     echo "  ok: $name (link failed, and names $needle)"
 }
 
+# goo itself must refuse the value, before any linker starts.
+expect_driver_rejects() {
+    local name="$1" opt="$2"
+    compile_case "$name" "$opt="
+    [ "$RC" != 0 ] || fail "$name: compile exited 0; an empty $opt was accepted"
+    if grep -q "Linking failed with command:" "$LOG"; then
+        fail "$name: the empty value reached the linker instead of being refused"
+    fi
+    grep -q -- "$opt" "$LOG" || fail "$name: no diagnostic naming $opt"
+    [ -e "$EXE" ] && fail "$name: a binary was emitted"
+    echo "  ok: $name (refused by the driver, not the linker)"
+}
+
 # 1. Positive control. Without it, a compiler broken for any other reason
 #    would make every negative case below pass for the wrong cause.
 expect_links default_links
@@ -136,6 +149,15 @@ expect_link_failure bad_linker "$WORKDIR/no-such-linker" \
 # 5. Teeth for --link-flag.
 expect_link_failure bad_link_flag -Wl,--goo-no-such-option \
     --link-flag=-Wl,--goo-no-such-option
+
+# 6-7. An empty value is always a mistake, and it must die in the driver. Left
+#      to reach execvp it becomes an EMPTY argv element, which the linker
+#      reports as an unreadable filename -- and which the echoed link command
+#      cannot show, because joining on spaces renders it invisible. So the
+#      assertion is that "Linking failed" is ABSENT: the driver refused it
+#      before any linker ran.
+expect_driver_rejects empty_link_flag --link-flag
+expect_driver_rejects empty_linker    --linker
 
 echo "PASS: --linker and --link-flag reach the forked linker"
 exit 0

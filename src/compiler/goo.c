@@ -295,9 +295,26 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 } else if (strcmp(long_options[option_index].name, "emit-testmain") == 0) {
                     options->emit_testmain = true;
                 } else if (strcmp(long_options[option_index].name, "linker") == 0) {
+                    // An empty value would become an empty argv[0] and fail
+                    // inside execvp. Refuse it here, where the message can
+                    // name the option.
+                    if (optarg[0] == '\0') {
+                        fprintf(stderr, "Error: --linker needs a value\n");
+                        free(options);
+                        return NULL;
+                    }
                     free(options->linker);   // a repeated --linker: last wins
                     options->linker = xstrdup(optarg);
                 } else if (strcmp(long_options[option_index].name, "link-flag") == 0) {
+                    // An empty value survives all the way to execvp as an
+                    // empty argv element, which the linker reports as an
+                    // unreadable file — and which the echoed link command
+                    // cannot show, because joining on spaces hides it.
+                    if (optarg[0] == '\0') {
+                        fprintf(stderr, "Error: --link-flag needs a value\n");
+                        free(options);
+                        return NULL;
+                    }
                     options->link_flags = xrealloc(options->link_flags,
                                                   (options->link_flag_count + 1) * sizeof(char*));
                     options->link_flags[options->link_flag_count++] = xstrdup(optarg);
