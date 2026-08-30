@@ -34,3 +34,30 @@ build --copt=-Wall
 build --copt=-Wextra
 
 test --test_output=errors
+
+# ---------------------------------------------------------------------------
+# Header layering.
+#
+# Two different mechanisms, and only one of them needs this config.
+#
+# Bazel's INPUT SANDBOX already refuses a header that no transitive dep
+# supplies -- it is simply not in the sandbox, and the compile dies with
+# "file not found". That works under gcc, needs no feature, and arrives free
+# with strict_hdrs = True (tools/defs.bzl).
+#
+# LAYERING_CHECK catches the other half: a header that IS present through a
+# transitive dep but is not a DIRECT one. Measured 2026-08-30 on
+# terminating_stmt.c reaching for ast.h, which types_h supplies transitively:
+# exit 0 without the feature, exit 1 with it, naming the module.
+#
+# CLANG ONLY, also measured. The gcc toolchain does not declare the feature and
+# Bazel drops the request silently, so the deliberate defect in
+# //testing/layering BUILDS clean under the default config. An exit 0 from
+# --features=layering_check on gcc is not evidence of anything.
+#
+# Scope: only targets with strict_hdrs = True are covered. Every other target
+# still takes //include:headers, which exports all 79 headers and makes the
+# check vacuous for it. tools/verify_layering.sh reports the covered count.
+# ---------------------------------------------------------------------------
+build:layering --config=clang
+build:layering --features=layering_check

@@ -53,50 +53,82 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "nonretaining",
     srcs = ["nonretaining.c"],
+    strict_hdrs = True,
     visibility = ["//visibility:private"],
+    deps = [
+        "//include:nonretaining_h",
+        "//include:shim_signatures_h",
+    ],
 )
 
 goo_cc_library(
     name = "escape_core",
     srcs = ["escape_core.c"],
+    strict_hdrs = True,
     visibility = ["//visibility:private"],
-    deps = [":nonretaining"],
+    deps = [
+        ":nonretaining",
+        "//include:escape_core_h",
+        "//include:nonretaining_h",
+    ],
 )
 
 goo_cc_library(
     name = "param_escape",
     srcs = ["param_escape.c"],
+    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
-    deps = [":escape_core"],
+    deps = [
+        ":escape_core",
+        "//include:escape_core_h",
+        "//include:nonretaining_h",
+        "//include:param_escape_h",
+        "//include:token_h",
+    ],
 )
 
 goo_cc_library(
     name = "block_escape",
     srcs = ["block_escape.c"],
+    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":escape_core",
         ":param_escape",
+        "//include:block_escape_h",
+        "//include:escape_core_h",
+        "//include:nonretaining_h",
+        "//include:token_h",
     ],
 )
 
 goo_cc_library(
     name = "local_escape",
     srcs = ["local_escape.c"],
+    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":escape_core",
         ":param_escape",
+        "//include:escape_core_h",
+        "//include:local_escape_h",
+        "//include:nonretaining_h",
+        "//include:token_h",
     ],
 )
 
 goo_cc_library(
     name = "release_decision",
     srcs = ["release_decision.c"],
+    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":local_escape",
         ":param_escape",
+        "//include:local_escape_h",
+        "//include:param_escape_h",
+        "//include:release_decision_h",
+        "//include:shim_signatures_h",
     ],
 )
 
@@ -125,20 +157,33 @@ goo_cc_library(
 goo_cc_library(
     name = "types",
     srcs = ["types.c"],
+    strict_hdrs = True,
     visibility = ["//visibility:private"],
-    deps = ["//src/comptime"],
+    deps = [
+        "//include:comptime_h",
+        "//include:types_h",
+        "//src/comptime",
+    ],
 )
 
 goo_cc_library(
     name = "terminating_stmt",
     srcs = ["terminating_stmt.c"],
+    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
+    deps = [
+        "//include:types_h",
+    ],
 )
 
 goo_cc_library(
     name = "tc_fctx",
     srcs = ["tc_fctx.c"],
+    strict_hdrs = True,
     visibility = ["//visibility:private"],
+    deps = [
+        "//include:types_h",
+    ],
 )
 
 # The TypeChecker accessors, lifted out of type_checker.c so they stop closing
@@ -148,8 +193,12 @@ goo_cc_library(
 goo_cc_library(
     name = "tc_context",
     srcs = ["tc_context.c"],
+    strict_hdrs = True,
     visibility = ["//visibility:private"],
-    deps = [":types"],
+    deps = [
+        ":types",
+        "//include:types_h",
+    ],
 )
 
 # The two files the accessor extraction freed. Both were in the seven-file
@@ -159,20 +208,24 @@ goo_cc_library(
 goo_cc_library(
     name = "embedding",
     srcs = ["embedding.c"],
+    strict_hdrs = True,
     visibility = ["//visibility:private"],
     deps = [
         ":tc_context",
         ":types",
+        "//include:embedding_h",
     ],
 )
 
 goo_cc_library(
     name = "shim_signatures",
     srcs = ["shim_signatures.c"],
+    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":tc_context",
         ":types",
+        "//include:shim_signatures_h",
     ],
 )
 
@@ -193,6 +246,7 @@ goo_cc_library(
         "ownership_checker.c",
         "type_checker.c",
     ],
+    strict_hdrs = True,
     visibility = [
         "//src/codegen:__pkg__",
         "//src/compiler:__pkg__",
@@ -211,6 +265,12 @@ goo_cc_library(
         ":tc_fctx",
         ":terminating_stmt",
         ":types",
+        "//include:comptime_h",
+        "//include:embedding_h",
+        "//include:lane_ownership_h",
+        "//include:ownership_checker_h",
+        "//include:shim_signatures_h",
+        "//include:types_h",
         "//src/ast",
         "//src/comptime",
         "//src/errors",
