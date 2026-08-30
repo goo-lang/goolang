@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# The 69 printf-category probe gates generate their .goo sources inside their
+# own Makefile recipes. Bazel cannot run a Makefile recipe, so those sources are
+# EXTRACTED to tests/probes/src/ and committed. Two copies of a program is a
+# drift hazard: the Make probe and the Bazel probe could test different code
+# while both report PASS.
+#
+# This tool is the extractor AND the gate, deliberately. Extraction is just the
+# derivation, and the gate is the same derivation compared against the tree --
+# the shape census_current.sh and targets_current.sh already use here.
+#
+# IT RUNS THE REAL RECIPE, and parses nothing. Two gates write their source
+# with a backslash-continued `printf '%s\n' \` spanning 30 lines, so any
+# line-based extraction truncates them in silence. Running `make <gate>` and
+# collecting what appears cannot make that mistake.
+#
+# Exit: 0 current, 1 drifted, 2 the harness failed.
+set -uo pipefail
+
+export LC_ALL=C   # see tools/probe_census.sh: sort collation orders committed output
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT" || exit 2
+# Both overrides exist ONLY for --self-test, which must mutate a copy rather
+# than the work tree. Nothing else sets them.
+CENSUS="${PROBE_CENSUS:-tests/probes/census.txt}"
+COMMITTED="${PROBE_SRC_DIR:-tests/probes/src}"
+
+# REFUSED, with the reason printed on every run -- the same contract
+# tools/gen_probe_targets.py uses. Both of these build their source
+# mechanically at scale (`yes '' | head -n 1000000`), so extracting them puts
+# 3 MB of blank lines and comments into the tree. That is precisely what a
+# generator exists to avoid, and neither file carries information a reader or
+# a diff can use.
+#
+# They stay Make-only. Task 15 (the bespoke set) is where they get a Bazel
+# target that GENERATES the source at build time instead of committing it.
+#
+# The count is asserted so that growth is deliberate: silently refusing a
+# third gate would shrink coverage with no sign.
+REFUSED="blank-lines-probe comment-lines-probe"
+EXPECTED_REFUSED=2
+
+is_refused() {
+    case " $REFUSED " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+gates() { awk '$1=="printf"{print $2}' "$CENSUS" | sort; }
+
+# Run every printf gate and copy the sources it writes into $1/<gate>/.
+extract() {
+    local dest="$1" mark gate n total=0 gates_with_none=""
+    mark="$(mktemp)"
+    for gate in $(gates); do
+        if is_refused "$gate"; then
+            echo "REFUSED $gate  source is generated at scale, see REFUSED in $0" >&2
+            continue
+        fi
+        : > "$mark"; sleep 0.02
+        make "$gate" >/dev/null 2>&1
+        n=0
+        while IFS= read -r f; do
+            mkdir -p "$dest/$gate"
+            cp "$f" "$dest/$gate/$(basename "$f")"
+            n=$((n + 1))
+        done < <(find build -newer "$mark" \( -name '*.goo' -o -name '*.go' \) 2>/dev/null | sort)
+        [ "$n" -eq 0 ] && gates_with_none="$gates_with_none $gate"
+        total=$((total + n))
+    done
+    rm -f "$mark"
+    n_refused=$(printf '%s\n' $REFUSED | grep -c .)
+    if [ "$n_refused" -ne "$EXPECTED_REFUSED" ]; then
+        echo "probe_source_drift: TOOL FAILURE $n_refused refusals, expected $EXPECTED_REFUSED" >&2
+        echo "  a refusal shrinks coverage -- update EXPECTED_REFUSED deliberately" >&2
+        return 2
+    fi
+    # A printf gate that writes no source means the recipe changed shape and
+    # this tool silently stopped covering it. That must not read as success.
+    if [ -n "$gates_with_none" ]; then
+        echo "probe_source_drift: TOOL FAILURE these printf gates wrote no source:$gates_with_none" >&2
+        return 2
+    fi
+    if [ "$total" -eq 0 ]; then
+        echo "probe_source_drift: TOOL FAILURE empty corpus" >&2
+        return 2
+    fi
+    echo "$total"
+}
+
+# --------------------------------------------------------------------------
+# A control plus three cases. Each extraction costs about 20 s, so the
+# self-test is the expensive half of this gate -- and it is the half that says
+# the other half means anything.
+# --------------------------------------------------------------------------
+if [ "${1:-}" = "--self-test" ]; then
+    SELF="probe_source_drift --self-test"
+    W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+    bad=0
+
+    mkdir -p "$W/good"
+    if ! extract "$W/good" >/dev/null; then
+        echo "$SELF: FAIL (extraction itself failed -- the harness is broken)"; exit 1
+    fi
+
+    if PROBE_SRC_DIR="$W/good" "$0" >"$W/control.log" 2>&1; then
+        echo "    ok: control (unmutated extraction) is GREEN"
+    else
+        echo "$SELF: FAIL (control already red -- the harness is broken, not the tree)"
+        sed 's/^/        /' "$W/control.log"; exit 1
+    fi
+
+    cp -r "$W/good" "$W/mut"
+    victim="$(find "$W/mut" -name '*.goo' | sort | head -1)"
+    probe="$(basename "$(dirname "$victim")")"
+    sed -i '1s/package/packagE/' "$victim"
+    if PROBE_SRC_DIR="$W/mut" "$0" >"$W/mut.log" 2>&1; then
+        echo "$SELF: FAIL (stayed green after a one-character edit)"; bad=1
+    else
+        rc=$?
+        if [ "$rc" -ne 1 ]; then
+            echo "$SELF: FAIL (a one-character edit gave exit $rc, want 1)"; bad=1
+        elif ! grep -q "$probe" "$W/mut.log"; then
+            echo "$SELF: FAIL (red, but the output does not name $probe)"
+            sed 's/^/        /' "$W/mut.log"; bad=1
+        else
+            echo "    ok: a one-character edit turns it red, and names $probe"
+        fi
+    fi
+
+    : > "$W/empty-census"
+    PROBE_CENSUS="$W/empty-census" "$0" >"$W/empty.log" 2>&1
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+        echo "    ok: an empty corpus gives exit 2, not a vacuous pass"
+    else
+        echo "$SELF: FAIL (empty corpus gave exit $rc, want 2)"; bad=1
+    fi
+
+    if PROBE_SRC_DIR="$W/good" "$0" >/dev/null 2>&1; then
+        echo "    ok: the unmutated copy is green again after the mutation run"
+    else
+        echo "$SELF: FAIL (the good copy went red after the mutation run)"; bad=1
+    fi
+
+    [ "$bad" = 0 ] || exit 1
+    echo "PASS: $SELF (control green; edit red and named; empty corpus 2)"
+    exit 0
+fi
+
+case "${1:-}" in
+    --extract)
+        dest="${2:-$COMMITTED}"
+        rm -rf "$dest"; mkdir -p "$dest"
+        total="$(extract "$dest")" || exit 2
+        echo "probe_source_drift: extracted $total sources from $(( $(gates | wc -l) - EXPECTED_REFUSED )) gates into $dest ($EXPECTED_REFUSED refused)"
+        exit 0
+        ;;
+esac
+
+W="$(mktemp -d)"
+trap 'rm -rf "$W"' EXIT
+total="$(extract "$W/src")" || exit 2
+
+if diff -ru "$COMMITTED" "$W/src" > "$W/diff" 2>&1; then
+    echo "probe_source_drift: PASS $total sources match $COMMITTED ($EXPECTED_REFUSED gates refused)"
+    exit 0
+fi
+echo "probe_source_drift: FAIL an extracted source differs from the committed copy"
+head -30 "$W/diff"
+echo "  re-extract with: ./tools/probe_source_drift.sh --extract"
+exit 1

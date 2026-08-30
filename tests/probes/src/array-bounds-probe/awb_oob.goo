@@ -1,0 +1,2 @@
+package main
+func main(){ var arr [3]int; i:=5; arr[i]=9; _=arr }

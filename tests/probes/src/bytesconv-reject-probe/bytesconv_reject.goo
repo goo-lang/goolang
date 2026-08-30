@@ -1,0 +1,5 @@
+package main
+func main(){
+	b := []int("x")
+	_ = b
+}

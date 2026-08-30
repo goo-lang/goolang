@@ -1,0 +1,6 @@
+package main
+import "fmt"
+func okval() !int { return 42 }
+func okerr() !int { return error("x") }
+func fwd() !int { return okval() }
+func main() { fmt.Println("ok") }

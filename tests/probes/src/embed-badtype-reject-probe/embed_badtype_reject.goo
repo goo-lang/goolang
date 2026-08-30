@@ -1,0 +1,8 @@
+package main
+type A struct {
+	B
+}
+type B struct {
+	A
+}
+func main(){ _ = A{} }

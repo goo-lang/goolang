@@ -4,6 +4,7 @@ bespoke census-current-probe
 bespoke charlit-reject-probe
 bespoke goostd-resolver-probe
 bespoke hexesc-reject-probe
+bespoke source-drift-probe
 bespoke stencil-race-runbook-probe
 bespoke targets-current-probe
 example arc-loop-carried-probe

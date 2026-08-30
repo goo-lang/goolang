@@ -1,0 +1,4 @@
+package main
+import "fmt"
+func f() (x int, y int) { x = 1; y = 2; return }
+func main() { a, b := f(); fmt.Println(a); fmt.Println(b) }

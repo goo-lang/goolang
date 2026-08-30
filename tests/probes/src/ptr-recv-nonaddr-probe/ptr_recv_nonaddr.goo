@@ -1,0 +1,5 @@
+package main
+import "fmt"
+type Counter struct { n int }
+func (c *Counter) inc() { c.n = c.n + 1 }
+func main() { Counter{n: 5}.inc(); fmt.Println("unreached") }

@@ -1,0 +1,3 @@
+package main
+func greet(s string) string { return s }
+func main() { greet(42) }

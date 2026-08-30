@@ -1,0 +1,4 @@
+package main
+type Stringer interface { String() string }
+func Op[T Stringer](a T, b T) T { return a + b }
+func main() {}
