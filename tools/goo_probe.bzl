@@ -145,7 +145,10 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
             "COMPILER": "$(rootpath %s)" % _COMPILER,
             "GOO_RUNTIME": "$(rootpath %s)" % _ARCHIVE,
         }
-        probe_data += [_COMPILER, _ARCHIVE]
+        # Fixtures too: these scripts open examples/<name>.goo by NAME, so
+        # there is no per-target edge to declare and no way to know which
+        # script wants which without auditing 597 files.
+        probe_data += [_COMPILER, _ARCHIVE, "//examples:all_fixtures"]
 
     sh_test(
         name = name,
