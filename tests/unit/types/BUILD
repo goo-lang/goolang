@@ -43,6 +43,36 @@ goo_cc_test(
     ],
 )
 
+# Neither the parser NOR the type checker. The three predicates under test take
+# two const char* and consult a static table, so nothing else is needed. This
+# only became expressible when the accessor extraction freed shim_signatures.c
+# from the seven-file cycle.
+#
+# THE DEPENDENCY LIST IS PART OF THE TEST, as below. Two names on it is the
+# claim.
+#
+# linkstatic IS LOAD-BEARING, and it records a finding rather than hiding one.
+# Bazel's default cc_test link on Linux builds each dep as a shared object and
+# resolves every symbol in it. //src/types:shim_signatures reaches :types,
+# which reaches //src/comptime for one symbol (comptime_value), and
+# libcomptime.so references type_check_expression and type_check_statement --
+# both inside the five-file cycle. So src/comptime and src/types are a cycle of
+# their own at PACKAGE level, undeclared, and the dynamic link is what says so.
+#
+# Static linking pulls only the objects the test actually reaches, which is the
+# truthful set. It does not fix the package cycle, and that cycle is the next
+# thing worth cutting.
+goo_cc_test(
+    name = "shim_signatures_test",
+    size = "small",
+    srcs = ["shim_signatures_test.c"],
+    linkstatic = True,
+    deps = [
+        "//src/types:shim_signatures",
+        "//tests/unit:goo_check",
+    ],
+)
+
 # The exception to the comment above, and the point of the exercise.
 #
 # stmt_is_terminating is a pure structural AST walk, so this suite parses a
