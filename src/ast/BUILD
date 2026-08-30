@@ -7,5 +7,9 @@ goo_cc_library(
         "ast.c",
         "ast_constructors.c",
     ],
+    strict_hdrs = True,
     visibility = ["//visibility:public"],
+    deps = [
+        "//include:ast_h",
+    ],
 )

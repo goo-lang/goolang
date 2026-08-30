@@ -6,7 +6,12 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "test_discovery",
     srcs = ["test_discovery.c"],
+    strict_hdrs = True,
     visibility = ["//visibility:public"],
+    deps = [
+        "//include:import_resolver_h",
+        "//include:test_discovery_h",
+    ],
 )
 
 # NO -DGOO_VERSION here, deliberately. The Makefile sets it target-specifically

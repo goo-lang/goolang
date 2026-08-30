@@ -25,11 +25,15 @@ goo_cc_library(
         "testing.c",
         "time_shim.c",
     ],
+    strict_hdrs = True,
     linkopts = [
         "-lm",
         "-pthread",
     ],
     visibility = ["//visibility:public"],
+    deps = [
+        "//include:runtime_h",
+    ],
 )
 
 # The archive's contents: Makefile:137 RUNTIME_OBJS, minus far_transport.c.
@@ -65,11 +69,15 @@ goo_cc_library(
         "testing.c",
         "time_shim.c",
     ],
+    strict_hdrs = True,
     linkopts = [
         "-lm",
         "-pthread",
     ],
     visibility = ["//visibility:public"],
+    deps = [
+        "//include:runtime_h",
+    ],
 )
 
 # The runtime archive under the name the compiler expects, so it can be handed

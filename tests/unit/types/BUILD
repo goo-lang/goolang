@@ -43,6 +43,63 @@ goo_cc_test(
     ],
 )
 
+# Neither the parser NOR the type checker. The three predicates under test take
+# two const char* and consult a static table, so nothing else is needed. This
+# only became expressible when the accessor extraction freed shim_signatures.c
+# from the seven-file cycle.
+#
+# THE DEPENDENCY LIST IS PART OF THE TEST, as below. Two names on it is the
+# claim.
+#
+# linkstatic IS LOAD-BEARING, and it records a finding rather than hiding one.
+# Bazel's default cc_test link on Linux builds each dep as a shared object and
+# resolves every symbol in it. //src/types:shim_signatures reaches :types,
+# which reaches //src/comptime for one symbol (comptime_value), and
+# libcomptime.so references type_check_expression and type_check_statement --
+# both inside the five-file cycle. So src/comptime and src/types are a cycle of
+# their own at PACKAGE level, undeclared, and the dynamic link is what says so.
+#
+# Static linking pulls only the objects the test actually reaches, which is the
+# truthful set. It does not fix the package cycle, and that cycle is the next
+# thing worth cutting.
+goo_cc_test(
+    name = "shim_signatures_test",
+    size = "small",
+    srcs = ["shim_signatures_test.c"],
+    linkstatic = True,
+    deps = [
+        "//src/types:shim_signatures",
+        "//tests/unit:goo_check",
+    ],
+)
+
+# The exception to the comment above, and the point of the exercise.
+#
+# stmt_is_terminating is a pure structural AST walk, so this suite parses a
+# fixture and calls it -- no TypeChecker, no type_check_program. It is the
+# first target here that does NOT depend on //src/types:frontend, which is
+# only possible because terminating_stmt.c stopped being one of the ten files
+# inside that coarse target.
+#
+# THE DEPENDENCY LIST IS PART OF THE TEST. If the predicate ever acquires a
+# TypeChecker dependency, this target stops linking. That is the alarm, and it
+# is louder than a comment asking people not to.
+goo_cc_test(
+    name = "terminating_stmt_test",
+    size = "small",
+    srcs = ["terminating_stmt_test.c"],
+    deps = [
+        "//src/ast",
+        # //src/parser's own edge, which the other four suites get for free
+        # through //src/types:frontend. Dropping frontend made it visible:
+        # the link named report_error, enter_panic_mode and make_source_location.
+        "//src/errors",
+        "//src/parser",
+        "//src/types:terminating_stmt",
+        "//tests/unit:goo_check",
+    ],
+)
+
 goo_cc_test(
     name = "local_escape_test",
     size = "small",
