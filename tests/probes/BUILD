@@ -36,6 +36,7 @@ sh_test(
         "generated.bzl",
         "//:Makefile",
         "//tools:gen_probe_targets.py",
+        "//tests/probes/src:all_sources",
     ],
 )
 
