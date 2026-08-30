@@ -14,7 +14,7 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "ast_impl",
     srcs = ["ast.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [
         "//include:ast_h",
         "//src/lexer:token",
@@ -24,14 +24,20 @@ goo_cc_library(
 goo_cc_library(
     name = "ast_constructors",
     srcs = ["ast_constructors.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/comptime:__pkg__"],
     deps = ["//include:ast_h"],
 )
 
 # The name the rest of the tree already uses.
 cc_library(
     name = "ast",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//src/codegen:__pkg__",
+        "//src/comptime:__pkg__",
+        "//src/parser:__pkg__",
+        "//src/types:__pkg__",
+        "//tests/unit/types:__pkg__",
+    ],
     deps = [
         ":ast_constructors",
         ":ast_impl",

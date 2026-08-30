@@ -82,7 +82,10 @@ goo_cc_library(
 # The name the rest of the tree already uses.
 cc_library(
     name = "parser",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//src/codegen:__pkg__",
+        "//tests/unit/types:__pkg__",
+    ],
     deps = [
         ":parser_actions",
         ":parser_core",

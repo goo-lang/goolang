@@ -95,7 +95,10 @@ goo_cc_library(
 # The name the rest of the tree already uses.
 cc_library(
     name = "comptime",
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//src/codegen:__pkg__",
+        "//src/types:__pkg__",
+    ],
     deps = [
         ":comptime_core",
         ":comptime_types",

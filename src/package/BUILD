@@ -4,7 +4,7 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "package",
     srcs = ["import_resolver.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/types:__pkg__"],
     deps = [
         "//include:import_resolver_h",
     ],
