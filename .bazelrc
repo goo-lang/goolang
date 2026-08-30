@@ -71,12 +71,17 @@ build:layering --features=layering_check
 # "cannot find /usr/lib64/libasan.so.8.0.0". Clang has the runtimes.
 #
 # src/runtime IS EXCLUDED, and the exclusion is load-bearing.
-# src/codegen/codegen.c hardcodes `gcc` as the linker for a compiled Goo
-# program and passes no sanitizer flag (grep -c fsanitize: 0). An instrumented
-# libgoo_runtime.a would therefore fail that link with undefined __asan_*
-# symbols, and all 76 probe tests would go red for a reason that is not a
-# defect. The compiler itself IS instrumented, which is the target worth
-# having: 570-plus allocation sites.
+# An instrumented libgoo_runtime.a would fail the link that a compiled Goo
+# program performs, with undefined __asan_* symbols, and all 76 probe tests
+# would go red for a reason that is not a defect. The compiler itself IS
+# instrumented, which is the target worth having: 570-plus allocation sites.
+#
+# The linker half of that gap is CLOSED: src/codegen/codegen.c no longer
+# hardcodes `gcc`, and goo --linker=clang --link-flag=-fsanitize=thread links
+# the tsan runtime (scripts/link_flags_probe.sh gates it, docs/SANITIZERS.md
+# records the measurement). Lifting the exclusion still needs a select() here
+# and the two flags threaded through the probe runner. Do not lift it without
+# both, or the 76 tests go red again.
 #
 # THE EXCLUSION IS IN src/runtime/BUILD, not here, as NO_SANITIZE_COPTS on
 # each target. --per_file_copt was tried first and abandoned: its regex is

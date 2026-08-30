@@ -61,17 +61,30 @@ costs a re-analysis when alternating configs. That is the trade.
 
 ## THREE LIMITS, and each is load-bearing
 
-**1. src/runtime is NOT instrumented.** `src/codegen/codegen.c` hardcodes `gcc`
-to link a compiled Goo program and passes no sanitizer flag (`grep -c
-fsanitize` returns 0). An instrumented `libgoo_runtime.a` fails that link with
-undefined `__asan_report_*` symbols. Measured: without the opt-out, 46 of 81
-tests go red, every one a link failure rather than a defect. The opt-out is
-`NO_SANITIZE_COPTS` on each target in `src/runtime/BUILD`, where a reader will
-look for it.
+**1. src/runtime is NOT instrumented, though the linker gap is now closed.**
+`src/codegen/codegen.c` used to hardcode `gcc` to link a compiled Goo program
+and pass no sanitizer flag, so an instrumented `libgoo_runtime.a` failed that
+link with undefined `__asan_report_*` symbols. Measured: without the opt-out,
+46 of 81 tests went red, every one a link failure rather than a defect. The
+opt-out is `NO_SANITIZE_COPTS` on each target in `src/runtime/BUILD`, where a
+reader will look for it.
 
-So **a green tsan run says nothing about the goroutine scheduler**, which is
-where a race would actually live. Closing the codegen link-flag gap is what
-would extend the sanitizers to the runtime.
+`--linker` and `--link-flag` now exist, gated by
+`scripts/link_flags_probe.sh`. Measured 2026-08-30 on `hello_world.goo`:
+
+    goo h.goo -o h --linker=clang --link-flag=-fsanitize=thread
+
+links and runs, and the binary carries **160** defined `__tsan_*` symbols
+against **0** for the same program with no flag (98 KB to 1.65 MB). asan and
+ubsan behave the same way. So the linker can now resolve an instrumented
+archive.
+
+What remains is two edits, neither done here: make `NO_SANITIZE_COPTS`
+conditional on the sanitizer configs via `select()`, and pass the two flags
+from the probe runner. **Until both land, a green tsan run still says nothing
+about the goroutine scheduler**, which is where a race would actually live.
+Expect the flip to surface real reports in `concurrency.c`, `deadlock.c` and
+`sync.c`; that work is unbounded until it is tried.
 
 **2. Leak detection is OFF under asan.** Measured on
 `examples/hello_world.goo` with an asan-built compiler: *1928 byte(s) leaked in
