@@ -124,6 +124,17 @@ goo_cc_library(
     visibility = ["//visibility:public"],
 )
 
+# The TypeChecker accessors, lifted out of type_checker.c so they stop closing
+# the cycle. See the file header for the four edges this cuts and for the rule
+# about what may live there. Depends on :types and on nothing else in this
+# package, which is the property that makes the cut work.
+goo_cc_library(
+    name = "tc_context",
+    srcs = ["tc_context.c"],
+    visibility = ["//visibility:public"],
+    deps = [":types"],
+)
+
 # The full front-end type checker: Makefile:119 GOO_TYPES_SRCS, minus the five
 # units already declared above as their own libraries, which are picked up as
 # deps instead. Splitting them out is deliberate -- it is the fine-grained
@@ -151,6 +162,7 @@ goo_cc_library(
         ":nonretaining",
         ":param_escape",
         ":release_decision",
+        ":tc_context",
         ":tc_fctx",
         ":terminating_stmt",
         ":types",
