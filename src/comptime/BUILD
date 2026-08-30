@@ -1,6 +1,6 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//tools:defs.bzl", "goo_cc_library")
 
-# Makefile:97 COMPTIME_SRCS.
 # THIS TARGET'S deps ARE INCOMPLETE, and Bazel cannot let them be complete.
 #
 # src/comptime and src/types are a cycle at PACKAGE level. Measured with nm on
@@ -32,20 +32,73 @@ load("//tools:defs.bzl", "goo_cc_library")
 # the second, which was verified by walking the edge list rather than assumed.
 # Until then //tests/unit/types:shim_signatures_test needs linkstatic, and its
 # BUILD comment says why.
+
+# Measured with nm on the built objects, 2026-08-30: this package is four files
+# and six internal edges, and only TWO of them are in a cycle. comptime.c and
+# comptime_intrinsics.c call each other. The other two never did.
+#
+#   comptime_value   a leaf inside this package. comptime, comptime_intrinsics
+#                    and comptime_types all call INTO it and it calls none of
+#                    them.
+#   comptime_types   calls comptime and comptime_value, and nothing calls it
+#                    back.
+#
+# No source changed. The cross-package edges above stay undeclared, because
+# they are the cycle this file's header describes.
+
 goo_cc_library(
-    name = "comptime",
-    srcs = [
-        "comptime.c",
-        "comptime_intrinsics.c",
-        "comptime_types.c",
-        "comptime_value.c",
-    ],
-    visibility = ["//visibility:public"],
+    name = "comptime_value",
+    srcs = ["comptime_value.c"],
     deps = [
         "//include:ast_h",
         "//include:comptime_h",
         "//include:token_h",
         "//include:types_h",
+        "//src/ast:ast_constructors",
+    ],
+)
+
+# The two that genuinely call each other: comptime.c reaches
+# comptime_intrinsic_emit, _sizeof and _typeof, and comptime_intrinsics.c
+# reaches comptime_eval_function_call_enhanced.
+goo_cc_library(
+    name = "comptime_core",
+    srcs = [
+        "comptime.c",
+        "comptime_intrinsics.c",
+    ],
+    deps = [
+        ":comptime_value",
+        "//include:ast_h",
+        "//include:comptime_h",
+        "//include:token_h",
+        "//include:types_h",
         "//src/ast",
+    ],
+)
+
+# The half of the package cycle that reaches into the type checker, kept on its
+# own so the next reader can see exactly which file does it. See the header:
+# comptime_types.c:251,273 call type_check_expression and type_check_statement.
+goo_cc_library(
+    name = "comptime_types",
+    srcs = ["comptime_types.c"],
+    deps = [
+        ":comptime_core",
+        ":comptime_value",
+        "//include:ast_h",
+        "//include:comptime_h",
+        "//include:types_h",
+    ],
+)
+
+# The name the rest of the tree already uses.
+cc_library(
+    name = "comptime",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":comptime_core",
+        ":comptime_types",
+        ":comptime_value",
     ],
 )
