@@ -69,6 +69,19 @@ jobs:
       - name: Prove parity.sh can report a change
         run: ./tools/parity_selftest.sh
 
+      # The teeth targets in testing/teeth are tagged manual, so //... above
+      # skips them, and this script had NO Makefile target and NO workflow --
+      # it had never run once. One macro generates ~150 probe targets in this
+      # phase; if it cannot fail, all 150 pass while asserting nothing. It
+      # cannot live in the Makefile, because it drives bazel and verify-core
+      # is deliberately bazel-free.
+      - name: Prove the probe macros can report a failure
+        env:
+          BAZEL_EXTRA: >-
+            --repo_env=CC=/usr/bin/gcc-14
+            --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
+        run: ./tools/verify_probe_teeth.sh
+
   parity:
     runs-on: ubuntu-24.04
     name: gate parity (informational until phase 7)
