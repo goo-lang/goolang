@@ -25,7 +25,6 @@ goo_cc_library(
         "type_mapping.c",
         "value_scope.c",
     ],
-    strict_hdrs = True,
     visibility = ["//visibility:public"],
     deps = [
         "//include:block_escape_h",

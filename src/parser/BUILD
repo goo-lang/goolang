@@ -19,7 +19,6 @@ goo_cc_library(
         "parser_errors.c",
         "//src/parser/gen:parser_tab_c",
     ],
-    strict_hdrs = True,
     visibility = ["//visibility:public"],
     deps = [
         "//include:ast_h",

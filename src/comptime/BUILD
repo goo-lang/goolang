@@ -9,7 +9,6 @@ goo_cc_library(
         "comptime_types.c",
         "comptime_value.c",
     ],
-    strict_hdrs = True,
     visibility = ["//visibility:public"],
     deps = [
         "//include:ast_h",

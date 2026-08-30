@@ -69,24 +69,27 @@ echo "visibility:"
 build //testing/layering:visibility_violation
 expect "reaching for a private target FAILS analysis" fail $? || rc=1
 
-# How much of the tree the check actually covers. A number nobody prints is a
-# number nobody notices going down.
+# THE RATCHET. //include:headers exported all 79 headers to every target, which
+# made layering_check unable to refuse anything. It was deleted once its last
+# consumer was migrated, and goo_cc_library has no opt-out any more.
 #
-# TWO numbers, because the first one alone would flatter. A target that still
-# takes //include:headers gets all 79 headers and cannot violate layering, so
-# the exempt count is the honest measure of what is left to do.
-covered=$(grep -rc 'strict_hdrs = True' src/*/BUILD 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
-total=$(grep -rc '^goo_cc_library(' src/*/BUILD 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
+# This asserts it has not come back. A reintroduced blob would turn every
+# assertion above green while checking nothing, and nothing else in the tree
+# would notice.
+echo "no opt-out:"
 # shellcheck disable=SC2086
-exempt=$("$BAZEL" query 'rdeps(//..., //include:headers, 1)' $BAZEL_EXTRA 2>/dev/null \
-         | grep -cv '^//include:headers$')
-echo "coverage:"
-printf '  %d of %d goo_cc_library targets in src/ set strict_hdrs = True\n' "$covered" "$total"
-printf '  %d targets still take //include:headers and are EXEMPT\n' "$exempt"
-if [ "$covered" -eq 0 ]; then
-    echo "  WRONG no target is covered, so the gate is vacuous"
+if "$BAZEL" query '//include:headers' $BAZEL_EXTRA >/dev/null 2>&1; then
+    printf '  WRONG //include:headers exists again -- a target can opt out of declaring headers\n'
     rc=1
+else
+    printf '  OK    //include:headers is gone, so no target can opt out\n'
 fi
+
+# The header libraries that replaced it. Printed rather than asserted: the
+# right number is whatever the includes require, and it moves with the code.
+# shellcheck disable=SC2086
+hdrlibs=$("$BAZEL" query 'kind("cc_library", //include:*)' $BAZEL_EXTRA 2>/dev/null | grep -c '_h$')
+printf '  %d header libraries in //include\n' "$hdrlibs"
 
 [ $rc -eq 0 ] && echo "verify_layering: both gates have teeth"
 exit $rc

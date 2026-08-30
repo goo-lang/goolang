@@ -53,7 +53,6 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "nonretaining",
     srcs = ["nonretaining.c"],
-    strict_hdrs = True,
     visibility = ["//visibility:private"],
     deps = [
         "//include:nonretaining_h",
@@ -64,7 +63,6 @@ goo_cc_library(
 goo_cc_library(
     name = "escape_core",
     srcs = ["escape_core.c"],
-    strict_hdrs = True,
     visibility = ["//visibility:private"],
     deps = [
         ":nonretaining",
@@ -76,7 +74,6 @@ goo_cc_library(
 goo_cc_library(
     name = "param_escape",
     srcs = ["param_escape.c"],
-    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":escape_core",
@@ -90,7 +87,6 @@ goo_cc_library(
 goo_cc_library(
     name = "block_escape",
     srcs = ["block_escape.c"],
-    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":escape_core",
@@ -105,7 +101,6 @@ goo_cc_library(
 goo_cc_library(
     name = "local_escape",
     srcs = ["local_escape.c"],
-    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":escape_core",
@@ -120,7 +115,6 @@ goo_cc_library(
 goo_cc_library(
     name = "release_decision",
     srcs = ["release_decision.c"],
-    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":local_escape",
@@ -157,7 +151,6 @@ goo_cc_library(
 goo_cc_library(
     name = "types",
     srcs = ["types.c"],
-    strict_hdrs = True,
     visibility = ["//visibility:private"],
     deps = [
         "//include:comptime_h",
@@ -169,7 +162,6 @@ goo_cc_library(
 goo_cc_library(
     name = "terminating_stmt",
     srcs = ["terminating_stmt.c"],
-    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         "//include:types_h",
@@ -179,7 +171,6 @@ goo_cc_library(
 goo_cc_library(
     name = "tc_fctx",
     srcs = ["tc_fctx.c"],
-    strict_hdrs = True,
     visibility = ["//visibility:private"],
     deps = [
         "//include:types_h",
@@ -193,7 +184,6 @@ goo_cc_library(
 goo_cc_library(
     name = "tc_context",
     srcs = ["tc_context.c"],
-    strict_hdrs = True,
     visibility = ["//visibility:private"],
     deps = [
         ":types",
@@ -208,7 +198,6 @@ goo_cc_library(
 goo_cc_library(
     name = "embedding",
     srcs = ["embedding.c"],
-    strict_hdrs = True,
     visibility = ["//visibility:private"],
     deps = [
         ":tc_context",
@@ -220,7 +209,6 @@ goo_cc_library(
 goo_cc_library(
     name = "shim_signatures",
     srcs = ["shim_signatures.c"],
-    strict_hdrs = True,
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":tc_context",
@@ -246,7 +234,6 @@ goo_cc_library(
         "ownership_checker.c",
         "type_checker.c",
     ],
-    strict_hdrs = True,
     visibility = [
         "//src/codegen:__pkg__",
         "//src/compiler:__pkg__",

@@ -7,7 +7,6 @@ goo_cc_library(
         "lexer.c",
         "token.c",
     ],
-    strict_hdrs = True,
     visibility = ["//visibility:public"],
     deps = [
         "//include:lexer_h",

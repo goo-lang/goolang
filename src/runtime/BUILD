@@ -25,7 +25,6 @@ goo_cc_library(
         "testing.c",
         "time_shim.c",
     ],
-    strict_hdrs = True,
     linkopts = [
         "-lm",
         "-pthread",
@@ -69,7 +68,6 @@ goo_cc_library(
         "testing.c",
         "time_shim.c",
     ],
-    strict_hdrs = True,
     linkopts = [
         "-lm",
         "-pthread",

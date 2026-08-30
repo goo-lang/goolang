@@ -22,7 +22,11 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 # NOT REPRESENTED HERE: contracts.h, dependent_types.h, panic_free.h and
 # runtime_optimization.h. Each is included only by a .c file that no Bazel
 # target compiles -- the probe-only set named in CLAUDE.md -- so none of them
-# constrains this graph. They stay in :headers.
+# constrains this graph. Nothing declares them, and nothing needs to.
+#
+# THERE IS NO BLOB. //include:headers was deleted once its last consumer was
+# migrated. Do not add one back: a dep that exports every header makes
+# layering_check unable to refuse anything, which is where this started.
 
 # The two headers Makefile:23 forces into every translation unit. They are
 # declared as hdrs so Bazel treats them as inputs: a -include flag alone would
@@ -33,17 +37,6 @@ cc_library(
         "goo_assert.h",
         "xalloc.h",
     ],
-    visibility = ["//visibility:public"],
-)
-
-# DEPRECATED, and kept only for the packages not yet migrated to declared
-# header deps. Every target that still takes this one is exempt from
-# layering_check by construction. Removing the last consumer is what finishes
-# the job; until then, do not add a new one.
-cc_library(
-    name = "headers",
-    hdrs = glob(["**/*.h"]),
-    includes = ["."],
     visibility = ["//visibility:public"],
 )
 
