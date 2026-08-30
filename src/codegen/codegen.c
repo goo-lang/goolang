@@ -540,19 +540,8 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
 }
 
 // Error reporting
-void codegen_error(CodeGenerator* codegen, Position pos, const char* format, ...) {
-    if (!codegen) return;
-    
-    fprintf(stderr, "Error at %s:%d:%d: ", pos.filename ? pos.filename : "<unknown>", pos.line, pos.column);
-    
-    va_list args;
-    va_start(args, format);
-    vfprintf(stderr, format, args);
-    va_end(args);
-    
-    fprintf(stderr, "\n");
-    codegen->error_count++;
-}
+// codegen_error moved to codegen_context.c. runtime_integration.c reached in
+// here for it, and that was one of two edges closing this package's cycle.
 
 void codegen_warning(CodeGenerator* codegen, Position pos, const char* format, ...) {
     if (!codegen) return;
@@ -1527,11 +1516,8 @@ LLVMValueRef codegen_create_entry_alloca(CodeGenerator* codegen, LLVMTypeRef typ
     return alloca;
 }
 
-LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name) {
-    if (!codegen || !codegen->current_function) return NULL;
-    
-    return LLVMAppendBasicBlockInContext(codegen->context, codegen->current_function, name);
-}
+// codegen_create_block moved to codegen_context.c. cfctx.c reached in here for
+// it, and that was the other edge.
 
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block) {
     if (!codegen || !block) return;
