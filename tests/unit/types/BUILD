@@ -43,6 +43,33 @@ goo_cc_test(
     ],
 )
 
+# The exception to the comment above, and the point of the exercise.
+#
+# stmt_is_terminating is a pure structural AST walk, so this suite parses a
+# fixture and calls it -- no TypeChecker, no type_check_program. It is the
+# first target here that does NOT depend on //src/types:frontend, which is
+# only possible because terminating_stmt.c stopped being one of the ten files
+# inside that coarse target.
+#
+# THE DEPENDENCY LIST IS PART OF THE TEST. If the predicate ever acquires a
+# TypeChecker dependency, this target stops linking. That is the alarm, and it
+# is louder than a comment asking people not to.
+goo_cc_test(
+    name = "terminating_stmt_test",
+    size = "small",
+    srcs = ["terminating_stmt_test.c"],
+    deps = [
+        "//src/ast",
+        # //src/parser's own edge, which the other four suites get for free
+        # through //src/types:frontend. Dropping frontend made it visible:
+        # the link named report_error, enter_panic_mode and make_source_location.
+        "//src/errors",
+        "//src/parser",
+        "//src/types:terminating_stmt",
+        "//tests/unit:goo_check",
+    ],
+)
+
 goo_cc_test(
     name = "local_escape_test",
     size = "small",
