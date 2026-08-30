@@ -164,7 +164,42 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 
 ### D. The tail
 
-- [ ] **14. The 28 script-backed probes.** One `sh_test` each, script and fixtures as `data`.
+- [~] **14. The script-backed probes.** One `sh_test` each. **6 of 29 operate.**
+      Not ticked: this is a partial pass, and the remaining 23 are recorded in
+      `tests/probes/BUILD` with a measured cause each rather than declared red
+      or tagged `manual` and left never-run.
+
+      **The contract.** `COMPILER` names the compiler; the compiler finds its
+      own archive and stdlib through `GOO_RUNTIME` and `GOOROOT`, which it
+      already reads. Necessary, and NOT sufficient — two further layers showed
+      up only when a target ran: the four `arc_*` probes take `ROOT` from
+      `git rev-parse` and a sandbox has no `.git`, and `$(rootpath)` is
+      relative to the runfiles root while those same scripts `cd "$ROOT"`
+      before using it.
+
+      **8 cannot be sandboxed at all.** `podman_image_probe.sh` EXITS 0 when
+      podman is missing, so a target for it is green everywhere without podman
+      while asserting nothing. `repro_build_probe.sh` builds `git archive
+      HEAD` on purpose. `archive_determinism_probe.sh` rebuilds the archive
+      in-tree. The four `far-*` share a helper taking arguments and need NNG
+      (phase 3c).
+
+      **7 were mis-grouped by me**, from the Makefile's PREREQUISITE list.
+      Five of them invoke a C compiler through a shell name (`$CC_`,
+      `${CC:-gcc}`) — found by reading the scripts, missed by a
+      command-position grep. They also scan or compile `src/**`, and
+      **there cannot be a `//:c_sources`**: a glob does not cross a package
+      boundary, and every `src/*` has its own BUILD. Ten per-package
+      filegroups would be needed.
+
+      **7 are green under make and red in a sandbox**, for four causes: four
+      do not find a fixture in runfiles, one reads `tests/examples/` (a second
+      fixture tree), one needs whole test packages with sidecars, and one
+      imports `strings` so it needs a `GOOROOT` the macro cannot name —
+      `//goostd:files` is a filegroup `$(rootpath)` refuses to expand.
+
+      *Next:* the 7 sandbox failures are the cheapest remaining work, one data
+      list each. The 10 per-package filegroups unlock 5 more. The 8 stay out.
       *Accepts:* all 28 green INSIDE the sandbox. A script reading a path not in `data` is fixed, not run outside the sandbox.
 
 - [ ] **15. The bespoke six.** `arena-free`, `arena-valgrind`, `charlit-reject`, `goostd-resolver`, `hexesc-reject`, `stencil-race-runbook`.

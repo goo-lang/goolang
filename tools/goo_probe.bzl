@@ -118,3 +118,43 @@ def goo_reject_probe(name, src, stderr_contains, gooflags = None,
         size = size,
         tags = tags,
     )
+
+
+def goo_script_probe(name, script, data = [], size = "medium", tags = [],
+                     needs_compiler = True):
+    """Run one of the Makefile's script-backed probe gates under Bazel.
+
+    Task 14. These 29 gates are whole shell scripts, not fixture declarations,
+    so there is nothing to parse and nothing to generate -- the script IS the
+    assertion. What they need is a way to be told where the compiler is: each
+    derives `<script-dir>/../bin/goo`, which does not exist in the sandbox.
+
+    The contract is one variable. COMPILER names the binary; the compiler then
+    finds its own archive and stdlib through GOO_RUNTIME and GOOROOT, which it
+    already reads. Scripts that touch no compiler pass needs_compiler = False
+    and take none of the three.
+    """
+    env = {}
+    probe_data = list(data)
+    if needs_compiler:
+        # GOOROOT is deliberately NOT set. It names a DIRECTORY, and
+        # //goostd:files is a filegroup that $(rootpath) refuses to expand.
+        # A probe that imports a vendored package must pass gooroot_file, so
+        # the need is declared per probe rather than assumed for all 29.
+        env = {
+            "COMPILER": "$(rootpath %s)" % _COMPILER,
+            "GOO_RUNTIME": "$(rootpath %s)" % _ARCHIVE,
+        }
+        # Fixtures too: these scripts open examples/<name>.goo by NAME, so
+        # there is no per-target edge to declare and no way to know which
+        # script wants which without auditing 597 files.
+        probe_data += [_COMPILER, _ARCHIVE, "//examples:all_fixtures"]
+
+    sh_test(
+        name = name,
+        srcs = [script],
+        data = probe_data,
+        env = env,
+        size = size,
+        tags = tags,
+    )
