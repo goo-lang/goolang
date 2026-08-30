@@ -3213,6 +3213,9 @@ VERIFY_ALL_DEPS := \
     safety-baseline-check \
     doc-claims-probe \
     probe-teeth-probe \
+    census-current-probe \
+    targets-current-probe \
+    targets-current-selftest \
     assert-corpus-selftest \
     golden-selftest \
     goo-check-probe \
@@ -6485,6 +6488,27 @@ doc-claims-probe:
 .PHONY: probe-teeth-probe
 probe-teeth-probe:
 	@bash scripts/probe_teeth_probe.sh
+
+# Two DERIVATION gates. Each regenerates a committed file and diffs, which is
+# what makes the file a derivation rather than a snapshot.
+#
+# Both live here, in make, and NOT only in bazel. census_current is tagged
+# `manual` in tests/probes/BUILD, so `bazel test //...` skips it (64 of 81
+# executed) -- it had no Makefile target and no workflow either, so it had
+# never run once. It caught a stale census on its first execution.
+#
+# Neither needs bazel: probe_census.sh calls parity.sh --list-make-gates, which
+# returns before list_bazel_tests. Verified with BAZEL=/nonexistent and with
+# bazel off PATH, both identical. The Makefile stays bazel-free.
+.PHONY: census-current-probe targets-current-probe targets-current-selftest
+census-current-probe:
+	@bash tests/probes/census_current.sh
+
+targets-current-probe:
+	@bash tests/probes/targets_current.sh
+
+targets-current-selftest:
+	@bash tests/probes/targets_current.sh --self-test
 
 # Scan the C compiler/runtime source against the adopted MISRA C:2012 subset and
 # fail on any violation not in scripts/misra-baseline.txt. Local-only gate (see

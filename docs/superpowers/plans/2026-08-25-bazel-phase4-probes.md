@@ -49,11 +49,27 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 - [ ] **5. The generated targets, all green.**
       *Accepts:* `bazel test //tests/probes:all` green except probes over the nine NNG fixtures, which are tagged `manual` naming phase 3c; at least 10 compared against `make <probe>` and agreeing.
 
-- [ ] **6. The regeneration gate.** Regenerates and diffs against the committed file.
-      *Accepts:* passes on the committed tree.
+- [x] **6. The regeneration gate.** `tests/probes/targets_current.sh`, the name
+      `generated.bzl`'s own header already prescribed. Runs in make
+      (`targets-current-probe`) AND under `bazel test //...` — it needs no
+      nested bazel, so unlike `census_current` it carries no `manual` tag.
+      *Accepts:* passes on the committed tree. **Met:** 63 targets, current.
 
-- [ ] **7. Prove the regeneration gate can fail.**
-      *Accepts:* editing one line turns it red; restoring turns it green; the tree is clean afterwards.
+- [x] **7. Prove the regeneration gate can fail.** `--self-test`: a control plus
+      three mutations, each on a COPY of the tree, because this task's
+      acceptance requires the work tree clean afterwards and `census_current.sh`
+      operates on `$root` directly. The Bazel wiring was proven separately by
+      mutating `generated.bzl` and confirming exit 3.
+      *Accepts:* editing one line turns it red; restoring turns it green; the tree is clean afterwards. **Met.**
+
+      **Found while doing this:** `census_current` was tagged `manual`, had no
+      Makefile target and no workflow, so it had NEVER RUN. Its first execution
+      found the census stale — `link-flags-probe` had landed in #329 without it.
+      `census-current-probe` is now a make gate too. Census 183 to 186.
+
+      **The 1–5 boxes above are stale, not the work.** `HANDOFF-bazel-migration.md`
+      records tasks 1–5 as done, and the artefacts are all present. Nobody
+      ticked them.
 
 ### B2. The reject probes (added while executing)
 

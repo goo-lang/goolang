@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit Bazel probe targets from the Makefile's probe recipes.
 
-WHY GENERATED. There are 183 probe gates. Hand-writing 183 target declarations
+WHY GENERATED. There are 186 probe gates. Hand-writing 63 target declarations
 produces a diff nobody can review, and a hand edit that drifts from its recipe
 is invisible. Generating them makes the BUILD file a derivation, and
 tests/probes/targets_current.sh gates that it is current.
