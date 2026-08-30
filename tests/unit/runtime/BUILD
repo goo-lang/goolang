@@ -31,3 +31,22 @@ goo_cc_test(
         "//tests/unit:goo_check",
     ],
 )
+
+# The runtime defer stack. Two exported functions, and nothing exercised them
+# before the runtime package was split.
+#
+# RUN THIS UNDER --config=valgrind AS WELL. goo_defer_run frees each entry's
+# env and then the entries array, and nothing in-process can observe that
+# without an allocation-interception harness this repo does not have. A run
+# that stopped freeing shows up under valgrind as a leak and here as nothing.
+# The suite allocates every env with goo_alloc so that check is meaningful.
+goo_cc_test(
+    name = "defer_test",
+    size = "small",
+    srcs = ["defer_test.c"],
+    deps = [
+        "//include:runtime_h",
+        "//src/runtime:defer",
+        "//tests/unit:goo_check",
+    ],
+)

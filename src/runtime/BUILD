@@ -103,6 +103,7 @@ goo_cc_library(
 goo_cc_library(
     name = "defer",
     srcs = ["defer.c"],
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
         "//include:runtime_h",
