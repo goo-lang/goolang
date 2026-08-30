@@ -249,14 +249,12 @@ int main(void) {
         goo_check(err.data != NULL && strstr(err.data, strerror(EINVAL)) != NULL,
                   label("error message = \"%s\", want it to contain \"%s\"",
                         err.data ? err.data : "(null)", strerror(EINVAL)));
-        // REVIEW FIX, and the reason is worth more than the two lines.
-        // valgrind reported 107 bytes definitely lost here, in
-        // goo_os_io_error. The message is built with PLAIN malloc -- io.c
-        // calls malloc three times and goo_alloc zero times -- so it carries
-        // NO ARC object header. It must therefore be released with free(),
-        // never with goo_free(), which subtracts GOO_OBJ_HEADER_SIZE and
-        // would hand a wrong pointer to free().
-        free(err.data);
+        // goo_free, NOT free. io.c now allocates every returned string with
+        // goo_alloc, so the buffer carries an ARC object header and the
+        // payload pointer is 16 bytes past the block base. This line was
+        // free(err.data) for exactly as long as io.c used plain malloc; the
+        // two must always agree, and io.c's header says which one it is.
+        goo_free(err.data);
     }
 
     // -----------------------------------------------------------------
@@ -273,7 +271,7 @@ int main(void) {
         goo_check(out.data != NULL && strstr(out.data, strerror(ENOENT)) != NULL,
                   label("error message = \"%s\", want it to contain \"%s\"",
                         out.data ? out.data : "(null)", strerror(ENOENT)));
-        free(out.data);   // plain free: no ARC header. See row 7.
+        goo_free(out.data);   // ARC header present. See row 7.
     }
 
     // -----------------------------------------------------------------
@@ -294,7 +292,7 @@ int main(void) {
                         (int)out.length, out.data ? out.data : "", content));
         goo_check(out.data != NULL && out.data[out.length] == '\0',
                   "the buffer carries a defensive NUL terminator after the last byte");
-        free(out.data);
+        goo_free(out.data);
         unlink(p);
     }
 
@@ -310,7 +308,7 @@ int main(void) {
         goo_check(rc == 1, label("read_file(empty) ok=%d, want 1", rc));
         goo_check(out.length == 0, label("length = %zu, want 0", out.length));
         goo_check(out.data != NULL, "the buffer for an empty file is still non-NULL");
-        free(out.data);
+        goo_free(out.data);
         unlink(p);
     }
 
@@ -329,7 +327,7 @@ int main(void) {
                   label("length = %zu, want %zu (strlen would stop at 2)", out.length, sizeof raw));
         goo_check(out.data != NULL && memcmp(out.data, raw, sizeof raw) == 0,
                   "the 5 bytes read back match the 5 bytes written, embedded NUL included");
-        free(out.data);
+        goo_free(out.data);
         unlink(p);
     }
 
@@ -358,7 +356,7 @@ int main(void) {
                       memcmp(out.data, "first line", out.length) == 0,
                   label("line = \"%.*s\", want \"first line\"",
                         (int)out.length, out.data ? out.data : ""));
-        free(out.data);
+        goo_free(out.data);
         unlink(p);
     }
 
@@ -378,7 +376,7 @@ int main(void) {
                       memcmp(out.data, "windows style", out.length) == 0,
                   label("line = \"%.*s\", want \"windows style\" with the \\r stripped",
                         (int)out.length, out.data ? out.data : ""));
-        free(out.data);
+        goo_free(out.data);
         unlink(p);
     }
 
@@ -398,7 +396,7 @@ int main(void) {
                       memcmp(out.data, fixture, out.length) == 0,
                   label("line = \"%.*s\", want \"%s\"",
                         (int)out.length, out.data ? out.data : "", fixture));
-        free(out.data);
+        goo_free(out.data);
         unlink(p);
     }
 

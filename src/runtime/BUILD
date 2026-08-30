@@ -145,11 +145,20 @@ goo_cc_library(
 
 # io.c is in the archive and NOT in the Makefile's RUNTIME_SRCS, which is why
 # it sits outside RUNTIME_UNITS and is named separately by the genrule.
+#
+# IT STOPPED BEING A LEAF on 2026-08-30. io.c used to allocate every returned
+# string with plain malloc, which reached nothing in this package. It now uses
+# goo_alloc, because a string handed to Goo code must carry an ARC object
+# header or goo_free will release a pointer 16 bytes before the block. That
+# edge to :core is real, and the link named it the moment the change landed.
 goo_cc_library(
     name = "io",
     srcs = ["io.c"],
     visibility = ["//tests/unit/runtime:__pkg__"],
-    deps = ["//include:runtime_h"],
+    deps = [
+        ":core",
+        "//include:runtime_h",
+    ],
 )
 
 # The 11 files of the Makefile's RUNTIME_SRCS, as an aggregate. io.c and
