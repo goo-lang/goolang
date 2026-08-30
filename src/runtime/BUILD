@@ -83,6 +83,7 @@ goo_cc_library(
 goo_cc_library(
     name = "arena",
     srcs = ["arena.c"],
+    visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
         "//include:runtime_h",
