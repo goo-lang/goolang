@@ -7,7 +7,13 @@ set -u
 
 fail() { echo "FAIL: $1"; exit 1; }
 
-COMPILER="$(cd "$(dirname "$0")/.." && pwd)/bin/goo"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# COMPILER is the contract a Bazel sh_test uses to point this probe at the
+# compiler it built: bin/goo does not exist inside the sandbox. The compiler
+# itself already reads GOO_RUNTIME and GOOROOT (codegen.c
+# goo_runtime_archive_path, import_resolver.c), so the path is the only thing
+# a caller has to supply. Unset, this behaves exactly as it did.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 

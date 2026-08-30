@@ -1,4 +1,5 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//tools:goo_probe.bzl", "goo_script_probe")
 
 # The probe census must stay current: it decides which macro each of the 186
 # probe gates gets, so a stale copy silently mis-routes probes.
@@ -45,3 +46,12 @@ load(":generated.bzl", "generated_probes")
 # 63 of the 80 fixture-shaped probes, emitted by tools/gen_probe_targets.py.
 # The other 17 are omitted with a printed reason -- see the generator's header.
 generated_probes()
+
+
+# Task 14, the script-backed gates. The EXEMPLAR: every other one copies this
+# shape. The script is the assertion, so there is nothing to generate -- only
+# the COMPILER contract to satisfy.
+goo_script_probe(
+    name = "exit_code_probe",
+    script = "//:scripts/exit_code_probe.sh",
+)
