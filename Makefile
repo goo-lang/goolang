@@ -1586,6 +1586,22 @@ link-libs-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ -e build/link_libs_bogus.out.o ]; then echo "link-libs-probe: FAIL (failed link left stray .o behind)"; exit 1; fi; \
 	  echo "link-libs-probe: PASS (positive + negative)"
 
+# --linker/--link-flag passthrough. Sibling of link-libs-probe above, and the
+# same shape: a positive case plus a value that MUST break the link, because a
+# discarded flag still satisfies "the build works". Kept as a script, not an
+# inline recipe, because Bazel phase 4 consumes a script directly (task 14,
+# one sh_test each) and is extracting printf recipes, not adding them.
+.PHONY: link-flags-probe link-flags-selftest
+link-flags-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/link_flags_probe.sh
+
+# Wired into VERIFY_ALL_DEPS, unlike some siblings. probe-teeth-probe checks
+# only that a --self-test EXISTS; running it is a separate claim, and
+# repro_build_probe.sh --self-test was found unable to execute on CI at all
+# while reading as present. Four extra hello-world compiles.
+link-flags-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/link_flags_probe.sh --self-test
+
 # P5.1: `goo -r` must propagate the child program's exit code as goo's own
 # exit code. Pre-fix, compile_file ran the program via system(), discarded
 # the status, and returned success — `goo -r` exited 0 no matter what the
@@ -3212,6 +3228,8 @@ VERIFY_ALL_DEPS := \
     comptime-probe \
     m10-probe \
     exit-code-probe \
+    link-flags-probe \
+    link-flags-selftest \
     switch-probe \
     methods-probe \
     pointer-write-probe \

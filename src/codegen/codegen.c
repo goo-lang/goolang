@@ -152,6 +152,12 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->link_libs = NULL;
     codegen->link_lib_count = 0;
 
+    // Driver overwrites these from --linker/--link-flag right after
+    // codegen_new, the same way it does link_libs above.
+    codegen->linker = NULL;
+    codegen->link_flags = NULL;
+    codegen->link_flag_count = 0;
+
     // WebAssembly configuration
     codegen->wasm_configured = 0;
     codegen->is_wasm_target = 0;
@@ -1794,6 +1800,13 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 #else
     const char* linker_name = "gcc"; // Linux and generic Unix
 #endif
+    // --linker overrides the platform default. An instrumented
+    // libgoo_runtime.a must be linked by the driver that owns the sanitizer
+    // runtimes, and the gcc above cannot link them at all on some hosts
+    // (.bazelrc records the measurement).
+    if (codegen->linker) {
+        linker_name = codegen->linker;
+    }
 
 #ifdef __APPLE__
     char* link_triple = codegen->target_triple;
@@ -1804,12 +1817,15 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     }
 #endif
 
-    // argv layout: <linker> [-target <triple> | -no-pie] -o <exe> <obj>
-    // <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed non-NULL slots
-    // covers the larger (__APPLE__) branch with room to spare on Linux;
-    // + one slot per user lib + the NULL terminator.
+    // argv layout: <linker> [-target <triple> | -no-pie] [<link-flag>]*
+    // -o <exe> <obj> <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed
+    // non-NULL slots covers the larger (__APPLE__) branch with room to spare
+    // on Linux; + one slot per user lib, + one per --link-flag, + the NULL
+    // terminator. Both counts must be added here: this sizes the execvp
+    // argv, so an omission is an overflow rather than a dropped flag.
     size_t fixed_slots = 9;
-    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count + 1;
+    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count
+                    + codegen->link_flag_count + 1;
     char** argv = malloc(max_argv * sizeof(char*));
     char** lib_flags = codegen->link_lib_count
         ? calloc((size_t)codegen->link_lib_count, sizeof(char*))
@@ -1835,6 +1851,12 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // -no-pie: see the ordering/relocation comment preserved below.
     argv[argn++] = "-no-pie";
 #endif
+    // User link flags precede -o, so a later flag beats the default set
+    // above (--link-flag=-pie against -no-pie, for one). These are borrowed
+    // strings, so unlike lib_flags below there is nothing here to free.
+    for (size_t i = 0; i < codegen->link_flag_count; i++) {
+        argv[argn++] = (char*)codegen->link_flags[i];
+    }
     argv[argn++] = "-o";
     argv[argn++] = (char*)filename;
     argv[argn++] = object_filename;

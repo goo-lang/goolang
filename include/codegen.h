@@ -283,6 +283,14 @@ struct CodeGenerator {
     // free these strings, only the driver does.
     const char** link_libs;
     size_t link_lib_count;
+
+    // The program that links a compiled Goo program, and extra flags for it
+    // (driver-set from --linker/--link-flag). A NULL linker keeps the
+    // platform default. Borrowed from CompilerOptions exactly as link_libs
+    // is -- codegen does not own or free these strings.
+    const char* linker;
+    const char** link_flags;
+    size_t link_flag_count;
 };
 
 // Function information for code generation
