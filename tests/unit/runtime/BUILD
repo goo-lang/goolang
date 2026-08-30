@@ -94,3 +94,24 @@ goo_cc_test(
         "//tests/unit:goo_check",
     ],
 )
+
+# Proof that the use-after-free detector detects. `make test-golden-poison`
+# runs 495 fixtures with GOO_ARC_POISON=1, which is a statement about the
+# fixtures, not about the mechanism -- a poison that never wrote a byte would
+# give the same 495. This suite makes the mechanism the thing under test, by
+# reading the same freed block with the poison off and on and asserting the two
+# readings differ.
+goo_cc_test(
+    name = "poison_test",
+    size = "small",
+    srcs = ["poison_test.c"],
+    # This suite reads freed memory deliberately, to observe what a
+    # use-after-free observes. That IS the defect asan reports, so the two
+    # cannot both run. The sanitizer configs filter this tag out.
+    tags = ["nosan"],
+    deps = [
+        "//include:runtime_h",
+        "//src/runtime:core",
+        "//tests/unit:goo_check",
+    ],
+)

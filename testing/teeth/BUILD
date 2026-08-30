@@ -68,3 +68,35 @@ goo_reject_probe(
     stderr_contains = "overflows int8",
     tags = ["manual"],
 )
+
+# ---------------------------------------------------------------------------
+# Sanitizer teeth. Each defect must turn its own config red AND leave the build
+# green without it. A defect that fails either way proves only that the code is
+# broken, never that the sanitizer saw it.
+#
+# Plain cc_test, not goo_cc_test: these must not take the goolang prelude,
+# which forces xalloc.h in and would replace the very malloc the asan defect
+# overflows.
+# ---------------------------------------------------------------------------
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+cc_test(
+    name = "asan_defect",
+    size = "small",
+    srcs = ["asan_defect.c"],
+    tags = ["manual"],
+)
+
+cc_test(
+    name = "ubsan_defect",
+    size = "small",
+    srcs = ["ubsan_defect.c"],
+    tags = ["manual"],
+)
+
+cc_test(
+    name = "tsan_defect",
+    size = "small",
+    srcs = ["tsan_defect.c"],
+    tags = ["manual"],
+)

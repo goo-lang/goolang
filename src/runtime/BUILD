@@ -1,6 +1,16 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//tools:defs.bzl", "goo_cc_library")
 
+# EVERY TARGET HERE OPTS OUT OF THE SANITIZERS, and it is not optional.
+# src/codegen/codegen.c hardcodes `gcc` to link a compiled Goo program and
+# passes no sanitizer flag, so an instrumented libgoo_runtime.a fails that
+# link with undefined __asan_report_* symbols. Measured 2026-08-30: without
+# this, 46 of 81 tests go red, every one of them a link failure rather than a
+# defect. `-fno-sanitize=all` is appended after the global --copt, so it wins.
+#
+# Removing this is safe only after codegen learns to pass link flags through.
+NO_SANITIZE_COPTS = ["-fno-sanitize=all"]
+
 # src/runtime is 12 files and 21 inter-file edges. Measured with nm on the built
 # objects, 2026-08-30: only FIVE of them are in a cycle. The other seven were
 # acyclic all along, and the two coarse targets below were the only thing
@@ -63,6 +73,7 @@ cc_library(
 # start it as a side effect of tidying targets.
 goo_cc_library(
     name = "core",
+    visibility = ["//tests/unit/runtime:__pkg__"],
     srcs = [
         "concurrency.c",
         "deadlock.c",
@@ -70,6 +81,7 @@ goo_cc_library(
         "runtime.c",
         "sync.c",
     ],
+    copts = NO_SANITIZE_COPTS,
     linkopts = [
         "-lm",
         "-pthread",
@@ -83,6 +95,7 @@ goo_cc_library(
 goo_cc_library(
     name = "arena",
     srcs = ["arena.c"],
+    copts = NO_SANITIZE_COPTS,
     visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
@@ -93,6 +106,7 @@ goo_cc_library(
 goo_cc_library(
     name = "channels",
     srcs = ["channels.c"],
+    copts = NO_SANITIZE_COPTS,
     deps = [
         ":core",
         ":platform_h",
@@ -103,6 +117,7 @@ goo_cc_library(
 goo_cc_library(
     name = "defer",
     srcs = ["defer.c"],
+    copts = NO_SANITIZE_COPTS,
     visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
@@ -113,6 +128,7 @@ goo_cc_library(
 goo_cc_library(
     name = "sync_shim",
     srcs = ["sync_shim.c"],
+    copts = NO_SANITIZE_COPTS,
     visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
@@ -124,6 +140,7 @@ goo_cc_library(
 goo_cc_library(
     name = "testing",
     srcs = ["testing.c"],
+    copts = NO_SANITIZE_COPTS,
     visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
@@ -134,6 +151,7 @@ goo_cc_library(
 goo_cc_library(
     name = "time_shim",
     srcs = ["time_shim.c"],
+    copts = NO_SANITIZE_COPTS,
     visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":channels",
@@ -154,6 +172,7 @@ goo_cc_library(
 goo_cc_library(
     name = "io",
     srcs = ["io.c"],
+    copts = NO_SANITIZE_COPTS,
     visibility = ["//tests/unit/runtime:__pkg__"],
     deps = [
         ":core",
