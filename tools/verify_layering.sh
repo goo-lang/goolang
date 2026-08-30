@@ -24,11 +24,24 @@
 set -uo pipefail
 
 BAZEL=${BAZEL:-bazel}
+
+# Extra flags added to every bazel invocation below. CI needs it: ubuntu's
+# llvm-dev ships only a VERSIONED llvm-config, so the coverage query -- which
+# loads //... and therefore //src/codegen -- would be refused by the repository
+# rule without --repo_env=GOO_LLVM_CONFIG.
+#
+# DO NOT PUT --repo_env=CC HERE. The configs below pin clang deliberately, and
+# an override would make every assertion pass under gcc while checking nothing:
+# gcc does not declare layering_check, so the defect would build, the "REFUSED"
+# assertion would fail, and the honest failure would be blamed on the gate.
+BAZEL_EXTRA=${BAZEL_EXTRA:-}
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 rc=0
 
 build() {
-    "$BAZEL" build "$@" >/dev/null 2>&1
+    # shellcheck disable=SC2086
+    "$BAZEL" build "$@" $BAZEL_EXTRA >/dev/null 2>&1
     return $?
 }
 
@@ -64,7 +77,8 @@ expect "reaching for a private target FAILS analysis" fail $? || rc=1
 # the exempt count is the honest measure of what is left to do.
 covered=$(grep -rc 'strict_hdrs = True' src/*/BUILD 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
 total=$(grep -rc '^goo_cc_library(' src/*/BUILD 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
-exempt=$("$BAZEL" query 'rdeps(//..., //include:headers, 1)' 2>/dev/null \
+# shellcheck disable=SC2086
+exempt=$("$BAZEL" query 'rdeps(//..., //include:headers, 1)' $BAZEL_EXTRA 2>/dev/null \
          | grep -cv '^//include:headers$')
 echo "coverage:"
 printf '  %d of %d goo_cc_library targets in src/ set strict_hdrs = True\n' "$covered" "$total"
