@@ -10,6 +10,10 @@ goo_cc_test(
     size = "small",
     srcs = ["release_decision_test.c"],
     deps = [
+        "//include:ast_h",
+        "//include:parser_h",
+        "//include:release_decision_h",
+        "//include:types_h",
         "//src/parser",
         "//src/types:frontend",
         "//src/types:release_decision",
@@ -22,6 +26,10 @@ goo_cc_test(
     size = "small",
     srcs = ["param_escape_test.c"],
     deps = [
+        "//include:ast_h",
+        "//include:param_escape_h",
+        "//include:parser_h",
+        "//include:types_h",
         "//src/parser",
         "//src/types:frontend",
         "//src/types:param_escape",
@@ -35,6 +43,11 @@ goo_cc_test(
     size = "small",
     srcs = ["block_escape_test.c"],
     deps = [
+        "//include:ast_h",
+        "//include:block_escape_h",
+        "//include:param_escape_h",
+        "//include:parser_h",
+        "//include:types_h",
         "//src/parser",
         "//src/types:block_escape",
         "//src/types:frontend",
@@ -68,6 +81,7 @@ goo_cc_test(
     srcs = ["shim_signatures_test.c"],
     linkstatic = True,
     deps = [
+        "//include:shim_signatures_h",
         "//src/types:shim_signatures",
         "//tests/unit:goo_check",
     ],
@@ -89,10 +103,10 @@ goo_cc_test(
     size = "small",
     srcs = ["terminating_stmt_test.c"],
     deps = [
+        "//include:ast_h",
+        "//include:parser_h",
+        "//include:types_h",
         "//src/ast",
-        # //src/parser's own edge, which the other four suites get for free
-        # through //src/types:frontend. Dropping frontend made it visible:
-        # the link named report_error, enter_panic_mode and make_source_location.
         "//src/errors",
         "//src/parser",
         "//src/types:terminating_stmt",
@@ -105,6 +119,10 @@ goo_cc_test(
     size = "small",
     srcs = ["local_escape_test.c"],
     deps = [
+        "//include:ast_h",
+        "//include:local_escape_h",
+        "//include:parser_h",
+        "//include:types_h",
         "//src/parser",
         "//src/types:frontend",
         "//src/types:local_escape",

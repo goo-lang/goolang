@@ -6,7 +6,6 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "test_discovery",
     srcs = ["test_discovery.c"],
-    strict_hdrs = True,
     visibility = ["//visibility:public"],
     deps = [
         "//include:import_resolver_h",
@@ -39,8 +38,16 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":test_discovery",
-        "//include:headers",
+        "//include:ast_h",
+        "//include:codegen_h",
+        "//include:error_h",
+        "//include:import_resolver_h",
+        "//include:lexer_h",
+        "//include:parser_h",
         "//include:prelude",
+        "//include:runtime_h",
+        "//include:test_discovery_h",
+        "//include:types_h",
         "//src/codegen",
         "//src/types:frontend",
     ],

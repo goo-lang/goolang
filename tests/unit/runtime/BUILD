@@ -8,6 +8,7 @@ goo_cc_test(
     size = "small",
     srcs = ["obj_header_test.c"],
     deps = [
+        "//include:runtime_h",
         "//src/runtime",
         "//tests/unit:goo_check",
     ],
