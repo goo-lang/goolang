@@ -82,24 +82,59 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 
 ### C. The 69 extracted probes
 
-- [ ] **8. The assertion macro.** `goo_expect_probe()` -- exit code, stderr substring, stdout substring. A thin wrapper over `goo_probe`, not a forked runner.
-      *Accepts:* one hand-written negative probe passes; the runner is shared, not duplicated.
+- [x] **8. The assertion macro.** `goo_expect_probe()` in `tools/goo_probe.bzl`.
+      It calls the same `_probe` as `goo_probe`, so the runner is shared, and it
+      `fail()`s at load time on a probe that asserts nothing.
+      *Accepts:* one hand-written negative probe passes; the runner is shared, not duplicated. **Met** (done before this PR; the box was never ticked).
 
-- [ ] **9. Prove the assertion macro can fail.**
-      *Accepts:* two teeth fixtures -- one wrong exit code, one absent stderr string -- each red, each green when corrected.
+- [x] **9. Prove the assertion macro can fail.** `testing/teeth/BUILD`:
+      `probe_exit_defect` (wrong exit code) and `probe_stderr_defect` (absent
+      stderr string), each with a control over the same program.
+      *Accepts:* two teeth fixtures -- one wrong exit code, one absent stderr string -- each red, each green when corrected. **Met.**
+      **But `tools/verify_probe_teeth.sh`, which runs them, was never wired** --
+      no Makefile target and no workflow, so it had never executed. It is a CI
+      step now, in the bazel workflow, since it drives bazel and `verify-core`
+      is bazel-free. Its first run: 7 checks, 4 defects red, 3 controls green.
 
-- [ ] **10. Extract the 69 sources.** Write `tests/probes/src/*.goo` by RUNNING each recipe's `printf`, never by transcribing.
-      *Accepts:* 69 files exist; the extraction is scripted and repeatable; no file was typed by hand.
+- [x] **10. Extract the sources.** **161 sources, not 69.** The task named the
+      69 GATES; only 27 of them write one source, and the rest write up to six.
+      **159 are extracted**, under `tests/probes/src/<gate>/`; 156 `.goo` plus
+      3 `.go` package files.
+      **Two gates are REFUSED, with the reason printed on every run.**
+      `blank-lines-probe` and `comment-lines-probe` build their source
+      mechanically at scale (`yes '' | head -n 1000000`), so extracting them
+      put 3 MB of blank lines and comments in the tree — exactly what a
+      generator exists to avoid, and neither file carries anything a diff can
+      use. They stay Make-only until task 15 gives them a Bazel target that
+      GENERATES the source at build time. `EXPECTED_REFUSED` is asserted, so a
+      third refusal has to be deliberate.
+      *Accepts:* the extraction is scripted and repeatable; no file was typed by hand. **Met** --
+      `tools/probe_source_drift.sh --extract` runs the real recipes and parses
+      nothing. Parsing was rejected on evidence: `spmd-bench-probe` and
+      `stencil-parallel-probe` write their sources with a backslash-continued
+      `printf '%s\n'` spanning 30 lines, which any line-based extractor
+      truncates in silence.
 
-- [ ] **11. The source-drift gate.** `tools/probe_source_drift.sh` re-runs each `printf` and diffs against the extracted file.
-      *Accepts:* passes on the committed tree; carries an empty-corpus guard.
+- [x] **11. The source-drift gate.** `tools/probe_source_drift.sh`. Extractor
+      and gate are the same tool, because extraction IS the derivation -- the
+      shape `census_current.sh` and `targets_current.sh` already use.
+      *Accepts:* passes on the committed tree; carries an empty-corpus guard. **Met**, plus a
+      second guard: a printf gate that writes NO source is a tool failure, not
+      a pass, because it would mean the tool silently stopped covering it.
 
-- [ ] **12. Prove the drift gate can fail.**
-      *Accepts:* a one-character edit gives exit 1 naming that probe; an empty corpus gives exit 2; restored gives exit 0.
+- [x] **12. Prove the drift gate can fail.**
+      *Accepts:* a one-character edit gives exit 1 naming that probe; an empty corpus gives exit 2; restored gives exit 0. **Met**, plus a control.
       *Risk:* **second highest.** Without this the Make probe and the Bazel probe can test different programs while both pass.
 
-- [ ] **13. Emit the 69 targets.** Extend the generator to the `printf` category.
-      *Accepts:* the 69 green (minus NNG-blocked); the regeneration gate still passes; at least 10 compared against `make`.
+- [ ] **13. Emit the targets.** Extend the generator to the `printf` category.
+      *Accepts:* green (minus NNG-blocked); the regeneration gate still passes; at least 10 compared against `make`.
+      **Re-scoped by task 10's measurement.** This is not 69 targets. 161
+      sources exist, each needing its own assertions, and the assertions are
+      interleaved per source in the recipe. Some cannot be expressed at all:
+      `asi-hardening-probe` asserts *"if exit is 0 AND stdout is 5, FAIL"*, a
+      negative compound condition `goo_expect_probe` has no form for. Expect
+      the generator to REFUSE a real fraction and print reasons. That is the
+      design working, and the refusal count is the deliverable, not a defect.
 
 ### D. The tail
 
