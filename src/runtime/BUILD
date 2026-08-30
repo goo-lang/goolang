@@ -1,38 +1,141 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//tools:defs.bzl", "goo_cc_library")
 
-# The 11 files in the Makefile's RUNTIME_SRCS, and only those. src/runtime/
-# holds 13 .c files: io.c and far_transport.c are deliberately excluded,
-# because RUNTIME_SRCS excludes them and this target must match what
-# $(RUNTIME_LIB) actually contains.
+# src/runtime is 12 files and 21 inter-file edges. Measured with nm on the built
+# objects, 2026-08-30: only FIVE of them are in a cycle. The other seven were
+# acyclic all along, and the two coarse targets below were the only thing
+# hiding it. Nothing in this commit changes a line of C.
+#
+#   cycle    concurrency, deadlock, platform, runtime, sync
+#   acyclic  arena, channels, defer, io, sync_shim, testing, time_shim
+#
+# The edges, so the deps below are checkable rather than trusted:
+#
+#   arena      -> core                goo_panic, goo_zerobase
+#   channels   -> core                the sync, concurrency, runtime and
+#                                     platform families
+#   defer      -> core                goo_free, goo_realloc
+#   sync_shim  -> core                the goo_mutex and goo_waitgroup families
+#   testing    -> core                goo_exit
+#   time_shim  -> channels, core      goo_chan_*, goo_platform_*, goo_go
+#   io         -> nothing at all      a true leaf
+#
+# ONE LIST, used by both the aggregate target and the archive genrule below.
+# Two lists would drift, and a runtime archive missing an object fails at the
+# link of every compiled Goo program rather than here.
+RUNTIME_UNITS = [
+    ":arena",
+    ":channels",
+    ":core",
+    ":defer",
+    ":sync_shim",
+    ":testing",
+    ":time_shim",
+]
+
+# Private sibling header. In Make this is invisible: #include "platform.h"
+# resolves relative to the including file, so it is never declared anywhere.
+# Bazel stages only declared inputs, so it is a target -- six files include it.
+cc_library(
+    name = "platform_h",
+    hdrs = ["platform.h"],
+)
+
+# The five files that genuinely call each other. runtime -> deadlock ->
+# concurrency -> runtime is the loop, with sync and platform joined to it.
 goo_cc_library(
-    name = "runtime",
+    name = "core",
     srcs = [
-        # Private sibling header. In Make this is invisible: #include
-        # "platform.h" resolves relative to the including file, so it is never
-        # declared anywhere. Bazel stages only declared inputs, so it must be
-        # named -- in srcs rather than hdrs, because it is private to this
-        # package and not part of the library's interface.
-        "platform.h",
-        "arena.c",
-        "channels.c",
         "concurrency.c",
         "deadlock.c",
-        "defer.c",
         "platform.c",
         "runtime.c",
         "sync.c",
-        "sync_shim.c",
-        "testing.c",
-        "time_shim.c",
     ],
     linkopts = [
         "-lm",
         "-pthread",
     ],
-    visibility = ["//visibility:public"],
     deps = [
+        ":platform_h",
         "//include:runtime_h",
     ],
+)
+
+goo_cc_library(
+    name = "arena",
+    srcs = ["arena.c"],
+    deps = [
+        ":core",
+        "//include:runtime_h",
+    ],
+)
+
+goo_cc_library(
+    name = "channels",
+    srcs = ["channels.c"],
+    deps = [
+        ":core",
+        ":platform_h",
+        "//include:runtime_h",
+    ],
+)
+
+goo_cc_library(
+    name = "defer",
+    srcs = ["defer.c"],
+    deps = [
+        ":core",
+        "//include:runtime_h",
+    ],
+)
+
+goo_cc_library(
+    name = "sync_shim",
+    srcs = ["sync_shim.c"],
+    deps = [
+        ":core",
+        ":platform_h",
+        "//include:runtime_h",
+    ],
+)
+
+goo_cc_library(
+    name = "testing",
+    srcs = ["testing.c"],
+    deps = [
+        ":core",
+        "//include:runtime_h",
+    ],
+)
+
+goo_cc_library(
+    name = "time_shim",
+    srcs = ["time_shim.c"],
+    deps = [
+        ":channels",
+        ":core",
+        ":platform_h",
+        "//include:runtime_h",
+    ],
+)
+
+# io.c is in the archive and NOT in the Makefile's RUNTIME_SRCS, which is why
+# it sits outside RUNTIME_UNITS and is named separately by the genrule.
+goo_cc_library(
+    name = "io",
+    srcs = ["io.c"],
+    deps = ["//include:runtime_h"],
+)
+
+# The 11 files of the Makefile's RUNTIME_SRCS, as an aggregate. io.c and
+# far_transport.c are excluded, because RUNTIME_SRCS excludes them and this
+# target must match what $(RUNTIME_LIB) contains. Kept for
+# //tests/unit/runtime:obj_header_test, its only consumer.
+cc_library(
+    name = "runtime",
+    visibility = ["//visibility:public"],
+    deps = RUNTIME_UNITS,
 )
 
 # The archive's contents: Makefile:137 RUNTIME_OBJS, minus far_transport.c.
@@ -51,31 +154,10 @@ goo_cc_library(
 # of 495 golden fixtures, the identical split a 13-object one gives, with the
 # same nine failures -- far_shim_probe and eight lanes_* probes, which are the
 # only fixtures that reach the far transport.
-goo_cc_library(
+cc_library(
     name = "runtime_full",
-    srcs = [
-        "platform.h",
-        "arena.c",
-        "channels.c",
-        "concurrency.c",
-        "deadlock.c",
-        "defer.c",
-        "io.c",
-        "platform.c",
-        "runtime.c",
-        "sync.c",
-        "sync_shim.c",
-        "testing.c",
-        "time_shim.c",
-    ],
-    linkopts = [
-        "-lm",
-        "-pthread",
-    ],
     visibility = ["//visibility:public"],
-    deps = [
-        "//include:runtime_h",
-    ],
+    deps = RUNTIME_UNITS + [":io"],
 )
 
 # The runtime archive under the name the compiler expects, so it can be handed
@@ -95,8 +177,29 @@ goo_cc_library(
 # own build. That is why the Makefile passes three CMAKE_C_ARCHIVE_* overrides.
 genrule(
     name = "goo_runtime_archive",
-    srcs = [":runtime_full"],
+    srcs = RUNTIME_UNITS + [":io"],
     outs = ["libgoo_runtime.a"],
-    cmd = "for f in $(SRCS); do case $$f in *.a) cp $$f $@ ;; esac; done",
+    # A MERGE, not a copy. It used to copy one 12-object archive, which stopped
+    # working the moment the package was split: an aggregate cc_library has no
+    # srcs of its own, so its own .a is empty and the copy would have produced
+    # an archive that links nothing.
+    #
+    # `ar rcs out.a in.a` is still wrong for the reason the old comment gave --
+    # it adds the input archive as a MEMBER and nests it. So each input is
+    # EXTRACTED first, then one archive is built from the objects.
+    #
+    # -D is deterministic mode: zero uid, gid and mtime on every member. Bazel's
+    # own archives already have that, and archive-determinism-probe asserts it,
+    # so stating it here keeps the property true of the merge as well as of the
+    # inputs. The $$tmp/*.o glob sorts, so member ORDER is deterministic too.
+    cmd = """
+root=$$PWD
+tmp=$$(mktemp -d)
+for f in $(SRCS); do
+  case $$f in *.a) ( cd $$tmp && ar x $$root/$$f ) ;; esac
+done
+ar rcsD $$root/$@ $$tmp/*.o
+rm -rf $$tmp
+""",
     visibility = ["//visibility:public"],
 )
