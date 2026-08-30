@@ -135,6 +135,30 @@ goo_cc_library(
     deps = [":types"],
 )
 
+# The two files the accessor extraction freed. Both were in the seven-file
+# cycle, and both left it the moment their single edge into type_checker.c
+# became an edge into :tc_context. Measured with nm after the cut: each reaches
+# :tc_context and :types and nothing else in this package.
+goo_cc_library(
+    name = "embedding",
+    srcs = ["embedding.c"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":tc_context",
+        ":types",
+    ],
+)
+
+goo_cc_library(
+    name = "shim_signatures",
+    srcs = ["shim_signatures.c"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":tc_context",
+        ":types",
+    ],
+)
+
 # The full front-end type checker: Makefile:119 GOO_TYPES_SRCS, minus the five
 # units already declared above as their own libraries, which are picked up as
 # deps instead. Splitting them out is deliberate -- it is the fine-grained
@@ -146,22 +170,22 @@ goo_cc_library(
 goo_cc_library(
     name = "frontend",
     srcs = [
-        "embedding.c",
         "expression_checker.c",
         "expression_helpers.c",
         "lane_ownership.c",
         "ownership_checker.c",
-        "shim_signatures.c",
         "type_checker.c",
     ],
     visibility = ["//visibility:public"],
     deps = [
         ":block_escape",
+        ":embedding",
         ":escape_core",
         ":local_escape",
         ":nonretaining",
         ":param_escape",
         ":release_decision",
+        ":shim_signatures",
         ":tc_context",
         ":tc_fctx",
         ":terminating_stmt",
