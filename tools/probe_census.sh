@@ -12,6 +12,14 @@
 # gates that the committed copy is current.
 #
 # Output: one "<category> <gate>" line per probe, sorted, then a summary.
+#
+# LC_ALL=C is LOAD-BEARING. sort's collation is locale-dependent, and this
+# output is a COMMITTED file that census_current.sh diffs. Under en_AU.UTF-8 a
+# hyphen is ignored in collation, so "mapkey-reject-probe" sorts before
+# "map-nilfunc-abort-probe"; under C it sorts after. The census was therefore
+# machine-dependent, and CI disagreed with the development box. Nothing caught
+# it because census_current.sh had never run.
+export LC_ALL=C
 set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

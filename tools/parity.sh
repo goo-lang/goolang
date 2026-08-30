@@ -24,6 +24,10 @@ MAKEFILE="${MAKEFILE:-$root/Makefile}"
 # The distinction is load-bearing: m12-probe is defined at Makefile:3101 and is
 # absent from VERIFY_ALL_DEPS, so it never runs. Scraping target definitions
 # would report it as a gate needing migration.
+# Same reason as tools/probe_census.sh: sort collation is locale-dependent, and
+# this output orders a committed file downstream.
+export LC_ALL=C
+
 list_make_gates() {
     if [ ! -r "$MAKEFILE" ]; then
         echo "parity: cannot read $MAKEFILE" >&2
