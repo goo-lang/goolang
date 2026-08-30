@@ -314,7 +314,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 break;
                 
             case 'l':
-                options->link_libs = realloc(options->link_libs, 
+                options->link_libs = xrealloc(options->link_libs, 
                                            (options->link_lib_count + 1) * sizeof(char*));
                 options->link_libs[options->link_lib_count++] = xstrdup(optarg);
                 break;
