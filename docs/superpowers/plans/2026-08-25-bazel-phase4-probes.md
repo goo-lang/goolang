@@ -126,8 +126,34 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       *Accepts:* a one-character edit gives exit 1 naming that probe; an empty corpus gives exit 2; restored gives exit 0. **Met**, plus a control.
       *Risk:* **second highest.** Without this the Make probe and the Bazel probe can test different programs while both pass.
 
-- [ ] **13. Emit the targets.** Extend the generator to the `printf` category.
-      *Accepts:* green (minus NNG-blocked); the regeneration gate still passes; at least 10 compared against `make`.
+- [x] **13. Emit the targets.** The generator reads `tests/probes/src/` for the
+      `printf` category and judges each SOURCE on its own, never a gate
+      all-or-nothing.
+      *Accepts:* green; the regeneration gate still passes; at least 10 compared against `make`. **Met:**
+      **136 targets** (63 fixture + 73 printf across 37 gates), `bazel test
+      //tests/probes:all` 137/137, and 15 gates compared against `make` with 15
+      agreements and 0 disagreements.
+      **100 sources refused, each with a printed cause** — the deliverable, not
+      a shortfall. Largest groups: 30 with no single expected exit code, 13
+      comparing captured stdout, 12 with no recipe line naming them.
+
+      **Three parser defects the run caught, all refusing wrongly rather than
+      passing wrongly.** The LLVM-verifier guard
+      (`grep -qiE "Module verification failed|LLVM ERROR"`) read as an
+      unmodelled alternation and refused 44 sources for carrying boilerplate
+      `goo_reject_probe` implements natively. The 3 extracted `.go` package
+      members would have produced `.goo` labels for files that do not exist.
+      And a diagnostic holding regex metacharacters was copied into
+      `stderr_contains`, which is `grep -qF` — Starlark rejected the escape,
+      which was the loud half of a defect whose quiet half is a pattern that
+      never matches.
+
+      **One contract was widened rather than worked around.** The recipes
+      assert with `grep -qi`, and a case-SENSITIVE match is a different
+      assertion: `strindex-reject-probe` greps for `error` where the compiler
+      prints `Error`. Refusing every case-insensitive diagnostic cost 49
+      targets, so `--stderr-ignorecase` was added to `tools/run_probe.sh` and
+      both macros instead. The Bazel side now asserts what the recipe asserts.
       **Re-scoped by task 10's measurement.** This is not 69 targets. 161
       sources exist, each needing its own assertions, and the assertions are
       interleaved per source in the recipe. Some cannot be expressed at all:

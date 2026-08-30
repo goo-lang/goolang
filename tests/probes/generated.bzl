@@ -7,10 +7,10 @@ Regenerate with:
 tests/probes/targets_current.sh gates that this file is current.
 """
 
-load("//tools:goo_probe.bzl", "goo_probe", "goo_reject_probe")
+load("//tools:goo_probe.bzl", "goo_expect_probe", "goo_probe", "goo_reject_probe")
 
 def generated_probes():
-    """63 probes generated from the Makefile."""
+    """136 probes generated from the Makefile."""
     goo_reject_probe(
         name = "baremod_reject_probe",
         src = "//examples:baremod_reject.goo",
@@ -325,4 +325,432 @@ def generated_probes():
         name = "unbuffered_probe",
         src = "//examples:unbuffered_probe.goo",
         expected = "//examples:unbuffered_probe.expected.txt",
+    )
+    goo_expect_probe(
+        name = "array_bounds_probe__arb_oob",
+        src = "//tests/probes/src:array-bounds-probe/arb_oob.goo",
+        exit_code = 2,
+        stderr_contains = "bounds check failed",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "array_bounds_probe__awb_oob",
+        src = "//tests/probes/src:array-bounds-probe/awb_oob.goo",
+        exit_code = 2,
+        stderr_contains = "bounds check failed",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "bits_div_abort_probe__div_dz",
+        src = "//tests/probes/src:bits-div-abort-probe/div_dz.goo",
+        exit_code = 2,
+        stderr_contains = "integer divide by zero",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "bits_div_abort_probe__div_of",
+        src = "//tests/probes/src:bits-div-abort-probe/div_of.goo",
+        exit_code = 2,
+        stderr_contains = "integer overflow",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "bytesconv_reject_probe__bytesconv_reject",
+        src = "//tests/probes/src:bytesconv-reject-probe/bytesconv_reject.goo",
+        stderr_contains = "only supported for",
+    )
+    goo_reject_probe(
+        name = "call_argtype_probe__cat_method",
+        src = "//tests/probes/src:call-argtype-probe/cat_method.goo",
+        stderr_contains = "cannot use string as int",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "call_argtype_probe__cat_str",
+        src = "//tests/probes/src:call-argtype-probe/cat_str.goo",
+        stderr_contains = "cannot use string as int",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "call_arity_probe__ca_few",
+        src = "//tests/probes/src:call-arity-probe/ca_few.goo",
+        stderr_contains = "wrong number of arguments",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "call_arity_probe__ca_many",
+        src = "//tests/probes/src:call-arity-probe/ca_many.goo",
+        stderr_contains = "wrong number of arguments",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "call_arity_probe__ca_method",
+        src = "//tests/probes/src:call-arity-probe/ca_method.goo",
+        stderr_contains = "wrong number of arguments",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "composite_literal_reject_probe__clr_map_val",
+        src = "//tests/probes/src:composite-literal-reject-probe/clr_map_val.goo",
+        stderr_contains = "not compatible with declared value type",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "composite_literal_reject_probe__clr_slice_elem",
+        src = "//tests/probes/src:composite-literal-reject-probe/clr_slice_elem.goo",
+        stderr_contains = "not compatible with declared element type",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "composite_literal_reject_probe__clr_slice_mix",
+        src = "//tests/probes/src:composite-literal-reject-probe/clr_slice_mix.goo",
+        stderr_contains = "not compatible with declared element type",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "const_array_bounds_probe__cabp_expr",
+        src = "//tests/probes/src:const-array-bounds-probe/cabp_expr.goo",
+        exit_code = 2,
+        stderr_contains = "length 5",
+    )
+    goo_reject_probe(
+        name = "copy_reject_probe__copy_stringdst",
+        src = "//tests/probes/src:copy-reject-probe/copy_stringdst.goo",
+        stderr_contains = "copy: destination must be a slice",
+    )
+    goo_reject_probe(
+        name = "embed_ambiguous_reject_probe__embed_ambig_reject",
+        src = "//tests/probes/src:embed-ambiguous-reject-probe/embed_ambig_reject.goo",
+        stderr_contains = "ambiguous selector 'X'",
+    )
+    goo_reject_probe(
+        name = "embed_dup_reject_probe__embed_dup_reject",
+        src = "//tests/probes/src:embed-dup-reject-probe/embed_dup_reject.goo",
+        stderr_contains = "duplicate field name 'Base'",
+    )
+    goo_reject_probe(
+        name = "embed_enum_reject_probe__embed_enum_reject",
+        src = "//tests/probes/src:embed-enum-reject-probe/embed_enum_reject.goo",
+        stderr_contains = "embedded fields are not supported in enum variants",
+    )
+    goo_reject_probe(
+        name = "error_arity_probe__error_arity_intarg",
+        src = "//tests/probes/src:error-arity-probe/error_arity_intarg.goo",
+        stderr_contains = "argument must be a string",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "error_arity_probe__error_arity_noargs",
+        src = "//tests/probes/src:error-arity-probe/error_arity_noargs.goo",
+        stderr_contains = "error expects exactly one string argument",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "floatint_reject_probe__fi_assign",
+        src = "//tests/probes/src:floatint-reject-probe/fi_assign.goo",
+        stderr_contains = "Cannot assign float32 to int64",
+    )
+    goo_reject_probe(
+        name = "floatint_reject_probe__fi_chansend",
+        src = "//tests/probes/src:floatint-reject-probe/fi_chansend.goo",
+        stderr_contains = "Cannot send float32 to channel of int64",
+    )
+    goo_reject_probe(
+        name = "floatint_reject_probe__fi_vardecl",
+        src = "//tests/probes/src:floatint-reject-probe/fi_vardecl.goo",
+        stderr_contains = "Cannot assign float32 to int64",
+    )
+    goo_reject_probe(
+        name = "generics_bound_reject_probe__genb_nomethod",
+        src = "//tests/probes/src:generics-bound-reject-probe/genb_nomethod.goo",
+        stderr_contains = "has no method",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "generics_bound_reject_probe__genb_noniface",
+        src = "//tests/probes/src:generics-bound-reject-probe/genb_noniface.goo",
+        stderr_contains = "constraint must be an interface",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "generics_bound_reject_probe__genb_notsat",
+        src = "//tests/probes/src:generics-bound-reject-probe/genb_notsat.goo",
+        stderr_contains = "does not implement",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "generics_bound_reject_probe__genb_sigmismatch",
+        src = "//tests/probes/src:generics-bound-reject-probe/genb_sigmismatch.goo",
+        stderr_contains = "does not satisfy",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "generics_reject_probe__gen_conflict",
+        src = "//tests/probes/src:generics-reject-probe/gen_conflict.goo",
+        stderr_contains = "conflicting types",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "iface_recv_kind_probe__recvkind_direct",
+        src = "//tests/probes/src:iface-recv-kind-probe/recvkind_direct.goo",
+        stderr_contains = "does not implement",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "iface_recv_kind_probe__recvkind_embed",
+        src = "//tests/probes/src:iface-recv-kind-probe/recvkind_embed.goo",
+        stderr_contains = "does not implement",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "iface_satisfaction_probe__iface_missing",
+        src = "//tests/probes/src:iface-satisfaction-probe/iface_missing.goo",
+        stderr_contains = "does not implement",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "iface_satisfaction_probe__iface_unknownm",
+        src = "//tests/probes/src:iface-satisfaction-probe/iface_unknownm.goo",
+        stderr_contains = "has no method",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "iface_satisfaction_probe__iface_wrongargs",
+        src = "//tests/probes/src:iface-satisfaction-probe/iface_wrongargs.goo",
+        stderr_contains = "wrong number of arguments",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "map_addr_reject_probe__map_addr_reject",
+        src = "//tests/probes/src:map-addr-reject-probe/map_addr_reject.goo",
+        stderr_contains = "cannot take the address of a map value",
+    )
+    goo_reject_probe(
+        name = "map_addr_reject_probe__map_array_reject",
+        src = "//tests/probes/src:map-addr-reject-probe/map_array_reject.goo",
+        stderr_contains = "cannot assign through a map value",
+    )
+    goo_reject_probe(
+        name = "map_addr_reject_probe__map_field_reject",
+        src = "//tests/probes/src:map-addr-reject-probe/map_field_reject.goo",
+        stderr_contains = "cannot assign through a map value",
+    )
+    goo_expect_probe(
+        name = "map_nilfunc_abort_probe__map_nilfunc_abort",
+        src = "//tests/probes/src:map-nilfunc-abort-probe/map_nilfunc_abort.goo",
+        exit_code = 2,
+        stderr_contains = "nil function",
+    )
+    goo_reject_probe(
+        name = "mapkey_reject_probe__mapkey_float",
+        src = "//tests/probes/src:mapkey-reject-probe/mapkey_float.goo",
+        stderr_contains = "not yet supported in v1",
+    )
+    goo_reject_probe(
+        name = "mapkey_reject_probe__mapkey_slice",
+        src = "//tests/probes/src:mapkey-reject-probe/mapkey_slice.goo",
+        stderr_contains = "not comparable",
+    )
+    goo_reject_probe(
+        name = "mapkey_reject_probe__mapkey_wrongindex",
+        src = "//tests/probes/src:mapkey-reject-probe/mapkey_wrongindex.goo",
+        stderr_contains = "Map key type mismatch",
+    )
+    goo_reject_probe(
+        name = "named_return_reject_probe__nrr_unnamed",
+        src = "//tests/probes/src:named-return-reject-probe/nrr_unnamed.goo",
+        stderr_contains = "bare return is only allowed when the function has named results",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "panic_abort_probe__panic_abort",
+        src = "//tests/probes/src:panic-abort-probe/panic_abort.goo",
+        exit_code = 2,
+        stderr_contains = "panic: boom",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "pkg_argcheck_probe__pac_arity",
+        src = "//tests/probes/src:pkg-argcheck-probe/pac_arity.goo",
+        stderr_contains = "wrong number of arguments",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "pkg_argcheck_probe__pac_width",
+        src = "//tests/probes/src:pkg-argcheck-probe/pac_width.goo",
+        stderr_contains = "cannot use int32 as int64",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "print_aggregate_probe__print_agg_erru",
+        src = "//tests/probes/src:print-aggregate-probe/print_agg_erru.goo",
+        stderr_contains = "unsupported argument type",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "print_aggregate_probe__print_agg_null",
+        src = "//tests/probes/src:print-aggregate-probe/print_agg_null.goo",
+        stderr_contains = "unsupported argument type",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "ptr_recv_nonaddr_probe__ptr_recv_nonaddr",
+        src = "//tests/probes/src:ptr-recv-nonaddr-probe/ptr_recv_nonaddr.goo",
+        stderr_contains = "non-addressable",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "return_mismatch_probe__rt_mm_float",
+        src = "//tests/probes/src:return-mismatch-probe/rt_mm_float.goo",
+        stderr_contains = "return type mismatch",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "return_mismatch_probe__rt_mm_narrow",
+        src = "//tests/probes/src:return-mismatch-probe/rt_mm_narrow.goo",
+        stderr_contains = "overflows",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "return_mismatch_probe__rt_mm_str",
+        src = "//tests/probes/src:return-mismatch-probe/rt_mm_str.goo",
+        stderr_contains = "return type mismatch",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "return_mismatch_probe__rt_mm_void",
+        src = "//tests/probes/src:return-mismatch-probe/rt_mm_void.goo",
+        stderr_contains = "return type mismatch",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "return_mismatch_probe__rt_mm_width",
+        src = "//tests/probes/src:return-mismatch-probe/rt_mm_width.goo",
+        stderr_contains = "return type mismatch",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "return_type_erru_probe__rt_erru_bad",
+        src = "//tests/probes/src:return-type-erru-probe/rt_erru_bad.goo",
+        stderr_contains = "return type mismatch",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "return_type_erru_probe__rt_erru_bare",
+        src = "//tests/probes/src:return-type-erru-probe/rt_erru_bare.goo",
+        stderr_contains = "return type mismatch",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "return_type_erru_probe__rt_erru_xfwd",
+        src = "//tests/probes/src:return-type-erru-probe/rt_erru_xfwd.goo",
+        stderr_contains = "return type mismatch",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "selectsend_reject_probe__selectsend_reject",
+        src = "//tests/probes/src:selectsend-reject-probe/selectsend_reject.goo",
+        stderr_contains = "select send",
+    )
+    goo_expect_probe(
+        name = "slice_expr_bounds_probe__sebp_highcap",
+        src = "//tests/probes/src:slice-expr-bounds-probe/sebp_highcap.goo",
+        exit_code = 2,
+        stderr_contains = "slice bounds out of range",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "slice_expr_bounds_probe__sebp_lowhigh",
+        src = "//tests/probes/src:slice-expr-bounds-probe/sebp_lowhigh.goo",
+        exit_code = 2,
+        stderr_contains = "slice bounds out of range",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "slice_expr_bounds_probe__sebp_neg",
+        src = "//tests/probes/src:slice-expr-bounds-probe/sebp_neg.goo",
+        exit_code = 2,
+        stderr_contains = "slice bounds out of range",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "slice_expr_bounds_probe__sebp_str",
+        src = "//tests/probes/src:slice-expr-bounds-probe/sebp_str.goo",
+        exit_code = 2,
+        stderr_contains = "slice bounds out of range",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "slice_write_bounds_probe__swb_neg",
+        src = "//tests/probes/src:slice-write-bounds-probe/swb_neg.goo",
+        exit_code = 2,
+        stderr_contains = "bounds check failed",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "slice_write_bounds_probe__swb_oob",
+        src = "//tests/probes/src:slice-write-bounds-probe/swb_oob.goo",
+        exit_code = 2,
+        stderr_contains = "bounds check failed",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "spread_reject_probe__spread_missingfixed",
+        src = "//tests/probes/src:spread-reject-probe/spread_missingfixed.goo",
+        stderr_contains = "spread call must supply exactly the fixed arguments then one slice",
+    )
+    goo_reject_probe(
+        name = "spread_reject_probe__spread_nonvariadic",
+        src = "//tests/probes/src:spread-reject-probe/spread_nonvariadic.goo",
+        stderr_contains = "spread argument requires a variadic function",
+    )
+    goo_reject_probe(
+        name = "strindex_reject_probe__strindex_reject",
+        src = "//tests/probes/src:strindex-reject-probe/strindex_reject.goo",
+        stderr_contains = "error",
+        stderr_ignorecase = True,
+    )
+    goo_expect_probe(
+        name = "string_bounds_probe__sbp_oob",
+        src = "//tests/probes/src:string-bounds-probe/sbp_oob.goo",
+        exit_code = 2,
+        stderr_contains = "bounds check failed",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "struct_map_key_reject_probe__struct_mapkey_array",
+        src = "//tests/probes/src:struct-map-key-reject-probe/struct_mapkey_array.goo",
+        stderr_contains = "not yet supported in v1",
+    )
+    goo_reject_probe(
+        name = "try_nonerru_probe__try_nonerru_int",
+        src = "//tests/probes/src:try-nonerru-probe/try_nonerru_int.goo",
+        stderr_contains = "try requires the enclosing function to return an error union",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "try_nonerru_probe__try_nonerru_void",
+        src = "//tests/probes/src:try-nonerru-probe/try_nonerru_void.goo",
+        stderr_contains = "try requires the enclosing function to return an error union",
+        stderr_ignorecase = True,
+    )
+    goo_reject_probe(
+        name = "typeassert_reject_probe__ta_impossible",
+        src = "//tests/probes/src:typeassert-reject-probe/ta_impossible.goo",
+        stderr_contains = "impossible type assertion",
+    )
+    goo_reject_probe(
+        name = "typeassert_reject_probe__ta_noniface",
+        src = "//tests/probes/src:typeassert-reject-probe/ta_noniface.goo",
+        stderr_contains = "not an interface type",
+    )
+    goo_reject_probe(
+        name = "typeswitch_reject_probe__ts_dupcase",
+        src = "//tests/probes/src:typeswitch-reject-probe/ts_dupcase.goo",
+        stderr_contains = "duplicate case type",
+    )
+    goo_reject_probe(
+        name = "typeswitch_reject_probe__ts_multidefault",
+        src = "//tests/probes/src:typeswitch-reject-probe/ts_multidefault.goo",
+        stderr_contains = "multiple defaults",
     )

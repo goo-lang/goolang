@@ -17,6 +17,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GEN="tools/gen_probe_targets.py"
 CENSUS="tests/probes/census.txt"
 TARGET="tests/probes/generated.bzl"
+SRC_DIR="tests/probes/src"
 
 # --------------------------------------------------------------------------
 # Three mutations plus a CONTROL. Every one runs against a COPY: the plan's
@@ -35,6 +36,11 @@ if [ "${1:-}" = "--self-test" ]; then
         cp "$ROOT/$TARGET"       "$W/t/$TARGET"
         cp "$ROOT/$GEN"          "$W/t/$GEN"
         cp "${BASH_SOURCE[0]}"   "$W/t/tests/probes/targets_current.sh"
+        # The printf-category sources. WITHOUT THESE the generator inside the
+        # copy sees no printf gates and emits 63 targets against the committed
+        # 136, so the control goes red and the self-test reports a broken
+        # harness. What the copy holds has to match what the generator reads.
+        cp -r "$ROOT/$SRC_DIR"   "$W/t/tests/probes/src"
     }
     run() { ( cd "$W/t" && bash tests/probes/targets_current.sh ) >"$W/out.log" 2>&1; }
 

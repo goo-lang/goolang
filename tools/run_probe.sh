@@ -25,7 +25,7 @@ set -uo pipefail
 
 COMPILER=""; ARCHIVE=""; GOOROOT_DIR=""; SRC=""
 EXPECTED=""; WANT_RC=""; STDERR_HAS=""; STDOUT_HAS=""
-GOOFLAGS_IN=""; TIMEOUT=10; REJECT=0
+GOOFLAGS_IN=""; TIMEOUT=10; REJECT=0; IGNORECASE=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,6 +39,7 @@ while [ $# -gt 0 ]; do
         --stdout-contains) STDOUT_HAS="$2"; shift 2 ;;
         --gooflags)        GOOFLAGS_IN="$2"; shift 2 ;;
         --timeout)         TIMEOUT="$2"; shift 2 ;;
+        --stderr-ignorecase) IGNORECASE=1; shift ;;
         --reject)          REJECT=1; shift ;;
         *) echo "run_probe: unknown argument '$1'"; exit 2 ;;
     esac
@@ -50,6 +51,20 @@ done
 [ -x "$COMPILER" ] || { echo "run_probe: compiler '$COMPILER' is not executable"; exit 2; }
 [ -r "$ARCHIVE" ]  || { echo "run_probe: archive '$ARCHIVE' is not readable"; exit 2; }
 [ -r "$SRC" ]      || { echo "run_probe: source '$SRC' is not readable"; exit 2; }
+
+# --stderr-ignorecase exists because the Makefile recipes assert with
+# `grep -qi`, and a case-SENSITIVE match here would be a DIFFERENT assertion
+# than the probe it mirrors. Measured 2026-08-30: strindex-reject-probe greps
+# case-insensitively for "error" and the compiler prints "Error", so the
+# sensitive form failed on a probe that passes under make. Matching the
+# recipe's own mode is what keeps the two sides comparable.
+stderr_match() {
+    if [ "$IGNORECASE" -eq 1 ]; then
+        grep -qiF -- "$STDERR_HAS" "$1"
+    else
+        grep -qF -- "$STDERR_HAS" "$1"
+    fi
+}
 
 # A reject probe must name the diagnostic it expects. "the compile failed" is
 # satisfied by a compiler that crashes, a missing file, or a typo in the
@@ -105,7 +120,7 @@ if [ "$REJECT" -eq 1 ]; then
         head -20 "$work/cerr"
         exit 1
     fi
-    if ! grep -qF -- "$STDERR_HAS" "$work/cerr"; then
+    if ! stderr_match "$work/cerr"; then
         echo "run_probe: FAIL $base (wrong or missing diagnostic; wanted '"'"'$STDERR_HAS'"'"')"
         head -20 "$work/cerr"
         exit 1
@@ -141,7 +156,7 @@ if [ -n "$STDOUT_HAS" ] && ! grep -qF -- "$STDOUT_HAS" "$work/stdout"; then
     echo "run_probe: FAIL $base (stdout does not contain '$STDOUT_HAS')"
     head -10 "$work/stdout"; exit 1
 fi
-if [ -n "$STDERR_HAS" ] && ! grep -qF -- "$STDERR_HAS" "$work/stderr"; then
+if [ -n "$STDERR_HAS" ] && ! stderr_match "$work/stderr"; then
     echo "run_probe: FAIL $base (stderr does not contain '$STDERR_HAS')"
     head -10 "$work/stderr"; exit 1
 fi
