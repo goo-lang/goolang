@@ -225,6 +225,24 @@ goo_cc_library(
 # No LLVM. Every LLVM identifier in type_checker.c, expression_checker.c and
 # shim_signatures.c is inside a // comment; the includes are types.h,
 # comptime.h, embedding.h and lane_ownership.h.
+#
+# THE REMAINING FIVE ARE MEASURED, not assumed. expression_checker and
+# type_checker trade 16 symbols one way and 5 the other, which is the spine of
+# the cycle. The thin edges were checked one at a time, 2026-08-30:
+#
+#   expression_helpers -> type_checker   TWO symbols, and only one is cheap.
+#     reject_comptime_function_value calls type_error and type_to_string,
+#     both of which are in :types already, so it would move cleanly.
+#     check_interface_assign calls report_comptime_method_not_satisfied and
+#     type_interface_satisfied, BOTH still in type_checker.c, so moving it
+#     re-closes the edge it was meant to cut. Cutting one of the two leaves
+#     the edge, so neither is worth taking alone.
+#
+#   ownership_checker -> expression_checker   type_check_expression, which is
+#     the recursive-descent entry point and cannot move.
+#
+# So this cycle is the type checker's own mutual recursion, not an accessor
+# that leaked. The tc_context extraction already took the part that was.
 goo_cc_library(
     name = "frontend",
     srcs = [

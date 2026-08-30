@@ -43,6 +43,24 @@ cc_library(
 
 # The five files that genuinely call each other. runtime -> deadlock ->
 # concurrency -> runtime is the loop, with sync and platform joined to it.
+#
+# I MEASURED THE CUT AND DID NOT TAKE IT. Exactly six symbols from runtime.c
+# are reached by the rest of the package -- goo_alloc, goo_free, goo_realloc,
+# goo_panic, goo_zerobase and goo_exit. Extracting them would cut
+# concurrency -> runtime, sync -> runtime and platform -> runtime, leaving a
+# three-file cycle and freeing runtime.c and platform.c.
+#
+# It is not clean. goo_alloc and goo_free are written against the ARC object
+# header, whose two static inline helpers -- goo_obj_headerless and
+# goo_obj_header -- are used at ten more sites in runtime.c by goo_retain,
+# goo_release and goo_make_immortal, which would stay. Extracting the
+# allocator therefore means extracting reference counting with it: about 320
+# lines, and the most safety-critical code in the project.
+#
+# That is a defensible refactor -- "the ARC core" is a real unit -- but it is
+# not a build-graph change, and it needs the ARC measurement harness
+# (docs/adr/0005-measurements) rather than the golden suite alone. Do not
+# start it as a side effect of tidying targets.
 goo_cc_library(
     name = "core",
     srcs = [
