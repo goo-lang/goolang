@@ -1,5 +1,22 @@
 load("//tools:defs.bzl", "goo_cc_library")
 
+# VISIBILITY IS THE BOUNDARY, and every value below was measured rather than
+# chosen. `bazel query "rdeps(//..., <target>, 1)"`, 2026-08-30:
+#
+#   private            embedding, escape_core, nonretaining, tc_context,
+#                      tc_fctx, types -- no consumer outside this package
+#   + unit suites      block_escape, local_escape, param_escape,
+#                      release_decision, shim_signatures, terminating_stmt
+#   + codegen/compiler frontend, which is the only thing outside src/types
+#                      that any other package is allowed to name
+#
+# Bazel refuses a violation at ANALYSIS time, before anything compiles.
+# //testing/layering:visibility_violation is the deliberate defect that proves
+# it, and it is tagged manual so `bazel build //...` never expands to it.
+#
+# Re-measure before widening one. A target that needs to be public is usually a
+# target that has grown a second job.
+
 # The escape/release analysis units. Each compiles with no LLVM and no parser,
 # which is why they are here in phase 1.
 #
@@ -36,27 +53,27 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "nonretaining",
     srcs = ["nonretaining.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
 )
 
 goo_cc_library(
     name = "escape_core",
     srcs = ["escape_core.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [":nonretaining"],
 )
 
 goo_cc_library(
     name = "param_escape",
     srcs = ["param_escape.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//tests/unit/types:__pkg__"],
     deps = [":escape_core"],
 )
 
 goo_cc_library(
     name = "block_escape",
     srcs = ["block_escape.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":escape_core",
         ":param_escape",
@@ -66,7 +83,7 @@ goo_cc_library(
 goo_cc_library(
     name = "local_escape",
     srcs = ["local_escape.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":escape_core",
         ":param_escape",
@@ -76,7 +93,7 @@ goo_cc_library(
 goo_cc_library(
     name = "release_decision",
     srcs = ["release_decision.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":local_escape",
         ":param_escape",
@@ -108,20 +125,20 @@ goo_cc_library(
 goo_cc_library(
     name = "types",
     srcs = ["types.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = ["//src/comptime"],
 )
 
 goo_cc_library(
     name = "terminating_stmt",
     srcs = ["terminating_stmt.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//tests/unit/types:__pkg__"],
 )
 
 goo_cc_library(
     name = "tc_fctx",
     srcs = ["tc_fctx.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
 )
 
 # The TypeChecker accessors, lifted out of type_checker.c so they stop closing
@@ -131,7 +148,7 @@ goo_cc_library(
 goo_cc_library(
     name = "tc_context",
     srcs = ["tc_context.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [":types"],
 )
 
@@ -142,7 +159,7 @@ goo_cc_library(
 goo_cc_library(
     name = "embedding",
     srcs = ["embedding.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [
         ":tc_context",
         ":types",
@@ -152,7 +169,7 @@ goo_cc_library(
 goo_cc_library(
     name = "shim_signatures",
     srcs = ["shim_signatures.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":tc_context",
         ":types",
@@ -176,7 +193,11 @@ goo_cc_library(
         "ownership_checker.c",
         "type_checker.c",
     ],
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//src/codegen:__pkg__",
+        "//src/compiler:__pkg__",
+        "//tests/unit/types:__pkg__",
+    ],
     deps = [
         ":block_escape",
         ":embedding",
