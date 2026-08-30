@@ -1,0 +1,18 @@
+package main
+import "fmt"
+type Animal interface {
+	Sound() string
+}
+type Dog struct{ N string }
+func (d Dog) Sound() string { return "woof" }
+func main() {
+	var a Animal = Dog{N: "Rex"}
+	switch a.(type) {
+	case Dog:
+		fmt.Println("dog")
+	default:
+		fmt.Println("other")
+	default:
+		fmt.Println("other2")
+	}
+}

@@ -1,0 +1,3 @@
+package main
+func F[T int](x T) T { return x }
+func main() {}

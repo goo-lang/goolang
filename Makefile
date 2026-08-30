@@ -3216,6 +3216,8 @@ VERIFY_ALL_DEPS := \
     census-current-probe \
     targets-current-probe \
     targets-current-selftest \
+    source-drift-probe \
+    source-drift-selftest \
     assert-corpus-selftest \
     golden-selftest \
     goo-check-probe \
@@ -6509,6 +6511,20 @@ targets-current-probe:
 
 targets-current-selftest:
 	@bash tests/probes/targets_current.sh --self-test
+
+# The THIRD derivation gate, and the only one whose derivation is expensive.
+# The 69 printf gates write their .goo sources inside their own recipes; those
+# sources are extracted to tests/probes/src/ so Bazel can reach them, and two
+# copies of a program drift. Extraction runs the real recipes (about 20 s) and
+# parses nothing -- two gates write their source with a backslash-continued
+# printf spanning 30 lines, which any line-based extraction truncates in
+# silence. The self-test costs three more extractions.
+.PHONY: source-drift-probe source-drift-selftest
+source-drift-probe:
+	@bash tools/probe_source_drift.sh
+
+source-drift-selftest:
+	@bash tools/probe_source_drift.sh --self-test
 
 # Scan the C compiler/runtime source against the adopted MISRA C:2012 subset and
 # fail on any violation not in scripts/misra-baseline.txt. Local-only gate (see

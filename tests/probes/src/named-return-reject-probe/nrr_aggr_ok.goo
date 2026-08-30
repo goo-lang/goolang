@@ -1,0 +1,4 @@
+package main
+import "fmt"
+func g() (s string) { s = "hi"; return }
+func main() { fmt.Println(g()) }

@@ -1,0 +1,2 @@
+package main
+func main(){ s:=[]int{1,2,3}; i:=-1; s[i]=9; _=s }

@@ -19,9 +19,13 @@ set -uo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 BAZEL="${BAZEL:-bazel}"
+# CI must pin its toolchain (the runner's default gcc is 13 and cannot do
+# -std=c23), and this script is invoked outside the job's own bazel command.
+# Same contract as tools/verify_sanitizers.sh.
+BAZEL_EXTRA=${BAZEL_EXTRA:-}
 
 status() {
-    "$BAZEL" test "$1" --test_output=summary --nocache_test_results >/dev/null 2>&1
+    "$BAZEL" test "$1" $BAZEL_EXTRA --test_output=summary --nocache_test_results >/dev/null 2>&1
     return $?
 }
 

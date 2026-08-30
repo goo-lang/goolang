@@ -1,0 +1,6 @@
+package main
+type Stringer interface { String() string }
+type Pt struct { x int }
+func (p Pt) String() string { return "p" }
+func Bad[T Stringer](v T) string { return v.Nope() }
+func main() { _ = Bad(Pt{x: 1}) }

@@ -1,0 +1,6 @@
+package main
+type Shape interface { Scale(f int) int }
+type Sq struct { side int }
+func (s Sq) Scale(f int) int { return s.side * f }
+func main() { var a Shape = Sq{side: 5}
+ _ = a.Scale(1, 2) }

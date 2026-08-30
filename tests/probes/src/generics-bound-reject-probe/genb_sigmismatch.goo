@@ -1,0 +1,8 @@
+package main
+type A interface { M() int }
+type B interface { M(x int) int }
+type C struct { n int }
+func (c C) M() int { return c.n }
+func Inner[U B](u U) int { return u.M(5) }
+func Outer[T A](t T) int { return Inner(t) + 1 }
+func main() { _ = Outer(C{n: 3}) }

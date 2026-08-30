@@ -1,0 +1,2 @@
+package main
+func main(){ var a [3]int; a[5]=9; _=a }
