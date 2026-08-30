@@ -95,4 +95,4 @@ sh_test(
     ],
 )
 
-exports_files(["run_probe.sh"])
+exports_files(["gen_probe_targets.py", "run_probe.sh"])

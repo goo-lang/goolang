@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assert tests/probes/census.txt is current.
 #
-# The census decides which macro each of the 183 probe gates gets, so a stale
+# The census decides which macro each of the 186 probe gates gets, so a stale
 # copy silently mis-routes probes. Regenerating and diffing is what makes it a
 # derivation rather than a snapshot.
 #

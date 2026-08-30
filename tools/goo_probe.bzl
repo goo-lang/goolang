@@ -1,6 +1,6 @@
 """Probe macros: compile a .goo fixture, run it, assert on the result.
 
-Two macros, because the 183 probe gates are not one shape. goo_probe covers
+Two macros, because the 186 probe gates are not one shape. goo_probe covers
 the 80 that compile an examples/*.goo and check stdout. goo_expect_probe
 covers the 69 that generate their source and assert an exit code or a
 diagnostic -- largely negative tests. They share ONE runner, so the two can

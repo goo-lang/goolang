@@ -1,9 +1,11 @@
 bespoke arena-free-probe
 bespoke arena-valgrind-probe
+bespoke census-current-probe
 bespoke charlit-reject-probe
 bespoke goostd-resolver-probe
 bespoke hexesc-reject-probe
 bespoke stencil-race-runbook-probe
+bespoke targets-current-probe
 example arc-loop-carried-probe
 example arc-release-probe
 example baremod-reject-probe
@@ -173,6 +175,7 @@ script goo-check-probe
 script goo-testcase-probe
 script goo-test-probe
 script lexer-keyword-probe
+script link-flags-probe
 script nil-deref-probe
 script podman-image-probe
 script probe-teeth-probe
