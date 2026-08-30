@@ -19,8 +19,10 @@ set -u
 fail() { echo "FAIL: $1"; exit 1; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# The self-test substitutes a stub here. Nothing else sets it.
-COMPILER="${LINK_FLAGS_PROBE_COMPILER:-$ROOT/bin/goo}"
+# COMPILER is the contract a Bazel sh_test uses to point this probe at the
+# compiler it built: bin/goo does not exist inside the sandbox. The self-test
+# substitutes a stub here. Unset, this behaves exactly as it did.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
 
 [ -x "$COMPILER" ] || fail "compiler not found at $COMPILER (run 'make')"
 
@@ -42,7 +44,7 @@ exec "$COMPILER" "\$@"
 STUB
         chmod +x "$W/goo"
     }
-    run() { LINK_FLAGS_PROBE_COMPILER="$W/goo" "$0" >"$W/out.log" 2>&1; }
+    run() { COMPILER="$W/goo" "$0" >"$W/out.log" 2>&1; }
 
     stub ':'
     if run; then echo "    ok: control (pass-through stub) is GREEN"

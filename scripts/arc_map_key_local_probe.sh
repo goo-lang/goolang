@@ -59,11 +59,29 @@
 
 set -uo pipefail
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
-    echo "FATAL: not in a git repository" >&2; exit 2; }
+# git first, because these probes are normally run from anywhere in a
+# checkout. A Bazel sandbox has no .git, so fall back to the script's own
+# location -- which is the runfiles root there, and the repo root here. The
+# probe must not depend on being inside a repository to know where it is.
+# Resolve COMPILER BEFORE the cd below. A Bazel sh_test passes a path relative
+# to the runfiles root, which is the working directory on entry; after `cd
+# "$ROOT"` a relative path no longer resolves, and the probe reports "no
+# bin/goo" while holding a perfectly good compiler path.
+case "${COMPILER:-}" in
+    "") ;;
+    /*) ;;
+    *) COMPILER="$PWD/$COMPILER" ;;
+esac
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[ -n "$ROOT" ] || ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 2
 
-COMPILER="./bin/goo"
+# COMPILER is the contract a Bazel sh_test uses to point this probe at the
+# compiler it built: bin/goo does not exist inside the sandbox. Unset, this
+# behaves exactly as it did.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
 SRC="examples/arc_map_key_local_probe.goo"
 WORK="${ARC_MAPKEY_WORKDIR:-build}"
 fail=0

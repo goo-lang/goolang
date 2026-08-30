@@ -22,7 +22,11 @@
 # NEVER read through a pipe — a pipeline reports its LAST stage's status, which
 # would silently mask a compiler abort here.
 set -u
-COMPILER="${COMPILER:-bin/goo}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# COMPILER is the contract a Bazel sh_test uses to point this probe at the
+# compiler it built: bin/goo does not exist inside the sandbox. Unset, this
+# behaves exactly as it did.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
 case "$COMPILER" in
   /*) ;;
   *) COMPILER="$PWD/$COMPILER" ;;
