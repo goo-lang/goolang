@@ -42,6 +42,7 @@ SRCS="tests/unit/ast/ast_free_leak_test.c
 src/lexer/lexer.c src/lexer/token.c
 src/parser/parser.tab.c src/parser/lexer_bridge.c
 src/parser/parser_errors.c src/parser/parser_actions.c
+src/parser/parser_state.c
 src/ast/ast_constructors.c
 src/errors/error.c src/errors/ergonomic_errors.c"
 
