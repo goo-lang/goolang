@@ -83,6 +83,47 @@ goo_cc_library(
     ],
 )
 
+# The three leaves that were inside :frontend, now declared on their own.
+#
+# Measured with nm on the Bazel-built objects, 2026-08-30. The whole package is
+# 16 files and 37 inter-file edges. Seven of them form ONE cycle -- embedding,
+# expression_checker, expression_helpers, lane_ownership, ownership_checker,
+# shim_signatures, type_checker -- and Bazel cannot express a cycle, so a
+# coarse target is the only legal description of those. These three are not in
+# it. They have no outgoing edge to any other file in this package at all:
+#
+#   types             14 libc symbols + comptime_value  (//src/comptime)
+#   terminating_stmt   1 libc symbol
+#   tc_fctx            1 libc symbol
+#
+# Nothing here is a source change. The files were always leaves; the coarse
+# target was hiding it. What it buys is a handle: a cc_test can only name a
+# target that exists, which is why the six acyclic units above have four unit
+# suites between them and the ten files inside :frontend had none.
+#
+# Re-take the measurement before moving a file out of :frontend. A file that
+# looks like a leaf in the source can still close a cycle through a symbol the
+# reader did not think to look for.
+
+goo_cc_library(
+    name = "types",
+    srcs = ["types.c"],
+    visibility = ["//visibility:public"],
+    deps = ["//src/comptime"],
+)
+
+goo_cc_library(
+    name = "terminating_stmt",
+    srcs = ["terminating_stmt.c"],
+    visibility = ["//visibility:public"],
+)
+
+goo_cc_library(
+    name = "tc_fctx",
+    srcs = ["tc_fctx.c"],
+    visibility = ["//visibility:public"],
+)
+
 # The full front-end type checker: Makefile:119 GOO_TYPES_SRCS, minus the five
 # units already declared above as their own libraries, which are picked up as
 # deps instead. Splitting them out is deliberate -- it is the fine-grained
@@ -100,10 +141,7 @@ goo_cc_library(
         "lane_ownership.c",
         "ownership_checker.c",
         "shim_signatures.c",
-        "tc_fctx.c",
-        "terminating_stmt.c",
         "type_checker.c",
-        "types.c",
     ],
     visibility = ["//visibility:public"],
     deps = [
@@ -113,6 +151,9 @@ goo_cc_library(
         ":nonretaining",
         ":param_escape",
         ":release_decision",
+        ":tc_fctx",
+        ":terminating_stmt",
+        ":types",
         "//src/ast",
         "//src/comptime",
         "//src/errors",
