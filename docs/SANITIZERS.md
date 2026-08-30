@@ -11,11 +11,22 @@ only that the code is broken; it says nothing about the sanitizer.
 
 Measured 2026-08-30. Clang 22.1.8, Bazel 9.2.0, Fedora, x86-64.
 
-| Config | Red under its own config | Green without it | Verdict |
+| Config | Red under its own config | Green under `--config=clang` | Verdict |
 |---|---|---|---|
 | `--config=asan`  | yes | yes | **has teeth** |
 | `--config=ubsan` | yes | yes | **has teeth** |
 | `--config=tsan`  | yes | yes | **has teeth** |
+
+THE CONTROL IS `--config=clang`, NOT "no config", and that is a correction.
+The first version built the control with no config, which means this file's
+default gcc. Two variables then separated the control from the test, the
+sanitizer AND the compiler, so a difference could be attributed to neither.
+
+It also failed on CI while passing here. This machine's `/usr/bin/gcc` is
+16.2.1 and accepts `-std=c23`; the `ubuntu-24.04` runner's is gcc-13 and
+rejects it, so the control would not BUILD there. `verify_sanitizers.sh`
+reported it as a TOOL FAILURE with exit 2, which is the right answer: a control
+that cannot build is not evidence that a sanitizer lacks teeth.
 
 Reproduce with:
 

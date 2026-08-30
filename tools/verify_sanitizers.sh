@@ -29,6 +29,18 @@ BAZEL=${BAZEL:-bazel}
 # and gcc on this machine cannot link -fsanitize=address at all.
 BAZEL_EXTRA=${BAZEL_EXTRA:-}
 
+# THE CONTROL RUNS UNDER CLANG TOO, and that is a correction rather than a
+# convenience. The first version built the control with no config at all, which
+# meant .bazelrc's default gcc. Two variables then separated the control from
+# the test -- the sanitizer AND the compiler -- so a difference could not be
+# attributed to either.
+#
+# It also broke on CI and passed here, for a reason worth recording: this
+# machine's /usr/bin/gcc is 16.2.1 and accepts -std=c23, while the ubuntu-24.04
+# runner's is gcc-13 and rejects it. The control failed to BUILD there and the
+# script correctly called it a TOOL FAILURE, exit 2.
+BASELINE_CONFIG=${BASELINE_CONFIG:---config=clang}
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 rc=0
 
@@ -42,24 +54,24 @@ check_config() {
     local name=$1 target=$2 with without
 
     bazel_status "$target" "--config=$name"; with=$?
-    bazel_status "$target"; without=$?
+    bazel_status "$target" "$BASELINE_CONFIG"; without=$?
 
     if [ "$with" -ne 0 ] && [ "$with" -ne 3 ]; then
         printf '  TOOL FAILURE  %-6s bazel exit %d under --config=%s\n' "$name" "$with" "$name"
         return 2
     fi
     if [ "$without" -ne 0 ] && [ "$without" -ne 3 ]; then
-        printf '  TOOL FAILURE  %-6s bazel exit %d with no config\n' "$name" "$without"
+        printf '  TOOL FAILURE  %-6s bazel exit %d under the %s baseline\n' "$name" "$without" "$BASELINE_CONFIG"
         return 2
     fi
     if [ "$with" -eq 3 ] && [ "$without" -eq 0 ]; then
-        printf '  HAS TEETH     %-6s red under --config=%s, green without it\n' "$name" "$name"
+        printf '  HAS TEETH     %-6s red under --config=%s, green under %s\n' "$name" "$name" "$BASELINE_CONFIG"
         return 0
     fi
     if [ "$with" -eq 0 ]; then
         printf '  NO TEETH      %-6s the defect PASSED under --config=%s\n' "$name" "$name"
     else
-        printf '  INVALID       %-6s the defect fails with the config OFF too\n' "$name"
+        printf '  INVALID       %-6s the defect fails under %s too\n' "$name" "$BASELINE_CONFIG"
     fi
     return 1
 }
