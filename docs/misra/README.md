@@ -448,17 +448,36 @@ Read these before trusting any number this tool produces.
   current `src/` tree only, hence its 40 — see
   `scripts/pthread-return-baseline.txt` for the full explanation and the
   per-file baseline.
-- **Task 24 decision: `GOO_ASSERT` stays compiled out by default.** Measured
-  2026-09-02 with `scripts/run_golden.sh` (495 fixtures, `GOLDEN_JOBS=32`), two
-  runs per compiler in one sitting, second (warm) run quoted: production
-  `bin/goo` (`GOO_ASSERT` off) 3.29 s wall / 28.68 s user, against a sandbox
-  build made with `CC='ccache gcc -DGOO_DEBUG'` (`GOO_ASSERT` on, confirmed by
-  `objdump -d`: 0 real calls to `goo_assert_fail` in `bin/goo` against 12 in
-  the sandbox binary) at 3.43 s wall / 29.28 s user. That is a 4.3% wall-time
-  cost, at or above the 2% line the task set, so the default is UNCHANGED and
-  no kill switch was added. Four further warm repeats of each binary (not the
-  quoted pair) ranged 3.21-3.36 s for production and 3.21-3.43 s for the
-  sandbox build — the two ranges overlap, so this 3.3-second suite cannot show
-  a signal much below its own run-to-run noise. The "do not flip" call rests
-  on the instrument being unable to confirm a cost under 2%, not on a
-  confidently larger one.
+- **Task 24 decision: `GOO_ASSERT` stays compiled out by default, blocked on
+  two probe scripts.** First measured 2026-09-02 with 32-way parallel golden
+  runs, which read 4.3% over the 2% line (full parallel numbers in the task
+  report only, because a 3.3-second run at `GOLDEN_JOBS=32` cannot resolve a
+  2% difference against its own noise). Re-measured the same day, serially,
+  to remove that noise: `scripts/run_golden.sh` (495 fixtures),
+  `GOLDEN_JOBS=1`, five runs per compiler, alternating off/on/off/on/... in
+  one sitting. Wall times, seconds, in run order —
+  off: 28.67, 27.93, 27.74, 28.07, 27.96 (range 27.74-28.67, median 27.96);
+  on: 27.90, 27.70, 27.99, 27.86, 28.30 (range 27.70-28.30, median 27.90).
+  Median-to-median that is `(27.90 - 27.96) / 27.96 = -0.2%` — no measurable
+  wall-time cost. Median user time agrees: 15.57 s off against 15.48 s on,
+  `-0.6%`. Both readings are far under the 2% line, so the rule says flip.
+  Flipping was implemented and built (`bin/goo` relinked with 12 real calls to
+  `goo_assert_fail`, confirmed by `objdump -d`, against 0 before) and
+  `make verify-core` was run once with it. It went red at
+  `release-decision-teeth`: the `cond1-escapes` mutation deletes
+  `src/types/release_decision.c:1445`'s early return, and with asserts on the
+  mutant now aborts at the `GOO_ASSERT(!local_escape_local_escapes(le, fn,
+  r->name))` on line 1540 (`goo: ASSERT FAILED`, reproduce by flipping
+  `include/goo_assert.h` per below and re-running
+  `scripts/release_decision_teeth.sh`) instead of producing a wrong decision
+  the harness can diff — `scripts/release_decision_teeth.sh` has no
+  CAUGHT category for a crash, only INCONCLUSIVE-crash, so its tally reads
+  "11 of 12 conditions were caught" and the target fails. A direct run of
+  `scripts/goo_assert_probe.sh` also goes red the same way: its own
+  "production (no flag)" case asserts `GOO_ASSERT(0)` must NOT abort, which
+  was the old contract and is no longer the design. Both assertions are
+  correct and firing exactly as designed — task scope forbids editing a probe
+  script, so neither was touched, weakened, or turned off. The flip was
+  reverted (`bin/goo` rebuilt back to 0 real calls, confirmed) so the tree
+  stays green, and the default stays off until a follow-up task teaches those
+  two scripts to recognise an assert abort as CAUGHT rather than a crash.
