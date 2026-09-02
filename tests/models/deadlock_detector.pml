@@ -6,10 +6,15 @@
  *             build/bazel-phase4-probes). Task 5 proved it aborts a live
  *             program for every finite threshold.
  *   FIX = 1   the CORRECTED protocol. The blocked count is a SET of parked
- *             goroutines, not a count of block_begin calls. The signaller
- *             removes from that set, under the scheduler mutex, every waiter
- *             its signal or broadcast moves to the signalled state.
- *             goo_sched_block_end no longer touches the count.
+ *             goroutines, not a count of block_begin calls. Every wake is a
+ *             BROADCAST, so the set woken is the whole waiter set, and the
+ *             broadcaster removes exactly that set from the blocked set, under
+ *             the scheduler mutex. goo_sched_block_end no longer touches the
+ *             count.
+ *
+ *             The broadcast is not decoration. pthread_cond_signal does not
+ *             say WHICH waiter the OS woke, so no signal site can pair itself
+ *             with the removal of one named waiter. See do_send.
  *
  * The two protocols live in one file on purpose: a second file would drift.
  *
@@ -129,11 +134,12 @@ bit prog_exit = 0;      /* goo_deadlock_abort() -> exit(2) kills every thread */
 
 #if FIX
 /* FIX=1 only. counted[i] is goroutine i's membership of the blocked SET, and
- * nblocked is the size of that set. The C has no such array today; the fix
- * needs one bit per goroutine (or, equivalently, a waiter list on each
- * condvar), because pthread_cond_signal does not say WHO it woke. See the
- * README section "The C-level fix". This array does not exist under FIX=0, so
- * the FIX=0 state vector is byte for byte the one task 5 measured. */
+ * nblocked is the size of that set. The C has no such array today. The fix
+ * needs one bit for each goroutine AND a waiter LIST on each condvar: the
+ * broadcaster must clear the bit of each waiter it wakes, and a bare waiter
+ * COUNT does not give it their identities. See the README section "The
+ * C-level fix", finding 2. This array does not exist under FIX=0, so the
+ * FIX=0 state vector is byte for byte the one task 5 measured. */
 bit counted[N];
 #endif
 
@@ -230,7 +236,13 @@ inline block_end() {
 
 /* pthread_cond_signal: wake exactly one waiter on cv, if any waits. The
  * choice of which waiter is nondeterministic. Called with the channel mutex
- * held, exactly as goo_chan_send() calls it. */
+ * held, exactly as goo_chan_send() calls it.
+ *
+ * FIX=0 ONLY. Under FIX=1 do_send broadcasts instead, and nothing calls this
+ * inline. The reason is at the call site: the choice of waiter here is the
+ * model MAKING a choice that POSIX leaves to the OS, so a decrement paired
+ * with it would assume the answer. The FIX=1 decrement lives in
+ * cond_broadcast, where the set woken is the whole waiter set. */
 inline cond_signal(cv) {
     atomic {
 #if FIX
@@ -298,9 +310,12 @@ inline cond_signal(cv) {
     }
 }
 
-/* pthread_cond_broadcast: wake every waiter on cv. goo_chan_recv() broadcasts
- * not_full because two predicate classes share that condvar
- * (channels.c:466-476 and :499-505 give the reason).
+/* pthread_cond_broadcast: wake every waiter on cv. goo_chan_recv() already
+ * broadcasts not_full because two predicate classes share that condvar
+ * (the comments at channels.c:466-473 and :499-504 give the reason).
+ *
+ * Under FIX=1 this is the ONLY wake primitive: do_send broadcasts not_empty
+ * too. That is what makes the set woken equal the set unregistered.
  *
  * A broadcast can wake more than one waiter, so under FIX=1 it must decrement
  * by the NUMBER it woke. BCAST_ONE=1 is the mutant that decrements by one. */
@@ -391,7 +406,22 @@ inline do_send() {
     :: else -> break
     od;
     chan_len++;
+#if FIX
+    /* 2026-09-02 review, finding 1. Under FIX=1 this site BROADCASTS, where
+     * the C ships a pthread_cond_signal (channels.c:325, and :356 and :543 on
+     * the paths this model does not carry).
+     *
+     * The reason is that pthread_cond_signal gives the caller no way to learn
+     * WHICH waiter the OS woke. A signal paired with "clear the bit of the one
+     * waiter this will wake" assumes an answer POSIX does not give: if the C
+     * clears X's bit and the OS wakes Y, then Y is awake and still registered,
+     * which is the shipped defect again. A broadcast removes the question,
+     * because the set woken is then the whole waiter set, which is exactly the
+     * set the signaller unregisters. */
+    cond_broadcast(CV_NOT_EMPTY);
+#else
     cond_signal(CV_NOT_EMPTY);
+#endif
     unlock(chmx)
 }
 

@@ -24,7 +24,7 @@ channel, the poll loop, the claim.
 | `FIX` | Protocol |
 |---|---|
 | `0` | **As it ships.** `blocked_goroutines++` at `goo_sched_block_begin`, `blocked_goroutines--` at `goo_sched_block_end`. Task 5 proved this aborts a live program for every finite threshold: the interval from `pthread_cond_signal` to the woken goroutine's `goo_sched_block_end` counts that goroutine as blocked, and nothing bounds that interval. |
-| `1` | **Corrected.** The count is the size of a SET of parked goroutines, not a tally of `block_begin` calls. The signaller removes from the set — under the scheduler mutex, while it still holds the channel mutex — every waiter its signal or broadcast moves to the signalled state. `goo_sched_block_end` no longer touches the count. A signalled goroutine is therefore not counted as blocked. |
+| `1` | **Corrected.** The count is the size of a SET of parked goroutines, not a tally of `block_begin` calls. EVERY wake is a broadcast, and the broadcaster removes from the set — under the scheduler mutex, while it still holds the channel mutex — every waiter it wakes. `goo_sched_block_end` no longer touches the count. A woken goroutine is therefore not counted as blocked. |
 
 The claim is the same for both. Only the accounting changes.
 
@@ -48,13 +48,14 @@ The C under test, all at commit `f641564` (branch
 | `goo_goroutine_exit()`, `concurrency.c:343-347` | the `gstate = G_DONE` then `nlive--` steps |
 | `goo_chan_send()` buffered path, `src/runtime/channels.c:277-329` | `inline do_send` |
 | `goo_chan_recv()` buffered path, `src/runtime/channels.c:422-479` | `inline do_recv` |
-| `pthread_cond_signal(not_empty)`, `channels.c:325` | `inline cond_signal` |
+| `pthread_cond_signal(not_empty)`, `channels.c:325` | `inline cond_signal` under `FIX=0`; `inline cond_broadcast` under `FIX=1`, see ruling 1 |
 | `pthread_cond_broadcast(not_full)`, `channels.c:475` | `inline cond_broadcast` |
 | `pthread_cond_wait`, `channels.c:296` and `:436` | `inline cond_wait_park` |
 | `goo_deadlock_abort()`, `src/runtime/deadlock.c:44-48` | `prog_exit = 1` and `goto stopped` |
 
-Under `FIX=1`, `cond_signal` and `cond_broadcast` also carry the new decrement.
-That is the only place the two protocols differ inside the channel code.
+Under `FIX=1`, `do_send` broadcasts `not_empty` instead of signalling it, and
+`cond_broadcast` carries the new decrement. Those are the only places the two
+protocols differ inside the channel code, and `cond_signal` is then unused.
 
 Modelled state: one channel of capacity `CAP`, the channel mutex
 (`ch->mutex`), the two condition variables (`not_full`, `not_empty`), the
@@ -171,7 +172,7 @@ each error is attributable to.
 
 | Name | Meaning | Default |
 |---|---|---|
-| `DOUBLE_DEC` | `block_end` decrements as well as the signaller | 0 |
+| `DOUBLE_DEC` | `block_end` decrements as well as the broadcaster | 0 |
 | `BCAST_ONE` | a broadcast decrements by ONE, not by the number of waiters it woke | 0 |
 | `SPURIOUS` | `pthread_cond_wait` may return with no signal, which POSIX permits | 0 |
 | `END_UNREG` | `block_end` unregisters this goroutine IF it is still registered | 0 |
@@ -351,39 +352,56 @@ Three edits, and nothing else:
 1. **`block_begin` registers, and registering is idempotent.** `counted[i]` is
    goroutine `i`'s membership of the blocked set. `nblocked` is the size of
    that set. A second `block_begin` with the bit already set adds nothing.
-2. **The signaller unregisters.** `cond_signal` clears the bit of the one
-   waiter it wakes and decrements by one. `cond_broadcast` clears the bit of
-   every waiter it wakes and decrements by THAT NUMBER. Both do it under the
-   scheduler mutex, taken while the channel mutex is already held.
-3. **`block_end` no longer touches the count.** It asserts
+2. **Every wake is a BROADCAST.** `do_send` broadcasts `not_empty` under
+   `FIX=1`, where the C ships a `pthread_cond_signal` (`channels.c:325`, and
+   `:356` and `:543` on the paths this model does not carry). `do_recv`
+   already broadcast `not_full`, as the C does.
+3. **The broadcaster unregisters.** It clears the bit of every waiter it wakes
+   and decrements by THAT NUMBER, under the scheduler mutex, taken while the
+   channel mutex is already held.
+4. **`block_end` no longer touches the count.** It asserts
    `counted[_pid] == 0` instead, which turns "it does not need to" from an
    assumption into a theorem of the model.
 
+Change 2 is not decoration, and it is the 2026-09-02 review's finding 1.
+`pthread_cond_signal` gives the caller no way to learn WHICH waiter the OS
+woke. A signal paired with "clear the bit of the one waiter this will wake"
+assumes an answer POSIX does not give: if the C clears X's bit and the OS wakes
+Y, then Y is awake and still registered, and that is the shipped defect again.
+A broadcast removes the question, because the set woken is then the whole
+waiter set, which is exactly the set the broadcaster unregisters. The model
+proves the broadcast protocol, so the broadcast protocol is what task 8 must
+build. The cost is in "The C-level fix" below.
+
 The lock order does not change. `block_begin` already takes the scheduler mutex
 while holding the channel mutex (`concurrency.c:304` inside a caller that holds
-`ch->mutex`), and the signal sites are inside the same channel mutex region, so
+`ch->mutex`), and the wake sites are inside the same channel mutex region, so
 the new decrement is channel-then-scheduler exactly like the old increment. In
 the model the scheduler-mutex acquisition is the FIRST statement of the
-`cond_signal` atomic sequence, which makes it that sequence's guard: a busy
-mutex leaves the sequence not enabled rather than half executed.
+`cond_broadcast` sequence, which makes it that sequence's guard: a busy mutex
+leaves the sequence not enabled rather than half executed.
 
 ### One abstraction the fix introduces, and why it is safe
 
 The model performs the decrement and the state change to `G_SIGNALLED` in one
-indivisible step. Real C cannot: it must lock the scheduler mutex, decrement,
-unlock, then call `pthread_cond_signal`, all under the channel mutex. That
+indivisible step, for every waiter the broadcast wakes. Real C cannot: it must lock the scheduler mutex, decrement,
+unlock, then call `pthread_cond_broadcast`, all under the channel mutex. That
 leaves a window in which a waiter is uncounted but still parked.
 
 That window can only make `blocked_goroutines` LOWER than the model's value,
-never higher, so `all_asleep` is FALSE throughout it — every live goroutine
-cannot be counted while the signaller itself is running and uncounted. A poll
+never higher, so `all_asleep` is FALSE throughout it. The reason is direct: the
+waiter the broadcaster just decremented is itself LIVE and PARKED and now
+UNCOUNTED, so `blocked_goroutines < num_goroutines` and the equality
+`all_asleep` needs cannot hold. That argument does not depend on who the
+broadcaster is, which matters because main can be the broadcaster too. A poll
 that lands in the window therefore RESETS `asleep_streak` and removes an abort;
 it never adds one. The set of states at which an abort can happen is the same
 in both, so a proof over the model covers the C.
 
-**The other order is not safe.** `pthread_cond_signal` first, then decrement,
-recreates the very window task 5 found — narrower, but still a window in which
-a woken goroutine is counted as blocked. The decrement must precede the signal.
+**The other order is not safe.** `pthread_cond_broadcast` first, then
+decrement, recreates the very window task 5 found — narrower, but still a
+window in which a woken goroutine is counted as blocked. The decrement must
+precede the broadcast.
 
 ### The claim, proved. `K = 1`, full exhaustive search, 0 errors.
 
@@ -393,13 +411,20 @@ can only remove aborts. Proving `K = 1` proves every larger threshold.
 
 | N | K | verdict | errors | invalid end states | states | search completed | depth | wall |
 |---|---|---|---|---|---|---|---|---|
-| 2 | 1 | PASS | 0 | 0 | 2274 | yes | 397 | 0.06 s |
-| 3 | 1 | PASS | 0 | 0 | 44866 | yes | 591 | 0.07 s |
-| 4 | 1 | PASS | 0 | 0 | 1017218 | yes | 859 | 0.33 s |
+| 2 | 1 | PASS | 0 | 0 | 2274 | yes | 365 | 0.07 s |
+| 3 | 1 | PASS | 0 | 0 | 44866 | yes | 544 | 0.07 s |
+| 4 | 1 | PASS | 0 | 0 | 998166 | yes | 872 | 0.33 s |
 
 The state counts are exact and repeat to the digit. The wall times move by
 about 0.01 s between runs of the same row, because the runner times the whole
 of `./pan` including process start.
+
+Only N = 4 moved when `do_send` became a broadcast (finding 1): 1017218 states
+became 998166. N = 2 and N = 3 have ONE receiver each, so `not_empty` never
+holds two waiters, and a broadcast there is the same instruction as a signal.
+That is the same shape as the `BCAST_ONE` split below, and it carries the same
+warning: a change to a wake primitive shows nothing until two waiters can share
+one condvar.
 
 **Positive control, `FIX=1` with the detector off.** The model has no assertion
 violation and no deadlock of its own, so a PASS above is not the model being
@@ -409,7 +434,7 @@ silent.
 |---|---|---|---|---|---|---|---|
 | 2 | 3 | PASS | 0 | 0 | 1731 | yes | 0.06 s |
 | 3 | 3 | PASS | 0 | 0 | 34535 | yes | 0.07 s |
-| 4 | 3 | PASS | 0 | 0 | 785493 | yes | 0.29 s |
+| 4 | 3 | PASS | 0 | 0 | 771876 | yes | 0.29 s |
 
 ### Is the PASS vacuous? Partly, and pan says exactly where.
 
@@ -419,9 +444,9 @@ control agree on which is which:
 
 | N | is the abort reached? | pan's unreached report | inverted `assert(!rd)` | reading |
 |---|---|---|---|---|
-| 2 | NO | `:517, assert(rd)` unreached | 0 errors, full search, 2274 states | the balanced program has no deadlock, and `FIX=1` never aborts it. The false abort task 5 found is GONE. |
-| 3 | YES | `(0 of 86 states)` unreached | `assertion violated !(rd)` at depth 432, 395 states | the abort IS reached, and `rd` holds every time it is. A real proof. |
-| 4 | NO | `:517, assert(rd)` unreached | 0 errors, full search, 1017218 states | as N = 2. Two senders and two receivers cannot deadlock here. |
+| 2 | NO | `assert(rd)` unreached | 0 errors, full search, 2274 states | the balanced program has no deadlock, and `FIX=1` never aborts it. The false abort task 5 found is GONE. |
+| 3 | YES | `(0 of 86 states)` unreached | `assertion violated !(rd)` at depth 396, 395 states | the abort IS reached, and `rd` holds every time it is. A real proof. |
+| 4 | NO | `assert(rd)` unreached | 0 errors, full search, 998166 states | as N = 2. Two senders and two receivers cannot deadlock here. |
 
 So the load-bearing row is `N = 3`, which has two senders and one receiver and
 therefore a genuine deadlock: a sender parked on `not_full` with no receiver
@@ -439,13 +464,13 @@ is reached (task 5's counterexample) and `rd` is false there.
 | none — `FIX=0`, the shipped protocol | 2 | 1 | FAIL | `assertion violated rd` | 519 | 331 |
 | none — `FIX=0`, the shipped protocol | 3 | 1 | FAIL | `assertion violated rd` | 863 | 377 |
 | none — `FIX=0`, the shipped protocol | 4 | 1 | FAIL | `assertion violated rd` | 872 | 752 |
-| `DOUBLE_DEC=1` | 2 | 1 | FAIL | `assertion violated (nblocked>0)` | 139 | 155 |
-| `DOUBLE_DEC=1` | 3 | 1 | FAIL | `assertion violated (nblocked>0)` | 183 | 195 |
-| `BCAST_ONE=1` | 2 | 1 | PASS | nothing — see below | 2274 | 397 |
-| `BCAST_ONE=1` | 3 | 1 | FAIL | `assertion violated rd` | 8201 | 558 |
-| `BCAST_ONE=1` | 4 | 1 | FAIL | `assertion violated rd` | 83645 | 748 |
+| `DOUBLE_DEC=1` | 2 | 1 | FAIL | `assertion violated (nblocked>0)` | 139 | 139 |
+| `DOUBLE_DEC=1` | 3 | 1 | FAIL | `assertion violated (nblocked>0)` | 183 | 183 |
+| `BCAST_ONE=1` | 2 | 1 | PASS | nothing — see below | 2274 | 365 |
+| `BCAST_ONE=1` | 3 | 1 | FAIL | `assertion violated rd` | 8201 | 515 |
+| `BCAST_ONE=1` | 4 | 1 | FAIL | `assertion violated rd` | 24811 | 642 |
 | `SPURIOUS=1` | 2 | 3 | FAIL | `assertion violated (counted[_pid]==0)` | 63 | 63 |
-| `SPURIOUS=1` | 3 | 3 | FAIL | `assertion violated (counted[_pid]==0)` | 92 | 104 |
+| `SPURIOUS=1` | 3 | 3 | FAIL | `assertion violated (counted[_pid]==0)` | 92 | 92 |
 
 `DOUBLE_DEC=1` is the mutant the task brief named: the wake-time decrement put
 back beside the signal-time one. Both fire for one wake, the count goes below
@@ -455,12 +480,14 @@ wrap to 255 and the failure would surface later and less clearly.
 
 ### Broadcast, and why the decrement must be by the number woken
 
-`goo_chan_recv` broadcasts `not_full` rather than signalling it
+`goo_chan_recv` already broadcasts `not_full` rather than signalling it
 (`channels.c:475` on the buffered path, `channels.c:505` on the rendezvous
 path, `channels.c:574` in `goo_chan_try_recv`). The reason is in the C comment
 at `channels.c:466-473`: two predicate classes share that condvar, and a single
 signal can wake the wrong class. `goo_chan_close` broadcasts both condvars
-(`channels.c:97-98`).
+(`channels.c:97-98`). Under `FIX=1` the send side broadcasts `not_empty` too,
+for the different reason in "What changes" above, so a broadcast is the ONLY
+wake primitive the corrected protocol uses.
 
 **The C's broadcast sites CAN wake more than one waiter**, so the decrement
 must be by the number woken. In the model, goroutine `i` sends when `i` is even
@@ -472,12 +499,13 @@ then wakes two.
 that split:
 
 - **N = 2 PASSES**, with the same 2274 states as the unmutated run. There is
-  one sender, so at most one waiter is ever parked on `not_full`, and
+  one sender and one receiver, so neither condvar ever holds two waiters, and
   "decrement by one" and "decrement by the number woken" are the same
   instruction. A reader who tested only `N = 2` would have concluded the
   decrement amount does not matter.
-- **N = 3 and N = 4 FAIL**, `assertion violated rd`. The witness is committed
-  at `evidence/deadlock_detector_FIX1_N3_K1_bcast_one.trail`. Its end state:
+- **N = 3 and N = 4 FAIL**, `assertion violated rd`, in 8201 and 24811 states.
+  The witness is committed at
+  `evidence/deadlock_detector_FIX1_N3_K1_bcast_one.trail`. Its end state:
 
 ```
 gstate[0] = 3 (G_SIGNALLED)   gstate[1] = 4   gstate[2] = 4 (both G_DONE)
@@ -499,11 +527,16 @@ reintroduced through the arithmetic instead of through the timing.
 the correct POSIX idiom and is already in place.
 
 **What the model assumes.** The proof rows above set `SPURIOUS=0`: a return
-from the wait happens only after a signal. `SPURIOUS=1` adds the second
-branch — a return with no signal, at any time.
+from the wait happens only after a broadcast. `SPURIOUS=1` adds the second
+branch — a return with no broadcast, at any time.
 
-**The result, and it changes what task 8 must write.** `FIX=1` as specified
-does NOT survive a spurious wakeup:
+#### What the model actually proves here, and what it does not
+
+The 2026-09-02 review's finding 3. An earlier draft of this section claimed the
+`SPURIOUS=1` trail showed a COUNT LEAK. It does not, and the correction
+matters, because the two claims need different evidence.
+
+What the trail shows is the failure of ONE assertion:
 
 ```
 $ MODEL_DEFS='-DSPURIOUS=1' ./tests/models/run_deadlock_model.sh 2 3 0 1
@@ -511,27 +544,76 @@ $ MODEL_DEFS='-DSPURIOUS=1' ./tests/models/run_deadlock_model.sh 2 3 0 1
 pan:1: assertion violated (counted[_pid]==0) (at depth 63)
 ```
 
-The witness is committed at
-`evidence/deadlock_detector_FIX1_N2_spurious.trail`. Goroutine 1 returns from
-the wait with `gstate[1] = 2` (still `G_WAITING`) and `counted[1] = 1`: no
-signaller cleared its bit, because no signaller ran. The goroutine then leaves
-the wait region still registered, and the count never comes back.
+That assertion is the "`block_end` does not need to touch the count" theorem
+inside `block_end`. Under `SPURIOUS=0` it holds on every reachable path: the
+broadcaster always cleared the bit first. Under `SPURIOUS=1` it does not, and
+that is a correct and useful result — the theorem the corrected protocol leans
+on is only true when every return from a wait came from a broadcast.
 
-The count itself never moves on the spurious return, which is what the task
-brief asked about — `block_begin` is idempotent, so re-waiting does not
-double-count. The leak is on the OTHER path: the goroutine that leaves the loop
-because its predicate has become false, still registered.
+It is NOT a leak. The committed witness
+(`evidence/deadlock_detector_FIX1_N2_spurious.trail`) ends with `chan_len = 0`
+and `counted[1] = 1`: goroutine 1 re-checks its predicate, finds it still true,
+and parks again, so nothing is lost. Replacing that assertion with `skip` and
+searching the whole state space finds no other complaint:
 
-**The amendment.** `END_UNREG=1` makes `block_end` unregister this goroutine IF
-it is still registered — an idempotent unregister, not a plain decrement, so it
-can never drive the count below zero and is a no-op whenever the signaller got
-there first. With it, the accounting is exact under spurious wakeups:
+```
+$ spin -DN=2 -DK=1 -DDETECTOR=1 -DFIX=1 -DSPURIOUS=1 -a deadlock_detector.pml   # assertion -> skip
+$ cc -O2 -DSAFETY -o pan pan.c && ./pan
+State-vector 44 byte, depth reached 587, errors: 0
+     3515 states, stored
+```
+
+**Why the model cannot show the leak.** It has no condition-variable QUEUE. Its
+broadcaster scans for `gstate[i] == G_WAITING`, and a model goroutine that
+returns spuriously stays `G_WAITING` until after `block_end`, so a later
+broadcast still finds it and still clears its bit. A real condvar drops a
+thread from its queue the moment `pthread_cond_wait` returns, spuriously or
+not, and a later broadcast never reaches it. Modelling that needs a wait queue
+separate from the goroutine state, which this model does not have.
+
+#### The leak is a C-level argument
+
+Take the buffered receive, `channels.c:425-446`, with the corrected protocol
+and with `goo_sched_block_end` made a no-op:
+
+1. The thread parks. `goo_sched_block_begin()` (`:435`) sets its bit and makes
+   `blocked_goroutines` 1 higher. `pthread_cond_wait` (`:436`) puts it on
+   `not_empty`'s queue.
+2. `pthread_cond_wait` returns with no broadcast. POSIX has now taken the
+   thread OFF the queue. `goo_sched_block_end()` (`:437`) does nothing, so the
+   bit stays set.
+3. The `while` at `:425` re-checks `ch->length == 0 && !ch->closed`.
+   - **Predicate still true** — the thread calls `goo_sched_block_begin()`
+     again. That call does nothing, because the bit is already set, and
+     `pthread_cond_wait` puts the thread back on the queue. Consistent, and
+     this is the case the model's witness shows.
+   - **Predicate now false** — some sender filled the buffer while this thread
+     was off the queue. The thread consumes the value and LEAVES the loop with
+     its bit still set. It is on no queue, so no future broadcast can ever
+     reach it and clear the bit. `blocked_goroutines` is permanently 1 too
+     high. **That is the leak.**
+
+The leak is not only a missed deadlock. With two goroutines, one leaked and
+running and one genuinely parked, `blocked_goroutines == num_goroutines` holds
+while a goroutine runs, and the detector aborts a live program — the shipped
+defect made permanent instead of transient.
+
+The same three steps apply at `channels.c:280-306` (buffered send), and at
+`:336-340`, `:359-363` and `:484-488` on the rendezvous paths.
+
+**The correction, and it stays.** `goo_sched_block_end` must unregister this
+goroutine IF it is still registered. That is a conditional removal, not a plain
+decrement, so it can never drive the count below zero, and it does nothing
+whenever the broadcaster got there first. `END_UNREG=1` models it. The model
+cannot prove the correction is NECESSARY, for the queue reason above, but it
+does show the correction is HARMLESS — it changes no verdict, and the
+accounting stays exact under `SPURIOUS=1`:
 
 | N | K | `MODEL_DEFS` | verdict | states | search completed | wall |
 |---|---|---|---|---|---|---|
 | 2 | 3 | `-DSPURIOUS=1 -DEND_UNREG=1` | PASS | 2449 | yes | 0.06 s |
-| 3 | 3 | `-DSPURIOUS=1 -DEND_UNREG=1` | PASS | 56406 | yes | 0.07 s |
-| 4 | 3 | `-DSPURIOUS=1 -DEND_UNREG=1` | PASS | 1565856 | yes | 0.53 s |
+| 3 | 3 | `-DSPURIOUS=1 -DEND_UNREG=1` | PASS | 56406 | yes | 0.08 s |
+| 4 | 3 | `-DSPURIOUS=1 -DEND_UNREG=1` | PASS | 1345089 | yes | 0.46 s |
 
 Those three rows run with `DETECTOR=0`, so they check the ACCOUNTING only:
 `nblocked <= nlive` on every poll, never-below-zero at every decrement, and
@@ -542,7 +624,7 @@ the failure is a limit of the predicate, not of the protocol:
 
 ```
 $ MODEL_DEFS='-DSPURIOUS=1 -DEND_UNREG=1' ./tests/models/run_deadlock_model.sh 3 1 1 1
-... FAIL ... pan:1: assertion violated rd (at depth 582)
+... FAIL ... states=602 ... pan:1: assertion violated rd (at depth 546)
 end state: gstate[0] = 1 (G_RUNNING)  gstate[1] = gstate[2] = 4 (G_DONE)
            nlive = 1  nblocked = 0  readyq = 0  chan_len = 1  counted[] all 0
 ```
@@ -554,19 +636,19 @@ Goroutine 0 woke spuriously in that gap, so by the time `rd` is evaluated it
 reads `G_RUNNING`. It will re-check `ch->length >= ch->capacity`, find it still
 true, and park again forever.
 
-This is task 5's concern 4 — `goo_deadlock_abort()` is called after the
-scheduler mutex is released, at `concurrency.c:194-196` against the unlock at
-`:184`, so the state may move between the snapshot and the abort. A state
-predicate cannot say "running, but about to park again". Widening `rd` to allow
-it would need the model to read the goroutine's program counter, which is not
-something the C could check either. Under `SPURIOUS=0` the gap is harmless,
-because only a signaller can move a parked goroutine and no signaller can run
-when every live goroutine is parked. Under `SPURIOUS=1` it is not, and the
-honest statement is the narrow one: the accounting is exact, and the state
-predicate has a transient false reading whose witness is a true deadlock.
+**That gap is REAL in the C, not an artefact of the model.** The three
+conjuncts of `all_asleep` are read under the scheduler mutex
+(`concurrency.c:180-183`), the mutex is released at `concurrency.c:184`, and
+`goo_deadlock_abort()` runs at `concurrency.c:194-196` — outside it. The model
+does the same thing in the same order (`deadlock_detector.pml`, the poll
+`atomic` and the `assert(rd)` after it). Task 8 must close the gap; the
+instruction is in "The C-level fix" below. Under `SPURIOUS=0` the gap is
+harmless, because only a broadcaster can move a parked goroutine and no
+broadcaster can run when every live goroutine is parked. Under `SPURIOUS=1` it
+is not, and a state predicate cannot say "running, but about to park again".
 
 N = 2 and N = 4 pass `assert(rd)` even with `SPURIOUS=1 END_UNREG=1` (3182 and
-1984513 states, both full searches), because those programs never reach the
+1704404 states, both full searches), because those programs never reach the
 abort at all.
 
 ### Reading the counterexample
@@ -734,6 +816,15 @@ Three more checks were added when `FIX` was added:
 - With `SPURIOUS=1`, `assert(rd)` is not proved. The accounting is, for
   N = 2, 3 and 4. See "Spurious wakeups" for the reason and for the witness,
   which is a TRUE deadlock read at the wrong instant.
+- **It cannot show the spurious-wakeup count leak, and it does not.** The model
+  has no condition-variable queue, so its broadcaster still finds a spuriously
+  woken goroutine and still clears its bit. The leak that makes ruling 3's
+  conditional unregister necessary is a C-level argument, set out with its C
+  lines under "The leak is a C-level argument". Do not cite a model row as
+  evidence for it.
+- It says nothing about the throughput cost of ruling 1's broadcast. The model
+  has no clock and counts no wakeups. The thundering-herd argument in the
+  C-level fix is an argument, not a measurement.
 
 ### The C-level fix
 
@@ -744,23 +835,74 @@ This section is the input to task 8. Line numbers are from this branch at
 
 `blocked_goroutines` is a tally of `goo_sched_block_begin` calls today. It must
 become the SIZE OF A SET: the set of goroutines that are parked and that no
-signaller has released. Everything below follows from that one change.
+waker has released. Everything below follows from that one change.
 
-The set needs a membership bit, because `pthread_cond_signal` never says who it
-woke. Two ways to hold it, and both are needed together:
+Three rulings come out of the 2026-09-02 review and are not negotiable inside
+this design. Ruling 1: every wake becomes a broadcast. Ruling 2: the waker
+needs a waiter LIST, not a waiter count. Ruling 3: the poll decides and aborts
+with the scheduler mutex held. Each has its own subsection below.
+
+#### Ruling 1: every wake becomes a broadcast
+
+`pthread_cond_signal` gives the caller NO WAY to learn which waiter the OS
+woke. So a signal site cannot pair itself with "clear the bit of the waiter
+this will wake": if it clears X's bit and the OS wakes Y, then Y is awake and
+still registered, and that is exactly the shipped defect. There is no version
+of the fix that keeps `pthread_cond_signal` and stays correct.
+
+**The three `pthread_cond_signal` calls therefore become
+`pthread_cond_broadcast`:** `channels.c:325` (buffered send), `:356`
+(rendezvous send), `:543` (`goo_chan_try_send`). With that change the set the
+OS wakes is the whole waiter set, which is exactly the set the broadcaster
+unregisters, and that is the protocol the model proves.
+
+**The cost is a thundering herd.** A broadcast on a channel with W waiting
+receivers wakes all W. Each one reacquires `ch->mutex` in turn, re-checks its
+predicate, and all but one find the buffer empty again and park again. That is
+O(W) wakeups and O(W) mutex handoffs for one delivered value, where a signal
+would have cost one. On a channel with a handful of waiters this is noise. On a
+fan-in with hundreds of receivers it is not, and it is a real regression in
+throughput, not only in theory.
+
+Three things make it acceptable here, and task 8 should record all three:
+
+- The receive side ALREADY broadcasts `not_full` (`channels.c:475`, `:505`,
+  `:574`), for the lost-wakeup reason at `channels.c:466-473`. Half the channel
+  traffic already pays this.
+- The alternative is a detector that can abort a live program, which is what
+  task 5 measured.
+- If the herd ever costs too much, the way out is NOT to go back to
+  `pthread_cond_signal`. It is to stop using a condvar the caller cannot
+  interrogate: a hand-rolled wait queue, where the waker chooses the thread and
+  therefore knows which bit to clear. That is a larger change and it is not
+  this fix.
+
+#### Ruling 2: the per-condvar waiter LIST is necessary, not a choice
+
+The set needs a membership bit, because a broadcaster must clear the bit of
+each waiter it wakes. Two pieces of state, and BOTH are necessary:
 
 - **One bit per goroutine**, for example `int counted_blocked` beside
   `waiting_on_channel` and `waiting_for_send`, which are already in
   `goo_goroutine_t` at `include/runtime.h:771-772`. This makes registering and
   unregistering idempotent.
-- **One waiter count per condition variable**, held under the channel mutex, so
-  the signaller knows HOW MANY it is about to wake. The channel already carries
-  `not_full` and `not_empty`; each needs an `int n_waiters` beside it, or a
-  list of the waiting goroutines.
+- **One waiter LIST per condition variable**, held under the channel mutex. The
+  channel already carries `not_full` and `not_empty`; each needs a list of the
+  goroutines currently waiting on it.
 
-The second is not optional. `pthread_cond_broadcast` wakes every waiter, and
-the model shows that decrementing by one instead of by the number woken
-reintroduces the original defect at N = 3 and N = 4. See "Broadcast" above.
+**A bare `int n_waiters` count is NOT enough**, and this is the 2026-09-02
+review's finding 2. With a count, a broadcast can decrement
+`blocked_goroutines` by `n` but it cannot clear any bit, because it does not
+know WHOSE bits to clear. Every woken thread then reaches ruling 3's
+conditional unregister in `goo_sched_block_end`, still finds its own bit set,
+and decrements again. The count falls by `2n` for `n` wakeups. That is the
+`DOUBLE_DEC` mutant exactly, and the model fails it at N = 2 in 139 states.
+
+The identities are what the broadcaster needs, so the list is what it must
+have. `self->waiting_on_channel` and `self->waiting_for_send`
+(`include/runtime.h:771-772`) already name the two predicate classes, so the
+list has an obvious shape: link the goroutines through a `next_waiter` field
+and hang one list head off each condvar.
 
 #### Which functions change
 
@@ -783,54 +925,81 @@ The mutex around it (`:304` and `:311`) does not move. The main-thread branch
 at `:315-323` is untouched, and `self == NULL` still selects it.
 
 **`goo_sched_block_end`, `concurrency.c:327-335`.** Lines `:331-333` are the
-old wake-time decrement. They become an idempotent UNREGISTER, not a plain
-decrement and not a deletion:
+old wake-time decrement. They become a CONDITIONAL unregister, not a plain
+decrement and not a deletion. `self` is the pointer `:329` already fetches from
+`goo_current_goroutine()`, which today it only tests against NULL:
 
 ```
+goo_goroutine_t* self = goo_current_goroutine();
+if (!self) return;                       /* main is not counted; this is :329 */
+goo_mutex_lock(g_scheduler->scheduler_mutex);
 if (self->counted_blocked) {
     self->counted_blocked = 0;
     g_scheduler->deadlock_detector.blocked_goroutines--;
 }
+goo_mutex_unlock(g_scheduler->scheduler_mutex);
 ```
 
-On the normal path the signaller has already cleared the bit, so this is a
+On the normal path the broadcaster has already cleared the bit, so this is a
 no-op; the model proves that with `assert(counted[_pid] == 0)` and a full
 search at `SPURIOUS=0`. It is NOT dead code. It is what stops a spurious return
-from leaking a set member, which the model reproduces in 63 states — see
-"Spurious wakeups" above. A plain unguarded decrement here is the `DOUBLE_DEC`
-mutant, and it drives the count below zero.
+from leaking a set member — the argument, with its C lines, is in "The leak is
+a C-level argument" above. The model cannot show that leak, because it has no
+condvar queue; the argument is a C-level one and it stands on the C. A plain
+unguarded decrement here is the `DOUBLE_DEC` mutant, and it drives the count
+below zero.
 
-**The three `pthread_cond_signal` sites.** `channels.c:325` (buffered send),
-`:356` (rendezvous send), `:543` (`goo_chan_try_send`). Before each, while the
-channel mutex is still held:
+**The eight `pthread_cond_broadcast` calls after ruling 1.** `channels.c:325`,
+`:356` and `:543`, which ruling 1 converts from signals, plus `:475`, `:505`,
+`:574`, and `:97` and `:98` in `goo_chan_close`. Each takes the same shape,
+with the channel mutex already held:
 
 ```
-if (ch->not_empty_waiters > 0) {
-    goo_mutex_lock(g_scheduler->scheduler_mutex);
-    /* the one waiter this signal will wake leaves the set */
-    ...clear its bit, blocked_goroutines--...
-    goo_mutex_unlock(g_scheduler->scheduler_mutex);
+goo_mutex_lock(g_scheduler->scheduler_mutex);
+for (goo_goroutine_t* w = ch->not_empty_waiters; w; w = w->next_waiter) {
+    if (w->counted_blocked) {
+        w->counted_blocked = 0;
+        g_scheduler->deadlock_detector.blocked_goroutines--;
+    }
 }
-pthread_cond_signal(&ch->not_empty->cond);
+goo_mutex_unlock(g_scheduler->scheduler_mutex);
+pthread_cond_broadcast(&ch->not_empty->cond);
 ```
 
-**The five `pthread_cond_broadcast` calls.** `channels.c:475` (buffered recv),
-`:505` (rendezvous recv), `:574` (`goo_chan_try_recv`), and `:97` and `:98` in
-`goo_chan_close`, which broadcasts both condvars. Same shape, but the decrement
-is by the FULL waiter count of that condvar, and every one of those waiters
-loses its bit. `goo_chan_close` needs both counts, one for each condvar.
+`goo_chan_close` walks both lists, one for each condvar.
 
 **Lock order.** Channel mutex, then scheduler mutex. That is already the order
 `goo_sched_block_begin` uses — `channels.c:295` calls it while holding
 `ch->mutex`, and it takes the scheduler mutex at `concurrency.c:304`. The new
 decrement sits inside the same channel mutex region, so it adds no new order.
 
-**Order within the signal site.** Decrement FIRST, then call
-`pthread_cond_signal`. The model's argument is in "One abstraction the fix
-introduces" above: decrement-then-signal leaves a window in which a waiter is
-uncounted but parked, which can only make `all_asleep` false and so can only
-remove an abort. Signal-then-decrement leaves a window in which a woken
+**Order within the broadcast site.** Decrement FIRST, then call
+`pthread_cond_broadcast`. The model's argument is in "One abstraction the fix
+introduces" above: decrement-then-broadcast leaves a window in which a waiter
+is uncounted but parked, and that waiter is itself live, so
+`blocked_goroutines < num_goroutines` and `all_asleep` cannot hold. It can only
+remove an abort. Broadcast-then-decrement leaves a window in which a woken
 goroutine is still counted, which is the original defect at a smaller scale.
+
+#### Ruling 3: decide AND abort under the scheduler mutex
+
+Today the poll reads its three conjuncts under the scheduler mutex
+(`concurrency.c:180-183`), releases the mutex at `concurrency.c:184`, and calls
+`goo_deadlock_abort()` at `concurrency.c:194-196` — outside it. The state can
+therefore change between the snapshot and the abort, and the model shows a case
+where it does: see "Why `assert(rd)` is not checked under `SPURIOUS=1`" above.
+This window is REAL in the C, not an artefact of the model.
+
+**Task 8 must decide and abort with the scheduler mutex held.** The cost is
+nothing: `goo_deadlock_abort()` is one `fprintf`, one `fflush` and `exit(2)`
+(`deadlock.c:44-48`). It takes no lock, so it cannot deadlock against the one
+being held, and the process is about to end, so holding a mutex through
+`exit(2)` costs nothing that matters.
+
+Concretely: move the `asleep_streak` update and the `asleep_streak >= K` test
+inside the critical section that begins at `concurrency.c:175`, and call
+`goo_deadlock_abort()` there, before the unlock. The `done || stopped` break at
+`:197-199` can stay outside, because it is not a claim about a frozen state.
 
 #### The 100-poll threshold
 
@@ -869,8 +1038,10 @@ named it.
 
 `current_goroutine` is the field section 8a item 1 of
 `docs/superpowers/specs/2026-06-28-m8c-mt-scheduler-design.md` already tracks.
-`concurrency.c:30` records that M8c leaves it NULL and that
-`goo_current_goroutine()` (`concurrency.c:277`) returns `t_current` instead.
+The M8c comment block at `concurrency.c:28-32` records that M8c leaves it
+unused, and `goo_current_goroutine()` (`concurrency.c:277`) returns `t_current`
+instead. The words "`->current_goroutine` fields (which are left unused" are on
+`concurrency.c:30`, inside that block.
 Section 8a item 1 offers three ways out: restore the field, sync it, or delete
 the dead bookkeeping and document the deletion.
 
