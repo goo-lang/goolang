@@ -10,7 +10,7 @@
 # WHAT THIS DOES: rebuilds bin/goo and libgoo_runtime.a from clean, in a
 # sandboxed build directory so the compiler the OTHER probes use is never
 # touched, and counts the compiler warnings the rebuild produced. This
-# probe writes only under build/warning-count, its own mktemp directory,
+# probe writes only under build/warning-count, the temporary directory of its self-test,
 # and one small lock file at build/.warning-count-probe.lock -- nowhere
 # else in the tree, not even transiently.
 #

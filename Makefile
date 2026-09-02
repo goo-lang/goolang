@@ -5487,7 +5487,7 @@ assertion-density-probe:
 # to go red against the real build log, and the unmodified log to stay
 # green.
 .PHONY: warning-count-probe
-warning-count-probe:
+warning-count-probe: $(NNG_LIB)
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh --self-test
 
