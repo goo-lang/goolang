@@ -7,9 +7,18 @@
 #
 # Source: the last 20 commits whose subject starts with "fix", read from
 # `git log --format='%h|%ad|%s' --date=short -N` and filtered to a subject
-# match, not from `git log --grep='^fix'` alone (that grep also matches a
-# "fix" line inside a body of a test/docs/merge commit, which is a wider
-# set - see task-25-report.md for the excluded rows and why).
+# match, not from `git log --grep='^fix'` alone. That command matches the
+# whole commit message, not only the subject line, so its most recent 20
+# hits include seven commits whose subject does not start with "fix".
+# Those seven are excluded from this ledger:
+#   c4130ab  subject is "test(bazel): prove both compilers emit identical IR"
+#   7e189ed  subject is "docs(build): phase 3 plan, IR equivalence without NNG"
+#   e6827e0  subject is "test(asserts): make seven stated invariants executable"
+#   c4671f4  subject is "Merge pull request #319 ..."; its body's second
+#            line, the squashed PR's own title, starts with "fix"
+#   0e49bac  subject is "Merge pull request #313 ..."; same reason
+#   7e36dcb  subject is "Merge pull request #307 ..."; same reason
+#   046d5ee  subject is "Merge pull request #305 ..."; same reason
 #
 # Summary by phase pair:
 # made=spec   found=code: 1
