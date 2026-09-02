@@ -146,8 +146,10 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
     if needs_compiler:
         # GOOROOT is deliberately NOT set. It names a DIRECTORY, and
         # //goostd:files is a filegroup that $(rootpath) refuses to expand.
-        # A probe that imports a vendored package must pass gooroot_file, so
-        # the need is declared per probe rather than assumed for all 29.
+        # A probe that imports a vendored package instead adds //goostd:files
+        # to its own `data`: the compiler's last resolver tier is ./goostd
+        # relative to the working directory, which under Bazel is the
+        # runfiles root, so the filegroup being present there is enough.
         env["COMPILER"] = "$(rootpath %s)" % _COMPILER
         env["GOO_RUNTIME"] = "$(rootpath %s)" % _ARCHIVE
         # Fixtures too: these scripts open examples/<name>.goo by NAME, so
