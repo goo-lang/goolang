@@ -9,15 +9,17 @@
 #
 # Environment:
 #   PAN_ARGS  extra flags passed to ./pan (for example "-m100000 -w26")
-#   CC        C compiler (default cc)
+#   CC        C compiler, flags allowed (default cc; e.g. CC='cc -DMEMLIM=1')
 #   KEEP_DIR  directory to copy the model, pan sources and any .trail into
 #             (the work directory itself is always a fresh mktemp -d and is
 #             removed on exit, so pan.* files never land in the tree)
 #
 # Exit status:
-#   0  pan reported 0 errors
+#   0  pan completed the search and reported 0 errors
 #   1  pan reported at least one error (assertion violation or invalid end state)
-#   2  bad arguments, or spin / cc / pan failed to run
+#   2  bad arguments, spin / cc / pan failed to run, or the run was
+#      INCONCLUSIVE: pan found no error but did not finish the search, or it
+#      explored 0 states. Such a run proves nothing, so it is never a pass.
 
 set -u
 
@@ -93,7 +95,10 @@ if [ ! -f "$WORK/pan.c" ]; then
     exit 2
 fi
 
-if ! ( cd "$WORK" && "$CC" -O2 -DSAFETY -o pan pan.c ) > "$WORK/cc.log" 2>&1; then
+# $CC is deliberately unquoted, the way make treats CC: it may carry flags, so
+# CC='cc -DMEMLIM=1' works. The verdict line prints the value, not just the
+# compiler's own --version, or a wrapper's flags would be invisible.
+if ! ( cd "$WORK" && $CC -O2 -DSAFETY -o pan pan.c ) > "$WORK/cc.log" 2>&1; then
     echo "run_deadlock_model: cc failed" >&2
     cat "$WORK/cc.log" >&2
     exit 2
@@ -129,20 +134,41 @@ fi
 # report form "pan:<n>: invalid end state (at depth ...)".
 INVALID_END=$(grep -c '^pan:[0-9]*: invalid end state' "$WORK/pan.log")
 
-# pan stops at the first error, so a FAIL state count is what it explored
-# before the error, not the whole state space. Say which it is.
+# Did pan finish the search? pan says so in more than one way, and it does NOT
+# use the same words for each cause:
+#   "Warning: Search not completed"       (stopped at the first error, and the
+#                                          -DMEMLIM stop)
+#   "error: max search depth too small"   (the -m depth limit; this one prints
+#                                          NO "Search not completed" line)
+#   "pan: reached -DMEMLIM bound"         (the memory limit; can stop after 0
+#                                          states explored)
+# Enumerating causes is a losing game, so the last pattern is the catch-all
+# "^error:", which covers pan's whole family of early-stop messages. The
+# 2026-09-02 review found the memory case by building pan with -DMEMLIM=1: the
+# runner printed PASS with states=0 and exited 0.
 COMPLETED=yes
-if grep -q 'Search not completed' "$WORK/pan.log"; then
+if grep -qE '^(Warning: )?Search not completed|^error:|^pan: reached' "$WORK/pan.log"; then
     COMPLETED=no
 fi
-# A truncated search that found nothing is NOT a pass. pan says
-# "error: max search depth too small" on stdout and still prints "errors: 0".
-if grep -q 'max search depth too small' "$WORK/pan.log"; then
-    COMPLETED=no
-    if [ "$ERRORS" -eq 0 ]; then
-        echo "run_deadlock_model: INCONCLUSIVE N=$N K=$K DETECTOR=$DETECTOR -- pan hit its search-depth limit and found no error; raise it with PAN_ARGS='-m<depth>'" >&2
-        exit 2
+
+# ONE rule, and it does not care WHY the search stopped early: a search that
+# did not finish and found nothing proves nothing, so it is never a PASS. The
+# cause goes into the message only.
+INCONCLUSIVE_WHY=
+if [ "$ERRORS" -eq 0 ] && [ "$COMPLETED" = no ]; then
+    INCONCLUSIVE_WHY="pan did not complete the search and found no error"
+elif [ "$ERRORS" -eq 0 ] && [ "$STATES" -eq 0 ]; then
+    INCONCLUSIVE_WHY="pan explored 0 states"
+fi
+
+if [ -n "$INCONCLUSIVE_WHY" ]; then
+    REASON=$(grep -m1 -E 'max search depth too small|reached -DMEMLIM bound|out of memory|error:' "$WORK/pan.log")
+    echo "run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=$N K=$K DETECTOR=$DETECTOR errors=$ERRORS states=$STATES search_completed=$COMPLETED -- $INCONCLUSIVE_WHY, so it proves nothing" >&2
+    if [ -n "$REASON" ]; then
+        echo "run_deadlock_model:   pan said: $REASON" >&2
     fi
+    echo "run_deadlock_model:   raise the depth with PAN_ARGS='-m<depth>', raise the memory with PAN_ARGS='-w<n>', or drop a -DMEMLIM from CC" >&2
+    exit 2
 fi
 
 if [ "$ERRORS" -eq 0 ]; then
@@ -153,7 +179,7 @@ else
     RC=1
 fi
 
-echo "run_deadlock_model: $VERDICT model=tests/models/deadlock_detector.pml N=$N K=$K DETECTOR=$DETECTOR errors=$ERRORS invalid_end_states=$INVALID_END states=$STATES search_completed=$COMPLETED depth=$DEPTH wall=${WALL}s spin='$SPIN_VERSION' cc='$($CC --version 2>/dev/null | head -1)'"
+echo "run_deadlock_model: $VERDICT model=tests/models/deadlock_detector.pml N=$N K=$K DETECTOR=$DETECTOR errors=$ERRORS invalid_end_states=$INVALID_END states=$STATES search_completed=$COMPLETED depth=$DEPTH wall=${WALL}s spin='$SPIN_VERSION' CC='$CC' cc='$($CC --version 2>/dev/null | head -1)'"
 
 if [ "$RC" -ne 0 ]; then
     grep -E '^pan:[0-9]*:' "$WORK/pan.log" | head -5

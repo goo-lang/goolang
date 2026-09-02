@@ -70,11 +70,23 @@ the model: `blocked_goroutines` still counts a `G_SIGNALLED` goroutine.
    is the hypothesis under test, stated as an abstraction so it can be seen.
 3. **Data values.** The channel carries no values, only an occupancy count.
 4. **Worker threads.** Every goroutine can be popped from the ready queue at
-   any time, as if `GOMAXPROCS >= N`. A smaller worker pool would leave the
-   ready queue non-empty, which RESETS `asleep_streak` and makes an abort
-   HARDER. The abstraction is therefore the one that favours the detector,
-   and it also matches the default (`goo_default_thread_count()` returns the
-   online CPU count, clamped to 16).
+   any time, as if `GOMAXPROCS >= N`. **This choice favours the
+   counterexample, not the detector.** A large pool empties the ready queue,
+   and an empty ready queue is one of the three terms of `all_asleep`, so it
+   makes an abort EASIER. A pool smaller than N would leave the ready queue
+   non-empty, which RESETS `asleep_streak` and would make an abort HARDER.
+
+   The defence is not that the abstraction is conservative. It is that the
+   large pool is the shipped default: `goo_default_thread_count()`
+   (`src/runtime/concurrency.c:63-80`) returns `GOMAXPROCS` when it parses,
+   otherwise the online CPU count, clamped to `GOO_MAX_OS_THREADS`, which is
+   16. For N of 2 to 4 the default pool is therefore larger than N on any
+   machine with 4 or more cores, and never smaller than N unless the operator
+   sets `GOMAXPROCS` below it. The model and its counterexample hold for the
+   configuration the runtime actually uses.
+
+   A reader who runs with `GOMAXPROCS=1` is outside the model. The
+   counterexample says nothing about that case.
 5. **`close`, unbuffered channels, `select`, `goo_yield`, panics, scheduler
    shutdown.** All out. The `stopped = !g_scheduler->running` term of the poll
    loop is therefore always 0 in the model.
@@ -133,11 +145,19 @@ has two senders and one receiver, so a genuine deadlock is reachable there.
 ./tests/models/run_deadlock_model.sh N K [DETECTOR]
 ```
 
-Exit status: 0 when pan reports 0 errors, 1 when pan reports an error, 2 when
-the arguments are wrong or spin, cc or pan fails to give a verdict.
+Exit status:
+
+- **0** — pan completed the search and reported 0 errors.
+- **1** — pan reported an error.
+- **2** — the arguments are wrong, spin/cc/pan failed to give a verdict, or the
+  run was **INCONCLUSIVE**: pan found no error but did not finish the search,
+  or it explored 0 states. Such a run proves nothing, so it is never a pass.
 
 `KEEP_DIR=<dir>` copies the model, `pan.log`, any `.trail` and a `spin -t -p`
-trace into `<dir>`. `PAN_ARGS` passes extra flags to `./pan`. The work
+trace into `<dir>`. `PAN_ARGS` passes extra flags to `./pan`. `CC` may carry
+flags, the way `make` treats it, so `CC='cc -DMEMLIM=1'` works; the verdict
+line prints the `CC` value as well as the compiler's own version, or a
+wrapper's flags would be invisible. The work
 directory is always a fresh `mktemp -d` and is removed on exit, so `pan.*`
 files never land in the tree.
 
@@ -218,8 +238,31 @@ fixed.** The failure was not an invalid end state but
 wake with a loop `sg_i = (sg_i + 1) % N` inside an `atomic`, and that loop can
 run forever. The fix counts the waiters, chooses an ordinal in `0 .. n-1` with
 a loop bounded by `N`, then walks to that waiter. The search now completes at
-depth 317. The runner learned the lesson too: a truncated search that finds no
-error now exits 2 as INCONCLUSIVE, not 0. `PAN_ARGS='-m50'` shows that path.
+depth 317.
+
+The runner learned the lesson too, in two rounds. A truncated search that
+finds no error exits 2 as INCONCLUSIVE, not 0. The first version of that rule
+named the causes it knew, and the 2026-09-02 review then found a cause it did
+not know: a pan built with `-DMEMLIM=1` prints `pan: reached -DMEMLIM bound`,
+explores 0 states, and the runner printed PASS with `states=0` and exited 0.
+The rule is now on the OUTCOME, not the cause: `errors == 0` together with an
+unfinished search, or 0 states explored, is INCONCLUSIVE whatever pan says.
+The unfinished test itself carries a `^error:` catch-all, because pan does NOT
+print `Search not completed` for the depth limit.
+
+The two negative controls for that rule:
+
+```
+$ PAN_ARGS='-m50' ./tests/models/run_deadlock_model.sh 2 3 0
+run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=2 K=3 DETECTOR=0 errors=0 states=797 search_completed=no -- pan did not complete the search and found no error, so it proves nothing
+run_deadlock_model:   pan said: error: max search depth too small
+rc=2
+
+$ CC='cc -DMEMLIM=1' ./tests/models/run_deadlock_model.sh 4 3 0
+run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=4 K=3 DETECTOR=0 errors=0 states=0 search_completed=no -- pan did not complete the search and found no error, so it proves nothing
+run_deadlock_model:   pan said: pan: reached -DMEMLIM bound
+rc=2
+```
 
 ### Reading the counterexample
 
