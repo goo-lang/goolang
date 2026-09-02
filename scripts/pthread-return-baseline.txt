@@ -1,0 +1,31 @@
+# pthread-return-probe baseline. SHRINK-ONLY.
+#
+# One line per file with an unchecked pthread_* return: <path><TAB><count>.
+# The counting rule is the docstring of tools/pthread_return_count.py,
+# applied via scripts/pthread_return_probe.sh. Regenerate with:
+#   scripts/pthread_return_probe.sh --update-baseline
+#
+# MEASURED 2026-09-02, tools/pthread_return_count.py (this file's
+# counting rule), git HEAD 3e8529d:
+# 40 unchecked pthread_* returns across 68 src/*.c files, 6 of them nonzero.
+#
+# Next to cppcheck's 840 (docs/misra/README.md, measured 2026-08-14, the
+# pthread_* slice of MISRA Rule 17.7 kept after deviation D-02): the two
+# numbers are NOT expected to match, and the header of
+# scripts/pthread_return_probe.sh explains why in detail -- in short, the
+# 840 was measured on a src/ tree three days OLDER than the 2026-08-17
+# quarantine that moved roughly 1,000 further pthread_ mentions out of
+# src/ into attic/src/, and cppcheck's Rule 17.7 cannot see a
+# pthread_cond_wait/_init/_destroy call at all (it has no signature for
+# them and reports Rule 17.3 instead), while this counter treats the
+# whole pthread_* family as one function group.
+#
+# The gate is red when a file's count here rises above its row, or a file
+# with a count above zero has no row at all. It never writes this file
+# itself; only --update-baseline does.
+src/runtime/channels.c	17
+src/runtime/concurrency.c	2
+src/runtime/far_transport.c	8
+src/runtime/platform.c	2
+src/runtime/sync.c	7
+src/runtime/sync_shim.c	4
