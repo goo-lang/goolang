@@ -1,0 +1,15 @@
+# warning-count gate baseline. One row per compiler:
+#   <key><TAB><C warning count>
+#
+# key = gcc-<major version>, read from `$CC -dumpversion`. This is NOT
+# the same as the bison/conflict count -- see the header of
+# scripts/warning_count_probe.sh for why that is a separate, ungated number.
+#
+# Regenerate/add a row with:
+#   scripts/warning_count_probe.sh --update-baseline
+#
+# Shrink-only: the gate is red when the CURRENT C warning count for a key
+# EXCEEDS its row. A compiler with no row here FAILS the gate outright --
+# it never passes on an unknown compiler. The gate never writes this file
+# itself; only this flag does.
+gcc-16	75

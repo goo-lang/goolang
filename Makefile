@@ -3387,6 +3387,7 @@ VERIFY_ALL_DEPS := \
     alloc-doors-selftest \
     goo-assert-probe \
     assertion-density-probe \
+    warning-count-probe \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
@@ -5471,6 +5472,24 @@ goo-assert-probe:
 assertion-density-probe:
 	@bash scripts/assertion_density_probe.sh
 	@bash scripts/assertion_density_probe.sh --self-test
+
+# The warning-count gate (Holzmann's Power of Ten, rule 10: compile with all
+# warnings on, stop the build on one). Today's build is warning-heavy, so
+# this does not yet stop on ONE warning -- task 22 removes them and adds
+# -Werror. Until then this refuses an INCREASE: it rebuilds bin/goo from
+# clean in its own sandboxed build directory (never bin/goo or
+# lib/libgoo_runtime.a themselves -- proved every run, not assumed) and
+# holds the C warning count to scripts/warning-count-baseline.txt, one row
+# per compiler since CC differs here (gcc-16) and on CI (gcc-14). The bison
+# warning count is printed but not gated -- scripts/grammar-tripwire.sh
+# already owns that number. Self-test runs in the same invocation: it
+# injects one unused variable into a copy of a small file and requires that
+# to go red against the real build log, and the unmodified log to stay
+# green.
+.PHONY: warning-count-probe
+warning-count-probe:
+	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh
+	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh --self-test
 
 # The corpus against an ASSERT-ENABLED compiler. Deliberately NOT in
 # verify-core: `make debug` and `make lexer` both write bin/goo, so this would
