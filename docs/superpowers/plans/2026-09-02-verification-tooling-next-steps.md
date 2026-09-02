@@ -84,34 +84,34 @@ CI builds with gcc-14, so the warning set there can be different. The gate in ta
 
 ### A. The pthread return ratchet (Power of Ten rule 7, MISRA Rule 17.7)
 
-- [ ] **1. The counter and its baseline.** `scripts/pthread_return_probe.sh` counts each call to a `pthread_*` function that discards the return value. The scope is `src/*.c` without the generated parser files. It writes `scripts/pthread-return-baseline.txt`, one line for each file, shrink-only, in the shape of `probe-teeth-baseline.txt`. The script has a `--self-test`. The self-test puts one unchecked `pthread_mutex_lock` into a copy of a source file, and the result must be red. Then it puts a checked call in, and the result must be green. Task 2 connects the script to the Makefile.
+- [x] **1. The counter and its baseline.** `scripts/pthread_return_probe.sh` counts each call to a `pthread_*` function that discards the return value. The scope is `src/*.c` without the generated parser files. It writes `scripts/pthread-return-baseline.txt`, one line for each file, shrink-only, in the shape of `probe-teeth-baseline.txt`. The script has a `--self-test`. The self-test puts one unchecked `pthread_mutex_lock` into a copy of a source file, and the result must be red. Then it puts a checked call in, and the result must be green. Task 2 connects the script to the Makefile.
       *Accepts:* the verdict line names the tree and the file count. A count that increases in a file exits 1. The header of the baseline records the total of the probe next to the 840 of cppcheck. It gives the cause of the difference. A call on more than one line is counted, or the header records the miss. The self-test shows the two directions.
       *Work:* M.
 
-- [ ] **2. Connect the ratchet.** Makefile targets `pthread-return-probe` and its self-test, the two in `VERIFY_ALL_DEPS`. Increase the count in `tools/parity-gate-count.txt`. Regenerate `tests/probes/census.txt`.
+- [x] **2. Connect the ratchet.** Makefile targets `pthread-return-probe` and its self-test, the two in `VERIFY_ALL_DEPS`. Increase the count in `tools/parity-gate-count.txt`. Regenerate `tests/probes/census.txt`.
       *Accepts:* `make verify-core` is green. In that run, `probe-teeth-probe`, `tools/parity_test.sh` and `census-current-probe` all pass.
       *Work:* S.
 
-- [ ] **3. Record the enforcement.** In `docs/misra/README.md`, the Rule 17.7 row and D-02 name the ratchet as the enforcement for the pthread slice. In `docs/misra/enforcement-plan.md`, the same.
+- [x] **3. Record the enforcement.** In `docs/misra/README.md`, the Rule 17.7 row and D-02 name the ratchet as the enforcement for the pthread slice. In `docs/misra/enforcement-plan.md`, the same.
       *Accepts:* `doc_claims_probe.sh` passes. The text gives the baseline total with the date.
       *Work:* S.
 
 ### B. The SPIN model of the deadlock detector
 
-- [ ] **4. Vendor SPIN.** `third_party/spin-<tag>.tar.gz` with its sha256 in `third_party/README.md`, and `scripts/spin_bootstrap.sh`. The bootstrap uses `spin` from PATH when its version is 6.5 or newer. If not, it builds the tarball into `build/tools/spin`. It has a `--self-test`.
+- [x] **4. Vendor SPIN.** `third_party/spin-<tag>.tar.gz` with its sha256 in `third_party/README.md`, and `scripts/spin_bootstrap.sh`. The bootstrap uses `spin` from PATH when its version is 6.5 or newer. If not, it builds the tarball into `build/tools/spin`. It has a `--self-test`.
       *Accepts:* with no `spin` on PATH, the bootstrap builds it, and `spin -V` prints the pinned version. An incorrect sha256 exits non-zero with a message that names the file. The self-test shows the incorrect-sha256 path.
       *Work:* S.
 
-- [ ] **5. The model of the protocol as it is.** `tests/models/deadlock_detector.pml`. It models `goo_scheduler_wait`, `goo_sched_block_begin` and `goo_sched_block_end`, one channel, and N goroutines with N from 2 to 4. The streak threshold is a parameter. The claim: an abort occurs only in a deadlock, that is, when no goroutine is signalled and not awake. The hypothesis to test: an abort with no deadlock is possible for each finite threshold. The cause is that the wake interval has no limit in the model.
+- [x] **5. The model of the protocol as it is.** `tests/models/deadlock_detector.pml`. It models `goo_scheduler_wait`, `goo_sched_block_begin` and `goo_sched_block_end`, one channel, and N goroutines with N from 2 to 4. The streak threshold is a parameter. The claim: an abort occurs only in a deadlock, that is, when no goroutine is signalled and not awake. The hypothesis to test: an abort with no deadlock is possible for each finite threshold. The cause is that the wake interval has no limit in the model.
       *Accepts:* `spin -a`, `cc -DSAFETY`, and `./pan` complete for each N. The result is recorded in each condition. When there is a counterexample, the trail file is committed with an explanation in prose. The number of states and the run time are recorded. A positive control: with the detector disabled, `pan` reports 0 errors. That shows that the model does not fail by itself.
       *Risk:* a model made to confirm a belief. The positive control and the teeth check in task 6 are the answer.
       *Work:* M.
 
-- [ ] **6. The model of the corrected protocol.** The candidate correction moves the blocked-count decrement to the signaller, in the scheduler mutex, at signal time. If the model of task 5 points at a different correction, model that one. Prove the claim with threshold 1.
+- [x] **6. The model of the corrected protocol.** The candidate correction moves the blocked-count decrement to the signaller, in the scheduler mutex, at signal time. If the model of task 5 points at a different correction, model that one. Prove the claim with threshold 1.
       *Accepts:* `pan` reports 0 errors in full mode, not bitstate, for N = 2, 3 and 4. The number of states is recorded. Teeth: a copy of the model with the wake-time decrement put back makes `pan` report an error.
       *Work:* M.
 
-- [ ] **7. Connect the model as a gate.** Makefile target `spin-deadlock-model-probe` in `VERIFY_ALL_DEPS`. It runs the corrected model, and 0 errors are necessary. Then it runs the as-is model as a negative control, and the error is necessary. Make the three companion edits from decision 2.
+- [x] **7. Connect the model as a gate.** Makefile target `spin-deadlock-model-probe` in `VERIFY_ALL_DEPS`. It runs the corrected model, and 0 errors are necessary. Then it runs the as-is model as a negative control, and the error is necessary. Make the three companion edits from decision 2.
       *Accepts:* `make verify-core` is green. The probe runs in less than 30 s on this machine, bootstrap not included.
       *Work:* S.
 
@@ -126,13 +126,13 @@ CI builds with gcc-14, so the warning set there can be different. The gate in ta
 
 ### C. The Power of Ten record
 
-- [ ] **10. Write the record.** `docs/misra/power-of-ten.md`, with a link from the MISRA README. For each of the ten rules: the rule, the measured count on `src/`, and a decision. The instrument is the `p10` script of Cobra 5.4 on 2026-09-02. Rule 10 is not met: the flags are on, and a full rebuild prints 85 warnings, so it is a target until task 22 closes. Rules 5 and 7 are targets, and each names the work that applies to it: task 23 and task 1 of this plan. Rules 1, 3 and 4 are declined by design, each with the cause or the deviation record. The record names the two instrument defects: the `expr` syntax error in the script, and rule 6, for which the `scope_check` helper is necessary. It gives the command that measures the numbers again. For each rule it names the checker, or the word unchecked, as decision 6 says.
+- [x] **10. Write the record.** `docs/misra/power-of-ten.md`, with a link from the MISRA README. For each of the ten rules: the rule, the measured count on `src/`, and a decision. The instrument is the `p10` script of Cobra 5.4 on 2026-09-02. Rule 10 is not met: the flags are on, and a full rebuild prints 85 warnings, so it is a target until task 22 closes. Rules 5 and 7 are targets, and each names the work that applies to it: task 23 and task 1 of this plan. Rules 1, 3 and 4 are declined by design, each with the cause or the deviation record. The record names the two instrument defects: the `expr` syntax error in the script, and rule 6, for which the `scope_check` helper is necessary. It gives the command that measures the numbers again. For each rule it names the checker, or the word unchecked, as decision 6 says.
       *Accepts:* each rule has a decision and a checker column. Each number has its instrument and date. The doc says that there is no gate, and `doc_claims_probe.sh` passes.
       *Work:* S.
 
 ### D. A report on a reproducible-build mismatch
 
-- [ ] **11. Name the different member.** In `scripts/repro_build_probe.sh`, when `cmp` fails, run `diffoscope` when it is available, with a limit on its output. If it is not available, run `llvm-objdump -d` for the binary, and compare the archive member by member. Print the first different member or section. The cmp verdict and the two hashes stay as they are.
+- [x] **11. Name the different member.** In `scripts/repro_build_probe.sh`, when `cmp` fails, run `diffoscope` when it is available, with a limit on its output. If it is not available, run `llvm-objdump -d` for the binary, and compare the archive member by member. Print the first different member or section. The cmp verdict and the two hashes stay as they are.
       *Accepts:* the current `--self-test`, which puts a nonce into `runtime.o`, prints `runtime.o` as the different member. With no tool available, the probe continues to fail on cmp. No new dependency is necessary, because `llvm-objdump` comes with `llvm-dev` in CI.
       *Work:* S.
 
@@ -179,7 +179,7 @@ CI builds with gcc-14, so the warning set there can be different. The gate in ta
 
 ### G. Metrics and the build, from the talk
 
-- [ ] **21. The warning-count gate.** `scripts/warning_count_probe.sh` rebuilds `bin/goo` from clean into its own build directory, with the flags of the Makefile. It counts the C warnings and the bison warnings as two numbers. The baseline is shrink-only. The verdict names the compiler version and the flags. Make the three companion edits.
+- [x] **21. The warning-count gate.** `scripts/warning_count_probe.sh` rebuilds `bin/goo` from clean into its own build directory, with the flags of the Makefile. It counts the C warnings and the bison warnings as two numbers. The baseline is shrink-only. The verdict names the compiler version and the flags. Make the three companion edits.
       *Accepts:* the count today is 77 C warnings and 8 bison warnings with gcc 16.2.1. One new warning makes the gate red. The self-test puts one unused variable into a copy and shows red. The bison count belongs to the grammar tripwire, and the gate records that, not a second count.
       *Work:* M.
 
@@ -187,15 +187,15 @@ CI builds with gcc-14, so the warning set there can be different. The gate in ta
       *Accepts:* a full rebuild prints no warning. `make verify-core` is green with `-Werror`. CI is green with gcc-14, read from `gh run view --json conclusion`.
       *Work:* L.
 
-- [ ] **23. The assertion-density gate.** `scripts/assertion_density_probe.sh` counts the assertion lines and the executable lines in `src/`, generated files not included, with the counting rule in its header. The baseline can only increase. The verdict prints the density and the two counts. Make the three companion edits.
+- [x] **23. The assertion-density gate.** `scripts/assertion_density_probe.sh` counts the assertion lines and the executable lines in `src/`, generated files not included, with the counting rule in its header. The baseline can only increase. The verdict prints the density and the two counts. Make the three companion edits.
       *Accepts:* the number today is 23 of 40,417, which is 0.057 percent. A removed assertion makes the gate red, and the self-test shows that. The target, 2 percent, is in the header with the talk as the source.
       *Work:* S.
 
-- [ ] **24. Assertions on in the shipped compiler.** `GOO_ASSERT` is compiled out unless `GOO_DEBUG` is defined. The talk keeps assertions on in flight. Measure the golden suite time with `GOO_DEBUG` on and off, in one sitting. If the cost is below 2 percent, make `GOO_ASSERT` on by default, with a kill switch. Record the decision in the MISRA README.
+- [x] **24. Assertions on in the shipped compiler.** `GOO_ASSERT` is compiled out unless `GOO_DEBUG` is defined. The talk keeps assertions on in flight. Measure the golden suite time with `GOO_DEBUG` on and off, in one sitting. If the cost is below 2 percent, make `GOO_ASSERT` on by default, with a kill switch. Record the decision in the MISRA README.
       *Accepts:* the two times are given from one sitting. The decision is recorded. If the default changes, `make verify-core` is green with it.
       *Work:* S.
 
-- [ ] **25. The defect ledger.** `docs/defects.tsv` has one row for each corrected defect. Fill in the last 20 `fix:` commits. Add one line to the PR template that asks for the row. There is no PR template today, so create `.github/PULL_REQUEST_TEMPLATE.md`.
+- [x] **25. The defect ledger.** `docs/defects.tsv` has one row for each corrected defect. Fill in the last 20 `fix:` commits. Add one line to the PR template that asks for the row. There is no PR template today, so create `.github/PULL_REQUEST_TEMPLATE.md`.
       *Columns:* `date  pr  phase_made  phase_found  instrument  gate_added`. The two phase columns take `spec`, `design`, `code` or `test`. The instrument column takes a gate name or `none`.
       *Accepts:* the table has 20 rows with each column filled. A summary by phase pair is at the top of the file. It gives the count of defects that went on after the phase that made them.
       *Work:* M.
