@@ -1,0 +1,44 @@
+# docs/defects.tsv - the defect ledger.
+#
+# Gerard Holzmann's Power of Ten talk names three numbers as the most
+# important defect metric: the phase that made a defect, the phase that
+# found it, and how far it travelled between the two. This file starts
+# that record. One row is one corrected defect, read from a fix commit.
+#
+# Source: the last 20 commits whose subject starts with "fix", read from
+# `git log --format='%h|%ad|%s' --date=short -N` and filtered to a subject
+# match, not from `git log --grep='^fix'` alone (that grep also matches a
+# "fix" line inside a body of a test/docs/merge commit, which is a wider
+# set - see task-25-report.md for the excluded rows and why).
+#
+# Summary by phase pair:
+# made=spec   found=code: 1
+# made=design found=code: 1
+# made=code   found=code: 8
+# made=code   found=test: 10
+#
+# Defects found in a phase later than the one that made them (spec, design,
+# code, test, in that order): 12 of 20.
+# Rows where the commit message does not say what found the defect
+# (instrument=none, note=unknown): 3 of 20.
+date	pr	phase_made	phase_found	instrument	gate_added	commit	summary	note
+2026-09-02	pending	spec	code	task review	none	9e4fb6f	fix(assert): teach the probe GOO_DEBUG beats GOO_ASSERT_OFF, name the header in its verdict, fix three stale comments	
+2026-09-02	pending	code	code	task review	none	0bc9d15	fix(probes): a case/default label can share its line with other code	
+2026-09-02	pending	code	code	task review	none	955b48a	fix(probes): reject ternary colons and a silently-crashed counter	
+2026-09-02	pending	code	code	task review	none	3e8529d	fix(probes): warning-count-probe builds the NNG archive before its inner make	
+2026-09-02	pending	code	code	task review	none	b0c28e0	fix(probes): stop the warning-count gate from racing shared build state	
+2026-09-02	pending	code	code	task review	none	9e47ceb	fix(probes): reject a zero baseline in the assertion-density gate	
+2026-09-02	pending	code	test	far-shim-probe	none	c4cfe1b	fix(probes): far-shim-probe binds its socket under TMPDIR, not the build dir	
+2026-08-25	#323	code	test	CI	none	985522d	fix(bazel): declare the real dependency edges between the analysis units	
+2026-08-20	#319	code	test	CI	none	09fc9cd	fix(gates): the teeth detector matched prose, not mechanism	
+2026-08-20	#319	design	code	none	assert-corpus --self-test	29936e0	fix(gates): probe-teeth-probe scanned 24 of 44 scripts	unknown
+2026-08-20	#317	code	test	CI	none	757e1d5	fix(gates): derive gcov from the compiler, and let the probe accuse the tool	
+2026-08-20	#313	code	test	none	none	4a685d2	fix(repro): the verdict now names the commit it tested, and what it excluded	
+2026-08-20	#307	code	test	none	none	bd3f4cb	fix(packages): a renamed import of a source package bound nothing	
+2026-08-20	#305	code	test	CI	none	d9a610b	fix(repro): the self-test could never run on CI, and its landing check could not tell	
+2026-08-20	#305	code	code	code review	none	fc4bae2	fix(ci): the anti-silent-skip job had a silent-skip path of its own	
+2026-08-19	#305	code	code	none	none	c0143dd	fix(repro): record all twelve toolchain packages, not seven	unknown
+2026-08-19	#305	code	code	none	none	04cb63c	fix(ci): widen repro workflow triggers, fix stale build count	unknown
+2026-08-19	#305	code	test	none	none	e13cc1b	fix(repro): enforce the digest pin in podman-image-probe	
+2026-08-19	#305	code	test	none	podman-image-probe	5f22a17	fix(repro): close two gaps in the determinism gate wiring	
+2026-08-19	#305	code	test	none	none	949b5cd	fix(repro): check the ar symbol-table member's mtime too	
