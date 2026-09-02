@@ -3393,6 +3393,7 @@ VERIFY_ALL_DEPS := \
     pthread-return-probe \
     warning-count-probe \
     spin-bootstrap-probe \
+    spin-deadlock-model-probe \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
@@ -5517,6 +5518,23 @@ warning-count-probe: $(NNG_LIB)
 spin-bootstrap-probe:
 	@bash scripts/spin_bootstrap.sh
 	@bash scripts/spin_bootstrap.sh --self-test
+
+# The Track B Promela gate itself (tasks 5-7 of the 2026-09-02 verification
+# tooling plan): runs tests/models/deadlock_detector.pml through
+# tests/models/run_deadlock_model.sh. FIX=1 (the corrected protocol) must
+# find 0 errors in a full search at K=1 for N=2, 3 and 4; FIX=0 (as it ships
+# today) is the negative control and must fail on assert(rd), by name, not
+# merely exit non-zero. A truncated or otherwise INCONCLUSIVE run (runner
+# exit 2) is never a pass in any row -- see scripts/spin_deadlock_model_probe.sh
+# for the full account and the measured wall time. Depends on
+# spin-bootstrap-probe so the outer `make` bootstraps SPIN once before this
+# runs; the runner then finds that same build on every row it invokes
+# scripts/spin_bootstrap.sh for. Self-test runs in the same invocation, in
+# the shape of assertion-density-probe above.
+.PHONY: spin-deadlock-model-probe
+spin-deadlock-model-probe: spin-bootstrap-probe
+	@bash scripts/spin_deadlock_model_probe.sh
+	@bash scripts/spin_deadlock_model_probe.sh --self-test
 
 # The corpus against an explicitly ASSERT-ENABLED (-DGOO_DEBUG) compiler.
 # Deliberately NOT in verify-core: `make debug` and `make lexer` both write
