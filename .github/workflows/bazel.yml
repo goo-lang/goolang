@@ -20,11 +20,14 @@ jobs:
 
       # gcc-14: the code is -std=c23 and gcc-13, the distro default, rejects it.
       # llvm-dev: codegen links against the LLVM C API.
+      # valgrind: the four arc_* probes (tests/probes/BUILD) need it, and
+      # GOO_PROBE_NO_SKIP turns a missing valgrind into a FAIL under Bazel
+      # rather than the SKIPPED line make tolerates.
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-14 bison llvm-dev clang
+            gcc-14 bison llvm-dev clang valgrind
           gcc-14 --version | head -1
 
       # The .bazelrc pins /usr/bin/gcc, which is correct on the development

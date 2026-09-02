@@ -92,6 +92,13 @@ fail=0
 mkdir -p "$WORK"
 
 if ! command -v valgrind >/dev/null 2>&1; then
+    # Under make, tests.yml greps verify-core.log for the SKIPPED line and
+    # fails the job, so the skip is loud there. A Bazel test log is read by
+    # nobody: the harness sets GOO_PROBE_NO_SKIP, and the skip is the failure.
+    if [ "${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then
+        echo "arc-map-key-local-probe: FAIL (valgrind not found, and GOO_PROBE_NO_SKIP forbids a skip)"
+        exit 1
+    fi
     echo "valgrind not found — SKIPPED"
     exit 0
 fi

@@ -1,4 +1,4 @@
-load("//tools:goo_probe.bzl", "goo_expect_probe", "goo_probe", "goo_reject_probe")
+load("//tools:goo_probe.bzl", "goo_expect_probe", "goo_probe", "goo_reject_probe", "goo_script_probe")
 
 # Deliberate defects that prove the probe macros can report a failure.
 #
@@ -66,6 +66,28 @@ goo_reject_probe(
     name = "probe_reject_control",
     src = "//examples:constint8_reject.goo",
     stderr_contains = "overflows int8",
+    tags = ["manual"],
+)
+
+# ---------------------------------------------------------------------------
+# The no-skip teeth. Same script, one difference: goo_script_probe sets
+# GOO_PROBE_NO_SKIP and a plain sh_test does not. The control therefore PASSES
+# by skipping, on a tool that never exists, and the defect on the identical
+# script must FAIL on that same missing tool.
+# ---------------------------------------------------------------------------
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_test(
+    name = "skip_control",
+    size = "small",
+    srcs = ["skip_probe.sh"],
+    tags = ["manual"],
+)
+
+goo_script_probe(
+    name = "skip_defect",
+    script = "skip_probe.sh",
+    needs_compiler = False,
     tags = ["manual"],
 )
 
