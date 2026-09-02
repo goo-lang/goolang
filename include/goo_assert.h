@@ -10,25 +10,43 @@
 // comment and the code beside it can disagree silently. An assert that survives
 // a test run cannot.
 //
-// SQLite ships over 7,500 asserts in a quarter of this line count. They make
-// that code roughly four times slower, which is why they need an opt-in flag
-// there and here.
+// SQLite ships over 7,500 asserts in a quarter of this line count, at a
+// measured cost there of roughly four times slower, which is why SQLite
+// keeps them behind an opt-in flag. This header kept that same opt-in
+// default until 2026-09-02, when a serial, low-noise re-measurement (Task
+// 24, docs/misra/README.md) found no cost here: median wall time on the
+// 495-fixture golden corpus was very slightly LOWER with asserts on (27.90 s)
+// than off (27.96 s), well inside the run-to-run range either side. With the
+// cost gone, Holzmann's Power of Ten rules (rule 5: an assertion belongs in
+// the code that flies, not only in the debug build that tested it) settle
+// the default below: ON.
 //
-// THE THREE BUILDS. The same construct behaves three ways on purpose:
+// THE FOUR BUILDS. The same construct behaves four ways on purpose:
 //
-//   construct        coverage (GOO_COVERAGE)  debug (GOO_DEBUG)   production
-//   GOO_ASSERT(x)    no-op                    abort if false      no-op
-//   GOO_NEVER(x)     constant 0               abort if true       (x)
-//   GOO_ALWAYS(x)    constant 1               abort if false      (x)
+//   construct        coverage        debug        default       GOO_ASSERT_OFF
+//                    (GOO_COVERAGE)  (GOO_DEBUG)   (no flag)
+//   GOO_ASSERT(x)    no-op           abort if      abort if      no-op
+//                                    false         false
+//   GOO_NEVER(x)     constant 0      abort if      abort if      (x)
+//                                    true          true
+//   GOO_ALWAYS(x)    constant 1      abort if      abort if      (x)
+//                                    false         false
+//
+// GOO_ASSERT_OFF is the KILL SWITCH, not the default. Define it to recover
+// the pre-2026-09-02 contract (no-op / pass-through) -- for example to bisect
+// whether an assert itself, rather than the bug it caught, explains a
+// regression. GOO_DEBUG still forces the checking arm on regardless of
+// GOO_ASSERT_OFF, exactly as before.
 //
 // The coverage row is the load-bearing one, and it is the part that is easy to
 // get wrong. GOO_NEVER and GOO_ALWAYS mark a DEFENSIVE branch — one the author
 // believes is unreachable, kept as a last line of defence. Such a branch pins
 // the coverage number below 100% forever, because no test can reach it. In the
 // coverage build they collapse to a constant, the branch disappears, and the
-// denominator stops counting something no test could ever cover. In production
-// the condition is passed through unchanged, so a wrong belief degrades into a
-// handled case instead of undefined behaviour.
+// denominator stops counting something no test could ever cover. Under
+// GOO_ASSERT_OFF the condition is passed through unchanged, so a wrong belief
+// degrades into a handled case instead of undefined behaviour -- this is the
+// pre-2026-09-02 default, kept alive only as the kill switch.
 //
 // The rule that goes with them: do NOT delete a defensive branch to make the
 // coverage number green. Mark it and keep it.
@@ -41,13 +59,15 @@
 // names were free on 2026-08-08 — the prefix is about the next header, not
 // this one.
 //
-// TRADE-OFF, STATED PLAINLY. This is three builds of one source, which Go's
-// design explicitly rejects and which SQLite's author defends. The cost is that
-// the debug build is not the shipped build, so an assert can only catch what
-// the debug build runs. `make verify-core` runs the PRODUCTION build, so the
-// asserts do not gate it; they fire for a developer running `make debug` and
-// for any target built that way. The alternative — keeping one build — gives up
-// an honest coverage number on defensive branches, which is the thing item 1 of
+// TRADE-OFF, STATED PLAINLY. This is four builds of one source, which Go's
+// design explicitly rejects and which SQLite's author defends. `make
+// verify-core` runs the DEFAULT build, so the asserts DO gate it now: a
+// crash there is a genuine invariant firing on real input, not a decoration,
+// and the fix is to read the assertion's file and line, never to weaken or
+// remove it. GOO_ASSERT_OFF exists for the rare case that genuinely needs
+// the pre-2026-09-02 behaviour; it is a kill switch, not a knob any gate
+// should turn by default. The alternative — keeping one build — gives up an
+// honest coverage number on defensive branches, which is the thing item 1 of
 // this arc just spent the effort to obtain.
 
 #include <stdio.h>
@@ -66,11 +86,18 @@ static void goo_assert_fail(const char* kind, const char* expr,
     abort();
 }
 
-#if defined(GOO_DEBUG)
+#if defined(GOO_COVERAGE)
+   // Coverage carve-out, unchanged by the 2026-09-02 flip: an assert that
+   // never fails in a test run must not register as an uncovered branch, so
+   // it stays a plain no-op here -- see the GOO_NEVER/GOO_ALWAYS coverage arm
+   // below for the same reasoning against the same denominator.
+#  define GOO_ASSERT(x) ((void)0)
+#elif defined(GOO_DEBUG) || !defined(GOO_ASSERT_OFF)
 #  define GOO_ASSERT(x) \
      ((x) ? (void)0 : goo_assert_fail("ASSERT", #x, __FILE__, __LINE__, __func__))
 #else
-   // (void)0 rather than empty, so `if (c) GOO_ASSERT(x); else ...` still parses.
+   // GOO_ASSERT_OFF only: the kill switch, not the default. (void)0 rather
+   // than empty, so `if (c) GOO_ASSERT(x); else ...` still parses.
 #  define GOO_ASSERT(x) ((void)0)
 #endif
 
@@ -80,13 +107,14 @@ static void goo_assert_fail(const char* kind, const char* expr,
    // compiling cannot hide in a coverage-only build.
 #  define GOO_NEVER(x)  ((void)sizeof(x), 0)
 #  define GOO_ALWAYS(x) ((void)sizeof(x), 1)
-#elif defined(GOO_DEBUG)
+#elif defined(GOO_DEBUG) || !defined(GOO_ASSERT_OFF)
 #  define GOO_NEVER(x) \
      ((x) ? (goo_assert_fail("NEVER", #x, __FILE__, __LINE__, __func__), 1) : 0)
 #  define GOO_ALWAYS(x) \
      ((x) ? 1 : (goo_assert_fail("ALWAYS", #x, __FILE__, __LINE__, __func__), 0))
 #else
-   // Production: the defensive branch stays, and it is the last line of defence.
+   // GOO_ASSERT_OFF only: the defensive branch stays, and it is the last
+   // line of defence -- the pre-2026-09-02 default, kept as the kill switch.
 #  define GOO_NEVER(x)  (x)
 #  define GOO_ALWAYS(x) (x)
 #endif

@@ -5499,12 +5499,14 @@ warning-count-probe: $(NNG_LIB)
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh --self-test
 
-# The corpus against an ASSERT-ENABLED compiler. Deliberately NOT in
-# verify-core: `make debug` and `make lexer` both write bin/goo, so this would
-# swap the binary out from under the other 197 gates mid-run. It is the
-# pre-release sweep, and it is what stops every assert in the tree from being a
-# comment with parentheses -- verify-core builds production, where they are all
-# (void)0.
+# The corpus against an explicitly ASSERT-ENABLED (-DGOO_DEBUG) compiler.
+# Deliberately NOT in verify-core: `make debug` and `make lexer` both write
+# bin/goo, so this would swap the binary out from under the other gates
+# mid-run. Assertions are ON BY DEFAULT since the 2026-09-02 flip (Task 24b),
+# so verify-core's own production build already evaluates every GOO_ASSERT in
+# the tree -- this target is no longer what makes them evaluated at all, it is
+# the pre-release sweep against the DEBUG build specifically, which also
+# forces every GOO_ASSERT on regardless of the GOO_ASSERT_OFF kill switch.
 assert-corpus:
 	@bash scripts/assert_corpus.sh
 

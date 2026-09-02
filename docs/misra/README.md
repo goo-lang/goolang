@@ -448,8 +448,8 @@ Read these before trusting any number this tool produces.
   current `src/` tree only, hence its 40 — see
   `scripts/pthread-return-baseline.txt` for the full explanation and the
   per-file baseline.
-- **Task 24 decision: `GOO_ASSERT` stays compiled out by default, blocked on
-  two probe scripts.** First measured 2026-09-02 with 32-way parallel golden
+- **Task 24 / 24b decision: `GOO_ASSERT` is ON by default, `GOO_ASSERT_OFF`
+  is the kill switch.** First measured 2026-09-02 with 32-way parallel golden
   runs, which read 4.3% over the 2% line (full parallel numbers in the task
   report only, because a 3.3-second run at `GOLDEN_JOBS=32` cannot resolve a
   2% difference against its own noise). Re-measured the same day, serially,
@@ -467,17 +467,18 @@ Read these before trusting any number this tool produces.
   `release-decision-teeth`: the `cond1-escapes` mutation deletes
   `src/types/release_decision.c:1445`'s early return, and with asserts on the
   mutant now aborts at the `GOO_ASSERT(!local_escape_local_escapes(le, fn,
-  r->name))` on line 1540 (`goo: ASSERT FAILED`, reproduce by flipping
-  `include/goo_assert.h` per below and re-running
-  `scripts/release_decision_teeth.sh`) instead of producing a wrong decision
-  the harness can diff — `scripts/release_decision_teeth.sh` has no
-  CAUGHT category for a crash, only INCONCLUSIVE-crash, so its tally reads
-  "11 of 12 conditions were caught" and the target fails. A direct run of
-  `scripts/goo_assert_probe.sh` also goes red the same way: its own
-  "production (no flag)" case asserts `GOO_ASSERT(0)` must NOT abort, which
-  was the old contract and is no longer the design. Both assertions are
-  correct and firing exactly as designed — task scope forbids editing a probe
-  script, so neither was touched, weakened, or turned off. The flip was
-  reverted (`bin/goo` rebuilt back to 0 real calls, confirmed) so the tree
-  stays green, and the default stays off until a follow-up task teaches those
-  two scripts to recognise an assert abort as CAUGHT rather than a crash.
+  r->name))` on line 1540 (`goo: ASSERT FAILED`) instead of producing a wrong
+  decision the harness can diff — `scripts/release_decision_teeth.sh` had no
+  CAUGHT category for a crash, only INCONCLUSIVE-crash, so its tally read
+  "11 of 12 conditions were caught" and the target failed. A direct run of
+  `scripts/goo_assert_probe.sh` went red the same way: its own
+  "production (no flag)" case asserted `GOO_ASSERT(0)` must NOT abort, which
+  was the old contract. Both assertions were correct and firing exactly as
+  designed — the defect was entirely in the two probe scripts' vocabulary for
+  the old contract. Task 24b (this task) taught
+  `scripts/release_decision_teeth.sh` a `CAUGHT` category for a mutant that
+  dies on a reported `GOO_ASSERT` (status 134, `goo: ASSERT FAILED` on its
+  stderr) before any row runs, and taught `scripts/goo_assert_probe.sh` the
+  new four-mode contract (default aborts, `GOO_ASSERT_OFF` recovers the old
+  no-op / pass-through, debug and coverage unchanged). With both probes
+  updated, the flip was re-applied and `make verify-core` passed green.
