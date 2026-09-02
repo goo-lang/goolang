@@ -29,7 +29,14 @@
 #   debug (GOO_DEBUG)      GOO_ASSERT(0) MUST abort       -> SIGABRT
 #                          GOO_NEVER(1) MUST abort, GOO_ALWAYS(0) MUST abort.
 #                          Unchanged by the flip: GOO_DEBUG already forced the
-#                          checking arm on.
+#                          checking arm on. GOO_DEBUG plus GOO_ASSERT_OFF
+#                          together MUST still abort -- GOO_DEBUG wins over
+#                          the kill switch, exactly as include/goo_assert.h
+#                          promises. Nothing checked that combination before
+#                          this row: a scratch header with the GOO_DEBUG term
+#                          deleted from both checking arms passes the plain
+#                          debug rows above (which never set GOO_ASSERT_OFF)
+#                          but goes red here.
 #   coverage (GOO_COVERAGE)
 #                          GOO_ASSERT is a no-op, GOO_NEVER -> constant 0,
 #                          GOO_ALWAYS -> constant 1, regardless of the
@@ -43,6 +50,11 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# The exact header this run compiled against, named in every verdict line so
+# two runs against two different headers (the real tree, and a scratch copy
+# used as a control) do not print an identical line.
+HEADER="$(readlink -f "$ROOT/include/goo_assert.h" 2>/dev/null || printf '%s' "$ROOT/include/goo_assert.h")"
 
 # Use the compiler the MAKEFILE uses, not a bare `gcc`. CI runs
 # `make CC=gcc-14 ...` because the distro default on ubuntu-24.04 is gcc-13,
@@ -60,8 +72,9 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 rc=0
-pass() { echo "  PASS $1"; }
-bad()  { echo "  FAIL $1"; rc=1; }
+checks=0
+pass() { checks=$((checks + 1)); echo "  PASS $1"; }
+bad()  { checks=$((checks + 1)); echo "  FAIL $1"; rc=1; }
 
 # The combined fixture. Used only for the two modes where NOTHING aborts
 # (GOO_ASSERT_OFF and coverage), so the print order below is safe to read in
@@ -176,6 +189,17 @@ st=$(compile_run "$WORK/never.c" "-DGOO_DEBUG")
 [ "$st" = "134" ] && pass "GOO_NEVER(true) aborts" || bad "GOO_NEVER(true) exited $st, expected 134"
 st=$(compile_run "$WORK/always.c" "-DGOO_DEBUG")
 [ "$st" = "134" ] && pass "GOO_ALWAYS(false) aborts" || bad "GOO_ALWAYS(false) exited $st, expected 134"
+# GOO_DEBUG must force the check on even when a caller ALSO passes the
+# GOO_ASSERT_OFF kill switch -- include/goo_assert.h promises this ("GOO_DEBUG
+# still forces the checking arm on regardless of GOO_ASSERT_OFF"), and no row
+# above compiles the two flags together, so none of them could catch a header
+# that lost the GOO_DEBUG term from its condition.
+st=$(compile_run "$WORK/assert0.c" "-DGOO_DEBUG -DGOO_ASSERT_OFF")
+if [ "$st" = "134" ]; then
+    pass "GOO_ASSERT(0) aborts under -DGOO_DEBUG -DGOO_ASSERT_OFF (GOO_DEBUG wins over the kill switch)"
+else
+    bad "-DGOO_DEBUG -DGOO_ASSERT_OFF exited $st, expected 134 — GOO_ASSERT_OFF silenced GOO_DEBUG"
+fi
 
 # ---------------------------------------------------------------------------
 echo "--- coverage (-DGOO_COVERAGE) ---"
@@ -203,8 +227,8 @@ fi
 
 echo
 if [ "$rc" -eq 0 ]; then
-    echo "goo-assert-probe: PASS (all four build modes behave)"
+    echo "goo-assert-probe: PASS ($HEADER, four build modes, $checks checks)"
 else
-    echo "goo-assert-probe: FAIL"
+    echo "goo-assert-probe: FAIL ($HEADER, four build modes, $checks checks)"
 fi
 exit "$rc"

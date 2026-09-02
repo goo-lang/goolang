@@ -17,9 +17,12 @@ CC = $(CCACHE) gcc
 # avoids "fatal error: include/foo.h: No such file" in those targets.
 # include/goo_assert.h is force-included next to xalloc.h so GOO_ASSERT,
 # GOO_NEVER and GOO_ALWAYS are available in every TU with no #include churn.
-# It defines NOTHING in a production build: all three macros compile away
-# unless GOO_DEBUG or GOO_COVERAGE is defined, which only `make debug` and the
-# coverage build do.
+# Since the 2026-09-02 flip (Task 24b), assertions are ON BY DEFAULT: this
+# build compiles all three macros to a check that aborts, unless
+# GOO_ASSERT_OFF is defined. GOO_DEBUG forces the check on regardless of
+# GOO_ASSERT_OFF. GOO_COVERAGE keeps its own no-op / constant carve-out, so
+# the coverage denominator is unaffected. See include/goo_assert.h for the
+# four build modes and the reason for the default.
 CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
@@ -5451,13 +5454,14 @@ fuzz-clean:
 # exemption list.
 alloc-doors-selftest:
 	@bash scripts/alloc_doors_probe.sh --self-test
-# The three build modes of include/goo_assert.h. GOO_ASSERT, GOO_NEVER and
-# GOO_ALWAYS expand to DIFFERENT code in a production, a debug and a coverage
-# build, which is the point of them and also the risk: a production build where
-# GOO_ASSERT still aborts ships a compiler that dies on a recoverable
-# condition, and a debug build where it quietly does nothing is a check that is
+# The four build modes of include/goo_assert.h. GOO_ASSERT, GOO_NEVER and
+# GOO_ALWAYS expand to DIFFERENT code across a default, a GOO_ASSERT_OFF, a
+# debug and a coverage build, which is the point of them and also the risk.
+# Assertions are ON BY DEFAULT since the 2026-09-02 flip (Task 24b), so a
+# default build where GOO_ASSERT does NOT abort ships a compiler whose checks
+# are dead, and a debug build where it quietly does nothing is a check that is
 # not one. The preprocessor picks the arm, so reading the header cannot tell
-# you which happened. Compile the same fixture three ways and observe it.
+# you which happened. Compile the same fixtures four ways and observe them.
 goo-assert-probe:
 	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_assert_probe.sh
 
