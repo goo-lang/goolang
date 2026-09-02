@@ -150,13 +150,14 @@ baseline_total() {
 # src/runtime/sync_shim.c, 121 lines) so the injected line lands inside real,
 # representative code rather than a synthetic fixture.
 #
-# Six checks against a baseline captured from the UNMODIFIED copy:
-#   1. inject one bare `pthread_mutex_lock(&m);`         -> must be RED
-#   2. inject a CHECKED call instead (`if (... != 0)`)    -> must be GREEN
-#   3. inject a `(void)`-cast call instead                -> must be GREEN
-#   4. inject a TERNARY call instead (`cond ? a : call`)  -> must be GREEN
-#   5. the unmodified copy again (the positive control)   -> must be GREEN
-#   6. a counter path that does not exist                 -> must be RED
+# Seven checks against a baseline captured from the UNMODIFIED copy:
+#   1. inject one bare `pthread_mutex_lock(&m);`             -> must be RED
+#   2. inject a CHECKED call instead (`if (... != 0)`)        -> must be GREEN
+#   3. inject a `(void)`-cast call instead                    -> must be GREEN
+#   4. inject a TERNARY call instead (`cond ? a : call`)      -> must be GREEN
+#   5. the unmodified copy again (the positive control)       -> must be GREEN
+#   6. a counter path that does not exist                     -> must be RED
+#   7. inject a one-line `switch { case N: call(); break; }`  -> must be RED
 # Each injection's landing is verified with grep before its result is
 # trusted -- a sed that silently matched nothing would otherwise read
 # exactly like a passing probe.
@@ -311,6 +312,30 @@ if [ "${1:-}" = "--self-test" ]; then
 		bad_self=1
 	else
 		echo "    ok: a counter path that does not exist is RED, and named in the message"
+	fi
+
+	# 7. A one-line "switch (x) { case N: call(); break; }" -> RED. Task
+	#    review 2026-09-02 (round 2) found is_label_colon() in
+	#    tools/pthread_return_count.py read the WHOLE source line back to
+	#    its own start, so this one-line shape read as
+	#    "switch (0) { case 0:" -- a line that starts with "switch", not
+	#    "case" -- and a genuinely discarded call went uncounted (GREEN
+	#    when it must be RED). The fix walks back only to the nearest
+	#    ";"/"{"/"}" instead of the line start; see is_label_colon()'s own
+	#    docstring and tools/pthread_return_count.py --self-test for the
+	#    unit-level proof this shell check is a second layer on top of.
+	mk
+	TARGET="$W/t/src/$BASENAME"
+	inject_after_first_block_open "$TARGET" 'switch (0) { case 0: pthread_mutex_lock(&m); break; }'
+	if ! grep -qF 'switch (0) { case 0: pthread_mutex_lock(&m); break; }' "$TARGET"; then
+		echo "$SELF: FAIL (the one-line-switch injection did not land in $TARGET)"
+		bad_self=1
+	elif run; then
+		echo "$SELF: FAIL (stayed GREEN after a one-line switch/case discarded call)"
+		sed 's/^/        /' "$W/out.log"
+		bad_self=1
+	else
+		echo "    ok: a one-line switch/case discarded call is RED"
 	fi
 
 	rm -rf "$W"

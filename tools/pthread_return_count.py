@@ -42,16 +42,33 @@ COUNTING RULE (read this before changing anything below):
   as compliant, and this rule agrees for the same reason.
   A REAL LABEL COLON is a ":" that closes a goto label ("name:"), a
   "case CONST:", or a "default:" -- the only three colon shapes that
-  introduce a C statement. Found 2026-09-02 (task review): a bare ":" in
-  PREV_OK used to accept ANY colon, including a TERNARY colon, so
-  "int rc = 1 ? 0 : pthread_mutex_trylock(&m);" counted the trylock as
-  discarded even though its value is plainly used (assigned to rc). The
-  fix reads the source line back from the candidate colon to its own
-  start (or to the previous newline) and accepts it only when that whole
-  prefix is "IDENTIFIER:", "case ...:", or "default:" -- a ternary's
-  colon prefix is instead the whole conditional expression up to that
-  point ("int rc = 1 ? 0 :" in the case above), which matches none of
-  the three shapes and is correctly rejected. See is_label_colon().
+  introduce a C statement. Found 2026-09-02 (task review, round 1): a
+  bare ":" in PREV_OK used to accept ANY colon, including a TERNARY
+  colon, so "int rc = 1 ? 0 : pthread_mutex_trylock(&m);" counted the
+  trylock as discarded even though its value is plainly used (assigned
+  to rc). The first fix read the WHOLE SOURCE LINE back from the
+  candidate colon to its own start and accepted it only when that whole
+  line was "IDENTIFIER:", "case ...:", or "default:".
+  That whole-line test was ITSELF wrong (found 2026-09-02, task review,
+  round 2): a one-line "switch (x) { case 2: pthread_mutex_lock(m);
+  break; }" reads, up to the candidate colon, as
+  "switch (x) { case 2:" -- a line that starts with "switch", not
+  "case", so the whole-line test wrongly rejected a real case label
+  that shares its line with other code, and a genuinely discarded call
+  went uncounted.
+  The rule now walks back from the candidate colon to the NEAREST ";",
+  "{" or "}" ON THE SAME LINE -- the closest thing this text-only scan
+  has to "the start of this statement" -- or to the line's own start
+  when none of those three characters appears earlier on it. The text
+  from that boundary up to the colon is the SEGMENT tested, not the
+  whole line: for the one-line switch above, the boundary is the "{"
+  right before "case 2:", so the segment is "case 2:", which matches.
+  For the ternary example above, no ";"/"{"/"}" precedes the colon on
+  that line, so the segment is the whole line back to its start
+  ("int rc = 1 ? 0 :"), which still contains "?" and is still rejected.
+  A segment containing "?" is rejected outright, on top of matching
+  none of the three shapes, as a second, explicit guard against a
+  ternary. See is_label_colon().
 
 Usage:
   pthread_return_count.py <root>
@@ -59,6 +76,10 @@ Usage:
     scratch copy for the probe's --self-test). Prints one line per file
     with a count above zero, "<path relative to root><TAB><count>", sorted
     by path, followed by "TOTAL<TAB><n>".
+  pthread_return_count.py --self-test
+    Runs this tool's own unit cases (SELF_TEST_CASES below), entirely in
+    memory -- no src/ tree needed. Exit 0 and "PASS" if every case's
+    count matches; exit 1 and "FAIL" otherwise.
 """
 import os
 import re
@@ -185,19 +206,29 @@ def prev_significant_index(text, idx):
 def is_label_colon(text, colon_idx):
     """True when the ':' at colon_idx is a REAL label colon: a goto
     label ("name:"), a "case CONST:", or a "default:" -- the only three
-    colon shapes that introduce a C statement. Rejects every other
-    colon, most importantly a ternary "cond ? a : b" colon, by requiring
-    the WHOLE source line from its own start up to and including this
-    colon to match one of the three shapes. A ternary's prefix is
-    instead the conditional expression itself (for example
-    "int rc = 1 ? 0 :"), which matches none of them.
+    colon shapes that introduce a C statement.
+
+    The segment tested is NOT the whole source line (see the COUNTING
+    RULE docstring above, "round 2", for why a whole-line test rejects
+    a real case label sharing its line with other code). Instead this
+    walks back from the colon to the nearest ";", "{" or "}" ON THE
+    SAME LINE, or to the line's own start when none of those three
+    characters appears earlier on it, and tests only the text from
+    that boundary to the colon.
     """
     line_start = text.rfind("\n", 0, colon_idx) + 1
-    prefix = text[line_start:colon_idx + 1].strip()
+    boundary = line_start
+    for i in range(colon_idx - 1, line_start - 1, -1):
+        if text[i] in (";", "{", "}"):
+            boundary = i + 1
+            break
+    segment = text[boundary:colon_idx + 1].strip()
+    if "?" in segment:
+        return False  # a ternary colon, not a label -- explicit second guard
     return bool(
-        LABEL_RE.match(prefix)
-        or CASE_RE.match(prefix)
-        or DEFAULT_RE.match(prefix)
+        LABEL_RE.match(segment)
+        or CASE_RE.match(segment)
+        or DEFAULT_RE.match(segment)
     )
 
 
@@ -251,9 +282,66 @@ def count_text(text):
     return count
 
 
+# SELF_TEST_CASES: the counter's own unit cases, run in memory (no files,
+# no src/ tree needed) by "pthread_return_count.py --self-test". Each is
+# (name, source text, expected count). Covers both task-review regressions
+# plus a positive control:
+#   - a ternary "cond ? a : call" must NOT count (round 1 regression: the
+#     first fix's PREV_OK still accepted the ternary's colon as a label).
+#   - a one-line "switch (x) { case N: call(); break; }" MUST count (round
+#     2 regression: the first fix's is_label_colon read the WHOLE line
+#     back to its start, so this shape read as "switch (x) { case N:",
+#     which does not start with "case", and the real discarded call went
+#     uncounted).
+#   - a plain, unconditionally discarded call is the positive control --
+#     without it, a self-test that always reports 0 would look identical
+#     to one that correctly rejects the two negative cases above.
+SELF_TEST_CASES = [
+    (
+        "a ternary colon is not a label colon",
+        "void f(void) {\n"
+        "    int rc = 1 ? 0 : pthread_mutex_trylock(&m);\n"
+        "}\n",
+        0,
+    ),
+    (
+        "a case label sharing its line with other code still counts",
+        "void f(int x) {\n"
+        "    switch (x) { case 2: pthread_mutex_lock(m); break; }\n"
+        "}\n",
+        1,
+    ),
+    (
+        "a plain discarded call is the positive control",
+        "void f(void) {\n"
+        "    pthread_mutex_lock(&m);\n"
+        "}\n",
+        1,
+    ),
+]
+
+
+def self_test():
+    ok = True
+    for name, source, expected in SELF_TEST_CASES:
+        got = count_text(source)
+        if got == expected:
+            print(f"    ok: {name} (count {got})")
+        else:
+            print(f"FAIL: {name} -- got {got}, wanted {expected}")
+            ok = False
+    if ok:
+        print("pthread_return_count.py --self-test: PASS")
+        return 0
+    print("pthread_return_count.py --self-test: FAIL")
+    return 1
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+        return self_test()
     if len(sys.argv) != 2:
-        print("usage: pthread_return_count.py <root>", file=sys.stderr)
+        print("usage: pthread_return_count.py <root>|--self-test", file=sys.stderr)
         return 2
     root = sys.argv[1]
     total = 0
