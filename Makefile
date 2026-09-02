@@ -1487,6 +1487,21 @@ fanin-stress: $(RUNTIME_LIB)
 	@timeout 120 ./build/fanin_stress; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "fanin-stress: PASS"; else echo "fanin-stress: FAIL (exit $$rc)"; exit 1; fi
 
+# 2026-09-02: the detector must NOT abort a LIVE program. The negative control
+# for deadlock-probe below, and the C-level counterpart of the SPIN model in
+# tests/models/ (see tests/models/README.md, "The C-level fix").
+# GOO_TEST_WAKE_DELAY_NS holds the wake-to-unregister window open for 100 ms,
+# which is 200 polls of the detector's 0.5 ms loop. RED against the runtime
+# before the fix: exit 2 with "all goroutines are asleep - deadlock!" while both
+# goroutines are alive. GREEN after: exit 0.
+false-deadlock-probe: $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== false-deadlock-probe: a live program survives a 100ms wake delay ==="
+	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/false_deadlock_test.c $(RUNTIME_LIB) -lpthread -lm -o build/false_deadlock_test
+	@GOO_TEST_WAKE_DELAY_NS=100000000 timeout 60 ./build/false_deadlock_test >build/false_deadlock_test.out 2>build/false_deadlock_test.err; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "false-deadlock-probe: FAIL (exit $$rc, expected 0)"; cat build/false_deadlock_test.err; exit 1; fi; \
+	if grep -q "^false-deadlock-probe OK" build/false_deadlock_test.out; then echo "false-deadlock-probe: PASS"; else echo "false-deadlock-probe: FAIL (missing OK line)"; cat build/false_deadlock_test.out; exit 1; fi
+
 # M9: a fully-deadlocked program aborts with Go's message + exit 2 (not a hang).
 deadlock-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
@@ -3263,6 +3278,7 @@ VERIFY_ALL_DEPS := \
     yield-stress \
     chan-mt-stress \
     fanin-stress \
+    false-deadlock-probe \
     deadlock-probe \
     deadlock-goroutine-probe \
     default-thread-count-test \
