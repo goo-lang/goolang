@@ -3386,6 +3386,7 @@ VERIFY_ALL_DEPS := \
     ast-free-leak-selftest \
     alloc-doors-selftest \
     goo-assert-probe \
+    assertion-density-probe \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
@@ -5457,6 +5458,19 @@ alloc-doors-selftest:
 # you which happened. Compile the same fixture three ways and observe it.
 goo-assert-probe:
 	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_assert_probe.sh
+
+# The assertion-density gate (Holzmann's Power of Ten, rule 5). Counts
+# assertion lines and executable lines across src/*.c (generated files
+# excluded), refuses a drop below scripts/assertion-density-baseline.txt in
+# either the raw count or the density, and never writes the baseline itself
+# -- see scripts/assertion_density_probe.sh --update-baseline. Self-test runs
+# in the same invocation, in the shape of goo-check-probe above: it removes
+# one assertion line from a scratch copy and requires that to go red, and an
+# unmodified copy to stay green.
+.PHONY: assertion-density-probe
+assertion-density-probe:
+	@bash scripts/assertion_density_probe.sh
+	@bash scripts/assertion_density_probe.sh --self-test
 
 # The corpus against an ASSERT-ENABLED compiler. Deliberately NOT in
 # verify-core: `make debug` and `make lexer` both write bin/goo, so this would

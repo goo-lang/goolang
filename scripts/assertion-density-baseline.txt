@@ -1,0 +1,11 @@
+# assertion-density gate baseline.
+#
+# Format: two integers on one line -- <assertion lines> <executable lines>.
+# Counting rule is in the header of scripts/assertion_density_probe.sh.
+# Regenerate with:
+#   scripts/assertion_density_probe.sh --update-baseline
+#
+# The gate requires BOTH to hold or improve: the assertion count may not
+# fall, and the density (assertions / executable lines) may not fall. The
+# gate never writes this file itself.
+23 40376
