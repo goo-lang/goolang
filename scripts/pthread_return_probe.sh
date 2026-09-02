@@ -76,11 +76,14 @@ set -u
 
 PROBE="pthread-return-probe"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COUNTER="$REPO_ROOT/tools/pthread_return_count.py"
-# PTHREAD_RETURN_ROOT overrides which tree gets scanned (the self-test points
-# it at a scratch copy). PTHREAD_RETURN_BASELINE overrides which baseline
-# file it is compared against -- the self-test always uses a scratch
-# baseline it writes itself, never the real one.
+# PTHREAD_RETURN_COUNTER overrides the counter's own path (the self-test
+# points it at a path that does not exist, to prove the gate cannot read a
+# false PASS out of a counter that never ran). PTHREAD_RETURN_ROOT overrides
+# which tree gets scanned (the self-test points it at a scratch copy).
+# PTHREAD_RETURN_BASELINE overrides which baseline file it is compared
+# against -- the self-test always uses a scratch baseline it writes itself,
+# never the real one.
+COUNTER="${PTHREAD_RETURN_COUNTER:-$REPO_ROOT/tools/pthread_return_count.py}"
 ROOT="${PTHREAD_RETURN_ROOT:-$REPO_ROOT}"
 BASELINE="${PTHREAD_RETURN_BASELINE:-$REPO_ROOT/scripts/pthread-return-baseline.txt}"
 
@@ -92,10 +95,42 @@ list_files() { # $1 = a directory containing an src/ tree
 	find "$1" -type f -name '*.c' ! -name '*.tab.c' ! -name 'lex.yy.c' -print0 2>/dev/null
 }
 
-# counter_rows / counter_total: split the Python counter's own output (one
-# call, captured by the caller into $1) into the per-file rows (no TOTAL
-# line) and the total. Callers that need both values run the counter once
-# and pass its output to both functions, rather than running it twice.
+# run_counter: run the Python counter against $1, and print its raw stdout
+# on success. Returns 1, with NOTHING on stdout, when the counter cannot be
+# trusted -- it exits non-zero (missing script, missing interpreter, a
+# crash) or its output has no TOTAL line (any other way it could fail to
+# run to completion) -- and names $COUNTER in a message on stderr either
+# way. Found 2026-09-02 (task review): the gate used to read an empty total
+# straight into `cur_total=0` with no red result at all, so a counter that
+# never ran at all printed a false "PASS (0 unchecked pthread returns ...)".
+# Every caller that needs the counter's output (the gate, --update-baseline,
+# and the self-test's own baseline setup) goes through this one function,
+# and every caller MUST check its return status -- `return 1` here only
+# fails the command-substitution subshell a caller like
+# `raw="$(run_counter "$ROOT")"` runs it in, so the caller has to test that
+# assignment itself (`if ! raw=...; then exit 1; fi`) rather than trust
+# that a failure here already stopped the script.
+run_counter() { # $1 = root; prints the counter's stdout, or returns 1
+	local root="$1" out rc
+	out="$(python3 "$COUNTER" "$root" 2>&1)"
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		echo "$PROBE: FAIL ($COUNTER exited $rc against $root -- the count cannot be trusted)" >&2
+		printf '%s\n' "$out" | sed 's/^/  /' >&2
+		return 1
+	fi
+	if ! printf '%s\n' "$out" | grep -q '^TOTAL	'; then
+		echo "$PROBE: FAIL ($COUNTER printed no TOTAL line against $root -- the count cannot be trusted)" >&2
+		printf '%s\n' "$out" | sed 's/^/  /' >&2
+		return 1
+	fi
+	printf '%s\n' "$out"
+}
+
+# counter_rows / counter_total: split the counter's own output (one call to
+# run_counter, captured by the caller into $1) into the per-file rows (no
+# TOTAL line) and the total. Callers that need both values run the counter
+# once and pass its output to both functions, rather than running it twice.
 counter_rows() {
 	printf '%s\n' "$1" | grep -v '^TOTAL	'
 }
@@ -115,11 +150,13 @@ baseline_total() {
 # src/runtime/sync_shim.c, 121 lines) so the injected line lands inside real,
 # representative code rather than a synthetic fixture.
 #
-# Four checks against a baseline captured from the UNMODIFIED copy:
-#   1. inject one bare `pthread_mutex_lock(&m);`        -> must be RED
-#   2. inject a CHECKED call instead (`if (... != 0)`)   -> must be GREEN
-#   3. inject a `(void)`-cast call instead               -> must be GREEN
-#   4. the unmodified copy again (the positive control)  -> must be GREEN
+# Six checks against a baseline captured from the UNMODIFIED copy:
+#   1. inject one bare `pthread_mutex_lock(&m);`         -> must be RED
+#   2. inject a CHECKED call instead (`if (... != 0)`)    -> must be GREEN
+#   3. inject a `(void)`-cast call instead                -> must be GREEN
+#   4. inject a TERNARY call instead (`cond ? a : call`)  -> must be GREEN
+#   5. the unmodified copy again (the positive control)   -> must be GREEN
+#   6. a counter path that does not exist                 -> must be RED
 # Each injection's landing is verified with grep before its result is
 # trusted -- a sed that silently matched nothing would otherwise read
 # exactly like a passing probe.
@@ -157,7 +194,11 @@ if [ "${1:-}" = "--self-test" ]; then
 	# Baseline: the UNMODIFIED copy's own counts. Written directly (not via
 	# --update-baseline) so this self-test never depends on that mode.
 	mk
-	counter_rows "$(python3 "$COUNTER" "$W/t")" >"$W/base.txt"
+	if ! setup_raw="$(run_counter "$W/t")"; then
+		echo "$SELF: FAIL (run_counter could not build the scratch baseline -- see the error above)"
+		exit 1
+	fi
+	counter_rows "$setup_raw" >"$W/base.txt"
 	base_count="$(grep -F "src/$BASENAME" "$W/base.txt" | cut -f2)"
 	[ -n "$base_count" ] || base_count=0
 	echo "    ok: baseline for src/$BASENAME captured at $base_count"
@@ -220,7 +261,26 @@ if [ "${1:-}" = "--self-test" ]; then
 		bad_self=1
 	fi
 
-	# 4. Unmodified copy again: the positive control -- without it, a
+	# 4. A ternary "cond ? a : b" call instead -> GREEN. Task review
+	#    2026-09-02 found the label-colon rule accepted ANY colon,
+	#    including this one, so a ternary's value (plainly used: it is
+	#    assigned to rc) was miscounted as discarded. See is_label_colon()
+	#    in tools/pthread_return_count.py for the fix this proves.
+	mk
+	TARGET="$W/t/src/$BASENAME"
+	inject_after_first_block_open "$TARGET" 'int rc = 1 ? 0 : pthread_mutex_lock(&m);'
+	if ! grep -qF 'int rc = 1 ? 0 : pthread_mutex_lock(&m);' "$TARGET"; then
+		echo "$SELF: FAIL (the ternary-call injection did not land in $TARGET)"
+		bad_self=1
+	elif run; then
+		echo "    ok: a ternary pthread_mutex_lock (cond ? a : call) is GREEN"
+	else
+		echo "$SELF: FAIL (a ternary pthread_mutex_lock went RED: its value is used, not discarded)"
+		sed 's/^/        /' "$W/out.log"
+		bad_self=1
+	fi
+
+	# 5. Unmodified copy again: the positive control -- without it, a
 	#    harness that is red for every input would look identical to a
 	#    working negative control.
 	mk
@@ -230,6 +290,27 @@ if [ "${1:-}" = "--self-test" ]; then
 		echo "$SELF: FAIL (an unmodified copy is RED -- the harness is broken, not the source)"
 		sed 's/^/        /' "$W/out.log"
 		bad_self=1
+	fi
+
+	# 6. A counter path that does not exist -> RED. Task review 2026-09-02
+	#    found the gate read an empty total straight into a default of 0
+	#    with no red result, so a counter that never ran at all (a
+	#    missing script, a missing interpreter, a crash) printed a false
+	#    "PASS (0 unchecked pthread returns ...)". ROOT and BASELINE stay
+	#    at the unmodified copy from check 5, which is known GREEN on its
+	#    own, so the only broken variable here is the counter path.
+	mk
+	if PTHREAD_RETURN_ROOT="$W/t" PTHREAD_RETURN_BASELINE="$W/base.txt" \
+		PTHREAD_RETURN_COUNTER="$W/no-such-counter.py" "$0" >"$W/out.log" 2>&1; then
+		echo "$SELF: FAIL (stayed GREEN with a counter path that does not exist)"
+		sed 's/^/        /' "$W/out.log"
+		bad_self=1
+	elif ! grep -q "no-such-counter.py" "$W/out.log"; then
+		echo "$SELF: FAIL (went RED for a missing counter, but did not name it in the message)"
+		sed 's/^/        /' "$W/out.log"
+		bad_self=1
+	else
+		echo "    ok: a counter path that does not exist is RED, and named in the message"
 	fi
 
 	rm -rf "$W"
@@ -248,7 +329,9 @@ fi
 # pthread_* return or otherwise shrinking the count.
 # ---------------------------------------------------------------------------
 if [ "${1:-}" = "--update-baseline" ]; then
-	raw="$(python3 "$COUNTER" "$ROOT")"
+	if ! raw="$(run_counter "$ROOT")"; then
+		exit 1
+	fi
 	rows="$(counter_rows "$raw")"
 	total="$(counter_total "$raw")"
 	nfiles="$(list_files "$ROOT/src" | tr '\0' '\n' | grep -c .)"
@@ -297,9 +380,10 @@ if [ ! -f "$BASELINE" ]; then
 	exit 1
 fi
 
-raw="$(python3 "$COUNTER" "$ROOT")"
+if ! raw="$(run_counter "$ROOT")"; then
+	exit 1
+fi
 cur_total="$(counter_total "$raw")"
-[ -n "$cur_total" ] || cur_total=0
 nfiles="$(list_files "$ROOT/src" | tr '\0' '\n' | grep -c .)"
 base_total="$(baseline_total "$BASELINE")"
 

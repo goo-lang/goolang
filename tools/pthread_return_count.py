@@ -27,7 +27,7 @@ COUNTING RULE (read this before changing anything below):
   whose value is discarded. Its value is discarded when the call is a
   WHOLE EXPRESSION STATEMENT:
     - the token immediately before the identifier is ";", "{", "}", or a
-      label colon (":"), or the identifier starts the file, AND
+      REAL label colon, or the identifier starts the file, AND
     - the matching closing parenthesis of the call is followed by ";"
       (skipping whitespace, including newlines -- so a call whose argument
       list spans more than one line is counted exactly like a one-line
@@ -35,11 +35,23 @@ COUNTING RULE (read this before changing anything below):
   A call inside "if (", "while (", "return", an assignment, a comparison,
   another call's argument list, or right after a "(void)" cast is NOT
   counted -- in every one of those shapes the token before the identifier
-  is something other than ";", "{", "}" or ":" (an operator, a keyword
-  letter, or an opening "(" from the outer call/cast), so the same single
-  rule above excludes all of them with no extra special-casing required.
-  MISRA Rule 17.7 treats the "(void)" cast as compliant, and this rule
-  agrees for the same reason.
+  is something other than ";", "{", "}" or a real label colon (an
+  operator, a keyword letter, or an opening "(" from the outer
+  call/cast), so the same single rule above excludes all of them with no
+  extra special-casing required. MISRA Rule 17.7 treats the "(void)" cast
+  as compliant, and this rule agrees for the same reason.
+  A REAL LABEL COLON is a ":" that closes a goto label ("name:"), a
+  "case CONST:", or a "default:" -- the only three colon shapes that
+  introduce a C statement. Found 2026-09-02 (task review): a bare ":" in
+  PREV_OK used to accept ANY colon, including a TERNARY colon, so
+  "int rc = 1 ? 0 : pthread_mutex_trylock(&m);" counted the trylock as
+  discarded even though its value is plainly used (assigned to rc). The
+  fix reads the source line back from the candidate colon to its own
+  start (or to the previous newline) and accepts it only when that whole
+  prefix is "IDENTIFIER:", "case ...:", or "default:" -- a ternary's
+  colon prefix is instead the whole conditional expression up to that
+  point ("int rc = 1 ? 0 :" in the case above), which matches none of
+  the three shapes and is correctly rejected. See is_label_colon().
 
 Usage:
   pthread_return_count.py <root>
@@ -53,7 +65,10 @@ import re
 import sys
 
 IDENT_RE = re.compile(r"\bpthread_[A-Za-z0-9_]*\b")
-PREV_OK = (";", "{", "}", ":")
+SIMPLE_PREV_OK = (";", "{", "}")
+LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*:$")
+CASE_RE = re.compile(r"^case\b.*:$")
+DEFAULT_RE = re.compile(r"^default\s*:$")
 
 
 def list_files(root):
@@ -157,14 +172,33 @@ def strip_noise(text):
     return "".join(out)
 
 
-def prev_significant_char(text, idx):
-    """The character immediately before index idx, skipping whitespace.
-    None means the identifier starts the file.
+def prev_significant_index(text, idx):
+    """The index of the character immediately before index idx, skipping
+    whitespace. -1 means the identifier starts the file.
     """
     i = idx - 1
     while i >= 0 and text[i].isspace():
         i -= 1
-    return None if i < 0 else text[i]
+    return i
+
+
+def is_label_colon(text, colon_idx):
+    """True when the ':' at colon_idx is a REAL label colon: a goto
+    label ("name:"), a "case CONST:", or a "default:" -- the only three
+    colon shapes that introduce a C statement. Rejects every other
+    colon, most importantly a ternary "cond ? a : b" colon, by requiring
+    the WHOLE source line from its own start up to and including this
+    colon to match one of the three shapes. A ternary's prefix is
+    instead the conditional expression itself (for example
+    "int rc = 1 ? 0 :"), which matches none of them.
+    """
+    line_start = text.rfind("\n", 0, colon_idx) + 1
+    prefix = text[line_start:colon_idx + 1].strip()
+    return bool(
+        LABEL_RE.match(prefix)
+        or CASE_RE.match(prefix)
+        or DEFAULT_RE.match(prefix)
+    )
 
 
 def matching_close_and_next_char(text, open_idx):
@@ -202,9 +236,14 @@ def count_text(text):
         if j >= len(cleaned) or cleaned[j] != "(":
             continue  # not a call (a type name, a macro, a declaration, ...)
         open_idx = j
-        prev = prev_significant_char(cleaned, start)
-        if prev is not None and prev not in PREV_OK:
-            continue  # value used or discarded on purpose (see header)
+        prev_idx = prev_significant_index(cleaned, start)
+        if prev_idx >= 0:
+            prev = cleaned[prev_idx]
+            is_ok = prev in SIMPLE_PREV_OK or (
+                prev == ":" and is_label_colon(cleaned, prev_idx)
+            )
+            if not is_ok:
+                continue  # value used or discarded on purpose (see header)
         close_idx, next_char = matching_close_and_next_char(cleaned, open_idx)
         if close_idx is None or next_char != ";":
             continue
