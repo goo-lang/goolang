@@ -448,3 +448,17 @@ Read these before trusting any number this tool produces.
   current `src/` tree only, hence its 40 — see
   `scripts/pthread-return-baseline.txt` for the full explanation and the
   per-file baseline.
+- **Task 24 decision: `GOO_ASSERT` stays compiled out by default.** Measured
+  2026-09-02 with `scripts/run_golden.sh` (495 fixtures, `GOLDEN_JOBS=32`), two
+  runs per compiler in one sitting, second (warm) run quoted: production
+  `bin/goo` (`GOO_ASSERT` off) 3.29 s wall / 28.68 s user, against a sandbox
+  build made with `CC='ccache gcc -DGOO_DEBUG'` (`GOO_ASSERT` on, confirmed by
+  `objdump -d`: 0 real calls to `goo_assert_fail` in `bin/goo` against 12 in
+  the sandbox binary) at 3.43 s wall / 29.28 s user. That is a 4.3% wall-time
+  cost, at or above the 2% line the task set, so the default is UNCHANGED and
+  no kill switch was added. Four further warm repeats of each binary (not the
+  quoted pair) ranged 3.21-3.36 s for production and 3.21-3.43 s for the
+  sandbox build — the two ranges overlap, so this 3.3-second suite cannot show
+  a signal much below its own run-to-run noise. The "do not flip" call rests
+  on the instrument being unable to confirm a cost under 2%, not on a
+  confidently larger one.
