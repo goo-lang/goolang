@@ -31,7 +31,9 @@
 # together take about 4.6s (N=4 K=1 alone is the slowest at ~1.3s, of which
 # only 0.32s is pan actually searching -- the rest is spin -a and the cc
 # build of pan.c, paid on every row). The full `make spin-deadlock-model-probe`
-# target, gate plus --self-test, takes about 18s. Both are comfortably inside
+# target takes about 18s, because its prerequisite spin-bootstrap-probe runs its own
+# self-test, which builds SPIN twice; this script alone, gate plus --self-test,
+# takes about 11s (4.6s + 6.7s). Both are comfortably inside
 # the plan's 30s budget (bootstrap excluded), so N=4 stays an unconditional
 # gate row -- SPIN_MODEL_FULL does not exist, because nothing needed moving
 # behind it.
