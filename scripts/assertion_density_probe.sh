@@ -61,6 +61,13 @@ BASELINE="${ASSERTION_DENSITY_BASELINE:-$REPO_ROOT/scripts/assertion-density-bas
 # all measure the exact same thing.
 # ---------------------------------------------------------------------------
 
+is_positive_int() { # $1 = candidate value; a whole number above zero
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	[ "$1" -gt 0 ]
+}
+
 list_files() { # $1 = a directory containing an src/ tree (this fn is given the src/ dir itself)
 	find "$1" -type f -name '*.c' ! -name '*.tab.c' ! -name 'lex.yy.c' -print0 2>/dev/null | LC_ALL=C sort -z
 }
@@ -127,15 +134,17 @@ find_assertion_line() {
 
 # ---------------------------------------------------------------------------
 # --self-test: the probe that refuses a density decrease must show it can
-# detect one. Two checks: remove one real assertion line from a scratch copy
-# and require RED against the real baseline, and require an unmodified copy
+# detect one. Three checks: remove one real assertion line from a scratch
+# copy and require RED against the real baseline; require an unmodified copy
 # to stay GREEN against that same baseline (the positive control -- without
-# it, a harness that is red for every input would look identical to a working
-# negative control).
+# it, a harness that is red for every input would look identical to a
+# working negative control); and require a baseline of "0 0" to read RED
+# against the real, unmodified tree, since a zero baseline can never be
+# passed BELOW and would otherwise pass with no real check at all.
 #
-# The mutation is verified to have LANDED (count dropped by exactly one)
-# before its red result is trusted: a sed that silently matched nothing would
-# otherwise read exactly like a passing probe.
+# The mutation in check 1 is verified to have LANDED (count dropped by
+# exactly one) before its red result is trusted: a sed that silently matched
+# nothing would otherwise read exactly like a passing probe.
 # ---------------------------------------------------------------------------
 if [ "${1:-}" = "--self-test" ]; then
 	SELF="$PROBE --self-test"
@@ -185,6 +194,21 @@ if [ "${1:-}" = "--self-test" ]; then
 		echo "$SELF: FAIL (an unmodified copy is RED -- the harness is broken, not the tree)"
 		sed 's/^/        /' "$W/out.log"
 		bad_self=1
+	fi
+
+	# 3. A baseline of 0 0 is not a real check: base_assert=0 can never read
+	#    as "below baseline", and the density compare is skipped outright
+	#    when base_exec is 0. Run this against the REAL, unmodified tree --
+	#    not a mutated copy, which would also go red for the count-drop
+	#    reason alone and prove nothing about zero handling specifically.
+	zero_baseline="$W/zero-baseline.txt"
+	printf '0 0\n' >"$zero_baseline"
+	if ASSERTION_DENSITY_BASELINE="$zero_baseline" "$0" >"$W/out.log" 2>&1; then
+		echo "$SELF: FAIL (a baseline of 0 0 passed -- zero must never verify anything)"
+		sed 's/^/        /' "$W/out.log"
+		bad_self=1
+	else
+		echo "    ok: a baseline of 0 0 is RED"
 	fi
 
 	rm -rf "$W"
@@ -245,8 +269,13 @@ cur_files="${cur_rest#* }"
 base_line="$(grep -vE '^[[:space:]]*(#|$)' "$BASELINE" | head -n1)"
 base_assert="$(printf '%s\n' "$base_line" | awk '{print $1}')"
 base_exec="$(printf '%s\n' "$base_line" | awk '{print $2}')"
-if [ -z "${base_assert:-}" ] || [ -z "${base_exec:-}" ]; then
-	echo "$PROBE: FAIL (could not read two counts from $BASELINE)"
+# A baseline of 0 0 (or anything not a whole number above zero) is not a real
+# check: base_assert=0 can never be "below baseline", and the density compare
+# below is skipped entirely when base_exec is 0. Reject both before the
+# compare step runs, in the same shape as the parse failure above.
+if [ -z "${base_assert:-}" ] || [ -z "${base_exec:-}" ] \
+	|| ! is_positive_int "$base_assert" || ! is_positive_int "$base_exec"; then
+	echo "$PROBE: FAIL (could not read two positive counts from $BASELINE: got '${base_assert:-}' '${base_exec:-}')"
 	exit 1
 fi
 
