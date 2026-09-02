@@ -3392,6 +3392,7 @@ VERIFY_ALL_DEPS := \
     assertion-density-probe \
     pthread-return-probe \
     warning-count-probe \
+    spin-bootstrap-probe \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
@@ -5502,6 +5503,20 @@ pthread-return-probe:
 warning-count-probe: $(NNG_LIB)
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh --self-test
+
+# Vendored SPIN (task 4 of the 2026-09-02 verification tooling plan; Track
+# B's Promela gate over the runtime deadlock detector, tasks 5-7, is not yet
+# on this branch). Builds or finds a spin >= 6.5 with no network read --
+# see third_party/README.md for the pinned tarball and scripts/spin_bootstrap.sh
+# for the PATH/prior-build/build order. Self-test runs in the same
+# invocation, in the shape of assertion-density-probe above: a corrupted
+# tarball copy must exit 3 naming the file, a real build must produce a
+# working spin, and a second run against the same build dir must not
+# rebuild.
+.PHONY: spin-bootstrap-probe
+spin-bootstrap-probe:
+	@bash scripts/spin_bootstrap.sh
+	@bash scripts/spin_bootstrap.sh --self-test
 
 # The corpus against an explicitly ASSERT-ENABLED (-DGOO_DEBUG) compiler.
 # Deliberately NOT in verify-core: `make debug` and `make lexer` both write
