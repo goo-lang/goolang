@@ -8,6 +8,10 @@ Source: MISRA C:2012, Third edition, first revision (February 2019), 17
 directives and 156 rules. Guideline headline text is quoted from a licensed
 copy solely to identify the guideline under discussion.
 
+A companion record, [`power-of-ten.md`](power-of-ten.md), covers Gerard
+Holzmann's ten rules for safety-critical C, with a checker named for each
+rule or the word "unchecked".
+
 ## This is not a compliance claim
 
 MISRA C:2012 section 5.5 sets the bar for claiming compliance. This project
