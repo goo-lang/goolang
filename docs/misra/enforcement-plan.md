@@ -160,6 +160,20 @@ Enforcement mechanisms in this project:
 | Rule 22.9 - The value of errno shall be tested against zero after calling an errno- setting-function | Required | Adopted, fix backlog | cppcheck |
 | Rule 22.10 - The value of errno shall only be tested when the last function to be called was an errno-setting-function | Required | Adopted, fix backlog | cppcheck |
 
+## Rule 17.7's pthread slice
+
+Rule 17.7 carries a deviation record (D-02), so it is absent from the table
+above like the other ten deviated guidelines. One part of it is now
+enforced on its own: the unchecked `pthread_*` returns D-02 keeps (840 of
+them, measured 2026-08-14, before the 2026-08-17 quarantine moved most of
+the calls behind them into `attic/src/`) are a shrink-only ratchet on
+today's `src/` tree — `pthread-return-probe`
+(`scripts/pthread_return_probe.sh`), in `make verify-core` since commit
+6719b8a. It held 40 unchecked calls across 68 `src/*.c` files on 2026-09-02
+(`scripts/pthread-return-baseline.txt`) and refuses any file's count
+rising, or a new file appearing with one. The rest of Rule 17.7 has no gate
+yet and stays on the Phase 1 fix backlog in `README.md`.
+
 ## The Mandatory guidelines the checker cannot see
 
 MISRA 6.2.1 permits no deviation from a Mandatory guideline, so these need a

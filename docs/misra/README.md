@@ -85,7 +85,7 @@ MISRA 5.4 requires a formal record for each. One file each, in `deviations/`, us
 | ID | Guideline | Waived | Reason |
 |---|---|---|---|
 | [D-01](deviations/D-01.md) | Rule 21.3 - The memory allocation and deallocation functions of <stdlib.h> shall not be used | 2,597 | malloc/free is the memory model: ARC, arenas, xalloc |
-| [D-02](deviations/D-02.md) | Rule 17.7 - The value returned by a function having non-void return type shall be used | 1,709 | 1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return |
+| [D-02](deviations/D-02.md) | Rule 17.7 - The value returned by a function having non-void return type shall be used | 1,709 | 1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return (2026-08-14, cppcheck). The pthread slice is now enforced by `pthread-return-probe` in `verify-core` — shrink-only, 40 unchecked calls across 68 `src/*.c` files on 2026-09-02, see `scripts/pthread-return-baseline.txt` |
 | [D-03](deviations/D-03.md) | Rule 14.4 - The controlling expression of an if statement and the controlling expression of an iteration-statement shall have essentially Boolean type | 2,111 | if (ptr) and if (!x) are the house idiom |
 | [D-04](deviations/D-04.md) | Rule 21.6 - The Standard Library input/output functions shall not be used | 1,372 | a compiler must print diagnostics |
 | [D-05](deviations/D-05.md) | Rule 11.3 - A cast shall not be performed between a pointer to object type and a pointer to a different object type | 912 | the AST downcast (CallExprNode *)node is the architecture |
@@ -133,7 +133,7 @@ Every rule here marks code that is either undefined, or a defect class this proj
 
 | Guideline | Category | To fix | Note |
 |---|---|---|---|
-| Rule 17.7 - The value returned by a function having non-void return type shall be used | Required | 1,516 | 1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return |
+| Rule 17.7 - The value returned by a function having non-void return type shall be used | Required | 1,516 | 1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return (2026-08-14, cppcheck). The pthread slice is now enforced by `pthread-return-probe` in `verify-core` — shrink-only, 40 unchecked calls across 68 `src/*.c` files on 2026-09-02, see `scripts/pthread-return-baseline.txt` |
 | Rule 11.8 - A cast shall not remove any const or volatile qualification from the type pointed to by a pointer | Required | 67 | free((void*)x) on a const char* field; a real defect class |
 | Rule 12.2 - The right hand operand of a shift operator shall lie in the range zero to one less than the width in bits of the essential type of the left hand operand | Required | 45 | shift out of range is undefined behaviour |
 | Rule 4.1 - Octal and hexadecimal escape sequences shall be terminated | Required | 41 | unterminated escape sequence |
@@ -325,7 +325,7 @@ The essential type model. Real value, but the largest and least mechanical group
 | Rule 17.4 - All exit paths from a function with non-void return type shall have an explicit return statement with an expression | Mandatory | Adopted, enforced by other means | - | no |
 | Rule 17.5 - The function argument corresponding to a parameter declared to have an array type shall have an appropriate number of elements | Advisory | Adopted, enforced by other means | - | no |
 | Rule 17.6 - The declaration of an array parameter shall not contain the static keyword between the [ ] | Mandatory | Adopted, clean | - | yes |
-| Rule 17.7 - The value returned by a function having non-void return type shall be used | Required | Deviation record (D-02) | 3225 | yes |
+| Rule 17.7 - The value returned by a function having non-void return type shall be used | Required | Deviation record (D-02); pthread slice enforced by `pthread-return-probe` in `verify-core`, shrink-only, 40 unchecked calls on 2026-09-02 (`scripts/pthread-return-baseline.txt`) | 3225 | yes |
 | Rule 17.8 - A function parameter should not be modified | Advisory | Declined (advisory) | 53 | yes |
 | Rule 18.1 - A pointer resulting from arithmetic on a pointer operand shall address an element of the same array as that pointer operand | Required | Adopted, enforced by other means | - | no |
 | Rule 18.2 - Subtraction between pointers shall only be applied to pointers that address elements of the same array | Required | Adopted, enforced by other means | - | no |
@@ -438,3 +438,13 @@ Read these before trusting any number this tool produces.
   call at `src/codegen/codegen.c:1797` is a real Rule 21.8 violation that the
   baseline reports as absent. A guideline reading clean means clean *on this
   platform's preprocessed source*, not clean in the tree.
+- **The 840 and the 40 count different trees, not different bugs.** The 840
+  unchecked `pthread_*` returns above came from the cppcheck scan of
+  2026-08-14. The 2026-08-17 quarantine then moved the unlinked frameworks
+  that carried most of those calls out of `src/` into `attic/src/`. A raw
+  `pthread_` grep on 2026-09-02 finds 44 call sites left in `src/`, 0 in
+  `include/`, and 981 in `attic/src/`. `pthread-return-probe`
+  (`scripts/pthread_return_probe.sh`, header dated 2026-09-02) counts the
+  current `src/` tree only, hence its 40 — see
+  `scripts/pthread-return-baseline.txt` for the full explanation and the
+  per-file baseline.
