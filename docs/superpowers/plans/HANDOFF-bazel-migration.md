@@ -16,10 +16,10 @@
 | 4 probe gates, task 14 in part, the four arc_* gates, 10 of 29 | #TBD | open |
 
 **Parity: 224 gates** as of #331 (was 217). `make verify-core` and
-`bazel test //...` are both green. `bazel test //...` runs 82 tests.
-`verify-core` now carries three DERIVATION gates — census, generated.bzl and
-the extracted sources — which together cost about 110 s, most of it the
-source-drift self-test.
+`bazel test //...` are both green. `bazel test //...` runs 165 tests
+(measured 2026-09-03). `verify-core` now carries three DERIVATION gates —
+census, generated.bzl and the extracted sources — which together cost about
+110 s, most of it the source-drift self-test.
 
 ## Pick up here
 
@@ -30,7 +30,8 @@ cause for each of the other 19. WARNING: the 1–5 checkboxes
 in that file were never ticked, though every artefact is present — do not read
 an empty box there as open work. 6 to 12 are ticked, with evidence.
 
-**Next is task 13**, then 14 (the 28 script-backed), 15 (the bespoke EIGHT, up
+**Task 13 is done. Next is task 14's remaining three** (`arena_rss_probe`,
+`goo_test_probe`, `dead_package_code_probe`), then 15 (the bespoke EIGHT, up
 from six — the derivation gates classify there, correctly: they are
 hand-written sh_tests), 16–17 (CI, close).
 
