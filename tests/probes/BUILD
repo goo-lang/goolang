@@ -94,28 +94,37 @@ goo_script_probe(
 # directory -- the runfiles root -- so the stdlib is DATA here, not a
 # GOOROOT the macro cannot name. The same tier is what every generated
 # fixture probe already relies on.
+#
+# tags = ["nosan"]: the sanitizer legs (.bazelrc test:san-base) instrument
+# the COMPILER and install no valgrind, while these four gates measure the
+# COMPILED PROGRAM under valgrind. A sanitizer leg learns nothing from them
+# and, with no valgrind on that job, would only turn them red.
 goo_script_probe(
     name = "arc_concat_operand_probe",
     script = "//:scripts/arc_concat_operand_probe.sh",
     data = ["//goostd:files"],
+    tags = ["nosan"],
 )
 
 goo_script_probe(
     name = "arc_map_key_local_probe",
     script = "//:scripts/arc_map_key_local_probe.sh",
     data = ["//goostd:files"],
+    tags = ["nosan"],
 )
 
 goo_script_probe(
     name = "arc_multi_assign_probe",
     script = "//:scripts/arc_multi_assign_probe.sh",
     data = ["//goostd:files"],
+    tags = ["nosan"],
 )
 
 goo_script_probe(
     name = "arc_reassign_probe",
     script = "//:scripts/arc_reassign_probe.sh",
     data = ["//goostd:files"],
+    tags = ["nosan"],
 )
 
 # NOT MIGRATED, and each for a measured reason rather than an assumption. All
@@ -124,7 +133,10 @@ goo_script_probe(
 #   arena_rss_probe            reads tests/examples/, a SECOND fixture tree
 #   goo_test_probe             needs whole test PACKAGES with expected.norm.txt
 #   dead_package_code_probe    imports "strings", so it needs GOOROOT, which
-#                              the macro deliberately does not set
+#                              the macro deliberately does not set. The
+#                              resolver's cwd tier (see above) means
+#                              //goostd:files in data is the likely fix,
+#                              unmeasured.
 #
 # The COMPILER contract is necessary for these and not sufficient. Each wants
 # its own data, and one wants a GOOROOT the macro cannot name because

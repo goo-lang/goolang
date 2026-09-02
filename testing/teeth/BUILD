@@ -88,6 +88,7 @@ goo_script_probe(
     name = "skip_defect",
     script = "skip_probe.sh",
     needs_compiler = False,
+    size = "small",
     tags = ["manual"],
 )
 

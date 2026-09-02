@@ -130,9 +130,10 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
     derives `<script-dir>/../bin/goo`, which does not exist in the sandbox.
 
     The contract is one variable. COMPILER names the binary; the compiler then
-    finds its own archive and stdlib through GOO_RUNTIME and GOOROOT, which it
-    already reads. Scripts that touch no compiler pass needs_compiler = False
-    and take none of the three.
+    finds its own archive through GOO_RUNTIME, and its stdlib through the
+    resolver's working-directory tier, which finds ./goostd in the runfiles
+    root. Scripts that touch no compiler pass needs_compiler = False and take
+    neither.
 
     GOO_PROBE_NO_SKIP is set for every probe, with or without a compiler. A
     script that cannot find its tool (valgrind, for instance) prints SKIPPED
