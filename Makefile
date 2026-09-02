@@ -3387,6 +3387,7 @@ VERIFY_ALL_DEPS := \
     alloc-doors-selftest \
     goo-assert-probe \
     assertion-density-probe \
+    pthread-return-probe \
     warning-count-probe \
     string-literal-header-probe \
     test-golden \
@@ -5472,6 +5473,13 @@ goo-assert-probe:
 assertion-density-probe:
 	@bash scripts/assertion_density_probe.sh
 	@bash scripts/assertion_density_probe.sh --self-test
+
+# The pthread return value discard count (shrink-only). MISRA Rule 17.7's
+# pthread slice, from task 1 of the 2026-09-02 verification tooling plan.
+.PHONY: pthread-return-probe
+pthread-return-probe:
+	@bash scripts/pthread_return_probe.sh
+	@bash scripts/pthread_return_probe.sh --self-test
 
 # The warning-count gate (Holzmann's Power of Ten, rule 10: compile with all
 # warnings on, stop the build on one). Today's build is warning-heavy, so
