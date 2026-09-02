@@ -1,6 +1,17 @@
 /*
  * deadlock_detector.pml — a Promela model of the Goo runtime's deadlock
- * detector AS IT IS TODAY (2026-09-02, branch build/bazel-phase4-probes).
+ * detector. ONE file, TWO protocols, selected by FIX:
+ *
+ *   FIX = 0   the detector AS IT IS TODAY (2026-09-02, branch
+ *             build/bazel-phase4-probes). Task 5 proved it aborts a live
+ *             program for every finite threshold.
+ *   FIX = 1   the CORRECTED protocol. The blocked count is a SET of parked
+ *             goroutines, not a count of block_begin calls. The signaller
+ *             removes from that set, under the scheduler mutex, every waiter
+ *             its signal or broadcast moves to the signalled state.
+ *             goo_sched_block_end no longer touches the count.
+ *
+ * The two protocols live in one file on purpose: a second file would drift.
  *
  * Modelled C code
  * ---------------
@@ -17,14 +28,32 @@
  *     every live goroutine is WAITING, none is SIGNALLED, and the ready
  *     queue is empty.
  *   assert(rd) at the abort point is the whole claim. A counterexample is an
- *   abort of a live program.
+ *   abort of a live program. The claim is the SAME for both protocols.
  *
  * Parameters (set with spin -D... -a):
- *   N         goroutines, 2..4          (default 2)
- *   K         asleep_streak threshold   (default 3; the C code uses 100)
- *   DETECTOR  1 = detector on, 0 = detector never aborts (positive control)
- *   CAP       channel buffer capacity   (default 1)
- *   OPS       channel operations per goroutine (default 2)
+ *   N          goroutines, 2..4          (default 2)
+ *   K          asleep_streak threshold   (default 3; the C code uses 100)
+ *   DETECTOR   1 = detector on, 0 = detector never aborts (positive control)
+ *   FIX        0 = the protocol as it is, 1 = the corrected protocol
+ *   CAP        channel buffer capacity   (default 1)
+ *   OPS        channel operations per goroutine (default 2)
+ *
+ * Teeth. Each of these is ONE change to the FIX=1 protocol and each must make
+ * pan report an error. They exist so a reader can see the proof is not vacuous.
+ *   DOUBLE_DEC 1  block_end decrements as well as the signaller. The count
+ *                 then goes below zero. FIX=1 only.
+ *   BCAST_ONE  1  a broadcast decrements by ONE however many waiters it woke,
+ *                 instead of by the number woken. FIX=1 only.
+ *
+ * Spurious wakeups.
+ *   SPURIOUS   1  pthread_cond_wait may return with no signal, which POSIX
+ *                 permits. Every wait in channels.c sits inside a while loop
+ *                 that re-checks the predicate and waits again (channels.c:280,
+ *                 :336, :359, :425, :484), so the model re-checks too.
+ *   END_UNREG  1  block_end unregisters this goroutine IF it is still in the
+ *                 set. This is the amendment a spurious wakeup needs; with
+ *                 SPURIOUS=0 it is dead code, and the SPURIOUS=0 runs prove
+ *                 that with assert(counted[_pid] == 0) inside block_end.
  *
  * Goroutine i sends when i is even and receives when i is odd.
  */
@@ -39,6 +68,26 @@
 
 #ifndef DETECTOR
 #define DETECTOR 1
+#endif
+
+#ifndef FIX
+#define FIX 0
+#endif
+
+#ifndef DOUBLE_DEC
+#define DOUBLE_DEC 0
+#endif
+
+#ifndef BCAST_ONE
+#define BCAST_ONE 0
+#endif
+
+#ifndef SPURIOUS
+#define SPURIOUS 0
+#endif
+
+#ifndef END_UNREG
+#define END_UNREG 0
 #endif
 
 #ifndef CAP
@@ -78,6 +127,16 @@ bit schmx = 0;          /* g_scheduler->scheduler_mutex */
 bit main_in_wait = 0;   /* deadlock_detector.main_in_wait; the C never reads it */
 bit prog_exit = 0;      /* goo_deadlock_abort() -> exit(2) kills every thread */
 
+#if FIX
+/* FIX=1 only. counted[i] is goroutine i's membership of the blocked SET, and
+ * nblocked is the size of that set. The C has no such array today; the fix
+ * needs one bit per goroutine (or, equivalently, a waiter list on each
+ * condvar), because pthread_cond_signal does not say WHO it woke. See the
+ * README section "The C-level fix". This array does not exist under FIX=0, so
+ * the FIX=0 state vector is byte for byte the one task 5 measured. */
+bit counted[N];
+#endif
+
 /* scratch for the condvar inlines; always reset to 0 so the state vector
  * carries no residue */
 byte sg_i = 0;
@@ -97,7 +156,64 @@ inline unlock(m) { m = 0 }
  * channel-then-scheduler. main takes the scheduler mutex only, so it can
  * observe the incremented counter while the caller still holds the channel
  * mutex and has not yet parked.
+ *
+ * FIX=0 keeps that as a TALLY of block_begin calls, which is what the C ships
+ * and what task 5 broke. FIX=1 makes nblocked the SIZE OF THE SET counted[],
+ * and moves the removal to the signaller. Both use the same lock and the same
+ * order; only the arithmetic and the place of the decrement differ.
  */
+#if FIX
+
+/* FIX=1: registering is IDEMPOTENT. The count is the size of the blocked set,
+ * so a second call with the bit already set adds nothing. Without this a
+ * spurious return that re-waits would count the same goroutine twice. */
+inline block_begin() {
+    atomic { schmx == 0 -> schmx = 1;
+             if
+             :: counted[_pid] == 0 -> counted[_pid] = 1; nblocked++
+             :: else -> skip
+             fi;
+             schmx = 0 }
+}
+
+#if DOUBLE_DEC
+/* TEETH mutant, FIX=1 only: the wake-time decrement is put back BESIDE the
+ * signal-time one. Both fire for one wake, so the count goes below zero. The
+ * assertion is the never-below-zero rule, and it is what must break. */
+inline block_end() {
+    atomic { schmx == 0 -> schmx = 1;
+             assert(nblocked > 0);
+             nblocked--;
+             schmx = 0 }
+}
+#elif END_UNREG
+/* The amendment a spurious wakeup needs: leave the set only if still in it.
+ * This can never drive the count below zero, and it is a no-op whenever the
+ * signaller got there first. */
+inline block_end() {
+    atomic { schmx == 0 -> schmx = 1;
+             if
+             :: counted[_pid] == 1 -> counted[_pid] = 0;
+                                      assert(nblocked > 0);
+                                      nblocked--
+             :: else -> skip
+             fi;
+             schmx = 0 }
+}
+#else
+/* The corrected protocol as specified: block_end does not touch the count.
+ * The assertion turns "it does not need to" into a THEOREM of the model: on
+ * every reachable path the signaller has already cleared this goroutine's
+ * bit. Under SPURIOUS=1 that theorem is false, and this assertion says so. */
+inline block_end() {
+    atomic { schmx == 0 -> schmx = 1;
+             assert(counted[_pid] == 0);
+             schmx = 0 }
+}
+#endif
+
+#else
+
 inline block_begin() {
     atomic { schmx == 0 -> schmx = 1; nblocked++; schmx = 0 }
 }
@@ -108,6 +224,8 @@ inline block_end() {
              schmx = 0 }
 }
 
+#endif
+
 /* ---- condition variables ---- */
 
 /* pthread_cond_signal: wake exactly one waiter on cv, if any waits. The
@@ -115,6 +233,15 @@ inline block_end() {
  * held, exactly as goo_chan_send() calls it. */
 inline cond_signal(cv) {
     atomic {
+#if FIX
+        /* The caller already holds the CHANNEL mutex. Take the SCHEDULER mutex
+         * as well, which keeps the channel-then-scheduler order that
+         * block_begin uses, so the fix adds no new lock order. Taking the lock
+         * is the FIRST statement of the atomic sequence, which makes it the
+         * sequence's guard: if the mutex is busy the sequence is simply not
+         * enabled, so no scratch variable is ever left half written. */
+        schmx == 0 -> schmx = 1;
+#endif
         sg_n = 0;
         sg_i = 0;
         do
@@ -143,7 +270,16 @@ inline cond_signal(cv) {
                   if
                   :: (gstate[sg_i] == G_WAITING && wcv[sg_i] == cv) ->
                        if
-                       :: sg_c == sg_t -> gstate[sg_i] = G_SIGNALLED; sg_i = N
+                       :: sg_c == sg_t ->
+#if FIX
+                            /* the woken waiter leaves the blocked set HERE,
+                             * not when it later returns from the wait */
+                            assert(counted[sg_i] == 1);
+                            assert(nblocked > 0);
+                            counted[sg_i] = 0;
+                            nblocked--;
+#endif
+                            gstate[sg_i] = G_SIGNALLED; sg_i = N
                        :: else -> sg_c++; sg_i++
                        fi
                   :: else -> sg_i++
@@ -156,25 +292,56 @@ inline cond_signal(cv) {
         sg_n = 0;
         sg_t = 0;
         sg_c = 0
+#if FIX
+        ; schmx = 0
+#endif
     }
 }
 
 /* pthread_cond_broadcast: wake every waiter on cv. goo_chan_recv() broadcasts
- * not_full because two predicate classes share that condvar. */
+ * not_full because two predicate classes share that condvar
+ * (channels.c:466-476 and :499-505 give the reason).
+ *
+ * A broadcast can wake more than one waiter, so under FIX=1 it must decrement
+ * by the NUMBER it woke. BCAST_ONE=1 is the mutant that decrements by one. */
 inline cond_broadcast(cv) {
     d_step {
+#if FIX
+        schmx == 0 -> schmx = 1;
+        sg_n = 0;
+#endif
         sg_i = 0;
         do
         :: sg_i < N ->
              if
              :: (gstate[sg_i] == G_WAITING && wcv[sg_i] == cv) ->
                   gstate[sg_i] = G_SIGNALLED
+#if FIX
+                  ; assert(counted[sg_i] == 1);
+                  counted[sg_i] = 0;
+                  sg_n++
+#endif
              :: else -> skip
              fi;
              sg_i++
         :: else -> break
         od;
         sg_i = 0
+#if FIX
+        ;
+#if BCAST_ONE
+        /* TEETH mutant: one decrement, however many waiters woke. */
+        if
+        :: sg_n > 0 -> assert(nblocked > 0); nblocked--
+        :: else -> skip
+        fi;
+#else
+        assert(nblocked >= sg_n);
+        nblocked = nblocked - sg_n;
+#endif
+        sg_n = 0;
+        schmx = 0
+#endif
     }
 }
 
@@ -191,7 +358,19 @@ inline cond_broadcast(cv) {
  */
 inline cond_wait_park() {
     unlock(chmx);
+#if SPURIOUS
+    /* POSIX lets pthread_cond_wait return with no signal at all. The second
+     * branch is that return: the goroutine is still G_WAITING and no signaller
+     * touched the blocked set. Every wait in channels.c is inside a while loop
+     * that re-checks the predicate (channels.c:280, :336, :359, :425, :484),
+     * so the caller re-checks and waits again. */
+    if
+    :: (gstate[_pid] == G_SIGNALLED || prog_exit) -> skip
+    :: skip
+    fi;
+#else
     (gstate[_pid] == G_SIGNALLED || prog_exit);
+#endif
     if
     :: prog_exit -> goto dead
     :: else -> lock(chmx)

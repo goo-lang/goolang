@@ -2,17 +2,22 @@
 # run_deadlock_model.sh — build and run the SPIN model of the Goo runtime's
 # deadlock detector (tests/models/deadlock_detector.pml).
 #
-# Usage: run_deadlock_model.sh N K [DETECTOR]
+# Usage: run_deadlock_model.sh N K [DETECTOR] [FIX]
 #   N         goroutines, 2..4
 #   K         asleep_streak threshold, >= 1
 #   DETECTOR  1 (default) detector on, 0 detector never aborts (positive control)
+#   FIX       0 (default) the protocol as it is today, 1 the corrected protocol
+#             (the signaller removes a woken waiter from the blocked set)
 #
 # Environment:
-#   PAN_ARGS  extra flags passed to ./pan (for example "-m100000 -w26")
-#   CC        C compiler, flags allowed (default cc; e.g. CC='cc -DMEMLIM=1')
-#   KEEP_DIR  directory to copy the model, pan sources and any .trail into
-#             (the work directory itself is always a fresh mktemp -d and is
-#             removed on exit, so pan.* files never land in the tree)
+#   PAN_ARGS    extra flags passed to ./pan (for example "-m100000 -w26")
+#   CC          C compiler, flags allowed (default cc; e.g. CC='cc -DMEMLIM=1')
+#   MODEL_DEFS  extra -D flags for spin, for the teeth mutants and the spurious
+#               wakeup option (for example "-DDOUBLE_DEC=1"). The verdict line
+#               prints the whole define set, so no run is unrecorded.
+#   KEEP_DIR    directory to copy the model, pan sources and any .trail into
+#               (the work directory itself is always a fresh mktemp -d and is
+#               removed on exit, so pan.* files never land in the tree)
 #
 # Exit status:
 #   0  pan completed the search and reported 0 errors
@@ -24,8 +29,8 @@
 set -u
 
 usage() {
-    echo "usage: $0 N K [DETECTOR]" >&2
-    echo "  N in 2..4, K >= 1, DETECTOR in 0..1" >&2
+    echo "usage: $0 N K [DETECTOR] [FIX]" >&2
+    echo "  N in 2..4, K >= 1, DETECTOR in 0..1, FIX in 0..1" >&2
 }
 
 die_usage() {
@@ -34,13 +39,14 @@ die_usage() {
     exit 2
 }
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
-    die_usage "expected 2 or 3 arguments, got $#"
+if [ "$#" -lt 2 ] || [ "$#" -gt 4 ]; then
+    die_usage "expected 2, 3 or 4 arguments, got $#"
 fi
 
 N=$1
 K=$2
 DETECTOR=${3:-1}
+FIX=${4:-0}
 
 case "$N" in
     2|3|4) ;;
@@ -55,6 +61,10 @@ fi
 case "$DETECTOR" in
     0|1) ;;
     *) die_usage "DETECTOR must be 0 or 1 (got '$DETECTOR')" ;;
+esac
+case "$FIX" in
+    0|1) ;;
+    *) die_usage "FIX must be 0 or 1 (got '$FIX')" ;;
 esac
 
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -75,6 +85,7 @@ SPIN_VERSION=$("$SPIN" -V 2>&1 | head -1)
 
 CC=${CC:-cc}
 PAN_ARGS=${PAN_ARGS:-}
+MODEL_DEFS=${MODEL_DEFS:-}
 
 WORK=$(mktemp -d)
 cleanup() { rm -rf "$WORK"; }
@@ -82,7 +93,10 @@ trap cleanup EXIT
 
 cp "$MODEL" "$WORK/deadlock_detector.pml"
 
-DEFS="-DN=$N -DK=$K -DDETECTOR=$DETECTOR"
+# MODEL_DEFS is deliberately unquoted: it carries a list of -D flags. It is
+# printed in the verdict line, so a mutant run can never be mistaken for a
+# plain one.
+DEFS="-DN=$N -DK=$K -DDETECTOR=$DETECTOR -DFIX=$FIX $MODEL_DEFS"
 
 if ! ( cd "$WORK" && "$SPIN" $DEFS -a deadlock_detector.pml ) > "$WORK/spin.log" 2>&1; then
     echo "run_deadlock_model: spin -a failed" >&2
@@ -163,7 +177,7 @@ fi
 
 if [ -n "$INCONCLUSIVE_WHY" ]; then
     REASON=$(grep -m1 -E 'max search depth too small|reached -DMEMLIM bound|out of memory|error:' "$WORK/pan.log")
-    echo "run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=$N K=$K DETECTOR=$DETECTOR errors=$ERRORS states=$STATES search_completed=$COMPLETED -- $INCONCLUSIVE_WHY, so it proves nothing" >&2
+    echo "run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=$N K=$K DETECTOR=$DETECTOR FIX=$FIX errors=$ERRORS states=$STATES search_completed=$COMPLETED defs='$DEFS' -- $INCONCLUSIVE_WHY, so it proves nothing" >&2
     if [ -n "$REASON" ]; then
         echo "run_deadlock_model:   pan said: $REASON" >&2
     fi
@@ -179,7 +193,7 @@ else
     RC=1
 fi
 
-echo "run_deadlock_model: $VERDICT model=tests/models/deadlock_detector.pml N=$N K=$K DETECTOR=$DETECTOR errors=$ERRORS invalid_end_states=$INVALID_END states=$STATES search_completed=$COMPLETED depth=$DEPTH wall=${WALL}s spin='$SPIN_VERSION' CC='$CC' cc='$($CC --version 2>/dev/null | head -1)'"
+echo "run_deadlock_model: $VERDICT model=tests/models/deadlock_detector.pml N=$N K=$K DETECTOR=$DETECTOR FIX=$FIX errors=$ERRORS invalid_end_states=$INVALID_END states=$STATES search_completed=$COMPLETED depth=$DEPTH wall=${WALL}s defs='$DEFS' spin='$SPIN_VERSION' CC='$CC' cc='$($CC --version 2>/dev/null | head -1)'"
 
 if [ "$RC" -ne 0 ]; then
     grep -E '^pan:[0-9]*:' "$WORK/pan.log" | head -5

@@ -5,17 +5,39 @@ vendored SPIN (`scripts/spin_bootstrap.sh` prints the binary path).
 
 Contents:
 
-- `deadlock_detector.pml` — the runtime's deadlock detector as it is today.
+- `deadlock_detector.pml` — the runtime's deadlock detector. ONE file, TWO
+  protocols, selected by `FIX`: `FIX=0` is the detector as it ships today,
+  `FIX=1` is the corrected protocol.
 - `run_deadlock_model.sh` — build and run that model.
-- `evidence/` — a committed counterexample trail and its readable trace.
+- `evidence/` — committed counterexample trails and their readable traces.
 
 ---
 
-## `deadlock_detector.pml` — the deadlock detector as it is
+## `deadlock_detector.pml` — the deadlock detector, as it is and as it should be
+
+### One file, two protocols
+
+`FIX` selects the protocol. A second file would drift from the first, so both
+live here and share every other line of the model — the goroutines, the
+channel, the poll loop, the claim.
+
+| `FIX` | Protocol |
+|---|---|
+| `0` | **As it ships.** `blocked_goroutines++` at `goo_sched_block_begin`, `blocked_goroutines--` at `goo_sched_block_end`. Task 5 proved this aborts a live program for every finite threshold: the interval from `pthread_cond_signal` to the woken goroutine's `goo_sched_block_end` counts that goroutine as blocked, and nothing bounds that interval. |
+| `1` | **Corrected.** The count is the size of a SET of parked goroutines, not a tally of `block_begin` calls. The signaller removes from the set — under the scheduler mutex, while it still holds the channel mutex — every waiter its signal or broadcast moves to the signalled state. `goo_sched_block_end` no longer touches the count. A signalled goroutine is therefore not counted as blocked. |
+
+The claim is the same for both. Only the accounting changes.
+
+`FIX=0` is byte-for-byte task 5's protocol. Every `FIX=1` line sits inside an
+`#if FIX`, including the `counted[N]` array, so the `FIX=0` state vector is the
+one task 5 measured. Two checks hold that: the preprocessed model at `FIX=0` is
+token-identical to the task 5 file, and every `FIX=0` row reproduces task 5's
+state count exactly (below).
 
 ### What it models
 
-The C under test, all on branch `build/bazel-phase4-probes` at `9311080`:
+The C under test, all at commit `f641564` (branch
+`worktree-verify-tooling-next-steps`, off `build/bazel-phase4-probes`):
 
 | C code | Model |
 |---|---|
@@ -26,7 +48,13 @@ The C under test, all on branch `build/bazel-phase4-probes` at `9311080`:
 | `goo_goroutine_exit()`, `concurrency.c:343-347` | the `gstate = G_DONE` then `nlive--` steps |
 | `goo_chan_send()` buffered path, `src/runtime/channels.c:277-329` | `inline do_send` |
 | `goo_chan_recv()` buffered path, `src/runtime/channels.c:422-479` | `inline do_recv` |
+| `pthread_cond_signal(not_empty)`, `channels.c:325` | `inline cond_signal` |
+| `pthread_cond_broadcast(not_full)`, `channels.c:475` | `inline cond_broadcast` |
+| `pthread_cond_wait`, `channels.c:296` and `:436` | `inline cond_wait_park` |
 | `goo_deadlock_abort()`, `src/runtime/deadlock.c:44-48` | `prog_exit = 1` and `goto stopped` |
+
+Under `FIX=1`, `cond_signal` and `cond_broadcast` also carry the new decrement.
+That is the only place the two protocols differ inside the channel code.
 
 Modelled state: one channel of capacity `CAP`, the channel mutex
 (`ch->mutex`), the two condition variables (`not_full`, `not_empty`), the
@@ -41,8 +69,9 @@ incrementing thread still holds the channel mutex and has not yet parked.
 
 `main_in_wait` is modelled because the design names it. Note that the C code
 **writes it and never reads it** — `grep -rn main_in_wait src/ include/` finds
-one write in `concurrency.c`, one reset in `deadlock.c`, and the field
-declaration. It steers nothing.
+four lines: one write at `concurrency.c:149`, one reset at `deadlock.c:17`, the
+field declaration at `include/runtime.h:671`, and the name inside a comment at
+`concurrency.c:170`. No line reads the field. It steers nothing.
 
 ### The five states of a goroutine
 
@@ -132,8 +161,20 @@ this for you.
 | `N` | goroutines, 2..4 | 2 |
 | `K` | `asleep_streak` threshold; the C code uses 100 | 3 |
 | `DETECTOR` | 1 detector on, 0 detector never aborts | 1 |
+| `FIX` | 0 the protocol as it ships, 1 the corrected protocol | 0 |
 | `CAP` | channel buffer capacity | 1 |
 | `OPS` | channel operations per goroutine | 2 |
+
+Three more parameters exist only to give the `FIX=1` proof teeth, and only
+`FIX=1` reads them. Each is ONE change, so a reader can see which change
+each error is attributable to.
+
+| Name | Meaning | Default |
+|---|---|---|
+| `DOUBLE_DEC` | `block_end` decrements as well as the signaller | 0 |
+| `BCAST_ONE` | a broadcast decrements by ONE, not by the number of waiters it woke | 0 |
+| `SPURIOUS` | `pthread_cond_wait` may return with no signal, which POSIX permits | 0 |
+| `END_UNREG` | `block_end` unregisters this goroutine IF it is still registered | 0 |
 
 Goroutine `i` sends when `i` is even and receives when `i` is odd. So `N = 2`
 and `N = 4` balance the sends against the receives, and `N = 3` does not: it
@@ -142,7 +183,19 @@ has two senders and one receiver, so a genuine deadlock is reachable there.
 ### Commands
 
 ```
-./tests/models/run_deadlock_model.sh N K [DETECTOR]
+./tests/models/run_deadlock_model.sh N K [DETECTOR] [FIX]
+```
+
+`DETECTOR` defaults to 1 and `FIX` defaults to 0, so every command written
+before `FIX` existed still means what it meant. The verdict line prints both,
+and prints the whole `-D` set as `defs='...'`, so no run can be mistaken for a
+different one.
+
+The four teeth and spurious-wakeup parameters have no positional slot. Pass
+them in `MODEL_DEFS`, which is appended to the define set and printed:
+
+```
+MODEL_DEFS='-DDOUBLE_DEC=1' ./tests/models/run_deadlock_model.sh 2 1 1 1
 ```
 
 Exit status:
@@ -175,26 +228,51 @@ cc -O2 -DSAFETY -o pan pan.c
 The `-D` flags must be the same on `spin -a` and on `spin -t`, or the replay
 reads a different model.
 
-To replay the committed trail:
+To replay a committed trail, use the `-D` set that trail was recorded with.
+Each is listed beside its file:
+
+| Trail | `-D` set |
+|---|---|
+| `evidence/deadlock_detector_N2_K1.trail` | `-DN=2 -DK=1 -DDETECTOR=1 -DFIX=0` |
+| `evidence/deadlock_detector_FIX1_N3_K1_bcast_one.trail` | `-DN=3 -DK=1 -DDETECTOR=1 -DFIX=1 -DBCAST_ONE=1` |
+| `evidence/deadlock_detector_FIX1_N2_spurious.trail` | `-DN=2 -DK=3 -DDETECTOR=0 -DFIX=1 -DSPURIOUS=1` |
 
 ```
 cp tests/models/deadlock_detector.pml "$WORK/"
 cp tests/models/evidence/deadlock_detector_N2_K1.trail \
    "$WORK/deadlock_detector.pml.trail"
-cd "$WORK" && "$SPIN" -t -p -DN=2 -DK=1 -DDETECTOR=1 deadlock_detector.pml
+cd "$WORK" && "$SPIN" -t -p -DN=2 -DK=1 -DDETECTOR=1 -DFIX=0 deadlock_detector.pml
 ```
+
+The task 5 trail was recorded before `FIX` existed, and it still replays
+against this model at `FIX=0`, to the same 332 steps and the same end state.
+That is the second check that `FIX=0` did not move.
 
 ### Results
 
 Instrument: Spin Version 6.5.2 (6 December 2019), vendored, built by
 `scripts/spin_bootstrap.sh`; `cc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)`
-with `-O2 -DSAFETY`; Linux 7.1.12-200.fc44.x86_64, 32 cores. Taken
-2026-09-02 on branch `build/bazel-phase4-probes` at `9311080`.
+with `-O2 -DSAFETY`; Linux 7.1.12-200.fc44.x86_64, 32 cores.
+The `FIX=0` rows were taken 2026-09-02 on branch `build/bazel-phase4-probes`
+at `9311080`, and re-taken unchanged at `f641564`. The `FIX=1` rows were taken
+2026-09-02 at `f641564` on branch `worktree-verify-tooling-next-steps`, on the
+same machine with the same instrument.
 
 `errors` and `states` come from pan's own summary. For a FAIL, pan stops at
 the first error, so the state count is what it explored before the error and
 not the whole state space — the runner prints `search_completed=no` in that
 case. The wall time is the runner's own measurement of `./pan` alone.
+
+Every row below is asked for a FULL state space search: `-DSAFETY`, no
+`-DBITSTATE`, no `PAN_ARGS`, so no depth limit below pan's default 10000 and no
+memory bound, and pan's own header reads
+`Full statespace search for: ... assertion violations +`. Each PASS row got
+one: it printed `search_completed=yes`, and the runner refuses to call a
+truncated search a PASS, so a PASS explored everything. A FAIL row did not, and
+cannot: pan stops at the first error by design, and a counterexample is a
+witness rather than a count.
+
+## `FIX=0` — the detector as it ships
 
 **Detector on (`DETECTOR=1`). Every case fails.**
 
@@ -254,15 +332,242 @@ The two negative controls for that rule:
 
 ```
 $ PAN_ARGS='-m50' ./tests/models/run_deadlock_model.sh 2 3 0
-run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=2 K=3 DETECTOR=0 errors=0 states=797 search_completed=no -- pan did not complete the search and found no error, so it proves nothing
+run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=2 K=3 DETECTOR=0 FIX=0 errors=0 states=797 search_completed=no defs='-DN=2 -DK=3 -DDETECTOR=0 -DFIX=0 ' -- pan did not complete the search and found no error, so it proves nothing
 run_deadlock_model:   pan said: error: max search depth too small
 rc=2
 
 $ CC='cc -DMEMLIM=1' ./tests/models/run_deadlock_model.sh 4 3 0
-run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=4 K=3 DETECTOR=0 errors=0 states=0 search_completed=no -- pan did not complete the search and found no error, so it proves nothing
+run_deadlock_model: INCONCLUSIVE model=tests/models/deadlock_detector.pml N=4 K=3 DETECTOR=0 FIX=0 errors=0 states=0 search_completed=no defs='-DN=4 -DK=3 -DDETECTOR=0 -DFIX=0 ' -- pan did not complete the search and found no error, so it proves nothing
 run_deadlock_model:   pan said: pan: reached -DMEMLIM bound
 rc=2
 ```
+
+## `FIX=1` — the corrected protocol
+
+### What changes
+
+Three edits, and nothing else:
+
+1. **`block_begin` registers, and registering is idempotent.** `counted[i]` is
+   goroutine `i`'s membership of the blocked set. `nblocked` is the size of
+   that set. A second `block_begin` with the bit already set adds nothing.
+2. **The signaller unregisters.** `cond_signal` clears the bit of the one
+   waiter it wakes and decrements by one. `cond_broadcast` clears the bit of
+   every waiter it wakes and decrements by THAT NUMBER. Both do it under the
+   scheduler mutex, taken while the channel mutex is already held.
+3. **`block_end` no longer touches the count.** It asserts
+   `counted[_pid] == 0` instead, which turns "it does not need to" from an
+   assumption into a theorem of the model.
+
+The lock order does not change. `block_begin` already takes the scheduler mutex
+while holding the channel mutex (`concurrency.c:304` inside a caller that holds
+`ch->mutex`), and the signal sites are inside the same channel mutex region, so
+the new decrement is channel-then-scheduler exactly like the old increment. In
+the model the scheduler-mutex acquisition is the FIRST statement of the
+`cond_signal` atomic sequence, which makes it that sequence's guard: a busy
+mutex leaves the sequence not enabled rather than half executed.
+
+### One abstraction the fix introduces, and why it is safe
+
+The model performs the decrement and the state change to `G_SIGNALLED` in one
+indivisible step. Real C cannot: it must lock the scheduler mutex, decrement,
+unlock, then call `pthread_cond_signal`, all under the channel mutex. That
+leaves a window in which a waiter is uncounted but still parked.
+
+That window can only make `blocked_goroutines` LOWER than the model's value,
+never higher, so `all_asleep` is FALSE throughout it — every live goroutine
+cannot be counted while the signaller itself is running and uncounted. A poll
+that lands in the window therefore RESETS `asleep_streak` and removes an abort;
+it never adds one. The set of states at which an abort can happen is the same
+in both, so a proof over the model covers the C.
+
+**The other order is not safe.** `pthread_cond_signal` first, then decrement,
+recreates the very window task 5 found — narrower, but still a window in which
+a woken goroutine is counted as blocked. The decrement must precede the signal.
+
+### The claim, proved. `K = 1`, full exhaustive search, 0 errors.
+
+`K = 1` is the hardest case: one single poll of all-parked state is enough to
+abort. Any larger `K` gives the model more chances to reset the streak, so it
+can only remove aborts. Proving `K = 1` proves every larger threshold.
+
+| N | K | verdict | errors | invalid end states | states | search completed | depth | wall |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 1 | PASS | 0 | 0 | 2274 | yes | 397 | 0.06 s |
+| 3 | 1 | PASS | 0 | 0 | 44866 | yes | 591 | 0.07 s |
+| 4 | 1 | PASS | 0 | 0 | 1017218 | yes | 859 | 0.33 s |
+
+The state counts are exact and repeat to the digit. The wall times move by
+about 0.01 s between runs of the same row, because the runner times the whole
+of `./pan` including process start.
+
+**Positive control, `FIX=1` with the detector off.** The model has no assertion
+violation and no deadlock of its own, so a PASS above is not the model being
+silent.
+
+| N | K | verdict | errors | invalid end states | states | search completed | wall |
+|---|---|---|---|---|---|---|---|
+| 2 | 3 | PASS | 0 | 0 | 1731 | yes | 0.06 s |
+| 3 | 3 | PASS | 0 | 0 | 34535 | yes | 0.07 s |
+| 4 | 3 | PASS | 0 | 0 | 785493 | yes | 0.29 s |
+
+### Is the PASS vacuous? Partly, and pan says exactly where.
+
+A PASS on `assert(rd)` can mean two different things, and the difference
+matters. pan's `unreached in proctype Main` report and the inverted-claim
+control agree on which is which:
+
+| N | is the abort reached? | pan's unreached report | inverted `assert(!rd)` | reading |
+|---|---|---|---|---|
+| 2 | NO | `:517, assert(rd)` unreached | 0 errors, full search, 2274 states | the balanced program has no deadlock, and `FIX=1` never aborts it. The false abort task 5 found is GONE. |
+| 3 | YES | `(0 of 86 states)` unreached | `assertion violated !(rd)` at depth 432, 395 states | the abort IS reached, and `rd` holds every time it is. A real proof. |
+| 4 | NO | `:517, assert(rd)` unreached | 0 errors, full search, 1017218 states | as N = 2. Two senders and two receivers cannot deadlock here. |
+
+So the load-bearing row is `N = 3`, which has two senders and one receiver and
+therefore a genuine deadlock: a sender parked on `not_full` with no receiver
+left. `FIX=1` aborts there, and every abort it reaches is a true deadlock.
+`N = 2` and `N = 4` say something different but not weaker: under `FIX=0` those
+same programs WERE aborted, and under `FIX=1` they are not aborted at all.
+
+Under `FIX=0` the same two instruments say the opposite for `N = 2`: the abort
+is reached (task 5's counterexample) and `rd` is false there.
+
+### Teeth. Each mutant is ONE change and each must fail.
+
+| mutant | N | K | verdict | what broke | states | depth |
+|---|---|---|---|---|---|---|
+| none — `FIX=0`, the shipped protocol | 2 | 1 | FAIL | `assertion violated rd` | 519 | 331 |
+| none — `FIX=0`, the shipped protocol | 3 | 1 | FAIL | `assertion violated rd` | 863 | 377 |
+| none — `FIX=0`, the shipped protocol | 4 | 1 | FAIL | `assertion violated rd` | 872 | 752 |
+| `DOUBLE_DEC=1` | 2 | 1 | FAIL | `assertion violated (nblocked>0)` | 139 | 155 |
+| `DOUBLE_DEC=1` | 3 | 1 | FAIL | `assertion violated (nblocked>0)` | 183 | 195 |
+| `BCAST_ONE=1` | 2 | 1 | PASS | nothing — see below | 2274 | 397 |
+| `BCAST_ONE=1` | 3 | 1 | FAIL | `assertion violated rd` | 8201 | 558 |
+| `BCAST_ONE=1` | 4 | 1 | FAIL | `assertion violated rd` | 83645 | 748 |
+| `SPURIOUS=1` | 2 | 3 | FAIL | `assertion violated (counted[_pid]==0)` | 63 | 63 |
+| `SPURIOUS=1` | 3 | 3 | FAIL | `assertion violated (counted[_pid]==0)` | 92 | 104 |
+
+`DOUBLE_DEC=1` is the mutant the task brief named: the wake-time decrement put
+back beside the signal-time one. Both fire for one wake, the count goes below
+zero, and `assert(nblocked > 0)` inside `block_end` catches it at N = 2 in 139
+states. The count is a `byte` in Promela, so without that assertion it would
+wrap to 255 and the failure would surface later and less clearly.
+
+### Broadcast, and why the decrement must be by the number woken
+
+`goo_chan_recv` broadcasts `not_full` rather than signalling it
+(`channels.c:475` on the buffered path, `channels.c:505` on the rendezvous
+path, `channels.c:574` in `goo_chan_try_recv`). The reason is in the C comment
+at `channels.c:466-473`: two predicate classes share that condvar, and a single
+signal can wake the wrong class. `goo_chan_close` broadcasts both condvars
+(`channels.c:97-98`).
+
+**The C's broadcast sites CAN wake more than one waiter**, so the decrement
+must be by the number woken. In the model, goroutine `i` sends when `i` is even
+and receives when `i` is odd, so `N = 3` and `N = 4` each have two senders, and
+both can be parked on `not_full` at once with `CAP = 1`. A receiver's broadcast
+then wakes two.
+
+`BCAST_ONE=1` is the mutant that decrements by one anyway. It shows exactly
+that split:
+
+- **N = 2 PASSES**, with the same 2274 states as the unmutated run. There is
+  one sender, so at most one waiter is ever parked on `not_full`, and
+  "decrement by one" and "decrement by the number woken" are the same
+  instruction. A reader who tested only `N = 2` would have concluded the
+  decrement amount does not matter.
+- **N = 3 and N = 4 FAIL**, `assertion violated rd`. The witness is committed
+  at `evidence/deadlock_detector_FIX1_N3_K1_bcast_one.trail`. Its end state:
+
+```
+gstate[0] = 3 (G_SIGNALLED)   gstate[1] = 4   gstate[2] = 4 (both G_DONE)
+nlive = 1   nblocked = 1   readyq = 0   chan_len = 1
+counted[0] = 0   counted[1] = 0   counted[2] = 0
+```
+
+`nblocked` is 1 while the set it is supposed to count is EMPTY. One broadcast
+woke two waiters and gave back one slot. That surplus made `nblocked == nlive`
+true for a goroutine that had already been signalled, which is task 5's bug
+reintroduced through the arithmetic instead of through the timing.
+
+### Spurious wakeups
+
+**What the C does.** Every `pthread_cond_wait` in `channels.c` sits inside a
+`while` loop that re-checks its predicate and waits again: `channels.c:280`
+(buffered send), `:336` and `:359` (rendezvous send), `:425` (buffered recv),
+`:484` (rendezvous recv). So a spurious return re-checks and re-parks, which is
+the correct POSIX idiom and is already in place.
+
+**What the model assumes.** The proof rows above set `SPURIOUS=0`: a return
+from the wait happens only after a signal. `SPURIOUS=1` adds the second
+branch — a return with no signal, at any time.
+
+**The result, and it changes what task 8 must write.** `FIX=1` as specified
+does NOT survive a spurious wakeup:
+
+```
+$ MODEL_DEFS='-DSPURIOUS=1' ./tests/models/run_deadlock_model.sh 2 3 0 1
+... FAIL ... errors=1 ... states=63 ...
+pan:1: assertion violated (counted[_pid]==0) (at depth 63)
+```
+
+The witness is committed at
+`evidence/deadlock_detector_FIX1_N2_spurious.trail`. Goroutine 1 returns from
+the wait with `gstate[1] = 2` (still `G_WAITING`) and `counted[1] = 1`: no
+signaller cleared its bit, because no signaller ran. The goroutine then leaves
+the wait region still registered, and the count never comes back.
+
+The count itself never moves on the spurious return, which is what the task
+brief asked about — `block_begin` is idempotent, so re-waiting does not
+double-count. The leak is on the OTHER path: the goroutine that leaves the loop
+because its predicate has become false, still registered.
+
+**The amendment.** `END_UNREG=1` makes `block_end` unregister this goroutine IF
+it is still registered — an idempotent unregister, not a plain decrement, so it
+can never drive the count below zero and is a no-op whenever the signaller got
+there first. With it, the accounting is exact under spurious wakeups:
+
+| N | K | `MODEL_DEFS` | verdict | states | search completed | wall |
+|---|---|---|---|---|---|---|
+| 2 | 3 | `-DSPURIOUS=1 -DEND_UNREG=1` | PASS | 2449 | yes | 0.06 s |
+| 3 | 3 | `-DSPURIOUS=1 -DEND_UNREG=1` | PASS | 56406 | yes | 0.07 s |
+| 4 | 3 | `-DSPURIOUS=1 -DEND_UNREG=1` | PASS | 1565856 | yes | 0.53 s |
+
+Those three rows run with `DETECTOR=0`, so they check the ACCOUNTING only:
+`nblocked <= nlive` on every poll, never-below-zero at every decrement, and
+`counted[i] == 1` at every unregister. They do not check `assert(rd)`.
+
+**Why `assert(rd)` is not checked under `SPURIOUS=1`.** It fails at N = 3, and
+the failure is a limit of the predicate, not of the protocol:
+
+```
+$ MODEL_DEFS='-DSPURIOUS=1 -DEND_UNREG=1' ./tests/models/run_deadlock_model.sh 3 1 1 1
+... FAIL ... pan:1: assertion violated rd (at depth 582)
+end state: gstate[0] = 1 (G_RUNNING)  gstate[1] = gstate[2] = 4 (G_DONE)
+           nlive = 1  nblocked = 0  readyq = 0  chan_len = 1  counted[] all 0
+```
+
+Goroutine 0 is a sender parked on `not_full` with a full buffer and no receiver
+left — a genuine deadlock, and the abort is CORRECT. `main` took its snapshot
+while goroutine 0 was parked and counted, then released the scheduler mutex.
+Goroutine 0 woke spuriously in that gap, so by the time `rd` is evaluated it
+reads `G_RUNNING`. It will re-check `ch->length >= ch->capacity`, find it still
+true, and park again forever.
+
+This is task 5's concern 4 — `goo_deadlock_abort()` is called after the
+scheduler mutex is released, at `concurrency.c:194-196` against the unlock at
+`:184`, so the state may move between the snapshot and the abort. A state
+predicate cannot say "running, but about to park again". Widening `rd` to allow
+it would need the model to read the goroutine's program counter, which is not
+something the C could check either. Under `SPURIOUS=0` the gap is harmless,
+because only a signaller can move a parked goroutine and no signaller can run
+when every live goroutine is parked. Under `SPURIOUS=1` it is not, and the
+honest statement is the narrow one: the accounting is exact, and the state
+predicate has a transient false reading whose witness is a true deadlock.
+
+N = 2 and N = 4 pass `assert(rd)` even with `SPURIOUS=1 END_UNREG=1` (3182 and
+1984513 states, both full searches), because those programs never reach the
+abort at all.
 
 ### Reading the counterexample
 
@@ -367,7 +672,8 @@ lost in practice.
 
 A counterexample means nothing if the assertion is false everywhere. Two checks
 on the instrument, both by inverting the claim to `assert(!rd)` on a scratch
-copy and re-running:
+copy and re-running. Both rows below are `FIX=0`; the `FIX=1` inverted rows are
+in "Is the PASS vacuous?" above:
 
 | case | inverted assertion | reading |
 |---|---|---|
@@ -385,6 +691,27 @@ an artefact of an unsatisfiable predicate.
 the declaration order that scrambled the goroutine indices would be caught
 rather than silently mis-indexing `gstate`.
 
+Three more checks were added when `FIX` was added:
+
+1. **`FIX=0` did not move.** `cpp -P -DN=2 -DK=1 -DDETECTOR=1 -DFIX=0` on this
+   file and `cpp -P -DN=2 -DK=1 -DDETECTOR=1` on the task 5 file give the same
+   token stream (`tr -s ' \n\t' ' '` on both, then `diff`, empty). Every
+   `FIX=0` row also reproduces task 5's state count to the digit: 519, 863,
+   872 for the detector-on rows at `K = 1`, and 2729, 53793, 1107433 for the
+   controls. The task 5 trail replays against this model at `FIX=0` to the
+   same 332 steps.
+2. **The `-O2` build is not lying.** `spin -DFIX=1 -DN=3` makes gcc emit two
+   `-Wstringop-overflow` warnings on `pan.b`'s state-restore path, which the
+   `FIX=0` build does not. pan's own `Boundcheck` macro is compiled in, so a
+   real out-of-range index would be an error in the report, and the report has
+   none. Rebuilding the same `pan.c` at `-O0` gives the identical verdict and
+   the identical 44866 states, so the warning is gcc's range inference on a
+   path the bounds check guards, not a miscompilation.
+3. **The `FIX=1` PASS is not silence.** pan's `unreached in proctype Main`
+   report names `assert(rd)` when the abort is never reached, and the
+   inverted-claim control agrees with it row for row. See "Is the PASS
+   vacuous?" above.
+
 ### What this does NOT say
 
 - It says nothing about wall-clock probability. The model has no clock, so it
@@ -398,15 +725,157 @@ rather than silently mis-indexing `gstate`.
   forever whenever a goroutine is live, so the system always has an executable
   transition. It still has one job: if `nlive` ever reached 0 while a goroutine
   was parked, `Main` would terminate and pan would report the stranded process.
+- `FIX=1` is proved for the buffered path with one channel and no `close`. The
+  `goo_chan_close` broadcast sites (`channels.c:97-98`) and the rendezvous
+  paths carry the same decrement in the C-level fix, and the model does not
+  cover them. A second sender class on `not_full` is exactly the case
+  `channels.c:466-473` warns about, and it is the case `BCAST_ONE` shows is
+  arithmetic-sensitive, so those sites need the same care and no less.
+- With `SPURIOUS=1`, `assert(rd)` is not proved. The accounting is, for
+  N = 2, 3 and 4. See "Spurious wakeups" for the reason and for the witness,
+  which is a TRUE deadlock read at the wrong instant.
 
-### The fix the model points at
+### The C-level fix
 
-The detector counts a goroutine as blocked from `goo_sched_block_begin` until
-`goo_sched_block_end`, and that interval covers a period in which the goroutine
-is awake and running. Any threshold on a count of polls is a bet on how long
-that period is. A detector that cannot be wrong needs the signal itself to
-clear the block, not the woken thread's later return — for example, the
-signaller decrements `blocked_goroutines` under the channel mutex at the same
-moment it calls `pthread_cond_signal`, and the woken goroutine no longer calls
-`goo_sched_block_end` on that path. Modelling that variant is not part of this
-task; it is stated here so the next task has a target.
+This section is the input to task 8. Line numbers are from this branch at
+`f641564`. Nothing in `src/` was changed to write it.
+
+#### The one idea
+
+`blocked_goroutines` is a tally of `goo_sched_block_begin` calls today. It must
+become the SIZE OF A SET: the set of goroutines that are parked and that no
+signaller has released. Everything below follows from that one change.
+
+The set needs a membership bit, because `pthread_cond_signal` never says who it
+woke. Two ways to hold it, and both are needed together:
+
+- **One bit per goroutine**, for example `int counted_blocked` beside
+  `waiting_on_channel` and `waiting_for_send`, which are already in
+  `goo_goroutine_t` at `include/runtime.h:771-772`. This makes registering and
+  unregistering idempotent.
+- **One waiter count per condition variable**, held under the channel mutex, so
+  the signaller knows HOW MANY it is about to wake. The channel already carries
+  `not_full` and `not_empty`; each needs an `int n_waiters` beside it, or a
+  list of the waiting goroutines.
+
+The second is not optional. `pthread_cond_broadcast` wakes every waiter, and
+the model shows that decrementing by one instead of by the number woken
+reintroduces the original defect at N = 3 and N = 4. See "Broadcast" above.
+
+#### Which functions change
+
+**`goo_sched_block_begin`, `concurrency.c:296-324`.** The goroutine branch is
+`concurrency.c:305-313`. Line `:302` already calls `goo_current_goroutine()`
+but keeps only a truth value; it must keep the pointer instead. Line `:310`,
+`g_scheduler->deadlock_detector.blocked_goroutines++`, then becomes a guarded
+increment:
+
+```
+goo_goroutine_t* self = goo_current_goroutine();   /* was: int is_goroutine */
+...
+if (!self->counted_blocked) {
+    self->counted_blocked = 1;
+    g_scheduler->deadlock_detector.blocked_goroutines++;
+}
+```
+
+The mutex around it (`:304` and `:311`) does not move. The main-thread branch
+at `:315-323` is untouched, and `self == NULL` still selects it.
+
+**`goo_sched_block_end`, `concurrency.c:327-335`.** Lines `:331-333` are the
+old wake-time decrement. They become an idempotent UNREGISTER, not a plain
+decrement and not a deletion:
+
+```
+if (self->counted_blocked) {
+    self->counted_blocked = 0;
+    g_scheduler->deadlock_detector.blocked_goroutines--;
+}
+```
+
+On the normal path the signaller has already cleared the bit, so this is a
+no-op; the model proves that with `assert(counted[_pid] == 0)` and a full
+search at `SPURIOUS=0`. It is NOT dead code. It is what stops a spurious return
+from leaking a set member, which the model reproduces in 63 states — see
+"Spurious wakeups" above. A plain unguarded decrement here is the `DOUBLE_DEC`
+mutant, and it drives the count below zero.
+
+**The three `pthread_cond_signal` sites.** `channels.c:325` (buffered send),
+`:356` (rendezvous send), `:543` (`goo_chan_try_send`). Before each, while the
+channel mutex is still held:
+
+```
+if (ch->not_empty_waiters > 0) {
+    goo_mutex_lock(g_scheduler->scheduler_mutex);
+    /* the one waiter this signal will wake leaves the set */
+    ...clear its bit, blocked_goroutines--...
+    goo_mutex_unlock(g_scheduler->scheduler_mutex);
+}
+pthread_cond_signal(&ch->not_empty->cond);
+```
+
+**The five `pthread_cond_broadcast` calls.** `channels.c:475` (buffered recv),
+`:505` (rendezvous recv), `:574` (`goo_chan_try_recv`), and `:97` and `:98` in
+`goo_chan_close`, which broadcasts both condvars. Same shape, but the decrement
+is by the FULL waiter count of that condvar, and every one of those waiters
+loses its bit. `goo_chan_close` needs both counts, one for each condvar.
+
+**Lock order.** Channel mutex, then scheduler mutex. That is already the order
+`goo_sched_block_begin` uses — `channels.c:295` calls it while holding
+`ch->mutex`, and it takes the scheduler mutex at `concurrency.c:304`. The new
+decrement sits inside the same channel mutex region, so it adds no new order.
+
+**Order within the signal site.** Decrement FIRST, then call
+`pthread_cond_signal`. The model's argument is in "One abstraction the fix
+introduces" above: decrement-then-signal leaves a window in which a waiter is
+uncounted but parked, which can only make `all_asleep` false and so can only
+remove an abort. Signal-then-decrement leaves a window in which a woken
+goroutine is still counted, which is the original defect at a smaller scale.
+
+#### The 100-poll threshold
+
+The model proves `K = 1` is enough for the ACCOUNTING: with the corrected
+protocol, one poll of all-parked state is already a real deadlock, and a larger
+`K` cannot make it more real. The streak buys nothing that the corrected count
+does not already give.
+
+The recommendation is to **keep a small `K`, and drop the 100**. Two reasons,
+and they are not about correctness:
+
+- The poll itself is a sleep loop (`goo_platform_sleep_ns(500000)` at
+  `concurrency.c:173`). A threshold of 1 aborts after the first 0.5 ms poll
+  that sees an all-parked state, which is fine, but a streak of 2 or 3 costs
+  1 ms to 1.5 ms and leaves room for a mistake in the new accounting to show up
+  as a delayed abort instead of a wrong one. `K` is cheap insurance, and the
+  model says it is not load-bearing.
+- Dropping the streak entirely would also delete the comment at
+  `concurrency.c:152-166`, which is the record of WHY the number is 100. That
+  record should stay, rewritten to say the threshold is no longer a bet on
+  scheduler latency.
+
+Whatever `K` becomes, the comment must stop claiming that the streak absorbs
+"the transient over-count". After this fix there is no transient over-count to
+absorb; the comment at `concurrency.c:154-156` and the one at
+`concurrency.c:285-288` both say there is, and both become wrong.
+
+#### The two dead fields
+
+`main_in_wait` (`include/runtime.h:671`) is written once at
+`concurrency.c:149`, initialised once at `deadlock.c:17`, and read NOWHERE.
+`grep -rn main_in_wait src/ include/` finds exactly four lines: those three
+plus a mention of the name inside a comment at `concurrency.c:170`. No line
+reads the field. It steers nothing. The model keeps it only because the design
+named it.
+
+`current_goroutine` is the field section 8a item 1 of
+`docs/superpowers/specs/2026-06-28-m8c-mt-scheduler-design.md` already tracks.
+`concurrency.c:30` records that M8c leaves it NULL and that
+`goo_current_goroutine()` (`concurrency.c:277`) returns `t_current` instead.
+Section 8a item 1 offers three ways out: restore the field, sync it, or delete
+the dead bookkeeping and document the deletion.
+
+This fix needs `goo_current_goroutine()` and does not need
+`g_scheduler->current_goroutine`, so the third option is the one it points at.
+Deleting `main_in_wait` at the same time costs nothing and removes a field a
+reader would otherwise assume the detector uses. Neither deletion is required
+for the fix to be correct — both are cleanups the fix makes safe.
