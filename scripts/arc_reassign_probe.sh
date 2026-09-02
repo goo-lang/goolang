@@ -41,9 +41,11 @@
 set -uo pipefail
 
 # git first, because these probes are normally run from anywhere in a
-# checkout. A Bazel sandbox has no .git, so fall back to the script's own
-# location -- which is the runfiles root there, and the repo root here. The
-# probe must not depend on being inside a repository to know where it is.
+# checkout. A Bazel sh_test starts with $PWD already AT the runfiles root, but
+# $0 and ${BASH_SOURCE[0]} resolve to <runfiles>/_main/tests/probes/<name> --
+# a symlink one directory too deep for a dirname-based fallback to find its
+# way back to the root. The fallback is $PWD itself: measured, it IS the
+# runfiles root there, and the repo root here.
 # Resolve COMPILER BEFORE the cd below. A Bazel sh_test passes a path relative
 # to the runfiles root, which is the working directory on entry; after `cd
 # "$ROOT"` a relative path no longer resolves, and the probe reports "no
@@ -54,9 +56,8 @@ case "${COMPILER:-}" in
     *) COMPILER="$PWD/$COMPILER" ;;
 esac
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
-    || ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[ -n "$ROOT" ] || ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || ROOT="$PWD"
+[ -n "$ROOT" ] || ROOT="$PWD"
 cd "$ROOT" || exit 2
 
 # COMPILER is the contract a Bazel sh_test uses to point this probe at the
