@@ -89,20 +89,57 @@ goo_script_probe(
     ],
 )
 
-# NOT MIGRATED, and each for a measured reason rather than an assumption. All
-# seven pass under make; all seven fail in a sandbox, and the causes differ:
+# Task 14, the four arc release gates. Each fixture imports "strings", and
+# the compiler's last resolver tier is ./goostd relative to the working
+# directory -- the runfiles root -- so the stdlib is DATA here, not a
+# GOOROOT the macro cannot name. The same tier is what every generated
+# fixture probe already relies on.
 #
-#   arc_concat_operand_probe   |
-#   arc_map_key_local_probe    | read examples/<name>.goo after `cd "$ROOT"`,
-#   arc_multi_assign_probe     | and still do not find it under runfiles
-#   arc_reassign_probe         |
+# tags = ["nosan"]: the sanitizer legs (.bazelrc test:san-base) instrument
+# the COMPILER and install no valgrind, while these four gates measure the
+# COMPILED PROGRAM under valgrind. A sanitizer leg learns nothing from them
+# and, with no valgrind on that job, would only turn them red.
+goo_script_probe(
+    name = "arc_concat_operand_probe",
+    script = "//:scripts/arc_concat_operand_probe.sh",
+    data = ["//goostd:files"],
+    tags = ["nosan"],
+)
+
+goo_script_probe(
+    name = "arc_map_key_local_probe",
+    script = "//:scripts/arc_map_key_local_probe.sh",
+    data = ["//goostd:files"],
+    tags = ["nosan"],
+)
+
+goo_script_probe(
+    name = "arc_multi_assign_probe",
+    script = "//:scripts/arc_multi_assign_probe.sh",
+    data = ["//goostd:files"],
+    tags = ["nosan"],
+)
+
+goo_script_probe(
+    name = "arc_reassign_probe",
+    script = "//:scripts/arc_reassign_probe.sh",
+    data = ["//goostd:files"],
+    tags = ["nosan"],
+)
+
+# NOT MIGRATED, and each for a measured reason rather than an assumption. All
+# three pass under make; all three fail in a sandbox, and the causes differ:
+#
 #   arena_rss_probe            reads tests/examples/, a SECOND fixture tree
 #   goo_test_probe             needs whole test PACKAGES with expected.norm.txt
 #   dead_package_code_probe    imports "strings", so it needs GOOROOT, which
-#                              the macro deliberately does not set
+#                              the macro deliberately does not set. The
+#                              resolver's cwd tier (see above) means
+#                              //goostd:files in data is the likely fix,
+#                              unmeasured.
 #
 # The COMPILER contract is necessary for these and not sufficient. Each wants
 # its own data, and one wants a GOOROOT the macro cannot name because
 # //goostd:files is a filegroup $(rootpath) will not expand. Declaring them
-# without that data would give seven red targets, and tagging them manual would
-# give seven that never run -- both worse than recording the gap here.
+# without that data would give three red targets, and tagging them manual
+# would give three that never run -- both worse than recording the gap here.

@@ -130,21 +130,29 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
     derives `<script-dir>/../bin/goo`, which does not exist in the sandbox.
 
     The contract is one variable. COMPILER names the binary; the compiler then
-    finds its own archive and stdlib through GOO_RUNTIME and GOOROOT, which it
-    already reads. Scripts that touch no compiler pass needs_compiler = False
-    and take none of the three.
+    finds its own archive through GOO_RUNTIME, and its stdlib through the
+    resolver's working-directory tier, which finds ./goostd in the runfiles
+    root. Scripts that touch no compiler pass needs_compiler = False and take
+    neither.
+
+    GOO_PROBE_NO_SKIP is set for every probe, with or without a compiler. A
+    script that cannot find its tool (valgrind, for instance) prints SKIPPED
+    and exits 0 under make, where .github/workflows/tests.yml greps the log
+    for that line and fails the job. A Bazel test log is read by nobody, so
+    under Bazel the skip must be the failure itself: a script that honours the
+    variable turns that branch into a FAIL and a non-zero exit instead.
     """
-    env = {}
+    env = {"GOO_PROBE_NO_SKIP": "1"}
     probe_data = list(data)
     if needs_compiler:
         # GOOROOT is deliberately NOT set. It names a DIRECTORY, and
         # //goostd:files is a filegroup that $(rootpath) refuses to expand.
-        # A probe that imports a vendored package must pass gooroot_file, so
-        # the need is declared per probe rather than assumed for all 29.
-        env = {
-            "COMPILER": "$(rootpath %s)" % _COMPILER,
-            "GOO_RUNTIME": "$(rootpath %s)" % _ARCHIVE,
-        }
+        # A probe that imports a vendored package instead adds //goostd:files
+        # to its own `data`: the compiler's last resolver tier is ./goostd
+        # relative to the working directory, which under Bazel is the
+        # runfiles root, so the filegroup being present there is enough.
+        env["COMPILER"] = "$(rootpath %s)" % _COMPILER
+        env["GOO_RUNTIME"] = "$(rootpath %s)" % _ARCHIVE
         # Fixtures too: these scripts open examples/<name>.goo by NAME, so
         # there is no per-target edge to declare and no way to know which
         # script wants which without auditing 597 files.
