@@ -4726,7 +4726,7 @@ far-transport-asan: $(NNG_LIB)
 far-shim-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	$(COMPILER) -o build/far_shim_probe examples/far_shim_probe.goo
-	@sock="ipc://$(abspath build)/far_shim_probe_$$$$.sock"; \
+	@sock="ipc://$${TMPDIR:-/tmp}/goo_far_shim_probe_$$$$.sock"; \
 	rm -f "$${sock#ipc://}"; \
 	./build/far_shim_probe "$$sock" > build/far_shim_probe.actual.txt; \
 	rc=$$?; \
