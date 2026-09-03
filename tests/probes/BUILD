@@ -259,6 +259,20 @@ goo_script_probe(
     needs_compiler = False,
 )
 
+# proof_cache_create() must not hand its argument to a shell. No self-test:
+# proof_cache_shell_probe.sh has no --self-test mode at all.
+goo_script_probe(
+    name = "proof_cache_shell_probe",
+    script = "//:scripts/proof_cache_shell_probe.sh",
+    data = [
+        "//src/types:probe_sources",
+        "//include:probe_headers",
+    ],
+    needs_compiler = False,
+    needs_cc = True,
+    tags = ["nosan"],
+)
+
 # NOT DECLARED HERE. 12 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
