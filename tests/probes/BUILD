@@ -136,11 +136,14 @@ goo_script_probe(
     data = ["//goostd:files"],
 )
 
+goo_script_probe(
+    name = "arena_rss_probe",
+    script = "//:scripts/arena_rss_probe.sh",
+)
+
 # NOT MIGRATED, and each for a measured reason rather than an assumption.
-# goo_test_probe and arena_rss_probe pass under make and fail in a sandbox;
-# the causes differ:
+# goo_test_probe passes under make and fails in a sandbox:
 #
-#   arena_rss_probe            reads tests/examples/, a SECOND fixture tree
 #   goo_test_probe             needs whole test PACKAGES with expected.norm.txt
 #
 # The COMPILER contract is necessary for these and not sufficient. Each wants
