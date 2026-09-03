@@ -207,6 +207,41 @@ goo_script_probe(
     tags = ["nosan"],
 )
 
+# Task 14, the five gates that read or compile src/**. Each of the ten
+# src/*:probe_sources filegroups exports one package's own .c/.h files, since
+# a glob does not cross a package boundary and there is no single //:c_sources
+# the way //goostd:files covers the stdlib.
+#
+# tags = ["nosan"] on ast_free_leak_probe and proof_cache_shell_probe: both
+# compile C with $(CC), which the sanitizer configs (.bazelrc test:san-base)
+# swap to clang. The other three either never touch a C compiler, or package
+# the Goo compiler Bazel already built -- which the sanitizer legs exist to
+# exercise, not to re-package.
+SRC_PROBE_SOURCES = [
+    "//src/ast:probe_sources", "//src/codegen:probe_sources",
+    "//src/compiler:probe_sources", "//src/comptime:probe_sources",
+    "//src/errors:probe_sources", "//src/lexer:probe_sources",
+    "//src/package:probe_sources", "//src/parser:probe_sources",
+    "//src/runtime:probe_sources", "//src/types:probe_sources",
+]
+
+# ARC header-feasibility audit rider: only goo_alloc/goo_realloc/goo_free may
+# name a libc allocator, and no bare strdup may appear anywhere in src/. Pure
+# source scan, no compiler needed.
+goo_script_probe(
+    name = "alloc_doors_probe",
+    script = "//:scripts/alloc_doors_probe.sh",
+    data = SRC_PROBE_SOURCES,
+    needs_compiler = False,
+)
+goo_script_probe(
+    name = "alloc_doors_selftest",
+    script = "//:scripts/alloc_doors_probe.sh",
+    args = ["--self-test"],
+    data = SRC_PROBE_SOURCES,
+    needs_compiler = False,
+)
+
 # NOT DECLARED HERE. 12 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
