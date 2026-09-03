@@ -17,7 +17,7 @@
 | 4 probe gates, task 14 tail, the last three sandbox-red script gates, 13 of 29 | #TBD | open |
 
 **Parity: 224 gates** as of #331 (was 217). `make verify-core` and
-`bazel test //...` are both green. `bazel test //...` runs 165 tests
+`bazel test //...` are both green. `bazel test //...` runs 168 tests
 (measured 2026-09-03). `verify-core` now carries three DERIVATION gates —
 census, generated.bzl and the extracted sources — which together cost about
 110 s, most of it the source-drift self-test.
