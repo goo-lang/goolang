@@ -150,7 +150,12 @@ goo_script_probe(
     data = ["//examples:test_packages"],
 )
 
-# NOT DECLARED HERE. 16 of the 29 script gates are not one of the targets
+goo_script_probe(
+    name = "string_literal_header_probe",
+    script = "//:scripts/string_literal_header_probe.sh",
+)
+
+# NOT DECLARED HERE. 15 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
 #
@@ -167,9 +172,8 @@ goo_script_probe(
 #   3 compile C fixtures against include/ or tests/unit/ through a shell C
 #     compiler ($CC, gcc): goo_assert, goo_check, goo_testcase. They need
 #     those two filegroups and a C compiler the sandbox can see.
-#   1 takes no COMPILER contract yet -- string_literal_header_probe.sh
-#     hardcodes $ROOT/bin/goo, generates its own source, and reads nothing
-#     else. Nothing else stands in its way. Unmeasured.
+#
+# 7 + 5 + 3 = 15.
 #
 # Declaring these without their data would give red targets, and tagging
 # them manual would give targets that never run -- both worse than
