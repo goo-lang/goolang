@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include "platform.h"
+#include "goo_os.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -16,14 +17,9 @@ goo_channel_t* goo_make_chan(size_t elem_size, size_t buffer_size) {
     ch->capacity = buffer_size;
     ch->pattern = GOO_CHANNEL_BASIC;
     ch->mutex = goo_mutex_new();
-    ch->not_empty = goo_alloc(sizeof(goo_cond_t));
-    ch->not_full = goo_alloc(sizeof(goo_cond_t));
-    
-#ifdef GOO_PLATFORM_UNIX
-    pthread_cond_init(&ch->not_empty->cond, NULL);
-    pthread_cond_init(&ch->not_full->cond, NULL);
-#endif
-    
+    ch->not_empty = goo_cond_new();
+    ch->not_full = goo_cond_new();
+
     if (buffer_size > 0) {
         ch->buffer = goo_alloc(elem_size * buffer_size);
     }
@@ -96,9 +92,9 @@ void goo_chan_close(goo_channel_t* ch) {
     // leave the detector's blocked set — before the wake, as everywhere.
 #ifdef GOO_PLATFORM_UNIX
     goo_sched_wake_waiters(&ch->recv_waiters);
-    pthread_cond_broadcast(&ch->not_empty->cond);
+    goo_cond_broadcast(ch->not_empty);
     goo_sched_wake_waiters(&ch->send_waiters);
-    pthread_cond_broadcast(&ch->not_full->cond);
+    goo_cond_broadcast(ch->not_full);
 #endif
 
     goo_mutex_unlock(ch->mutex);
@@ -149,13 +145,8 @@ void goo_chan_free(goo_channel_t* ch) {
             break;
     }
     
-#ifdef GOO_PLATFORM_UNIX
-    pthread_cond_destroy(&ch->not_empty->cond);
-    pthread_cond_destroy(&ch->not_full->cond);
-#endif
-    
-    goo_free(ch->not_empty);
-    goo_free(ch->not_full);
+    goo_cond_free(ch->not_empty);
+    goo_cond_free(ch->not_full);
     goo_mutex_free(ch->mutex);
     
     if (g_scheduler) {
@@ -300,7 +291,7 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
 
 #ifdef GOO_PLATFORM_UNIX
             goo_sched_block_begin(&ch->send_waiters);
-            pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+            goo_cond_wait(ch->not_full, ch->mutex);
             goo_sched_block_end(&ch->send_waiters);
 #endif
 
@@ -329,12 +320,12 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
         
         // Wake receivers. BROADCAST, not signal, since 2026-09-02: the waker
         // must remove from the detector's blocked set exactly the waiters it
-        // wakes, and pthread_cond_signal never says WHICH one it woke. Clear
-        // X's bit, wake Y, and Y runs while still counted — the defect the SPIN
-        // model found (tests/models/README.md, "Ruling 1").
+        // wakes, and a single-waiter signal never says WHICH one it woke.
+        // Clear X's bit, wake Y, and Y runs while still counted — the defect
+        // the SPIN model found (tests/models/README.md, "Ruling 1").
 #ifdef GOO_PLATFORM_UNIX
         goo_sched_wake_waiters(&ch->recv_waiters);
-        pthread_cond_broadcast(&ch->not_empty->cond);
+        goo_cond_broadcast(ch->not_empty);
 #endif
 
         goo_mutex_unlock(ch->mutex);
@@ -347,7 +338,7 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
         // Wait until the slot is free (a previous sender's value was consumed).
         while (ch->rv_full && !ch->closed) {
             goo_sched_block_begin(&ch->send_waiters);
-            pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+            goo_cond_wait(ch->not_full, ch->mutex);
             goo_sched_block_end(&ch->send_waiters);
         }
         if (ch->closed) {
@@ -367,12 +358,12 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
         // Wake the waiting receivers. BROADCAST for the accounting reason at
         // the buffered send above (ruling 1).
         goo_sched_wake_waiters(&ch->recv_waiters);
-        pthread_cond_broadcast(&ch->not_empty->cond);
+        goo_cond_broadcast(ch->not_empty);
 
         // Block until the receiver has copied the value out.
         while (ch->rv_full && !ch->closed) {
             goo_sched_block_begin(&ch->send_waiters);
-            pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+            goo_cond_wait(ch->not_full, ch->mutex);
             goo_sched_block_end(&ch->send_waiters);
         }
 
@@ -447,7 +438,7 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
 
 #ifdef GOO_PLATFORM_UNIX
             goo_sched_block_begin(&ch->recv_waiters);
-            pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
+            goo_cond_wait(ch->not_empty, ch->mutex);
             goo_sched_block_end(&ch->recv_waiters);
 #endif
 
@@ -489,7 +480,7 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         // the set the OS wakes (tests/models/README.md, "Ruling 1").
 #ifdef GOO_PLATFORM_UNIX
         goo_sched_wake_waiters(&ch->send_waiters);
-        pthread_cond_broadcast(&ch->not_full->cond);
+        goo_cond_broadcast(ch->not_full);
 #endif
         
         goo_mutex_unlock(ch->mutex);
@@ -500,7 +491,7 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
 #ifdef GOO_PLATFORM_UNIX
         while (!ch->rv_full && !ch->closed) {
             goo_sched_block_begin(&ch->recv_waiters);
-            pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
+            goo_cond_wait(ch->not_empty, ch->mutex);
             goo_sched_block_end(&ch->recv_waiters);
         }
         if (!ch->rv_full && ch->closed) {
@@ -520,7 +511,7 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         // slot-waiter forever (the 2-sender unbuffered fan-in lost-wakeup;
         // fanin-stress pins it).
         goo_sched_wake_waiters(&ch->send_waiters);
-        pthread_cond_broadcast(&ch->not_full->cond);
+        goo_cond_broadcast(ch->not_full);
 
         goo_mutex_unlock(ch->mutex);
         return 1;
@@ -560,7 +551,7 @@ int goo_chan_try_send(goo_channel_t* ch, void* data) {
         // BROADCAST for the accounting reason at goo_chan_send (ruling 1).
 #ifdef GOO_PLATFORM_UNIX
         goo_sched_wake_waiters(&ch->recv_waiters);
-        pthread_cond_broadcast(&ch->not_empty->cond);
+        goo_cond_broadcast(ch->not_empty);
 #endif
 
         goo_mutex_unlock(ch->mutex);
@@ -592,7 +583,7 @@ int goo_chan_try_recv(goo_channel_t* ch, void* data) {
         // Broadcast for the same two-predicate-class reason as the blocking
         // recv above (see that comment; fanin-stress).
         goo_sched_wake_waiters(&ch->send_waiters);
-        pthread_cond_broadcast(&ch->not_full->cond);
+        goo_cond_broadcast(ch->not_full);
 #endif
 
         goo_mutex_unlock(ch->mutex);

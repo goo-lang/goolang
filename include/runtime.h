@@ -16,6 +16,9 @@ typedef struct goo_scheduler goo_scheduler_t;
 typedef struct goo_mutex goo_mutex_t;
 typedef struct goo_cond goo_cond_t;
 typedef struct goo_waitgroup goo_waitgroup_t;
+// Moved from src/runtime/platform.h (deterministic-simulation task 1) so a
+// later task can name this type here without including goo_os.h.
+typedef struct goo_thread goo_thread_t;
 
 // Error structure
 struct goo_error {
