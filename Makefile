@@ -3455,6 +3455,7 @@ VERIFY_ALL_DEPS := \
     proof-cache-shell-probe \
     archive-determinism-probe \
     repro-build-probe \
+    compile-commands-current-probe \
     podman-image-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the heavy-toolchain set. This is the
@@ -6613,3 +6614,18 @@ podman-image-probe:
 repro-build-probe:
 	@bash scripts/repro_build_probe.sh
 .PHONY: repro-build-probe
+
+# Task 14 of the 2026-09-02 verification tooling plan: keeps
+# build/compile_commands.json a DERIVATION of GOO_OBJS, never a file that
+# drifts from the Makefile. tools/gen_compile_commands.sh does the parsing
+# (a `make -Bn lexer` dry run, filtered to GOO_OBJS); this gate regenerates
+# it, checks the entry count against $(words $(GOO_OBJS)) and that every
+# entry's file is unique, and checks the derivation twice against itself for
+# self-consistency. build/ is git-ignored, so this is the only thing that
+# keeps the file current — task 15 (cppcheck) and task 16 (the gcc/clang-tidy
+# strict lanes) both read it. Filesystem plus a dry-run `make`, no toolchain
+# beyond what verify-core already assumes, so it belongs there.
+.PHONY: compile-commands-current-probe
+compile-commands-current-probe:
+	@bash scripts/compile_commands_current_probe.sh
+	@bash scripts/compile_commands_current_probe.sh --self-test
