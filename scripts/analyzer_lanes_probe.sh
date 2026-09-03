@@ -15,14 +15,28 @@
 # -std is exactly what the real build uses), with the object output
 # redirected to a scratch path under build/sarif/gcc/.objs/ and
 # "-Wall -Wextra -Wpedantic -fanalyzer -fdiagnostics-format=sarif-file"
-# appended. gcc >= 13 writes "<source-basename>.sarif" BESIDE THE OBJECT
-# (verified empirically: `gcc -o /tmp/outdir/t.o -c /tmp/srcdir/t.c
-# -fdiagnostics-format=sarif-file` writes /tmp/outdir/t.c.sarif -- the
-# directory of -o, the basename of the SOURCE, not of -o). Redirecting -o
-# into build/sarif/gcc/.objs/ is what keeps the source tree clean, per the
-# task text; the throwaway .o is never linked into anything. Each SARIF is
-# then moved to build/sarif/gcc/<stem>.sarif (stem = source basename minus
-# ".c"), which is where the task's own acceptance line expects it.
+# appended. gcc >= 13 writes "<dumpbase-without-its-own-extension>.<source
+# extension>.sarif" BESIDE THE OBJECT (verified empirically: an object
+# named weirdname123.o compiled from ctrl.c writes weirdname123.c.sarif in
+# the object's own directory). Redirecting -o into build/sarif/gcc/.objs/
+# is what keeps the source tree clean, per the task text; the throwaway .o
+# is never linked into anything.
+#
+# OUTPUT KEYS. Every output of both lanes is named after the entry's
+# repository-relative "file" path with "/" replaced by "__", extension
+# kept (for example "src/runtime/channels.c" -> "src__runtime__channels.c",
+# so the gcc lane's SARIF is build/sarif/gcc/src__runtime__channels.c.sarif
+# and the clang-tidy lane's text is
+# build/sarif/clang-tidy/src__runtime__channels.c.txt). Keying by the
+# BASENAME ALONE (an earlier version of this script did this) silently
+# clobbers two entries that share a basename in different directories
+# under JOBS-way parallelism -- neither compile fails, so nothing signals
+# the collision; see --self-test's "same basename, two directories" case,
+# which proves two distinct files come out. Before either lane starts,
+# every entry's key is checked for a collision (two DIFFERENT "file"
+# values that happen to produce the same key, for example a literal "__"
+# in a path segment) and the probe fails loudly, rather than clobbering,
+# if one is found.
 #
 # CCACHE. Task 14's captured "arguments" start with "/usr/bin/ccache gcc
 # ...". ccache does not track -fanalyzer's SARIF side file as part of a
@@ -49,17 +63,23 @@
 # This build's clang-tidy (LLVM 22) enables NO named check by default
 # outside a .clang-tidy file -- `-dump-config` reports Checks:
 # 'clang-diagnostic-*' but running with no -checks at all fails outright
-# with "Error: no checks enabled." (verified). Absent a repository
-# .clang-tidy (checked at runtime; there is none as of this commit), the
-# lane passes an explicit -checks="clang-diagnostic-*,clang-analyzer-*" so
-# the run actually exercises clang-analyzer's dataflow checks rather than
-# silently doing nothing. A repository .clang-tidy, if one is added later,
-# is used as-is (no -checks override), matching normal clang-tidy behaviour.
+# with "Error: no checks enabled." (verified). For each entry, this lane
+# WALKS UP from that entry's own file directory to the entry's declared
+# project root (bounded there, not to the filesystem root, since anything
+# above the project is out of this probe's business) looking for a
+# ".clang-tidy" file, the same direction clang-tidy itself searches. Absent
+# one anywhere on that walk (there is none as of this commit, checked at
+# run time for every entry), the lane passes an explicit
+# -checks="clang-diagnostic-*,clang-analyzer-*" so the run actually
+# exercises clang-analyzer's dataflow checks rather than silently doing
+# nothing. A directory that DOES have a .clang-tidy on its walk is used
+# as-is (no -checks override), matching normal clang-tidy behaviour.
 #
 # clang-tidy has no native SARIF emitter (task 17 converts its plain-text
-# output and cppcheck's XML into one SARIF-shaped database). Per file:
-# build/sarif/clang-tidy/<stem>.txt (the raw run-together stdout+stderr) and,
-# when --export-fixes is supported (checked at runtime), <stem>.yaml.
+# output and cppcheck's XML into one SARIF-shaped database). Per file, keyed
+# as above: build/sarif/clang-tidy/<key>.txt (the raw run-together
+# stdout+stderr) and, when --export-fixes is supported (checked at
+# runtime), <key>.yaml.
 #
 # --- companion edits (plan decision 2) ------------------------------------
 #   - this file's --self-test, below, for probe-teeth-probe
@@ -78,8 +98,9 @@
 #   COMPILE_COMMANDS_OUT  the capture itself (default: build/compile_commands.json)
 #   SARIF_GCC_DIR         gcc lane output dir (default: build/sarif/gcc)
 #   SARIF_TIDY_DIR        clang-tidy lane output dir (default: build/sarif/clang-tidy)
-#   CLANG_TIDY_CHECKS     -checks= value when no .clang-tidy exists
-#                         (default: clang-diagnostic-*,clang-analyzer-*)
+#   CLANG_TIDY_CHECKS     fallback -checks= value, used per file only where
+#                         that file's own directory walk finds no
+#                         .clang-tidy (default: clang-diagnostic-*,clang-analyzer-*)
 set -euo pipefail
 
 PROBE="analyzer-lanes-probe"
@@ -130,20 +151,41 @@ os.makedirs(objs_dir, exist_ok=True)
 
 EXTRA = ["-Wall", "-Wextra", "-Wpedantic", "-fanalyzer", "-fdiagnostics-format=sarif-file"]
 
-def stem_of(path):
-    b = os.path.basename(path)
-    return b[:-2] if b.endswith(".c") else b
+def key_of(path):
+    # Repository-relative path, "/" -> "__", extension kept -- see this
+    # script's header ("OUTPUT KEYS"). Keying by the basename alone lets
+    # two entries in different directories with the same basename clobber
+    # each other's scratch object and SARIF under JOBS-way parallelism,
+    # silently (neither compile fails).
+    return path.replace("/", "__")
+
+# Fail loudly, before compiling anything, if two DIFFERENT entries would
+# produce the SAME key (for example a literal "__" in one path segment
+# colliding with a real "/" in another) -- a collision here is exactly the
+# clobbering this keying scheme exists to prevent, and must never be
+# discovered by one SARIF silently overwriting another.
+seen = {}
+for e in entries:
+    k = key_of(e["file"])
+    seen.setdefault(k, []).append(e["file"])
+dups = {k: v for k, v in seen.items() if len(v) > 1}
+if dups:
+    for k, files in dups.items():
+        sys.stderr.write(f"analyzer-lanes gcc lane: output key {k!r} is shared by: {', '.join(files)}\n")
+    sys.exit(3)
 
 def run_one(e):
     src = e["file"]
-    stem = stem_of(src)
+    key = key_of(src)
+    ext = os.path.splitext(src)[1] or ".c"
+    obj_stem = key[: -len(ext)] if key.endswith(ext) else key
     args = list(e["arguments"])
     # "-c <src> -o <obj>" is always the tail of an entry's own arguments
     # (both gen_compile_commands.sh emission paths end this way -- see its
     # header). Find the LAST "-o" rather than assume a fixed index, in case
     # a future entry shape puts other flags after it.
     oi = max(i for i, tok in enumerate(args) if tok == "-o")
-    obj_path = os.path.join(objs_dir, stem + ".o")
+    obj_path = os.path.join(objs_dir, obj_stem + ".o")
     args[oi + 1] = obj_path
     args = args + EXTRA
     cwd = os.path.join(repo_root, e.get("directory", "."))
@@ -160,12 +202,16 @@ def run_one(e):
     t0 = time.time()
     r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env)
     dt = time.time() - t0
-    gen_sarif = os.path.join(objs_dir, os.path.basename(src) + ".sarif")
+    # gcc's dumpbase defaults to the -o basename minus ITS OWN extension
+    # (obj_stem here), and the SARIF it writes is "<dumpbase><source
+    # extension>.sarif" -- which is exactly "<obj_stem><ext>.sarif" ==
+    # "<key>.sarif", since obj_stem + ext == key by construction above.
+    gen_sarif = os.path.join(objs_dir, key + ".sarif")
     if r.returncode != 0:
         return (src, dt, r.returncode, 0, "", r.stderr[-2000:])
     if not os.path.isfile(gen_sarif):
         return (src, dt, 2, 0, "", f"no sarif produced at {gen_sarif}")
-    final_sarif = os.path.join(sarif_dir, stem + ".sarif")
+    final_sarif = os.path.join(sarif_dir, key + ".sarif")
     os.replace(gen_sarif, final_sarif)
     with open(final_sarif, encoding="utf-8") as f:
         d = json.load(f)
@@ -197,7 +243,7 @@ PYEOF
 }
 
 # --- the clang-tidy lane, same shape as run_gcc_lane. ----------------------
-run_tidy_lane() { # $1 = compile_commands.json path, $2 = out dir, $3 = jobs, $4 = -checks value (empty = use repo .clang-tidy), $5 = repo root (for the abs-directory rewrite)
+run_tidy_lane() { # $1 = compile_commands.json path, $2 = out dir, $3 = jobs, $4 = fallback -checks= value (used per-file only where that file's own .clang-tidy walk finds nothing), $5 = repo root (for the abs-directory rewrite)
 	python3 - "$1" "$2" "$3" "$4" "$5" <<'PYEOF'
 import json, os, sys, time
 from concurrent.futures import ThreadPoolExecutor
@@ -229,31 +275,62 @@ try:
 except FileNotFoundError:
     pass
 
-def stem_of(path):
-    b = os.path.basename(path)
-    return b[:-2] if b.endswith(".c") else b
+def key_of(path):
+    # See the gcc lane's identical helper and this script's header
+    # ("OUTPUT KEYS"): repository-relative path, "/" -> "__", extension
+    # kept, so two same-basename entries in different directories cannot
+    # clobber each other's .txt/.yaml output.
+    return path.replace("/", "__")
+
+seen = {}
+for e in entries:
+    k = key_of(e["file"])
+    seen.setdefault(k, []).append(e["file"])
+dups = {k: v for k, v in seen.items() if len(v) > 1}
+if dups:
+    for k, files in dups.items():
+        sys.stderr.write(f"analyzer-lanes clang-tidy lane: output key {k!r} is shared by: {', '.join(files)}\n")
+    sys.exit(3)
+
+# M1: walk up from a file's own directory to its entry's declared project
+# root looking for ".clang-tidy", the same direction clang-tidy itself
+# searches -- not just the project root alone. Under ten lines, per the
+# review's own bar for choosing the walk over a documented root-only check.
+def has_config(file_dir, stop_dir):
+    d = os.path.abspath(file_dir)
+    stop_dir = os.path.abspath(stop_dir)
+    while True:
+        if os.path.isfile(os.path.join(d, ".clang-tidy")):
+            return True
+        if d == stop_dir or os.path.dirname(d) == d:
+            return False
+        d = os.path.dirname(d)
 
 def run_one(e):
     src = e["file"]
-    stem = stem_of(src)
+    key = key_of(src)
+    orig_dir = e.get("directory", ".")
+    base = orig_dir if os.path.isabs(orig_dir) else os.path.join(repo_root, orig_dir)
+    file_dir = os.path.dirname(os.path.join(base, src))
+    cfg_found = has_config(file_dir, base)
     args = ["clang-tidy"]
-    if checks:
+    if checks and not cfg_found:
         args.append(f"-checks={checks}")
     args += ["-p", cc_dir]
     if export_fixes_ok:
-        args.append(f"--export-fixes={os.path.join(out_dir, stem + '.yaml')}")
+        args.append(f"--export-fixes={os.path.join(out_dir, key + '.yaml')}")
     args.append(src)
     t0 = time.time()
     r = subprocess.run(args, cwd=repo_root, capture_output=True, text=True)
     dt = time.time() - t0
-    with open(os.path.join(out_dir, stem + ".txt"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, key + ".txt"), "w", encoding="utf-8") as f:
         f.write(r.stdout)
         f.write(r.stderr)
     nwarn = r.stdout.count("warning:")
     # clang-tidy exits non-zero on a genuine compile ERROR in the TU (not on
     # a plain warning), which is the one failure mode worth surfacing loudly
     # -- see gcc lane's identical rc convention.
-    return (src, dt, r.returncode, nwarn)
+    return (src, dt, r.returncode, nwarn, cfg_found)
 
 t_start = time.time()
 out = []
@@ -264,24 +341,31 @@ wall = time.time() - t_start
 
 fails = 0
 total_warn = 0
-for src, dt, rc, nwarn in out:
+any_cfg = False
+for src, dt, rc, nwarn, cfg_found in out:
     print(f"TIDY_FILE {src} rc={rc} warnings={nwarn}")
     if rc != 0:
         fails += 1
     total_warn += nwarn
+    any_cfg = any_cfg or cfg_found
 
-print(f"TIDY_SUMMARY entries={len(entries)} fails={fails} warnings={total_warn} wall={wall:.2f} export_fixes={1 if export_fixes_ok else 0}")
+print(f"TIDY_SUMMARY entries={len(entries)} fails={fails} warnings={total_warn} wall={wall:.2f} export_fixes={1 if export_fixes_ok else 0} config_found={1 if any_cfg else 0}")
 PYEOF
 }
 
 # --self-test: the positive control (a null dereference, exactly one gcc
-# result whose rule id names it) and TWO negative controls (an empty
-# function gives zero gcc results; clang-tidy still finds something on the
-# bug so the lane is not silently inert).
+# result whose rule id names it), the zero-results negative control (an
+# empty function, rc=0 AND count=0), a THIRD case that a lane FAILURE
+# (a file that does not compile, rc != 0) is never confused with a clean
+# zero-results run, clang-tidy's own zero-warnings negative control on the
+# same empty function, and the path-keying fix itself: two files that
+# share a basename in two different directories must not clobber each
+# other's SARIF.
 if [ "${1:-}" = "--self-test" ]; then
 	SELF="$PROBE --self-test"
 	W="$(mktemp -d)"
 	trap 'rm -rf "$W"' EXIT
+	mkdir -p "$W/a" "$W/b"
 
 	cat >"$W/bug.c" <<'EOF'
 int bug(void) {
@@ -293,37 +377,126 @@ EOF
 void ctrl(void) {
 }
 EOF
+	cat >"$W/broken.c" <<'EOF'
+int broken(void) {
+	int x = ;
+}
+EOF
+	# Same basename ("same.c"), two different directories, two different
+	# bodies (one null-deref, one empty) -- an old basename-only key would
+	# have one entry's SARIF silently overwrite the other's, with neither
+	# compile failing, so nothing would signal it. Different bodies make
+	# the two expected counts (1 and 0) distinguishable proof that the
+	# right file produced the right SARIF, not just that two files exist.
+	cat >"$W/a/same.c" <<'EOF'
+int same(void) {
+	int *p = 0;
+	return *p;
+}
+EOF
+	cat >"$W/b/same.c" <<'EOF'
+void same(void) {
+}
+EOF
 	cat >"$W/cc.json" <<EOF
 [
   {"directory": "$W", "file": "bug.c", "arguments": ["gcc", "-c", "bug.c", "-o", "bug.o"]},
-  {"directory": "$W", "file": "ctrl.c", "arguments": ["gcc", "-c", "ctrl.c", "-o", "ctrl.o"]}
+  {"directory": "$W", "file": "ctrl.c", "arguments": ["gcc", "-c", "ctrl.c", "-o", "ctrl.o"]},
+  {"directory": "$W", "file": "broken.c", "arguments": ["gcc", "-c", "broken.c", "-o", "broken.o"]},
+  {"directory": "$W", "file": "a/same.c", "arguments": ["gcc", "-c", "a/same.c", "-o", "a/same.o"]},
+  {"directory": "$W", "file": "b/same.c", "arguments": ["gcc", "-c", "b/same.c", "-o", "b/same.o"]}
 ]
 EOF
 
 	fail=0
 
-	gcc_out="$(run_gcc_lane "$W/cc.json" "$W/sarif-gcc" "$W/objs-gcc" 2)"
+	gcc_out="$(run_gcc_lane "$W/cc.json" "$W/sarif-gcc" "$W/objs-gcc" 3)"
+	gcc_summary="$(printf '%s\n' "$gcc_out" | grep '^GCC_SUMMARY ')"
 	bug_line="$(printf '%s\n' "$gcc_out" | grep '^GCC_FILE bug.c ')"
 	ctrl_line="$(printf '%s\n' "$gcc_out" | grep '^GCC_FILE ctrl.c ')"
+	broken_line="$(printf '%s\n' "$gcc_out" | grep '^GCC_FILE broken.c ')"
+	a_line="$(printf '%s\n' "$gcc_out" | grep '^GCC_FILE a/same.c ')"
+	b_line="$(printf '%s\n' "$gcc_out" | grep '^GCC_FILE b/same.c ')"
 
-	if printf '%s\n' "$bug_line" | grep -q 'count=1 ' && printf '%s\n' "$bug_line" | grep -q 'null-dereference'; then
-		echo "    ok: positive control (null dereference) gives exactly one gcc result, ruleId names it"
+	if printf '%s\n' "$bug_line" | grep -q 'rc=0 ' && printf '%s\n' "$bug_line" | grep -q 'count=1 ' && printf '%s\n' "$bug_line" | grep -q 'null-dereference'; then
+		echo "    ok: positive control (null dereference) gives exactly one gcc result, ruleId names it, rc=0"
 		echo "        $bug_line"
 	else
-		echo "$SELF: FAIL (positive control did not give one null-dereference result): $bug_line"
+		echo "$SELF: FAIL (positive control did not give rc=0 and one null-dereference result): $bug_line"
 		fail=1
 	fi
 
-	if printf '%s\n' "$ctrl_line" | grep -q 'count=0 '; then
-		echo "    ok: negative control (empty function) gives zero gcc results"
+	# I2: rc=0 AND count=0, not just count=0 -- the "no sarif produced"
+	# failure path also prints count=0, with rc=2, so count=0 alone cannot
+	# tell a clean negative control apart from a broken lane.
+	if printf '%s\n' "$ctrl_line" | grep -q 'rc=0 ' && printf '%s\n' "$ctrl_line" | grep -q 'count=0 '; then
+		echo "    ok: negative control (empty function) gives rc=0 AND zero gcc results"
 		echo "        $ctrl_line"
 	else
-		echo "$SELF: FAIL (negative control gave a nonzero gcc result count): $ctrl_line"
+		echo "$SELF: FAIL (negative control was not rc=0 with zero gcc results): $ctrl_line"
 		fail=1
 	fi
 
-	tidy_out="$(run_tidy_lane "$W/cc.json" "$W/tidy" 2 "clang-diagnostic-*,clang-analyzer-*" "$W")"
+	# I2, continued: a file that cannot compile must be a LANE FAILURE
+	# (non-zero rc, counted in GCC_SUMMARY's fails=), never reported as a
+	# clean "zero results" run -- the two must stay distinguishable.
+	if printf '%s\n' "$broken_line" | grep -qE 'rc=[1-9][0-9]*' && ! printf '%s\n' "$broken_line" | grep -q 'rc=0 '; then
+		echo "    ok: a file that does not compile is reported with a non-zero rc, not as zero results"
+		echo "        $broken_line"
+	else
+		echo "$SELF: FAIL (a broken file did not get a non-zero rc): $broken_line"
+		fail=1
+	fi
+	if printf '%s\n' "$gcc_summary" | grep -qE 'fails=[1-9]'; then
+		echo "    ok: GCC_SUMMARY counts the broken file as a lane failure"
+		echo "        $gcc_summary"
+	else
+		echo "$SELF: FAIL (GCC_SUMMARY did not count the broken file as a failure): $gcc_summary"
+		fail=1
+	fi
+
+	# I1: same basename ("same.c"), two directories -- both must succeed,
+	# and each must carry ITS OWN count (1 for a/, 0 for b/), not a count
+	# borrowed from whichever entry a race let write last.
+	if printf '%s\n' "$a_line" | grep -q 'rc=0 ' && printf '%s\n' "$a_line" | grep -q 'count=1 '; then
+		echo "    ok: a/same.c (null deref) gives rc=0, count=1"
+		echo "        $a_line"
+	else
+		echo "$SELF: FAIL (a/same.c did not give rc=0, count=1): $a_line"
+		fail=1
+	fi
+	if printf '%s\n' "$b_line" | grep -q 'rc=0 ' && printf '%s\n' "$b_line" | grep -q 'count=0 '; then
+		echo "    ok: b/same.c (empty function) gives rc=0, count=0"
+		echo "        $b_line"
+	else
+		echo "$SELF: FAIL (b/same.c did not give rc=0, count=0): $b_line"
+		fail=1
+	fi
+
+	# The proof is on DISK, not just in the printed line: two distinct
+	# SARIF files, keyed by path, each independently holding its own
+	# entry's count -- the shape of bug this fix corrects is exactly a
+	# printed line looking right while one file silently overwrote the
+	# other on disk.
+	a_sarif="$W/sarif-gcc/a__same.c.sarif"
+	b_sarif="$W/sarif-gcc/b__same.c.sarif"
+	if [ -f "$a_sarif" ] && [ -f "$b_sarif" ]; then
+		a_count="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(r.get('results',[])) for r in d.get('runs',[])))" "$a_sarif")"
+		b_count="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(r.get('results',[])) for r in d.get('runs',[])))" "$b_sarif")"
+		if [ "$a_count" = "1" ] && [ "$b_count" = "0" ]; then
+			echo "    ok: two distinct SARIF files on disk, $a_sarif (1 result) and $b_sarif (0 results)"
+		else
+			echo "$SELF: FAIL (on-disk counts wrong: $a_sarif=$a_count, $b_sarif=$b_count, want 1 and 0)"
+			fail=1
+		fi
+	else
+		echo "$SELF: FAIL (expected two distinct SARIF files, missing one): $a_sarif $b_sarif"
+		fail=1
+	fi
+
+	tidy_out="$(run_tidy_lane "$W/cc.json" "$W/tidy" 3 "clang-diagnostic-*,clang-analyzer-*" "$W")"
 	tidy_bug_line="$(printf '%s\n' "$tidy_out" | grep '^TIDY_FILE bug.c ')"
+	tidy_ctrl_line="$(printf '%s\n' "$tidy_out" | grep '^TIDY_FILE ctrl.c ')"
 	if printf '%s\n' "$tidy_bug_line" | grep -qE 'warnings=[1-9][0-9]*'; then
 		echo "    ok: clang-tidy lane finds at least one warning on the same positive control"
 		echo "        $tidy_bug_line"
@@ -331,11 +504,20 @@ EOF
 		echo "$SELF: FAIL (clang-tidy lane found no warning on the positive control): $tidy_bug_line"
 		fail=1
 	fi
+	# M3: clang-tidy's own negative control -- the empty function must give
+	# zero warnings, not merely "gcc found zero" carried over by assumption.
+	if printf '%s\n' "$tidy_ctrl_line" | grep -q 'warnings=0'; then
+		echo "    ok: clang-tidy lane gives zero warnings on the empty-function negative control"
+		echo "        $tidy_ctrl_line"
+	else
+		echo "$SELF: FAIL (clang-tidy lane gave a nonzero warning count on the negative control): $tidy_ctrl_line"
+		fail=1
+	fi
 
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "$SELF: PASS (gcc lane: 1 result / 0 results; clang-tidy lane: >=1 warning)"
+	echo "$SELF: PASS (gcc: 1/0/failure distinguished, path-keyed same-basename pair correct; clang-tidy: >=1 warning / 0 warnings)"
 	exit 0
 fi
 
@@ -364,36 +546,37 @@ gcc_objs_dir="$SARIF_GCC_DIR/.objs"
 rm -rf "$SARIF_TIDY_DIR"
 mkdir -p "$SARIF_TIDY_DIR"
 
-HAS_CLANG_TIDY_CFG=0
-[ -f "$REPO_ROOT/.clang-tidy" ] && HAS_CLANG_TIDY_CFG=1
-if [ "$HAS_CLANG_TIDY_CFG" -eq 1 ]; then
-	tidy_checks=""
-else
-	tidy_checks="$CLANG_TIDY_CHECKS"
-fi
-
+# M1: the ".clang-tidy discovered anywhere?" decision is now made PER FILE,
+# inside run_tidy_lane's own directory walk (see that function and this
+# script's header). $CLANG_TIDY_CHECKS is always passed as the fallback;
+# it is only actually used for a file whose own walk finds nothing.
 gcc_out="$(run_gcc_lane "$COMPILE_COMMANDS_OUT" "$SARIF_GCC_DIR" "$gcc_objs_dir" "$JOBS")"
 gcc_summary="$(printf '%s\n' "$gcc_out" | grep '^GCC_SUMMARY ')"
 gcc_fails="$(printf '%s\n' "$gcc_summary" | sed -n 's/.*fails=\([0-9]*\).*/\1/p')"
 gcc_results="$(printf '%s\n' "$gcc_summary" | sed -n 's/.*results=\([0-9]*\).*/\1/p')"
 gcc_wall="$(printf '%s\n' "$gcc_summary" | sed -n 's/.*wall=\([0-9.]*\).*/\1/p')"
 
-tidy_out="$(run_tidy_lane "$COMPILE_COMMANDS_OUT" "$SARIF_TIDY_DIR" "$JOBS" "$tidy_checks" "$REPO_ROOT")"
+tidy_out="$(run_tidy_lane "$COMPILE_COMMANDS_OUT" "$SARIF_TIDY_DIR" "$JOBS" "$CLANG_TIDY_CHECKS" "$REPO_ROOT")"
 tidy_summary="$(printf '%s\n' "$tidy_out" | grep '^TIDY_SUMMARY ')"
 tidy_fails="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*fails=\([0-9]*\).*/\1/p')"
 tidy_warnings="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*warnings=\([0-9]*\).*/\1/p')"
 tidy_wall="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*wall=\([0-9.]*\).*/\1/p')"
 tidy_export_fixes="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*export_fixes=\([0-9]\).*/\1/p')"
+tidy_config_found="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*config_found=\([0-9]\).*/\1/p')"
 
 echo "$PROBE: capture $COMPILE_COMMANDS_OUT, $entry_count entries"
 echo "$PROBE: gcc lane  -- $GCC_VERSION"
 echo "$PROBE: gcc lane  -- $gcc_fails/$entry_count compile failures, $gcc_results analyser results, ${gcc_wall}s wall, SARIF in $SARIF_GCC_DIR"
-echo "$PROBE: clang-tidy lane -- $CLANG_TIDY_VERSION, repo .clang-tidy present: $([ "$HAS_CLANG_TIDY_CFG" -eq 1 ] && echo yes || echo no)"
+echo "$PROBE: clang-tidy lane -- $CLANG_TIDY_VERSION, a .clang-tidy found on any file's directory walk: $([ "$tidy_config_found" = "1" ] && echo yes || echo no)"
 echo "$PROBE: clang-tidy lane -- $tidy_fails/$entry_count compile failures, $tidy_warnings warnings, ${tidy_wall}s wall, export-fixes YAML: $([ "$tidy_export_fixes" = "1" ] && echo yes || echo no), output in $SARIF_TIDY_DIR"
 
+# M2: the terminal verdict line carries the artefact -- the capture path
+# and both SARIF directories -- the way
+# scripts/compile_commands_current_probe.sh's own PASS line names the
+# capture path and entry count.
 if [ "${gcc_fails:-1}" != "0" ] || [ "${tidy_fails:-1}" != "0" ]; then
-	echo "$PROBE: FAIL ($gcc_fails gcc-lane failure(s), $tidy_fails clang-tidy-lane failure(s))"
+	echo "$PROBE: FAIL ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_fails failure(s) in $SARIF_GCC_DIR; clang-tidy $tidy_fails failure(s) in $SARIF_TIDY_DIR)"
 	exit 1
 fi
 
-echo "$PROBE: PASS (gcc $gcc_results results, clang-tidy $tidy_warnings warnings, across $entry_count translation units)"
+echo "$PROBE: PASS ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_results results in $SARIF_GCC_DIR; clang-tidy $tidy_warnings warnings in $SARIF_TIDY_DIR)"
