@@ -187,6 +187,12 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
     # The caller's own env is layered on last, so a target can name a
     # variable the contract above does not know about (PARSER_TAB_C, for
     # instance) without having to duplicate COMPILER/GOO_RUNTIME/CC_PROBE.
+    # A silent .update() would let a caller overwrite a contract value
+    # instead -- COMPILER, say -- with no error, so refuse the collision
+    # instead of resolving it in the caller's favour.
+    for key in env:
+        if key in computed_env:
+            fail("goo_script_probe(%s): env cannot override contract key %s" % (name, key))
     computed_env.update(env)
 
     sh_test(

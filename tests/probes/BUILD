@@ -278,6 +278,11 @@ goo_script_probe(
 # small parse-and-free driver and runs it under valgrind.
 _AST_FREE_LEAK_DATA = SRC_PROBE_SOURCES + [
     "//include:probe_headers",
+    # parser.tab.c is named twice on purpose: parser_tab_files stages BOTH
+    # generated files (the .c the script compiles and the .h it #includes),
+    # while the single-file parser.tab.c label is what $(rootpath) below
+    # actually expands -- a two-file filegroup cannot be that label's
+    # target (measured: "not a declared prerequisite of this rule").
     "//src/parser/gen:parser_tab_files",
     "//src/parser/gen:parser.tab.c",
     "//tests/unit:ast/ast_free_leak_test.c",
