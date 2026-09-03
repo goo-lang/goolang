@@ -1494,13 +1494,31 @@ fanin-stress: $(RUNTIME_LIB)
 # which is 200 polls of the detector's 0.5 ms loop. RED against the runtime
 # before the fix: exit 2 with "all goroutines are asleep - deadlock!" while both
 # goroutines are alive. GREEN after: exit 0.
+#
+# 2026-09-03: the recipe moved into scripts/false_deadlock_probe.sh. As a
+# recipe it sat outside probe-teeth-probe's scan of scripts/*.sh, so it had no
+# in-tree negative control and nothing said so.
 false-deadlock-probe: $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== false-deadlock-probe: a live program survives a 100ms wake delay ==="
-	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/false_deadlock_test.c $(RUNTIME_LIB) -lpthread -lm -o build/false_deadlock_test
-	@GOO_TEST_WAKE_DELAY_NS=100000000 timeout 60 ./build/false_deadlock_test >build/false_deadlock_test.out 2>build/false_deadlock_test.err; rc=$$?; \
-	if [ $$rc -ne 0 ]; then echo "false-deadlock-probe: FAIL (exit $$rc, expected 0)"; cat build/false_deadlock_test.err; exit 1; fi; \
-	if grep -q "^false-deadlock-probe OK" build/false_deadlock_test.out; then echo "false-deadlock-probe: PASS"; else echo "false-deadlock-probe: FAIL (missing OK line)"; cat build/false_deadlock_test.out; exit 1; fi
+	@CC_PROBE="$(CC)" bash scripts/false_deadlock_probe.sh
+
+# Teeth: the pre-2026-09-02 wake site restored in a SCRATCH copy of
+# src/runtime/concurrency.c must bring the false abort back, and a run with the
+# wake delay unset must fail rather than pass blind.
+false-deadlock-selftest: $(RUNTIME_LIB)
+	@CC_PROBE="$(CC)" bash scripts/false_deadlock_probe.sh --self-test
+
+# 2026-09-03: the poll loop's own positive control. deadlock-probe aborts in
+# goo_sched_block_begin's main-thread branch and spawns no goroutine, so
+# nothing in the tree read GOO_DEADLOCK_POLL_STREAK or the `all_asleep`
+# conjunction until this gate. Two goroutines park for ever; main polls; the
+# process must leave through goo_deadlock_abort with exit 2.
+deadlock-poll-probe: $(RUNTIME_LIB)
+	@CC_PROBE="$(CC)" bash scripts/deadlock_poll_probe.sh
+
+# Teeth: with the threshold raised past the timeout the same program hangs,
+# which is also the evidence that the abort comes from the poll loop.
+deadlock-poll-selftest: $(RUNTIME_LIB)
+	@CC_PROBE="$(CC)" bash scripts/deadlock_poll_probe.sh --self-test
 
 # M9: a fully-deadlocked program aborts with Go's message + exit 2 (not a hang).
 deadlock-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -3279,6 +3297,9 @@ VERIFY_ALL_DEPS := \
     chan-mt-stress \
     fanin-stress \
     false-deadlock-probe \
+    false-deadlock-selftest \
+    deadlock-poll-probe \
+    deadlock-poll-selftest \
     deadlock-probe \
     deadlock-goroutine-probe \
     default-thread-count-test \
