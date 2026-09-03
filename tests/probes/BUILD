@@ -150,6 +150,8 @@ goo_script_probe(
     data = ["//examples:test_packages"],
 )
 
+# Its generated source imports only fmt, a C shim, and it never changes
+# directory, so the macro's contract is all it needs.
 goo_script_probe(
     name = "string_literal_header_probe",
     script = "//:scripts/string_literal_header_probe.sh",
