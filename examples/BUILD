@@ -21,3 +21,14 @@ filegroup(
     ]),
     visibility = ["//visibility:public"],
 )
+
+# The two test PACKAGES goo_test_probe drives with `goo test .`. all_fixtures
+# stops at the top level; these need the directory, sidecar included.
+filegroup(
+    name = "test_packages",
+    srcs = glob([
+        "testpkg/**",
+        "testfailpkg/**",
+    ]),
+    visibility = ["//visibility:public"],
+)

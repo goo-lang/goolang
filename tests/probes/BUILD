@@ -141,13 +141,8 @@ goo_script_probe(
     script = "//:scripts/arena_rss_probe.sh",
 )
 
-# NOT MIGRATED, and each for a measured reason rather than an assumption.
-# goo_test_probe passes under make and fails in a sandbox:
-#
-#   goo_test_probe             needs whole test PACKAGES with expected.norm.txt
-#
-# The COMPILER contract is necessary for these and not sufficient. Each wants
-# its own data, and one wants a GOOROOT the macro cannot name because
-# //goostd:files is a filegroup $(rootpath) will not expand. Declaring them
-# without that data would give red targets, and tagging them manual would
-# give targets that never run -- both worse than recording the gap here.
+goo_script_probe(
+    name = "goo_test_probe",
+    script = "//:scripts/goo_test_probe.sh",
+    data = ["//examples:test_packages"],
+)
