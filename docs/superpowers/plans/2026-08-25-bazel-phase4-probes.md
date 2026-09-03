@@ -237,9 +237,9 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       `.../tests/tests/unit/goo_check.h does not exist` — `$ROOT/tests/unit`
       doubled the `tests/` segment for the same reason. `goo_testcase_probe`
       FAILED with `.../tests/include/goo_assert.h missing` — `$ROOT/include`
-      doubled `tests/` the same way. All three took the same fix as the four
-      `arc_*` gates and `arena_rss_probe`: `git rev-parse --show-toplevel`,
-      falling back to `pwd`.
+      gained the same stray `tests/` segment, for the same reason. All three
+      took the same fix as the four `arc_*` gates and `arena_rss_probe`:
+      `git rev-parse --show-toplevel`, falling back to `pwd`.
       They needed no `GOOROOT` and no compiler contract — the macro's
       `needs_cc = True` hands them `CC_PROBE="$(CC)"` and
       `CSTD_PROBE="-std=c23"` from Bazel's own cc toolchain instead, the same
@@ -253,6 +253,16 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       `tags = ["nosan"]`: a sanitizer build of the Goo compiler changes
       nothing these gates test, while the sanitizer config swaps `$(CC)` to
       clang, whose coverage notes `gcov` cannot read.
+
+      The new `$ROOT` shape trades away a property the old one had: the old
+      form found the repo from the script's OWN path, so the script could
+      run from any directory, while the new form falls back to the working
+      directory, and inside a DIFFERENT git repository `git rev-parse` would
+      hand back the wrong tree — but under `make` the working directory is
+      already the repo root, and under Bazel the fallback is already the
+      runfiles root, so both callers stay correct, and the shape now matches
+      the four `arc_*` gates and `arena_rss_probe.sh`, which buys consistency
+      rather than costing anything measured here.
 
       *Next:* the 5 filegroup gates need the ten per-package filegroups. The
       7 that cannot be sandboxed stay out.

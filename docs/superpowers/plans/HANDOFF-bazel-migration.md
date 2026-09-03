@@ -45,7 +45,7 @@ the fix is `$PWD` — already the runfiles root on entry — and
 `GOO_PROBE_NO_SKIP` turns a missing valgrind into a FAIL under Bazel rather
 than a SKIPPED line nobody reads. Ten per-package filegroups under `src/`
 would unlock five more — a glob does not cross a package boundary, so there
-cannot be a `//:c_sources`. Eight stay out permanently, recorded.
+cannot be a `//:c_sources`. Seven stay out permanently, recorded.
 
 **Task 13 is done. #332 delivered 136 targets and 100 refusals**, and the
 refusal count is the deliverable there, not a shortfall.
