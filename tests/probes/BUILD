@@ -242,6 +242,23 @@ goo_script_probe(
     needs_compiler = False,
 )
 
+# The factual claims our documents make about this codebase, re-checked
+# against the tree: goostd package classification, the shim set in goo.c, the
+# /proc/self/exe site count, and that `make install` still packages rather
+# than a bare cp. No self-test target: doc_claims_probe.sh supports
+# --self-test, but no Makefile target ever passes that flag, so there is no
+# make gate to mirror here.
+goo_script_probe(
+    name = "doc_claims_probe",
+    script = "//:scripts/doc_claims_probe.sh",
+    data = SRC_PROBE_SOURCES + [
+        "//:Makefile",
+        "//:probe_scripts",
+        "//goostd:files",
+    ],
+    needs_compiler = False,
+)
+
 # NOT DECLARED HERE. 12 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
