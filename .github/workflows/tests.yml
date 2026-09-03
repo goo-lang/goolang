@@ -77,12 +77,23 @@ jobs:
         # valgrind: arena-valgrind-probe and arc-release-probe need it.
         # cmake: builds nng from the vendored tarball in third_party/.
         # json-c / curl / zlib: LDFLAGS links -ljson-c -lcurl -lz.
+        # clang-tidy: scripts/analyzer_lanes_probe.sh's clang-tidy lane (task
+        #   16) -- a pre-existing gap this run confirmed: analyzer-lanes-probe
+        #   joined VERIFY_ALL_DEPS in task 16 with no matching apt install, so
+        #   `make verify-core` could not have been green on this runner before
+        #   task 17 either.
+        # cppcheck: the same probe's third, MISRA-scanning lane (task 17).
+        # python3-jsonschema: tools/sarif_merge.py --validate checks the
+        #   merged SARIF against the vendored schema (task 17); apt, not pip,
+        #   since Ubuntu 24.04's system pip is externally managed (PEP 668)
+        #   and every other tool here already comes from apt.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             make gcc-14 bison llvm-dev clang libblocksruntime-dev \
             valgrind cmake \
-            libjson-c-dev libcurl4-openssl-dev zlib1g-dev
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev \
+            clang-tidy cppcheck python3-jsonschema
 
       - name: Tool versions
         run: |
@@ -91,6 +102,9 @@ jobs:
           bison --version | head -1
           valgrind --version
           cmake --version | head -1
+          clang-tidy --version | head -1
+          cppcheck --version
+          python3 -c "import jsonschema; print('jsonschema', jsonschema.__version__)"
           (ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 | xargs -r -I{} sh -c '{} --version') || echo "no llvm-config"
 
       - name: make verify-core

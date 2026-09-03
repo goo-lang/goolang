@@ -9,6 +9,7 @@ tools/probe_verdicts_to_sarif.py). scripts/findings_probe.sh is the
 shrink-only gate that reads the merged file this script writes.
 
     sarif_merge.py --out build/findings.sarif [--validate] INPUT [INPUT ...]
+    sarif_merge.py --validate-only EXISTING.sarif
     sarif_merge.py --self-test
 
 Each INPUT is a .sarif file, or a directory searched (non-recursively is not
@@ -73,21 +74,35 @@ def normalise_line(text):
     return WHITESPACE_RE.sub(" ", text.strip())
 
 
-def repo_relative(uri, base_dir):
+def repo_relative(uri):
     """A SARIF artifactLocation.uri is either already relative to the
     working directory every lane runs from (REPO_ROOT -- verified: every
     lane in scripts/analyzer_lanes_probe.sh either `cd`s there first or is
-    invoked with `directory: "."` resolved against it), or absolute (a
-    system header, e.g. /usr/include/features.h, that gcc's -fanalyzer
-    reports as a related location). os.path.relpath handles both: a
-    relative URI is joined against base_dir first so a result read from a
-    subdirectory-scoped SARIF file still resolves correctly, then relpath'd
-    against REPO_ROOT. An out-of-repository result gets a path with leading
-    ".." segments -- still a stable, deterministic key, and the leading
-    ".." is itself a legible signal that the finding is not in this repo."""
+    invoked with `directory: "."` resolved against it, and
+    tools/clang_tidy_to_sarif.py strips clang-tidy's own leading "./" to
+    match), or absolute (a system header, e.g. /usr/include/features.h,
+    that gcc's -fanalyzer reports as a related location).
+
+    A relative URI is joined against REPO_ROOT -- NEVER against the SARIF
+    FILE'S OWN directory (build/sarif/gcc/, build/sarif/cppcheck/, ...),
+    which is a DIFFERENT directory from the repository root every one of
+    those lanes is actually relative to. FOUND while measuring this
+    module's real output for task 17's report: an earlier version joined
+    against the input file's directory instead, so line_text_at() below
+    silently read from a path that does not exist, got "" back for every
+    real (non-self-test) result, and 287 genuinely different
+    misra-c2012-15.6 findings at 287 different lines in one file collapsed
+    into ONE fingerprint -- a false collision the self-test's own fixture
+    (an absolute file:// URI, which skips this join entirely) could not
+    catch. See this module's own self-test for the regression case this
+    added.
+
+    An out-of-repository result gets a path with leading ".." segments --
+    still a stable, deterministic key, and the leading ".." is itself a
+    legible signal that the finding is not in this repo."""
     if uri.startswith("file://"):
         uri = uri[len("file://"):]
-    abs_path = uri if os.path.isabs(uri) else os.path.normpath(os.path.join(base_dir, uri))
+    abs_path = uri if os.path.isabs(uri) else os.path.normpath(os.path.join(REPO_ROOT, uri))
     return os.path.relpath(abs_path, REPO_ROOT), abs_path
 
 
@@ -137,7 +152,6 @@ def merge(input_paths):
     for path in find_inputs(input_paths):
         with open(path, encoding="utf-8") as f:
             doc = json.load(f)
-        base_dir = os.path.dirname(os.path.abspath(path))
         for run in doc.get("runs", []):
             driver = run.get("tool", {}).get("driver", {})
             name = driver.get("name", "unknown")
@@ -154,7 +168,7 @@ def merge(input_paths):
                     art = locations[0].get("physicalLocation", {}).get("artifactLocation", {})
                     uri = art.get("uri", "")
                     if uri:
-                        rel_path, abs_path = repo_relative(uri, base_dir)
+                        rel_path, abs_path = repo_relative(uri)
                 region = locations[0].get("physicalLocation", {}).get("region", {}) if locations else {}
                 line_no = region.get("startLine")
                 line_text = line_text_at(abs_path, line_no) if abs_path else ""
@@ -321,7 +335,45 @@ def self_test():
                 print("FAIL: a result with no region merged with no fingerprint")
                 ok = False
 
-    # 5. Schema validation: missing "version" is invalid; a minimal
+        # 5. A RELATIVE uri must resolve against REPO_ROOT, never against
+        # the SARIF FILE'S OWN directory. REGRESSION CASE: an earlier
+        # version of repo_relative() joined a relative uri against the
+        # input file's directory instead, so on this repository's real
+        # output (every lane writes a repo-root-relative uri from a SARIF
+        # file that lives in build/sarif/<tool>/, a DIFFERENT directory)
+        # line_text_at() silently read a path that does not exist, got ""
+        # for every real result, and 287 genuinely different
+        # misra-c2012-15.6 findings at 287 different lines in one file
+        # collapsed into ONE fingerprint -- caught only by inspecting the
+        # real merged output, because this self-test's OTHER fixtures all
+        # use an absolute file:// uri, which skips the buggy join entirely.
+        # REPO_ROOT is monkeypatched to a scratch tree here so this proves
+        # the regression without touching a real repository file.
+        global REPO_ROOT
+        saved_root = REPO_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as scratch_root:
+                REPO_ROOT = scratch_root
+                os.makedirs(os.path.join(scratch_root, "src"))
+                with open(os.path.join(scratch_root, "src", "rel.c"), "w", encoding="utf-8") as f:
+                    f.write("int a(void) { return 1; }\nint b(void) { return 2; }\n")
+                sarif_subdir = os.path.join(scratch_root, "build", "sarif", "gcc")
+                os.makedirs(sarif_subdir)
+                _write_sarif(os.path.join(sarif_subdir, "one.sarif"), "GNU C23", "16", "ruleA", "src/rel.c", 1)
+                _write_sarif(os.path.join(sarif_subdir, "two.sarif"), "GNU C23", "16", "ruleA", "src/rel.c", 2)
+                doc5, _ = merge([sarif_subdir])
+                fps = {r["fingerprints"]["goo/v1"] for r in doc5["runs"][0]["results"]}
+            if len(fps) == 2:
+                print("    ok: two results on different lines of a repo-root-relative file, resolved from a "
+                      "SARIF file sitting in a DIFFERENT directory, get two different fingerprints")
+            else:
+                print("FAIL: two genuinely different lines collapsed to %d fingerprint(s) -- "
+                      "relative URI resolution regressed" % len(fps))
+                ok = False
+        finally:
+            REPO_ROOT = saved_root
+
+    # 6. Schema validation: missing "version" is invalid; a minimal
     # well-formed document is valid. Uses the REAL vendored schema and its
     # sha256 sidecar (both committed), so this also exercises
     # verify_schema_sha256() on the untouched, correct file.
@@ -348,6 +400,24 @@ def self_test():
 def main(argv):
     if argv == ["--self-test"]:
         return self_test()
+
+    # --validate-only <file>: validate an EXISTING SARIF document as-is,
+    # with no merge step. merge() always sets "version" on its own output,
+    # so feeding it a version-less INPUT can never produce an invalid
+    # OUTPUT -- scripts/findings_probe.sh's own self-test needs a way to
+    # prove its gate goes red on a genuinely invalid build/findings.sarif,
+    # which this gives it directly.
+    if len(argv) == 2 and argv[0] == "--validate-only":
+        with open(argv[1], encoding="utf-8") as f:
+            doc = json.load(f)
+        errors = validate(doc)
+        if errors:
+            print("sarif_merge: SCHEMA INVALID -- %d error(s)" % len(errors))
+            for e in errors[:20]:
+                print("    %s: %s" % ("/".join(str(p) for p in e.absolute_path), e.message))
+            return 1
+        print("sarif_merge: schema OK (%s, sha256 verified)" % SCHEMA_PATH)
+        return 0
 
     out_path = None
     do_validate = False

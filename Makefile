@@ -3458,6 +3458,8 @@ VERIFY_ALL_DEPS := \
     compile-commands-current-probe \
     analyzer-lanes-probe \
     analyzer-lanes-selftest \
+    findings-probe \
+    findings-probe-selftest \
     podman-image-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the heavy-toolchain set. This is the
@@ -6652,3 +6654,19 @@ analyzer-lanes-probe:
 
 analyzer-lanes-selftest:
 	@bash scripts/analyzer_lanes_probe.sh --self-test
+
+# Task 17 of the 2026-09-02 verification tooling plan: one SARIF findings
+# database over gcc, clang-tidy, cppcheck, the pthread-return-probe ratchet
+# and the gate log those probes print, with a shrink-only gate that
+# generalises docs/misra/tools/gate.py's own (file, rule) tally into
+# (tool, rule, file, fingerprint) across every one of them. Re-runs
+# analyzer-lanes-probe and pthread-return-probe itself (see
+# scripts/findings_probe.sh's own header on why: it must also work
+# standalone, with no Makefile dependency graph to rely on), so this adds
+# roughly another minute on top of analyzer-lanes-probe's own budget.
+.PHONY: findings-probe findings-probe-selftest
+findings-probe:
+	@bash scripts/findings_probe.sh
+
+findings-probe-selftest:
+	@bash scripts/findings_probe.sh --self-test
