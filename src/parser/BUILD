@@ -93,3 +93,27 @@ cc_library(
         ":parser_state",
     ],
 )
+
+# The src-scanning probe gates (task 14) read these as FILES: alloc_doors
+# greps every .c and .h for a raw strdup, doc_claims counts /proc/self/exe
+# sites, and two others compile a named handful with a shell C compiler.
+# A glob does not cross a package boundary, so each package names its own.
+# allow_empty: most of these ten packages hold only .c files at top level --
+# their headers live in include/ -- so the "*.h" half of the pattern matches
+# nothing, and the default empty-glob error would otherwise block the build.
+#
+# exclude parser.tab.c/.tab.h: they are MAKE's build outputs, gitignored, and
+# on a tree where `make lexer` has run they sit right here, beside their own
+# sources. They are not sources. Bazel generates its own copy in
+# src/parser/gen, and the C preprocessor's quoted-include search checks the
+# includer's own directory BEFORE -I$PARSER_TAB_DIR -- so a stale copy here
+# would answer #include "parser.tab.h" from the wrong build's output.
+filegroup(
+    name = "probe_sources",
+    srcs = glob(
+        ["*.c", "*.h"],
+        exclude = ["parser.tab.c", "parser.tab.h"],
+        allow_empty = True,
+    ),
+    visibility = ["//tests/probes:__pkg__"],
+)

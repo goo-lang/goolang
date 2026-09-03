@@ -16,36 +16,44 @@
 | 4 probe gates, task 14 in part, the four arc_* gates, 10 of 29 | #334 | merged |
 | 4 probe gates, task 14 in part, the last three sandbox failures and string_literal_header, 14 of 29 | #335 | merged |
 | 4 probe gates, task 14 in part, the three C-fixture gates, 17 of 29 | #336 | merged |
+| 4 probe gates, task 14 in part, the five src/** gates, 22 of 29 | **#337** | **open** |
 
 **Parity: 224 gates** as of #331 (was 217). `make verify-core` and
-`bazel test //...` are both green. `bazel test //...` runs 174 tests
+`bazel test //...` are both green. `bazel test //...` runs 181 tests
 (measured 2026-09-03). `verify-core` now carries three DERIVATION gates —
 census, generated.bzl and the extracted sources — which together cost about
 110 s, most of it the source-drift self-test.
 
 ## Pick up here
 
-`docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **the task 14 tail,
-then 15 onward**. Tasks 1–13 and the two added ones (4b, 4c) are done. Task 14
-is a PARTIAL pass — 17 of 29 script gates — and the plan holds the measured
-cause for each of the other 12, in two buckets rather than three. WARNING: the
-1–5 checkboxes in that file were never ticked, though every artefact is
-present — do not read an empty box there as open work. 6 to 12 are ticked,
-with evidence.
+`docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **task 15
+onward**. Tasks 1–13 and the two added ones (4b, 4c) are done. Task 14 is
+a PARTIAL pass by design — 22 of 29 script gates operate, and one bucket
+of 7 remains, recorded with a measured cause each rather than declared red
+or tagged `manual`. WARNING: the 1–5 checkboxes in that file were never
+ticked, though every artefact is present — do not read an empty box there
+as open work. 6 to 14 are ticked or `[~]`, with evidence.
 
-**Task 13 is done. Next is task 14's tail, the five filegroup gates, or
-move to** task 15 (the bespoke EIGHT, up from six — the derivation gates
-classify there, correctly: they are hand-written sh_tests), 16–17 (CI,
-close).
+**Task 13 is done. Task 14 is done to the extent it will ever be — 7 of 29
+stay out by design, permanently. Next is task 15** (the bespoke EIGHT, up
+from six — the derivation gates classify there, correctly: they are
+hand-written sh_tests), 16–17 (CI, close).
 
-**Task 14's tail is now the five filegroup gates.** The four `arc_*` gates
-are done: `$0` and `${BASH_SOURCE[0]}` resolve to a symlink under
-`tests/probes/`, one directory too deep for their old `dirname` fallback, so
-the fix is `$PWD` — already the runfiles root on entry — and
-`GOO_PROBE_NO_SKIP` turns a missing valgrind into a FAIL under Bazel rather
-than a SKIPPED line nobody reads. Ten per-package filegroups under `src/`
-would unlock five more — a glob does not cross a package boundary, so there
-cannot be a `//:c_sources`. Seven stay out permanently, recorded.
+**Task 14's tail — the five src/**-scanning gates — is now closed.** The
+four `arc_*` gates were done earlier: `$0` and `${BASH_SOURCE[0]}` resolve
+to a symlink under `tests/probes/`, one directory too deep for their old
+`dirname` fallback, so the fix is `$PWD` — already the runfiles root on
+entry — and `GOO_PROBE_NO_SKIP` turns a missing valgrind into a FAIL under
+Bazel rather than a SKIPPED line nobody reads. Ten per-package filegroups
+under `src/`, one in `include/` and one in `src/parser/gen/` unlocked the
+last five: a glob does not cross a package boundary, so there cannot be a
+single `//:c_sources`. Full measured causes, RED lines and the mechanism
+(the twelve filegroups, the macro's new per-target `env`, `PARSER_TAB_C`,
+the `CC_PROBE` fallback, the no-skip rule, the `package_toolchain.sh`
+two-line override, and three further symlink-related fixes the original
+plan did not anticipate) are in the phase-4 plan's task 14 entry. The
+remaining 7 stay out permanently, by design — none of them can run inside
+a sandbox at all.
 
 **Task 13 is done. #332 delivered 136 targets and 100 refusals**, and the
 refusal count is the deliverable there, not a shortfall.

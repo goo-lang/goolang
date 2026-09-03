@@ -207,22 +207,140 @@ goo_script_probe(
     tags = ["nosan"],
 )
 
-# NOT DECLARED HERE. 12 of the 29 script gates are not one of the targets
+# Task 14, the five gates that read or compile src/**. Each of the ten
+# src/*:probe_sources filegroups exports one package's own .c/.h files, since
+# a glob does not cross a package boundary and there is no single //:c_sources
+# the way //goostd:files covers the stdlib.
+#
+# tags = ["nosan"] on ast_free_leak_probe and proof_cache_shell_probe: both
+# compile C with $(CC), which the sanitizer configs (.bazelrc test:san-base)
+# swap to clang. The other three either never touch a C compiler, or package
+# the Goo compiler Bazel already built -- which the sanitizer legs exist to
+# exercise, not to re-package.
+SRC_PROBE_SOURCES = [
+    "//src/ast:probe_sources", "//src/codegen:probe_sources",
+    "//src/compiler:probe_sources", "//src/comptime:probe_sources",
+    "//src/errors:probe_sources", "//src/lexer:probe_sources",
+    "//src/package:probe_sources", "//src/parser:probe_sources",
+    "//src/runtime:probe_sources", "//src/types:probe_sources",
+    "//:src_orphan_sources",
+]
+
+# ARC header-feasibility audit rider: only goo_alloc/goo_realloc/goo_free may
+# name a libc allocator, and no bare strdup may appear anywhere in src/. Pure
+# source scan, no compiler needed.
+goo_script_probe(
+    name = "alloc_doors_probe",
+    script = "//:scripts/alloc_doors_probe.sh",
+    data = SRC_PROBE_SOURCES,
+    needs_compiler = False,
+)
+goo_script_probe(
+    name = "alloc_doors_selftest",
+    script = "//:scripts/alloc_doors_probe.sh",
+    args = ["--self-test"],
+    data = SRC_PROBE_SOURCES,
+    needs_compiler = False,
+)
+
+# The factual claims our documents make about this codebase, re-checked
+# against the tree: goostd package classification, the shim set in goo.c, the
+# /proc/self/exe site count, and that `make install` still packages rather
+# than a bare cp. No self-test target: doc_claims_probe.sh supports
+# --self-test, but no Makefile target ever passes that flag, so there is no
+# make gate to mirror here.
+goo_script_probe(
+    name = "doc_claims_probe",
+    script = "//:scripts/doc_claims_probe.sh",
+    data = SRC_PROBE_SOURCES + [
+        "//:Makefile",
+        "//:probe_scripts",
+        "//goostd:files",
+    ],
+    needs_compiler = False,
+)
+
+# proof_cache_create() must not hand its argument to a shell. No self-test:
+# proof_cache_shell_probe.sh has no --self-test mode at all.
+goo_script_probe(
+    name = "proof_cache_shell_probe",
+    script = "//:scripts/proof_cache_shell_probe.sh",
+    data = [
+        "//src/types:probe_sources",
+        "//include:probe_headers",
+    ],
+    needs_compiler = False,
+    needs_cc = True,
+    tags = ["nosan"],
+)
+
+# ast_node_free() must free the whole tree, not only the spine. Compiles a
+# small parse-and-free driver and runs it under valgrind.
+_AST_FREE_LEAK_DATA = SRC_PROBE_SOURCES + [
+    "//include:probe_headers",
+    # parser.tab.c is named twice on purpose: parser_tab_files stages BOTH
+    # generated files (the .c the script compiles and the .h it #includes),
+    # while the single-file parser.tab.c label is what $(rootpath) below
+    # actually expands -- a two-file filegroup cannot be that label's
+    # target (measured: "not a declared prerequisite of this rule").
+    "//src/parser/gen:parser_tab_files",
+    "//src/parser/gen:parser.tab.c",
+    "//tests/unit:ast/ast_free_leak_test.c",
+]
+_AST_FREE_LEAK_ENV = {"PARSER_TAB_C": "$(rootpath //src/parser/gen:parser.tab.c)"}
+
+goo_script_probe(
+    name = "ast_free_leak_probe",
+    script = "//:scripts/ast_free_leak_probe.sh",
+    data = _AST_FREE_LEAK_DATA,
+    env = _AST_FREE_LEAK_ENV,
+    needs_compiler = False,
+    needs_cc = True,
+    tags = ["nosan"],
+)
+goo_script_probe(
+    name = "ast_free_leak_selftest",
+    script = "//:scripts/ast_free_leak_probe.sh",
+    args = ["--self-test"],
+    data = _AST_FREE_LEAK_DATA,
+    env = _AST_FREE_LEAK_ENV,
+    needs_compiler = False,
+    needs_cc = True,
+    tags = ["nosan"],
+)
+
+# The FIRST automated execution of resolver tier 2: an extracted, packaged
+# toolchain must compile and run a program that imports a vendored package,
+# with no environment variable set and from an unrelated directory. Needs
+# the compiler and the runtime archive (needs_compiler defaults True),
+# scripts/package_toolchain.sh and scripts/check_stdlib_coverage.sh, and the
+# stdlib it packages. No self-test target: release-package-probe has no
+# make gate that passes --self-test.
+#
+# package_toolchain.sh stages goostd with `cp -rL`, not `cp -r`: under Bazel
+# this probe's goostd data arrives as symlinks into the source tree, and
+# plain -r would have packaged the symlinks rather than their content, so
+# the tarball would not survive being moved off this machine. Measured
+# after the fix: the extracted tarball holds 0 symlinks
+# (`find <extracted> -type l | wc -l`).
+goo_script_probe(
+    name = "release_package_probe",
+    script = "//:scripts/release_package_probe.sh",
+    data = [
+        "//:probe_scripts",
+        "//goostd:files",
+    ],
+)
+
+# NOT DECLARED HERE. 7 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
-# docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
-#
-#   7 cannot run in a sandbox at all -- podman_image_probe.sh exits 0 with no
-#     podman, so a sandboxed target would be green while asserting nothing;
-#     repro_build_probe.sh and archive_determinism_probe.sh each rebuild
-#     `git archive HEAD`, and a sandbox has no .git; far-collective,
-#     far-halo, far-jacobi and far-stencil-r2 share a helper that takes
-#     arguments and need NNG (phase 3c).
-#   5 read or compile src/** and need ten per-package filegroups first -- a
-#     glob does not cross a package boundary, so there cannot be a single
-#     //:c_sources the way //goostd:files covers the stdlib: alloc_doors,
-#     ast_free_leak, doc_claims, proof_cache_shell, release_package.
-#
-# 7 + 5 = 12.
+# docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14. All
+# seven cannot run in a sandbox at all: podman_image_probe.sh exits 0 with
+# no podman, so a sandboxed target would be green while asserting nothing;
+# repro_build_probe.sh and archive_determinism_probe.sh each rebuild
+# `git archive HEAD`, and a sandbox has no .git; far-collective, far-halo,
+# far-jacobi and far-stencil-r2 share a helper that takes arguments and
+# need NNG (phase 3c).
 #
 # Declaring these without their data would give red targets, and tagging
 # them manual would give targets that never run -- both worse than
