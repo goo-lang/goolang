@@ -5,9 +5,9 @@
 # applied via scripts/pthread_return_probe.sh. Regenerate with:
 #   scripts/pthread_return_probe.sh --update-baseline
 #
-# MEASURED 2026-09-02, tools/pthread_return_count.py (this file's
-# counting rule), git HEAD 3e8529d:
-# 40 unchecked pthread_* returns across 68 src/*.c files, 6 of them nonzero.
+# MEASURED 2026-09-03, tools/pthread_return_count.py (this file's
+# counting rule), git HEAD cd7fe091:
+# 19 unchecked pthread_* returns across 69 src/*.c files, 4 of them nonzero.
 #
 # Next to cppcheck's 840 (docs/misra/README.md, measured 2026-08-14, the
 # pthread_* slice of MISRA Rule 17.7 kept after deviation D-02): the two
@@ -23,9 +23,7 @@
 # The gate is red when a file's count here rises above its row, or a file
 # with a count above zero has no row at all. It never writes this file
 # itself; only --update-baseline does.
-src/runtime/channels.c	17
 src/runtime/concurrency.c	2
 src/runtime/far_transport.c	8
-src/runtime/platform.c	2
-src/runtime/sync.c	7
+src/runtime/goo_os_posix.c	5
 src/runtime/sync_shim.c	4
