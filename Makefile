@@ -3456,6 +3456,8 @@ VERIFY_ALL_DEPS := \
     archive-determinism-probe \
     repro-build-probe \
     compile-commands-current-probe \
+    analyzer-lanes-probe \
+    analyzer-lanes-selftest \
     podman-image-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the heavy-toolchain set. This is the
@@ -6629,3 +6631,24 @@ repro-build-probe:
 compile-commands-current-probe:
 	@bash scripts/compile_commands_current_probe.sh
 	@bash scripts/compile_commands_current_probe.sh --self-test
+
+# Task 16 of the 2026-09-02 verification tooling plan: two static-analysis
+# lanes over the SAME capture compile-commands-current-probe keeps fresh --
+# gcc with -Wall -Wextra -Wpedantic -fanalyzer, SARIF to build/sarif/gcc/,
+# and clang-tidy, plain text (+ YAML fixes where supported) to
+# build/sarif/clang-tidy/. Both lanes regenerate the capture themselves, the
+# same "just derive it again" rule scripts/misra-scan.sh already follows.
+# scripts/analyzer_lanes_probe.sh's header records a real ccache defect this
+# lane tripped over: ccache does not track -fanalyzer's SARIF side file, so
+# a warm cache silently drops it on a hit (exit 0, no file) -- the gcc lane
+# forces CCACHE_DISABLE=1 for every compile it runs. Both lanes parallelise
+# across JOBS (default nproc); on this machine the full 58-entry run is
+# ~20 s (gcc) + ~24 s (clang-tidy), well inside verify-core's budget, but
+# the task's own instruction is to keep this gate in verify-core even if a
+# slower machine pushes it past a minute.
+.PHONY: analyzer-lanes-probe analyzer-lanes-selftest
+analyzer-lanes-probe:
+	@bash scripts/analyzer_lanes_probe.sh
+
+analyzer-lanes-selftest:
+	@bash scripts/analyzer_lanes_probe.sh --self-test
