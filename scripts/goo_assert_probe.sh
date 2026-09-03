@@ -29,7 +29,14 @@
 
 set -u
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# A Bazel sh_test starts with $PWD already AT the runfiles root, but $0
+# resolves to <runfiles>/_main/tests/probes/goo_assert_probe.sh -- a symlink
+# one directory too deep for the old dirname-based fallback to find its way
+# back to the root (measured: -I"$ROOT/include" reported "goo_assert.h: No
+# such file or directory"). git rev-parse fails in the sandbox (no .git), so
+# the fallback is $PWD itself, which IS the runfiles root there and the repo
+# root here.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 # Use the compiler the MAKEFILE uses, not a bare `gcc`. CI runs
 # `make CC=gcc-14 ...` because the distro default on ubuntu-24.04 is gcc-13,

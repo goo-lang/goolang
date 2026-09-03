@@ -157,6 +157,22 @@ goo_script_probe(
     script = "//:scripts/string_literal_header_probe.sh",
 )
 
+# The three C-fixture gates. None invokes the Goo compiler: each compiles
+# small C programs against one header with the C compiler the Makefile
+# would use, which the macro hands over as CC_PROBE from Bazel's own
+# toolchain. tags = ["nosan"]: a sanitizer build of the Goo compiler
+# changes nothing these gates test, while the config swaps $(CC) to clang,
+# whose coverage notes gcov cannot read. The two _selftest targets are the
+# second command each make gate runs, and they are the teeth.
+goo_script_probe(
+    name = "goo_assert_probe",
+    script = "//:scripts/goo_assert_probe.sh",
+    needs_compiler = False,
+    needs_cc = True,
+    data = ["//include:goo_assert.h"],
+    tags = ["nosan"],
+)
+
 # NOT DECLARED HERE. 15 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
