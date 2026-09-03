@@ -47,10 +47,26 @@ fi
 # read_object_count: $(words $(GOO_OBJS)) via an injected print-% rule, the
 # same mechanism tools/gen_compile_commands.sh uses for the lists
 # themselves -- one source of truth, never a hand-copied number.
+#
+# --no-print-directory and the GOO_MAKE_VAR= sentinel: this gate is itself
+# invoked as a make recipe (`make compile-commands-current-probe`), so
+# MAKELEVEL is already >= 1 when this nested `make` runs -- GNU make then
+# auto-prints "Entering/Leaving directory" lines to the SAME stdout, with
+# "Leaving directory" landing after our echo. A first version of this
+# probe used a bare `tail -1` here: it passed every time it was run
+# directly (`bash scripts/compile_commands_current_probe.sh`, MAKELEVEL=0,
+# no announcement) and failed every time `make
+# compile-commands-current-probe` ran it for real, reading the
+# announcement as the count. Both guards close that: --no-print-directory
+# removes the announcement at the source, and the sentinel means only a
+# line we tagged ourselves is ever read as the value, whichever mode this
+# runs in.
 read_object_count() {
-	make -f "$REPO_ROOT/Makefile" \
-		--eval='print-goo-objs-count: ; @echo $(words $(GOO_OBJS))' \
-		print-goo-objs-count 2>/dev/null | tail -1
+	make --no-print-directory -f "$REPO_ROOT/Makefile" \
+		--eval='print-goo-objs-count: ; @echo GOO_MAKE_VAR=$(words $(GOO_OBJS))' \
+		print-goo-objs-count 2>/dev/null \
+		| sed -n 's/^GOO_MAKE_VAR=//p' \
+		| tail -1
 }
 
 # check_json: $1 = path to a compile_commands.json, $2 = expected object

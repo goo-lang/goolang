@@ -86,8 +86,28 @@ MAKE_TARGET="${GEN_CC_MAKE_TARGET:-lexer}"
 # `tail -1` drops the $(info)/$(warning) lines the Makefile prints while
 # choosing its LLVM config -- those go to the same stdout, ahead of our
 # recipe's own output, on every invocation.
+# --no-print-directory matters here, not just for tidiness: this script is
+# invoked from INSIDE a make recipe (the compile-commands-current-probe
+# target calls the gate script, which calls this one), so MAKELEVEL is
+# already >= 1 in the environment this nested `make` inherits. GNU make
+# auto-enables its "Entering/Leaving directory" announcements whenever it
+# detects it is a sub-make, WITH NO -w NEEDED to trigger it -- and prints
+# them to the SAME stdout our recipe's own echo uses, with "Leaving
+# directory" landing AFTER it. A bare `tail -1` then silently returns that
+# announcement instead of the real value: this script worked from an
+# interactive shell (MAKELEVEL=0, no announcement) and failed only when
+# `make compile-commands-current-probe` ran it for real -- proof the two
+# invocation modes are not interchangeable for this kind of nested-make
+# call. The GOO_MAKE_VAR= sentinel is the second, independent guard: even
+# with the announcement suppressed, sed only accepts a line we ourselves
+# tagged, so any OTHER future noise on this stdout (a $(warning), a second
+# $(info)) cannot be mistaken for the value either.
 read_make_var() { # $1 = variable name
-	make -f Makefile --eval="print-$1: ; @echo \$($1)" "print-$1" 2>/dev/null | tail -1
+	make --no-print-directory -f Makefile \
+		--eval="print-$1: ; @echo GOO_MAKE_VAR=\$($1)" \
+		"print-$1" 2>/dev/null \
+		| sed -n 's/^GOO_MAKE_VAR=//p' \
+		| tail -1
 }
 
 goo_srcs_raw="$(read_make_var GOO_SRCS)"
