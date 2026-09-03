@@ -394,13 +394,14 @@ The essential type model. Real value, but the largest and least mechanical group
     scripts/misra-scan.sh --report # full breakdown, never fails
 
 The scan reads its file list from `--project=build/compile_commands.json`
-(task 14's derivation of `GOO_OBJS`, regenerated on every run), not a
-hand-rolled `find src` — so it scans exactly the files linked into `bin/goo`,
-each with its own real compiler flags.
+(task 14's derivation of `GOO_OBJS` plus `COMPILER_SRCS`, regenerated on
+every run), not a hand-rolled `find src` — so it scans exactly the files
+linked into `bin/goo`, each with its own real compiler flags.
 
-`make misra` does not fail on the 7,168 accepted violations. It records the
-count per file and rule in `scripts/misra-baseline.txt` and fails only when a
-count rises or a new pair appears. This is the same shape as `make safety`.
+`make misra` does not fail on the 2,141 accepted violations (cppcheck 2.21.1,
+measured 2026-09-03). It records the count per file and rule in
+`scripts/misra-baseline.txt` and fails only when a count rises or a new pair
+appears. This is the same shape as `make safety`.
 
 Setup is one step and it is not automatic: the cppcheck addon needs a rule-text
 file built from **your own licensed copy** of the standard. That file is not in

@@ -6,13 +6,24 @@
 # list instead of each re-deriving its own `find src -name '*.c'`.
 #
 # SCOPE: one entry for each file in GOO_OBJS -- the translation units the
-# Makefile links into bin/goo (see $(COMPILER)'s prerequisite list). This is
-# NOT every *.c the "lexer" target's dry run touches: RUNTIME_OBJS (the
-# libgoo_runtime.a archive $(COMPILER) itself needs to run) compiles two
-# further files, src/runtime/io.c and src/runtime/far_transport.c, that are
-# not in GOO_OBJS and so are not captured here. This scope choice is the
-# task's own acceptance line: "each src/*.c in GOO_OBJS is in the list one
-# time".
+# Makefile links into bin/goo (see $(COMPILER)'s prerequisite list) -- PLUS
+# one entry for each .c file on $(COMPILER)'s own link line (COMPILER_SRCS:
+# src/compiler/goo.c and src/compiler/test_discovery.c today). Those two
+# ship in bin/goo exactly like every GOO_OBJS file, but the Makefile compiles
+# and links them in the SAME recipe line rather than through the generic
+# $(BUILDDIR)/%.o pattern rule (see $(COMPILER)'s recipe), so they have no
+# "-c $src -o $obj" step for step 3 below to match. Task 15 fix round 1 (the
+# 2026-09-02 verification tooling plan) added step 3b to catch this: it reads
+# the actual link line and pulls its .c files out BY PATTERN, not by name, so
+# a third file added to COMPILER_SRCS is captured on its next run with no
+# code change here.
+#
+# This is still NOT every *.c the "lexer" target's dry run touches:
+# RUNTIME_OBJS (the libgoo_runtime.a archive $(COMPILER) itself needs to run)
+# compiles two further files, src/runtime/io.c and src/runtime/far_transport.c,
+# that are in neither GOO_OBJS nor COMPILER_SRCS and so are not captured here.
+# This scope choice is the task's own acceptance line: "each src/*.c in
+# GOO_OBJS is in the list one time".
 #
 # WHY `make -Bn lexer`, not a hand-written flag list: -n (--just-print,
 # a.k.a. dry run) means make PRINTS every recipe it would run without
@@ -161,19 +172,47 @@ if [ "$missing" -ne 0 ]; then
 	exit 1
 fi
 
+# --- 3b. The link line: $(COMPILER)'s own recipe compiles COMPILER_SRCS
+#         directly alongside the GOO_OBJS inputs (see $(COMPILER)'s recipe in
+#         the Makefile), so those files never get a standalone "-c ... -o
+#         ..." step -- step 3's grep cannot see them. Read $(COMPILER) itself
+#         (never hand-copy "bin/goo") to find the one dry-run line that links
+#         it, and hand the raw line to Python step 4, which pulls its .c
+#         files out generically. -----------------------------------------
+compiler_path="$(read_make_var COMPILER)"
+srcdir_val="$(read_make_var SRCDIR)"
+builddir_val="$(read_make_var BUILDDIR)"
+if [ -z "$compiler_path" ] || [ -z "$srcdir_val" ] || [ -z "$builddir_val" ]; then
+	echo "$TOOL: FAIL (could not read COMPILER/SRCDIR/BUILDDIR from the Makefile)" >&2
+	exit 1
+fi
+
+link_line_file="$(mktemp)"
+trap 'rm -f "$pairs_file" "$link_line_file"' EXIT
+
+# Fixed-string match on " -o <compiler_path>": $(COMPILER)'s recipe is the
+# only line in the dry run that links to this exact path -- every object
+# recipe's "-o" targets a $(BUILDDIR)/*.o path instead.
+link_line="$(printf '%s\n' "$DRYRUN" | grep -F -- " -o $compiler_path" | head -1)"
+if [ -z "$link_line" ]; then
+	echo "$TOOL: FAIL (no link line for \$(COMPILER)=$compiler_path in \`make -Bn $MAKE_TARGET\`)" >&2
+	exit 1
+fi
+printf '%s\n' "$link_line" >"$link_line_file"
+
 # --- 4. Emit the compilation database. Python's shlex does the one part a
 #        shell script should not hand-roll: quote-aware tokenizing of each
 #        recipe line into the real argv gcc receives. -----------------
 mkdir -p "$(dirname "$OUT")"
 tmp_out="$(mktemp "$(dirname "$OUT")/.compile_commands.XXXXXX.json")"
-trap 'rm -f "$pairs_file" "$tmp_out"' EXIT
+trap 'rm -f "$pairs_file" "$link_line_file" "$tmp_out"' EXIT
 
-python3 - "$pairs_file" "$tmp_out" <<'PYEOF'
+python3 - "$pairs_file" "$link_line_file" "$srcdir_val" "$builddir_val" "$tmp_out" <<'PYEOF'
 import json
 import shlex
 import sys
 
-pairs_path, out_path = sys.argv[1], sys.argv[2]
+pairs_path, link_line_path, srcdir, builddir, out_path = sys.argv[1:6]
 
 entries = []
 with open(pairs_path, encoding="utf-8") as f:
@@ -188,6 +227,54 @@ with open(pairs_path, encoding="utf-8") as f:
             "arguments": shlex.split(cmd),
         })
 
+# Step 3b's link line: pull out every bare ".c" token (a source, never a
+# flag -- no flag value in this recipe ends in ".c") and every other token
+# that is NOT a link-only artefact (an already-built ".o"/".a" input, "-o"
+# and the path that follows it, or a "-l.../-L..." linker flag). What is
+# left is the exact compile-flag set gcc would use for these files, taken
+# from the real line rather than hand-copied -- so a flag added to CFLAGS
+# shows up here too, and a file added to COMPILER_SRCS is picked up by
+# PATTERN (ends in ".c", is not a flag) with no code change.
+link_tokens = shlex.split(open(link_line_path, encoding="utf-8").read())
+flags = []
+sources = []
+i = 0
+while i < len(link_tokens):
+    tok = link_tokens[i]
+    if tok == "-o":
+        i += 2  # drop -o and the output path that follows it
+        continue
+    if not tok.startswith("-") and tok.endswith(".c"):
+        sources.append(tok)
+        i += 1
+        continue
+    if tok.endswith(".o") or tok.endswith(".a"):
+        i += 1
+        continue
+    if tok.startswith("-l") or tok.startswith("-L"):
+        i += 1
+        continue
+    flags.append(tok)
+    i += 1
+
+srcdir_prefix = srcdir + "/"
+for src in sources:
+    if not src.startswith(srcdir_prefix) or not src.endswith(".c"):
+        sys.exit(f"gen-compile-commands: FAIL (link-line source {src!r} is "
+                 f"not under {srcdir_prefix!r} -- cannot derive its object path)")
+    # Same $(SRCDIR)/%.c -> $(BUILDDIR)/%.o substitution GOO_OBJS itself
+    # uses. Nothing on disk is ever built at this path -- $(COMPILER)'s real
+    # recipe compiles this file straight into the link, with no separate
+    # object -- this is a synthesized, but real-flags, single-file compile
+    # command for consumers (cppcheck, task 16's gcc/clang-tidy lanes) that
+    # expect one.
+    obj = builddir + "/" + src[len(srcdir_prefix):-2] + ".o"
+    entries.append({
+        "directory": ".",
+        "file": src,
+        "arguments": flags + ["-c", src, "-o", obj],
+    })
+
 # LC_ALL=C order: plain code-point comparison on these ASCII repo-relative
 # paths is byte-for-byte what `sort` under LC_ALL=C would give.
 entries.sort(key=lambda e: e["file"])
@@ -200,7 +287,7 @@ print(f"wrote {len(entries)} entries", file=sys.stderr)
 PYEOF
 
 mv "$tmp_out" "$OUT"
-trap 'rm -f "$pairs_file"' EXIT
+trap 'rm -f "$pairs_file" "$link_line_file"' EXIT
 
 count="$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$OUT")"
 echo "$TOOL: wrote $count entries to $OUT"
