@@ -2,13 +2,15 @@
 # analyzer_lanes_probe.sh -- task 16 of the 2026-09-02 verification tooling
 # plan: the gcc strict lane and the clang-tidy lane, both reading task 14's
 # compile-command capture (build/compile_commands.json), both writing SARIF
-# or SARIF-shaped output under build/sarif/.
+# or SARIF-shaped output under build/sarif/. Task 17 adds a third lane,
+# cppcheck, so task 17's tools/sarif_merge.py has one place to read all
+# three tools' SARIF from.
 #
-# TWO LANES, ONE CAPTURE. Task 15's cppcheck lane and this probe's two lanes
-# all read the SAME list -- see tools/gen_compile_commands.sh's header for
-# why the capture, not a hand-rolled `find src -name '*.c'`, is the source of
-# truth (each entry carries the exact -I/-D/-include/-std flags gcc compiles
-# that file with today).
+# THREE LANES, ONE CAPTURE. This probe's three lanes and task 15's own
+# misra-scan.sh all read the SAME list -- see tools/gen_compile_commands.sh's
+# header for why the capture, not a hand-rolled `find src -name '*.c'`, is
+# the source of truth (each entry carries the exact -I/-D/-include/-std
+# flags gcc compiles that file with today).
 #
 # --- gcc lane -----------------------------------------------------------
 # For each entry: run the entry's OWN "arguments" (so every -I/-D/-include/
@@ -81,9 +83,85 @@
 # stdout+stderr) and, when --export-fixes is supported (checked at
 # runtime), <key>.yaml.
 #
+# --- cppcheck lane (task 17) -----------------------------------------------
+# cppcheck's own --project mode reads the WHOLE compile database in one
+# process and reports every file's findings together, unlike the gcc and
+# clang-tidy lanes above, which invoke the tool once PER FILE. So this lane
+# writes ONE aggregate SARIF file, build/sarif/cppcheck/cppcheck.sarif,
+# rather than one per entry, and there is no per-file key scheme to collide.
+#
+# It reuses docs/misra/tools/scan.sh -- the SAME script misra-scan.sh calls
+# -- rather than a bespoke cppcheck invocation, so its flags (--std=c11,
+# --enable=style, --library=posix/gnu, the two --include= headers) never
+# drift from that gate's. Task 18 checks the SARIF gate sees the same counts
+# misra-scan.sh's text baseline does; a second, smaller flag set here could
+# not be trusted for that comparison (VERIFIED: dropping --enable=style
+# alone, which an early draft of this lane did by copying only the flags the
+# task text names, took the misra rule count on this tree from 2,491 to 8 --
+# cppcheck's MISRA checks report at "style" severity and are silently
+# dropped without it).
+#
+# THE ADDON CONFIG. docs/misra/tools/README.md deliberately keeps a REAL
+# misra.json (one built from a licensed MISRA PDF's rule text) out of this
+# repository, and misra-scan.sh has no default for it -- MISRA_JSON must be
+# set by hand. That is fine for misra-scan.sh, a local-only gate never run
+# in CI (see its own header), but analyzer-lanes-probe is in VERIFY_ALL_DEPS
+# and must stay "green on any machine" (Makefile, verify-core's own
+# description) with no licensed PDF anywhere near it. The addon SCRIPT NAME
+# is not copyrighted text -- only the guideline text a --rule-texts= file
+# would carry is -- so this lane's default, docs/misra/tools/misra.json, is
+# `{"script": "misra.py"}` with no --rule-texts arg: it is committed, and
+# VERIFIED to change no rule ID and no count from a licensed config, only
+# the message text (a bare config reports "misra violation (use
+# --rule-texts=<file> to get proper output)" in place of the guideline's own
+# wording). Set MISRA_JSON to a richer config for readable messages; the
+# gate's own numbers do not move either way.
+#
+# --self-test's positive control reuses the gcc/clang-tidy lanes' own
+# "bug.c" fixture (a null dereference, not `static`, no prototype): cppcheck
+# reports it as misra-c2012-8.4 (external declaration) among others, so the
+# SAME fixture proves all three lanes without a fourth scratch file.
+run_cppcheck_lane() { # $1 = compile_commands.json, $2 = sarif out dir, $3 = jobs, $4 = misra addon config, $5 = suppressions list
+	local cc_path="$1" out_dir="$2" jobs="$3" misra_json="$4" suppressions="$5"
+	mkdir -p "$out_dir"
+	local run_log="$out_dir/cppcheck-run.log"
+	local sarif_out="$out_dir/cppcheck.sarif"
+	local entry_count
+	entry_count="$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$cc_path")"
+	local t0 t1 wall
+	t0="$(date +%s.%N)"
+	MISRA_JSON="$misra_json" "$REPO_ROOT/docs/misra/tools/scan.sh" "$run_log" \
+		-j "$jobs" \
+		"--suppressions-list=$suppressions" \
+		"--project=$cc_path" \
+		--output-format=sarif \
+		"--output-file=$sarif_out" \
+		-- >/dev/null
+	t1="$(date +%s.%N)"
+	wall="$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')"
+	# scan.sh's own last command is always an `echo`, so ITS exit status
+	# tells a caller nothing -- read the SCAN_EXIT= marker it writes into
+	# the run log instead, the same convention docs/misra/tools/gate.py's
+	# tally() already relies on for the plain-text gate.
+	local scan_exit checked results
+	scan_exit="$(sed -n 's/^SCAN_EXIT=//p' "$run_log" | tail -1)"
+	checked="$(grep -c '^Checking ' "$run_log" || true)"
+	results=0
+	if [ -f "$sarif_out" ]; then
+		results="$(python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(sum(len(r.get('results', [])) for r in d.get('runs', [])))
+" "$sarif_out")"
+	fi
+	echo "CPPCHECK_SUMMARY entries=$entry_count checked=$checked exit=${scan_exit:-none} results=$results wall=$wall"
+}
+
 # --- companion edits (plan decision 2) ------------------------------------
 #   - this file's --self-test, below, for probe-teeth-probe
-#   - tools/parity-gate-count.txt +2 (two new VERIFY_ALL_DEPS entries)
+#   - tools/parity-gate-count.txt +2 (two new VERIFY_ALL_DEPS entries --
+#     findings-probe and findings-probe-selftest, task 17's own gate; this
+#     lane joining analyzer-lanes-probe adds no new VERIFY_ALL_DEPS entry)
 #   - tests/probes/census.txt: this branch's base (main) does not have that
 #     file, so there is nothing to regenerate (task 14 and 15's reports
 #     record the same fact).
@@ -93,14 +171,17 @@
 #   scripts/analyzer_lanes_probe.sh --self-test  # positive+negative control
 #
 # Environment overrides:
-#   JOBS                  parallel workers for both lanes (default: nproc)
+#   JOBS                  parallel workers for all three lanes (default: nproc)
 #   COMPILE_COMMANDS_GEN  compile-command generator (default: tools/gen_compile_commands.sh)
 #   COMPILE_COMMANDS_OUT  the capture itself (default: build/compile_commands.json)
 #   SARIF_GCC_DIR         gcc lane output dir (default: build/sarif/gcc)
 #   SARIF_TIDY_DIR        clang-tidy lane output dir (default: build/sarif/clang-tidy)
+#   SARIF_CPPCHECK_DIR    cppcheck lane output dir (default: build/sarif/cppcheck)
 #   CLANG_TIDY_CHECKS     fallback -checks= value, used per file only where
 #                         that file's own directory walk finds no
 #                         .clang-tidy (default: clang-diagnostic-*,clang-analyzer-*)
+#   MISRA_JSON            cppcheck addon config (default: docs/misra/tools/misra.json)
+#   MISRA_SUPPRESSIONS    cppcheck suppression list (default: docs/misra/misra-suppressions.txt)
 set -euo pipefail
 
 PROBE="analyzer-lanes-probe"
@@ -112,7 +193,10 @@ COMPILE_COMMANDS_GEN="${COMPILE_COMMANDS_GEN:-$REPO_ROOT/tools/gen_compile_comma
 COMPILE_COMMANDS_OUT="${COMPILE_COMMANDS_OUT:-$REPO_ROOT/build/compile_commands.json}"
 SARIF_GCC_DIR="${SARIF_GCC_DIR:-$REPO_ROOT/build/sarif/gcc}"
 SARIF_TIDY_DIR="${SARIF_TIDY_DIR:-$REPO_ROOT/build/sarif/clang-tidy}"
+SARIF_CPPCHECK_DIR="${SARIF_CPPCHECK_DIR:-$REPO_ROOT/build/sarif/cppcheck}"
 CLANG_TIDY_CHECKS="${CLANG_TIDY_CHECKS:-clang-diagnostic-*,clang-analyzer-*}"
+MISRA_JSON="${MISRA_JSON:-$REPO_ROOT/docs/misra/tools/misra.json}"
+MISRA_SUPPRESSIONS="${MISRA_SUPPRESSIONS:-$REPO_ROOT/docs/misra/misra-suppressions.txt}"
 
 if ! command -v gcc >/dev/null 2>&1; then
 	echo "$PROBE: FAIL (gcc is required)" >&2
@@ -122,13 +206,22 @@ if ! command -v clang-tidy >/dev/null 2>&1; then
 	echo "$PROBE: FAIL (clang-tidy is required)" >&2
 	exit 2
 fi
+if ! command -v cppcheck >/dev/null 2>&1; then
+	echo "$PROBE: FAIL (cppcheck is required)" >&2
+	exit 2
+fi
 if ! command -v python3 >/dev/null 2>&1; then
 	echo "$PROBE: FAIL (python3 is required)" >&2
+	exit 2
+fi
+if [ ! -f "$MISRA_JSON" ]; then
+	echo "$PROBE: FAIL (no cppcheck addon config at $MISRA_JSON)" >&2
 	exit 2
 fi
 
 GCC_VERSION="$(gcc --version | head -1)"
 CLANG_TIDY_VERSION="$(clang-tidy --version | sed -n 's/^[[:space:]]*LLVM version[[:space:]]*//p')"
+CPPCHECK_VERSION="$(cppcheck --version)"
 
 # --- the gcc lane, callable on ANY compile-command JSON (the real capture,
 #     or the self-test's two-entry scratch one) -- one mechanism, two
@@ -514,10 +607,36 @@ EOF
 		fail=1
 	fi
 
+	# cppcheck positive control (task 17): the SAME bug.c fixture used above
+	# (a null dereference, not `static`, no prototype) is also a MISRA
+	# violation -- misra-c2012-8.4, "a function with external linkage needs
+	# exactly one visible declaration" -- among cppcheck's own findings
+	# (nullPointer, constVariablePointer). One fixture, three lanes.
+	cppcheck_out="$(run_cppcheck_lane "$W/cc.json" "$W/sarif-cppcheck" 3 "$MISRA_JSON" "$MISRA_SUPPRESSIONS")"
+	cppcheck_summary="$(printf '%s\n' "$cppcheck_out" | grep '^CPPCHECK_SUMMARY ')"
+	bug_misra_hit="$(python3 -c "
+import json
+d = json.load(open('$W/sarif-cppcheck/cppcheck.sarif'))
+for run in d.get('runs', []):
+    for r in run.get('results', []):
+        rid = r.get('ruleId', '')
+        for loc in r.get('locations', []):
+            uri = loc.get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '')
+            if uri.endswith('/bug.c') and rid.startswith('misra-c2012-'):
+                print(rid)
+" 2>/dev/null | head -1)"
+	if [ -n "$bug_misra_hit" ] && printf '%s\n' "$cppcheck_summary" | grep -qE 'exit=0 '; then
+		echo "    ok: cppcheck lane finds a MISRA violation ($bug_misra_hit) on the same positive control"
+		echo "        $cppcheck_summary"
+	else
+		echo "$SELF: FAIL (cppcheck lane found no misra-c2012-* result on bug.c): $cppcheck_summary"
+		fail=1
+	fi
+
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "$SELF: PASS (gcc: 1/0/failure distinguished, path-keyed same-basename pair correct; clang-tidy: >=1 warning / 0 warnings)"
+	echo "$SELF: PASS (gcc: 1/0/failure distinguished, path-keyed same-basename pair correct; clang-tidy: >=1 warning / 0 warnings; cppcheck: >=1 misra-c2012-* result)"
 	exit 0
 fi
 
@@ -546,6 +665,9 @@ gcc_objs_dir="$SARIF_GCC_DIR/.objs"
 rm -rf "$SARIF_TIDY_DIR"
 mkdir -p "$SARIF_TIDY_DIR"
 
+rm -rf "$SARIF_CPPCHECK_DIR"
+mkdir -p "$SARIF_CPPCHECK_DIR"
+
 # M1: the ".clang-tidy discovered anywhere?" decision is now made PER FILE,
 # inside run_tidy_lane's own directory walk (see that function and this
 # script's header). $CLANG_TIDY_CHECKS is always passed as the fallback;
@@ -564,19 +686,47 @@ tidy_wall="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*wall=\([0-9.]*\).*/\1/p
 tidy_export_fixes="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*export_fixes=\([0-9]\).*/\1/p')"
 tidy_config_found="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*config_found=\([0-9]\).*/\1/p')"
 
+cppcheck_out="$(run_cppcheck_lane "$COMPILE_COMMANDS_OUT" "$SARIF_CPPCHECK_DIR" "$JOBS" "$MISRA_JSON" "$MISRA_SUPPRESSIONS")"
+cppcheck_summary="$(printf '%s\n' "$cppcheck_out" | grep '^CPPCHECK_SUMMARY ')"
+cppcheck_checked="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*checked=\([0-9]*\).*/\1/p')"
+cppcheck_exit="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*exit=\([a-z0-9]*\).*/\1/p')"
+cppcheck_results="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*results=\([0-9]*\).*/\1/p')"
+cppcheck_wall="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*wall=\([0-9.]*\).*/\1/p')"
+# The gate is "did the scan actually run", never "how many findings" -- a
+# high MISRA count is expected (see docs/misra/README.md's own accepted
+# baseline) and is task 17's findings-probe's business, not this lane's.
+# Both checks mirror docs/misra/tools/gate.py's tally(): a nonzero exit or
+# zero "Checking " lines means the scan cannot be trusted, and a comparison
+# against nothing always passes silently unless this refuses it first.
+# NOT compared against entry_count: cppcheck prints a SECOND "Checking
+# <file>: <defines>..." line for a file with more than one preprocessor
+# configuration, so the raw line count legitimately exceeds the entry count
+# (VERIFIED: 100 lines for 58 entries on this tree) -- gate.py's own
+# "checked == 0" refusal is the proven bar, not equality with entry_count.
+cppcheck_fails=0
+if [ "${cppcheck_exit:-none}" != "0" ] || [ "${cppcheck_checked:-0}" = "0" ]; then
+	cppcheck_fails=1
+fi
+
 echo "$PROBE: capture $COMPILE_COMMANDS_OUT, $entry_count entries"
 echo "$PROBE: gcc lane  -- $GCC_VERSION"
 echo "$PROBE: gcc lane  -- $gcc_fails/$entry_count compile failures, $gcc_results analyser results, ${gcc_wall}s wall, SARIF in $SARIF_GCC_DIR"
 echo "$PROBE: clang-tidy lane -- $CLANG_TIDY_VERSION, a .clang-tidy found on any file's directory walk: $([ "$tidy_config_found" = "1" ] && echo yes || echo no)"
 echo "$PROBE: clang-tidy lane -- $tidy_fails/$entry_count compile failures, $tidy_warnings warnings, ${tidy_wall}s wall, export-fixes YAML: $([ "$tidy_export_fixes" = "1" ] && echo yes || echo no), output in $SARIF_TIDY_DIR"
+echo "$PROBE: cppcheck lane -- $CPPCHECK_VERSION, addon config $MISRA_JSON"
+# $cppcheck_checked can exceed $entry_count -- see run_cppcheck_lane's own
+# comment: a file with more than one preprocessor configuration gets a
+# SECOND "Checking <file>: <defines>..." line, so this counts lines, not
+# distinct files.
+echo "$PROBE: cppcheck lane -- $entry_count entries, $cppcheck_checked 'Checking' lines, exit=$cppcheck_exit, $cppcheck_results findings, ${cppcheck_wall}s wall, SARIF in $SARIF_CPPCHECK_DIR"
 
 # M2: the terminal verdict line carries the artefact -- the capture path
-# and both SARIF directories -- the way
+# and all three SARIF directories -- the way
 # scripts/compile_commands_current_probe.sh's own PASS line names the
 # capture path and entry count.
-if [ "${gcc_fails:-1}" != "0" ] || [ "${tidy_fails:-1}" != "0" ]; then
-	echo "$PROBE: FAIL ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_fails failure(s) in $SARIF_GCC_DIR; clang-tidy $tidy_fails failure(s) in $SARIF_TIDY_DIR)"
+if [ "${gcc_fails:-1}" != "0" ] || [ "${tidy_fails:-1}" != "0" ] || [ "$cppcheck_fails" != "0" ]; then
+	echo "$PROBE: FAIL ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_fails failure(s) in $SARIF_GCC_DIR; clang-tidy $tidy_fails failure(s) in $SARIF_TIDY_DIR; cppcheck exit=$cppcheck_exit checked=$cppcheck_checked/$entry_count in $SARIF_CPPCHECK_DIR)"
 	exit 1
 fi
 
-echo "$PROBE: PASS ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_results results in $SARIF_GCC_DIR; clang-tidy $tidy_warnings warnings in $SARIF_TIDY_DIR)"
+echo "$PROBE: PASS ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_results results in $SARIF_GCC_DIR; clang-tidy $tidy_warnings warnings in $SARIF_TIDY_DIR; cppcheck $cppcheck_results findings in $SARIF_CPPCHECK_DIR)"
