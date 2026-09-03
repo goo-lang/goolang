@@ -256,15 +256,21 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       passes both as `$(rootpath)`-relative paths. Verified with a
       before/after `--stage` diff, `COMPILER`/`GOO_RUNTIME` unset both
       times: identical 18-file staged trees, so `make install` is
-      unaffected. CONCERN, recorded rather than fixed: `//goostd:files`
-      stages its source as symlinks, and `cp -r` plus a bare `tar` (no
-      `-h`) preserve them as symlinks rather than dereferencing them, so
-      the packaged tarball's stdlib files point back at this machine's
-      absolute source path rather than holding a copy of the bytes — it
-      passes today only because Bazel's own sandbox already exposes that
-      path as this test's declared data. Fixing it touches the release
-      artifact's actual bytes, which is a larger decision than this slice
-      of task 14 was asked to make.
+      unaffected.
+
+      **Found and fixed in review round 1: the packaged tarball kept
+      symlinks, not files, under Bazel.** `//goostd:files` stages its
+      source as symlinks, and `cp -r` preserved them as symlinks rather
+      than dereferencing them, so the packaged tarball's stdlib files
+      pointed back at the build machine's absolute source path rather than
+      holding a copy of the bytes. Fixed with `cp -rL` at
+      `package_toolchain.sh`'s one call site that copies FROM the
+      Bazel-or-make-supplied source (line 72); the second `cp -r`, staging
+      FROM the already-dereferenced `$STAGE` (line 86), needed no change.
+      Measured: `find goostd -type l` is empty under make, so `-L` changes
+      no byte of a make-built release; the extracted tarball from a
+      Bazel-built run now holds 0 symlinks
+      (`find <extracted> -type l | wc -l`).
 
       `string_literal_header_probe` needed only the `COMPILER` contract,
       measured: with the target declared and no script change, `bazel test`

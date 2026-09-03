@@ -316,6 +316,13 @@ goo_script_probe(
 # scripts/package_toolchain.sh and scripts/check_stdlib_coverage.sh, and the
 # stdlib it packages. No self-test target: release-package-probe has no
 # make gate that passes --self-test.
+#
+# package_toolchain.sh stages goostd with `cp -rL`, not `cp -r`: under Bazel
+# this probe's goostd data arrives as symlinks into the source tree, and
+# plain -r would have packaged the symlinks rather than their content, so
+# the tarball would not survive being moved off this machine. Measured
+# after the fix: the extracted tarball holds 0 symlinks
+# (`find <extracted> -type l | wc -l`).
 goo_script_probe(
     name = "release_package_probe",
     script = "//:scripts/release_package_probe.sh",
