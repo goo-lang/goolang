@@ -48,9 +48,16 @@ exports_files(["goo_assert.h"])
 # Every header, as FILES, for the probe gates that compile src/ sources
 # with a shell C compiler through -Iinclude. The cc_library targets above
 # serve Bazel's own compile; this serves a bash -I flag.
+#
+# **/*.h, not *.h: include/errors, include/package, include/parser,
+# include/test and include/types are subdirectories with no BUILD of their
+# own, so they belong to this same package -- and the generated parser's
+# own prologue spells #include "parser/parser_actions.h", so a probe that
+# compiles it needs those to resolve too, the same reasoning src/parser's
+# probe_sources filegroup already applies to itself.
 filegroup(
     name = "probe_headers",
-    srcs = glob(["*.h"]),
+    srcs = glob(["**/*.h"]),
     visibility = ["//tests/probes:__pkg__"],
 )
 

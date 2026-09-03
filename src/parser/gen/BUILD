@@ -18,6 +18,13 @@ genrule(
     ],
     cmd = "bison -d -o $(location parser.tab.c) $(location //src/parser:parser.y)",
     message = "Running bison on parser.y",
+    # ast_free_leak_probe (task 14) names this genrule's parser.tab.c output
+    # directly in its env, through $(rootpath) -- the two-file
+    # parser_tab_files filegroup below cannot be the target of $(rootpath)
+    # itself, since that expansion requires exactly one file. //src/parser
+    # is kept for the two wrapper targets below, though neither has ever
+    # needed it: they are in the same package as this genrule.
+    visibility = ["//tests/probes:__pkg__", "//src/parser:__pkg__"],
 )
 
 # The generated header, on an include path. parser_actions.c and

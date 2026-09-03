@@ -273,6 +273,36 @@ goo_script_probe(
     tags = ["nosan"],
 )
 
+# ast_node_free() must free the whole tree, not only the spine. Compiles a
+# small parse-and-free driver and runs it under valgrind.
+_AST_FREE_LEAK_DATA = SRC_PROBE_SOURCES + [
+    "//include:probe_headers",
+    "//src/parser/gen:parser_tab_files",
+    "//src/parser/gen:parser.tab.c",
+    "//tests/unit:ast/ast_free_leak_test.c",
+]
+_AST_FREE_LEAK_ENV = {"PARSER_TAB_C": "$(rootpath //src/parser/gen:parser.tab.c)"}
+
+goo_script_probe(
+    name = "ast_free_leak_probe",
+    script = "//:scripts/ast_free_leak_probe.sh",
+    data = _AST_FREE_LEAK_DATA,
+    env = _AST_FREE_LEAK_ENV,
+    needs_compiler = False,
+    needs_cc = True,
+    tags = ["nosan"],
+)
+goo_script_probe(
+    name = "ast_free_leak_selftest",
+    script = "//:scripts/ast_free_leak_probe.sh",
+    args = ["--self-test"],
+    data = _AST_FREE_LEAK_DATA,
+    env = _AST_FREE_LEAK_ENV,
+    needs_compiler = False,
+    needs_cc = True,
+    tags = ["nosan"],
+)
+
 # NOT DECLARED HERE. 12 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
