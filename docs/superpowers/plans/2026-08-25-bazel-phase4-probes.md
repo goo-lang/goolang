@@ -164,8 +164,8 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 
 ### D. The tail
 
-- [~] **14. The script-backed probes.** One `sh_test` each. **13 of 29 operate.**
-      Not ticked: this is a partial pass, and the remaining 16 are recorded in
+- [~] **14. The script-backed probes.** One `sh_test` each. **14 of 29 operate.**
+      Not ticked: this is a partial pass, and the remaining 15 are recorded in
       `tests/probes/BUILD` with a measured cause each rather than declared red
       or tagged `manual` and left never-run.
 
@@ -177,7 +177,7 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       relative to the runfiles root while those same scripts `cd "$ROOT"`
       before using it.
 
-      **The 16 that stay out split into four measured buckets, not the two
+      **The 15 that stay out split into three measured buckets, not the two
       guessed here before.** 7 cannot be sandboxed at all: `podman_image_probe.sh`
       EXITS 0 when podman is missing, so a target for it is green everywhere
       without podman while asserting nothing; `repro_build_probe.sh` builds
@@ -192,10 +192,14 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       fixtures against `include/` or `tests/unit/` through a shell C
       compiler (`$CC`, `gcc`): `goo_assert`, `goo_check`, `goo_testcase`.
       They need those two filegroups and a C compiler the sandbox can see.
-      1 takes no `COMPILER` contract yet: `string_literal_header_probe.sh`
-      hardcodes `$ROOT/bin/goo`, generates its own source, and reads
-      nothing else. Nothing else stands in its way. Unmeasured. 7 + 5 + 3 +
-      1 = 16.
+      7 + 5 + 3 = 15.
+
+      `string_literal_header_probe` needed only the `COMPILER` contract,
+      measured: with the target declared and no script change, `bazel test`
+      failed with `string-literal-header-probe: FAIL — no bin/goo — run make
+      lexer first`, because the script hardcoded `COMPILER="$ROOT/bin/goo"`
+      with no environment override. Reading `COMPILER` from the environment
+      first, the way `scripts/exit_code_probe.sh` already does, fixed it.
 
       The git-first root shape shared by the five scripts that already run
       (the four `arc_*` gates and `arena_rss_probe`) prefers `git rev-parse`
@@ -231,8 +235,7 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 
       *Next:* the 5 filegroup gates and the 3 C-fixture gates both need the
       ten per-package filegroups, the latter also a C compiler the sandbox
-      can see. The 1 unmeasured gate may need only a target. The 7 that
-      cannot be sandboxed stay out.
+      can see. The 7 that cannot be sandboxed stay out.
       *Accepts:* all 29 green INSIDE the sandbox. A script reading a path not in `data` is fixed, not run outside the sandbox.
 
 - [ ] **15. The bespoke six.** `arena-free`, `arena-valgrind`, `charlit-reject`, `goostd-resolver`, `hexesc-reject`, `stencil-race-runbook`.
