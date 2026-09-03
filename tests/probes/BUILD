@@ -172,6 +172,23 @@ goo_script_probe(
     data = ["//include:goo_assert.h"],
     tags = ["nosan"],
 )
+goo_script_probe(
+    name = "goo_check_probe",
+    script = "//:scripts/goo_check_probe.sh",
+    needs_compiler = False,
+    needs_cc = True,
+    data = ["//tests/unit:goo_check.h"],
+    tags = ["nosan"],
+)
+goo_script_probe(
+    name = "goo_check_selftest",
+    script = "//:scripts/goo_check_probe.sh",
+    args = ["--self-test"],
+    needs_compiler = False,
+    needs_cc = True,
+    data = ["//tests/unit:goo_check.h"],
+    tags = ["nosan"],
+)
 
 # NOT DECLARED HERE. 15 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
