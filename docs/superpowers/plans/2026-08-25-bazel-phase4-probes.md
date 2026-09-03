@@ -164,10 +164,11 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 
 ### D. The tail
 
-- [~] **14. The script-backed probes.** One `sh_test` each. **17 of 29 operate.**
-      Not ticked: this is a partial pass, and the remaining 12 are recorded in
-      `tests/probes/BUILD` with a measured cause each rather than declared red
-      or tagged `manual` and left never-run.
+- [~] **14. The script-backed probes.** One `sh_test` each. **22 of 29 operate.**
+      Not ticked: 7 stay out BY DESIGN — none of them can run inside a
+      sandbox at all — and are recorded in `tests/probes/BUILD` with a
+      measured cause each rather than declared red or tagged `manual` and
+      left never-run.
 
       **The contract.** `COMPILER` names the compiler; the compiler finds its
       own archive and stdlib through `GOO_RUNTIME` and `GOOROOT`, which it
@@ -177,19 +178,93 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       relative to the runfiles root while those same scripts `cd "$ROOT"`
       before using it.
 
-      **The 12 that stay out split into two measured buckets.** 7 cannot be
-      sandboxed at all: `podman_image_probe.sh`
+      **The 7 that stay out are one bucket: none can be sandboxed at all.**
+      `podman_image_probe.sh`
       EXITS 0 when podman is missing, so a target for it is green everywhere
       without podman while asserting nothing; `repro_build_probe.sh` builds
       `git archive HEAD` on purpose; `archive_determinism_probe.sh` rebuilds
       the archive in-tree; `far-collective`, `far-halo`, `far-jacobi` and
       `far-stencil-r2` share `scripts/far-probe.sh`, which takes arguments,
-      and need NNG (phase 3c). 5 read or compile `src/**` and need ten
-      per-package filegroups first — a glob does not cross a package
-      boundary, so there cannot be a single `//:c_sources` the way
-      `//goostd:files` covers the stdlib: `alloc_doors`, `ast_free_leak`,
-      `doc_claims`, `proof_cache_shell`, `release_package`.
-      7 + 5 = 12.
+      and need NNG (phase 3c).
+
+      **The 5 that read or compile `src/**` are done (task 14e).** Each
+      needed a ten-per-package filegroup set before it could be data at
+      all — a glob does not cross a package boundary, so there cannot be a
+      single `//:c_sources` the way `//goostd:files` covers the stdlib.
+      `probe_sources` (glob(["*.c", "*.h"], allow_empty = True) — seven of
+      the ten packages hold only `.c` at top level) went into each of the
+      ten depth-one `src` packages, `probe_headers` (`glob(["**/*.h"])`,
+      not the flatter `glob(["*.h"])` first tried — see below) into
+      `include/`, and `parser_tab_files` into `src/parser/gen/` for the
+      generated parser `ast_free_leak_probe` needs by path. All five share
+      the same RED cause the four `arc_*` gates and `arena_rss_probe`
+      already had: a Bazel `sh_test` starts in the runfiles root with `$0`
+      one directory too deep, so a `dirname`-based `ROOT` looks under
+      `tests/`. Measured: `alloc-doors-probe: FAIL — missing
+      .../tests/src/runtime/runtime.c`; all four `doc-claims-probe` claims
+      FAILED, each unable to read a file under `.../tests/scripts/
+      check_stdlib_coverage.sh`; `proof-cache-shell-probe: FAIL (harness did
+      not build)` on every named `src/types/*.c`; and
+      `release-package-probe: FAIL (packaging failed)` on `.../tests/
+      scripts/package_toolchain.sh`. Fixed the same way as the earlier
+      three: `git rev-parse --show-toplevel`, falling back to `pwd`.
+
+      Beyond the `ROOT` fix, three further measured causes, none named in
+      the original plan for this bucket. `alloc_doors_probe.sh`'s `find src
+      -type f` matched ZERO files once the data arrived as a Bazel runfiles
+      tree of SYMLINKS — `-type f` matches a symlink's own type, never the
+      regular file it points to — so the probe PASSED while scanning
+      nothing; the fix is `find -L`, and the self-test could not have caught
+      this because its five controls write real files under `mktemp` and
+      never exercise the ordinary run's traversal. `doc_claims_probe.sh`'s
+      two `grep -r` calls have the identical cause in the opposite
+      direction: `-r` does not follow a symlink discovered while recursing,
+      so six goostd fixture packages read as unclassified and
+      `/proc/self/exe` counted 0 sites instead of 2, both FAILING where the
+      real files verifiably held the expected content; the fix is `-R`.
+      `proof_cache_shell_probe.sh` was the one script of the five reading
+      the plain `CC` variable rather than `CC_PROBE`, so left alone it would
+      have silently compiled with whatever `gcc` is on `PATH`, ignoring the
+      toolchain compiler Bazel selected; `CC_BIN="${CC_PROBE:-${CC:-gcc}}"`
+      keeps the make recipe's `$(CC)` as the middle fallback.
+      `ast_free_leak_probe.sh` needed `include/probe_headers` widened from
+      `glob(["*.h"])` to `glob(["**/*.h"])`: the generated parser's own
+      prologue spells `#include "parser/parser_actions.h"`, and
+      `src/errors/error.c` spells a relative `../../include/errors/error.h`
+      — both reach into an `include/` subdirectory with no BUILD of its
+      own, the exact condition the brief's own note on `src/parser` already
+      names for switching to a recursive glob.
+
+      `ast_free_leak_probe.sh` also needed the generated parser's path by
+      name: `PARSER_TAB_C`, passed through the macro's new per-target `env`
+      (`$(rootpath //src/parser/gen:parser.tab.c)`), with `PARSER_TAB_DIR`
+      added to `CFLAGS_` as an `-I` so `#include "parser.tab.h"` still
+      resolves from wherever the `.c` lives. Measured in two steps:
+      naming only the two-file `parser_tab_files` filegroup in `data` gave
+      "label ... is not a declared prerequisite of this rule" —
+      `$(rootpath)` needs the single-file label itself in `data`; adding
+      that label directly then gave a visibility error, fixed by giving the
+      `bison` genrule `visibility = ["//tests/probes:__pkg__",
+      "//src/parser:__pkg__"]`. Its valgrind skip became a FAIL under
+      `GOO_PROBE_NO_SKIP=1`, the same shape as `arena_rss_probe.sh`'s skip.
+
+      `release_package_probe.sh` needed one more change beyond its own
+      `ROOT`: `scripts/package_toolchain.sh`'s two hardcoded paths became
+      `COMPILER="${COMPILER:-$ROOT/bin/goo}"` and
+      `RUNTIME="${GOO_RUNTIME:-$ROOT/lib/libgoo_runtime.a}"`, made absolute
+      when relative, since the macro's `needs_compiler = True` contract
+      passes both as `$(rootpath)`-relative paths. Verified with a
+      before/after `--stage` diff, `COMPILER`/`GOO_RUNTIME` unset both
+      times: identical 18-file staged trees, so `make install` is
+      unaffected. CONCERN, recorded rather than fixed: `//goostd:files`
+      stages its source as symlinks, and `cp -r` plus a bare `tar` (no
+      `-h`) preserve them as symlinks rather than dereferencing them, so
+      the packaged tarball's stdlib files point back at this machine's
+      absolute source path rather than holding a copy of the bytes — it
+      passes today only because Bazel's own sandbox already exposes that
+      path as this test's declared data. Fixing it touches the release
+      artifact's actual bytes, which is a larger decision than this slice
+      of task 14 was asked to make.
 
       `string_literal_header_probe` needed only the `COMPILER` contract,
       measured: with the target declared and no script change, `bazel test`
@@ -264,9 +339,11 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       the four `arc_*` gates and `arena_rss_probe.sh`, which buys consistency
       rather than costing anything measured here.
 
-      *Next:* the 5 filegroup gates need the ten per-package filegroups. The
-      7 that cannot be sandboxed stay out.
-      *Accepts:* all 29 green INSIDE the sandbox. A script reading a path not in `data` is fixed, not run outside the sandbox.
+      *Next:* task 15. The 7 that cannot be sandboxed stay out, by design.
+      *Accepts:* 22 of 29 green INSIDE the sandbox; the remaining 7 recorded
+      with a measured cause each, not declared red or tagged `manual`. A
+      script reading a path not in `data` is fixed, not run outside the
+      sandbox.
 
 - [ ] **15. The bespoke six.** `arena-free`, `arena-valgrind`, `charlit-reject`, `goostd-resolver`, `hexesc-reject`, `stencil-race-runbook`.
       *Accepts:* each green or explicitly tagged, with a comment saying why it is not generated. **`arena-valgrind-probe` must not reproduce its silent skip** -- a real config or a `requires-valgrind` tag, never a `SKIPPED` that reads as a pass.

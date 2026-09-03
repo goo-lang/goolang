@@ -319,22 +319,15 @@ goo_script_probe(
     ],
 )
 
-# NOT DECLARED HERE. 12 of the 29 script gates are not one of the targets
+# NOT DECLARED HERE. 7 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
-# docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
-#
-#   7 cannot run in a sandbox at all -- podman_image_probe.sh exits 0 with no
-#     podman, so a sandboxed target would be green while asserting nothing;
-#     repro_build_probe.sh and archive_determinism_probe.sh each rebuild
-#     `git archive HEAD`, and a sandbox has no .git; far-collective,
-#     far-halo, far-jacobi and far-stencil-r2 share a helper that takes
-#     arguments and need NNG (phase 3c).
-#   5 read or compile src/** and need ten per-package filegroups first -- a
-#     glob does not cross a package boundary, so there cannot be a single
-#     //:c_sources the way //goostd:files covers the stdlib: alloc_doors,
-#     ast_free_leak, doc_claims, proof_cache_shell, release_package.
-#
-# 7 + 5 = 12.
+# docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14. All
+# seven cannot run in a sandbox at all: podman_image_probe.sh exits 0 with
+# no podman, so a sandboxed target would be green while asserting nothing;
+# repro_build_probe.sh and archive_determinism_probe.sh each rebuild
+# `git archive HEAD`, and a sandbox has no .git; far-collective, far-halo,
+# far-jacobi and far-stencil-r2 share a helper that takes arguments and
+# need NNG (phase 3c).
 #
 # Declaring these without their data would give red targets, and tagging
 # them manual would give targets that never run -- both worse than
