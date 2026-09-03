@@ -3429,6 +3429,8 @@ VERIFY_ALL_DEPS := \
     assertion-density-probe \
     pthread-return-probe \
     warning-count-probe \
+    runtime-seam-probe \
+    runtime-seam-selftest \
     spin-bootstrap-probe \
     spin-deadlock-model-probe \
     string-literal-header-probe \
@@ -5550,6 +5552,19 @@ pthread-return-probe:
 warning-count-probe: $(NNG_LIB)
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh --self-test
+
+# The runtime-seam gate (task 3 of the 2026-09-03 deterministic-simulation
+# plan). src/runtime/concurrency.c, channels.c and sync.c reach the OS only
+# through include/goo_os.h -- a raw pthread_ call or a _Thread_local there
+# escapes tests/sim's simulator silently. Self-test is a separate target,
+# not folded into this one, so a red run distinguishes "the seam broke" from
+# "the probe's own mutations do not turn it red".
+.PHONY: runtime-seam-probe
+runtime-seam-probe:
+	@bash scripts/runtime_seam_probe.sh
+.PHONY: runtime-seam-selftest
+runtime-seam-selftest:
+	@bash scripts/runtime_seam_probe.sh --self-test
 
 # Vendored SPIN (task 4 of the 2026-09-02 verification tooling plan; Track
 # B's Promela gate over the runtime deadlock detector, tasks 5-7, is not yet
