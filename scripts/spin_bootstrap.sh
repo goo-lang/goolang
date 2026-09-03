@@ -172,6 +172,19 @@ build_spin() {
 #      reports a version below the floor (6.4.9) must be REJECTED, not
 #      accepted just because something answered to the name -- the
 #      bootstrap must fall through and build its own instead.
+#   5. teeth for the SPIN_BOOTSTRAP_IGNORE_PATH scrub controls 1-3 set: on
+#      the common case (no PATH spin), removing that scrub from any of
+#      them would NOT turn this self-test red, because the PATH branch
+#      finds nothing regardless -- the plan's global constraint is that
+#      the self-test shows the negative, and until this control existed,
+#      it could not. This control builds its own fake, floor-meeting spin
+#      on a private PATH and runs the corrupted-tarball case both WITH
+#      the scrub (must still exit 3 -- the scrub works even with a spin
+#      present) and WITHOUT it (must exit 0 with "using PATH spin" on
+#      stderr -- the shortcut the scrub exists to prevent is real, so the
+#      scrub is proven load-bearing, not a no-op). If the WITHOUT half
+#      does not take the shortcut, the fake spin was never exercised and
+#      this control is reported BROKEN, not passing.
 # ---------------------------------------------------------------------------
 self_test() {
 	local SELF="$PROBE --self-test"
@@ -284,6 +297,51 @@ FAKE_SPIN
 		bad_self=1
 	else
 		echo "    ok: a PATH spin reporting 6.4.9 is rejected -- the bootstrap built its own instead ($accepted)"
+	fi
+
+	# 5. Teeth for the SPIN_BOOTSTRAP_IGNORE_PATH scrub itself (controls 1-3
+	#    set it). A fake spin here reports 6.5.2 -- AT the floor, so it is
+	#    exactly the shape a real interfering spin took in the 2026-09-03
+	#    incident this scrub was written for (spin_version()'s parse only
+	#    ever reads MAJOR.MINOR, so ".2" plays no role -- kept for realism).
+	local teeth_dir="$W/teeth-fakepath"
+	mkdir -p "$teeth_dir"
+	cat >"$teeth_dir/spin" <<'FAKE_SPIN_TEETH'
+#!/usr/bin/env bash
+echo "Spin Version 6.5.2 -- fake"
+FAKE_SPIN_TEETH
+	chmod +x "$teeth_dir/spin"
+
+	# (a) WITH the scrub: the fake spin must NOT stop the corrupted tarball
+	#     from reaching the sha256 check and exiting 3.
+	local rc5a
+	PATH="$teeth_dir:$PATH" SPIN_TARBALL="$W/bad.tar.gz" SPIN_BUILD_DIR="$W/build-teeth-a" \
+		SPIN_BOOTSTRAP_IGNORE_PATH=1 "$0" >"$W/teeth-a.out" 2>"$W/teeth-a.err"
+	rc5a=$?
+	if [ "$rc5a" -ne 3 ]; then
+		echo "$SELF: FAIL (teeth (a): WITH the scrub and a fake spin on PATH ($teeth_dir), a corrupted tarball exited $rc5a, want 3)"
+		sed 's/^/        /' "$W/teeth-a.err"
+		bad_self=1
+	else
+		echo "    ok: WITH the scrub, a fake spin on PATH ($teeth_dir) still lets a corrupted tarball exit 3"
+	fi
+
+	# (b) WITHOUT the scrub: the SAME fake spin must be taken as the
+	#     shortcut -- exit 0, "using PATH spin" on stderr. This is the
+	#     blind spot itself: its presence here is what proves (a)'s scrub
+	#     did something, rather than nothing being reachable either way. If
+	#     this half does not show the shortcut, the fake spin was never
+	#     really exercised and (a) proves nothing -- report BROKEN.
+	local rc5b
+	PATH="$teeth_dir:$PATH" SPIN_TARBALL="$W/bad.tar.gz" SPIN_BUILD_DIR="$W/build-teeth-b" \
+		"$0" >"$W/teeth-b.out" 2>"$W/teeth-b.err"
+	rc5b=$?
+	if [ "$rc5b" -ne 0 ] || ! grep -q "using PATH spin" "$W/teeth-b.err"; then
+		echo "$SELF: FAIL (teeth (b) BROKEN: WITHOUT the scrub, a fake spin on PATH ($teeth_dir) did not produce the shortcut -- exit $rc5b, so control 5 exercised nothing and proves nothing)"
+		sed 's/^/        /' "$W/teeth-b.err"
+		bad_self=1
+	else
+		echo "    ok: WITHOUT the scrub, a fake spin on PATH ($teeth_dir) DOES take the shortcut (exit 0, 'using PATH spin') -- the scrub in controls 1-3 is load-bearing"
 	fi
 
 	if [ "$bad_self" -ne 0 ]; then
