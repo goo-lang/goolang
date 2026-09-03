@@ -900,7 +900,7 @@ struct goo_scheduler {
     goo_goroutine_t* current_goroutine;
     
 #ifdef GOO_PLATFORM_UNIX
-    pthread_t* os_threads;
+    goo_thread_t** os_threads;
     ucontext_t main_context;
 #endif
     
