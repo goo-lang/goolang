@@ -38,3 +38,12 @@ filegroup(
     srcs = ["parser.tab.c"],
     visibility = ["//src/parser:__pkg__"],
 )
+
+# ast_free_leak_probe compiles the generated parser with a shell C
+# compiler. Under make the two files sit in src/parser/; under Bazel they
+# are here, and the probe receives the .c path through PARSER_TAB_C.
+filegroup(
+    name = "parser_tab_files",
+    srcs = ["parser.tab.c", "parser.tab.h"],
+    visibility = ["//tests/probes:__pkg__"],
+)

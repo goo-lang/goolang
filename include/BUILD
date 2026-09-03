@@ -45,6 +45,15 @@ cc_library(
 # shell compiler, not with Bazel's own C++ rules.
 exports_files(["goo_assert.h"])
 
+# Every header, as FILES, for the probe gates that compile src/ sources
+# with a shell C compiler through -Iinclude. The cc_library targets above
+# serve Bazel's own compile; this serves a bash -I flag.
+filegroup(
+    name = "probe_headers",
+    srcs = glob(["*.h"]),
+    visibility = ["//tests/probes:__pkg__"],
+)
+
 # ---------------------------------------------------------------------------
 # Leaves
 # ---------------------------------------------------------------------------
