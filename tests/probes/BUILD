@@ -207,7 +207,7 @@ goo_script_probe(
     tags = ["nosan"],
 )
 
-# NOT DECLARED HERE. 15 of the 29 script gates are not one of the targets
+# NOT DECLARED HERE. 12 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
 #
@@ -221,11 +221,8 @@ goo_script_probe(
 #     glob does not cross a package boundary, so there cannot be a single
 #     //:c_sources the way //goostd:files covers the stdlib: alloc_doors,
 #     ast_free_leak, doc_claims, proof_cache_shell, release_package.
-#   3 compile C fixtures against include/ or tests/unit/ through a shell C
-#     compiler ($CC, gcc): goo_assert, goo_check, goo_testcase. They need
-#     those two filegroups and a C compiler the sandbox can see.
 #
-# 7 + 5 + 3 = 15.
+# 7 + 5 = 12.
 #
 # Declaring these without their data would give red targets, and tagging
 # them manual would give targets that never run -- both worse than

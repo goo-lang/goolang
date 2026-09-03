@@ -164,8 +164,8 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 
 ### D. The tail
 
-- [~] **14. The script-backed probes.** One `sh_test` each. **14 of 29 operate.**
-      Not ticked: this is a partial pass, and the remaining 15 are recorded in
+- [~] **14. The script-backed probes.** One `sh_test` each. **17 of 29 operate.**
+      Not ticked: this is a partial pass, and the remaining 12 are recorded in
       `tests/probes/BUILD` with a measured cause each rather than declared red
       or tagged `manual` and left never-run.
 
@@ -177,8 +177,8 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       relative to the runfiles root while those same scripts `cd "$ROOT"`
       before using it.
 
-      **The 15 that stay out split into three measured buckets, not the two
-      guessed here before.** 7 cannot be sandboxed at all: `podman_image_probe.sh`
+      **The 12 that stay out split into two measured buckets.** 7 cannot be
+      sandboxed at all: `podman_image_probe.sh`
       EXITS 0 when podman is missing, so a target for it is green everywhere
       without podman while asserting nothing; `repro_build_probe.sh` builds
       `git archive HEAD` on purpose; `archive_determinism_probe.sh` rebuilds
@@ -188,11 +188,8 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       per-package filegroups first — a glob does not cross a package
       boundary, so there cannot be a single `//:c_sources` the way
       `//goostd:files` covers the stdlib: `alloc_doors`, `ast_free_leak`,
-      `doc_claims`, `proof_cache_shell`, `release_package`. 3 compile C
-      fixtures against `include/` or `tests/unit/` through a shell C
-      compiler (`$CC`, `gcc`): `goo_assert`, `goo_check`, `goo_testcase`.
-      They need those two filegroups and a C compiler the sandbox can see.
-      7 + 5 + 3 = 15.
+      `doc_claims`, `proof_cache_shell`, `release_package`.
+      7 + 5 = 12.
 
       `string_literal_header_probe` needed only the `COMPILER` contract,
       measured: with the target declared and no script change, `bazel test`
@@ -233,9 +230,32 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       wrong; the cwd resolver tier that unblocked the four `arc_*` gates
       covered it too.
 
-      *Next:* the 5 filegroup gates and the 3 C-fixture gates both need the
-      ten per-package filegroups, the latter also a C compiler the sandbox
-      can see. The 7 that cannot be sandboxed stay out.
+      **The 3 C-fixture gates are done, same $ROOT cause each time, all
+      measured.** `goo_assert_probe` FAILED all three build modes with
+      `goo_assert.h: No such file or directory` — `-I"$ROOT/include"`
+      pointed one directory too deep. `goo_check_probe` FAILED with
+      `.../tests/tests/unit/goo_check.h does not exist` — `$ROOT/tests/unit`
+      doubled the `tests/` segment for the same reason. `goo_testcase_probe`
+      FAILED with `.../tests/include/goo_assert.h missing` — `$ROOT/include`
+      doubled `tests/` the same way. All three took the same fix as the four
+      `arc_*` gates and `arena_rss_probe`: `git rev-parse --show-toplevel`,
+      falling back to `pwd`.
+      They needed no `GOOROOT` and no compiler contract — the macro's
+      `needs_cc = True` hands them `CC_PROBE="$(CC)"` and
+      `CSTD_PROBE="-std=c23"` from Bazel's own cc toolchain instead, the same
+      compiler the Makefile passes as `CC_PROBE="$(CC)"` (Makefile:4633).
+      `include/goo_assert.h` and `tests/unit/goo_check.h` each needed one
+      `exports_files` line — they were `cc_library` hdrs, not files a probe
+      could read by path. `goo_check` and `goo_testcase` also each needed a
+      SECOND target: the make recipe runs the script twice, the second time
+      with `--self-test`, and the self-test is the teeth, so `_selftest` is
+      its own target rather than folded into the first run. All five carry
+      `tags = ["nosan"]`: a sanitizer build of the Goo compiler changes
+      nothing these gates test, while the sanitizer config swaps `$(CC)` to
+      clang, whose coverage notes `gcov` cannot read.
+
+      *Next:* the 5 filegroup gates need the ten per-package filegroups. The
+      7 that cannot be sandboxed stay out.
       *Accepts:* all 29 green INSIDE the sandbox. A script reading a path not in `data` is fixed, not run outside the sandbox.
 
 - [ ] **15. The bespoke six.** `arena-free`, `arena-valgrind`, `charlit-reject`, `goostd-resolver`, `hexesc-reject`, `stencil-race-runbook`.

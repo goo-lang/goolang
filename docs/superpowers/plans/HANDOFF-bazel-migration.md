@@ -15,9 +15,10 @@
 | 4 probe gates, task 14 in part, 6 of 29 | **#333** | **merged** |
 | 4 probe gates, task 14 in part, the four arc_* gates, 10 of 29 | #334 | merged |
 | 4 probe gates, task 14 in part, the last three sandbox failures and string_literal_header, 14 of 29 | #335 | merged |
+| 4 probe gates, task 14 in part, the three C-fixture gates, 17 of 29 | #TBD | open |
 
 **Parity: 224 gates** as of #331 (was 217). `make verify-core` and
-`bazel test //...` are both green. `bazel test //...` runs 169 tests
+`bazel test //...` are both green. `bazel test //...` runs 174 tests
 (measured 2026-09-03). `verify-core` now carries three DERIVATION gates —
 census, generated.bzl and the extracted sources — which together cost about
 110 s, most of it the source-drift self-test.
@@ -26,10 +27,11 @@ census, generated.bzl and the extracted sources — which together cost about
 
 `docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **the task 14 tail,
 then 15 onward**. Tasks 1–13 and the two added ones (4b, 4c) are done. Task 14
-is a PARTIAL pass — 14 of 29 script gates — and the plan holds the measured
-cause for each of the other 15. WARNING: the 1–5 checkboxes
-in that file were never ticked, though every artefact is present — do not read
-an empty box there as open work. 6 to 12 are ticked, with evidence.
+is a PARTIAL pass — 17 of 29 script gates — and the plan holds the measured
+cause for each of the other 12, in two buckets rather than three. WARNING: the
+1–5 checkboxes in that file were never ticked, though every artefact is
+present — do not read an empty box there as open work. 6 to 12 are ticked,
+with evidence.
 
 **Task 13 is done. Next is task 14's tail, the five filegroup gates, or
 move to** task 15 (the bespoke EIGHT, up from six — the derivation gates
