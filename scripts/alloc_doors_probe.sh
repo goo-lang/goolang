@@ -66,7 +66,11 @@ fail() { echo "alloc-doors-probe: FAIL — $1"; exit 1; }
 # --------------------------------------------------------------------------
 scan_strdup() {
     local root="$1"
-    ( cd "$root" && find src -type f \( -name '*.c' -o -name '*.h' \) \
+    # -L: a Bazel sh_test's data arrives as a runfiles tree of SYMLINKS, and
+    # plain `-type f` matches a symlink's own type (l), never the regular
+    # file it points to -- so without -L this found nothing under Bazel and
+    # reported zero offenders, PASSING while scanning no file at all.
+    ( cd "$root" && find -L src -type f \( -name '*.c' -o -name '*.h' \) \
         ! -path 'src/parser/parser.tab.c' \
         ! -path 'src/types/dependent_types.c' \
         -print0 2>/dev/null | xargs -0 awk '
