@@ -21,9 +21,26 @@
 set -u
 
 fail() { echo "FAIL: $1"; exit 1; }
-skip() { echo "arena-rss-probe: SKIPPED ($1)"; exit 0; }
+skip() {
+    # Under make, a skip is a SKIPPED line and exit 0, and the CI job reads
+    # the log. A Bazel test log is read by nobody: the harness sets
+    # GOO_PROBE_NO_SKIP, and the skip is the failure.
+    if [ "${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then
+        echo "arena-rss-probe: FAIL ($1, and GOO_PROBE_NO_SKIP forbids a skip)"
+        exit 1
+    fi
+    echo "arena-rss-probe: SKIPPED ($1)"
+    exit 0
+}
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# A Bazel sh_test starts with $PWD already AT the runfiles root, but $0
+# resolves to <runfiles>/_main/tests/probes/<name> -- a symlink one directory
+# too deep for a dirname-based fallback to find its way back to the root
+# (measured: it looked for examples/ under tests/). git rev-parse fails in
+# the sandbox (no .git), so the fallback is $PWD itself, which IS the
+# runfiles root there and the repo root here.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || ROOT="$PWD"
+[ -n "$ROOT" ] || ROOT="$PWD"
 COMPILER="${COMPILER:-$ROOT/bin/goo}"
 PROBES="arena_loop_reclaim_probe arena_return_reclaim_probe arena_loopexit_reclaim_probe arena_closure_reclaim_probe"
 

@@ -127,19 +127,56 @@ goo_script_probe(
     tags = ["nosan"],
 )
 
-# NOT MIGRATED, and each for a measured reason rather than an assumption. All
-# three pass under make; all three fail in a sandbox, and the causes differ:
+# The generated fixture imports "strings", and the compiler's last resolver
+# tier is ./goostd relative to the working directory -- the runfiles root --
+# so the stdlib is DATA here, the same shape as the four arc_* gates above.
+goo_script_probe(
+    name = "dead_package_code_probe",
+    script = "//:scripts/dead_package_code_probe.sh",
+    data = ["//goostd:files"],
+)
+
+# No extra data: the four arena_*_reclaim_probe.goo fixtures this script
+# reads by name are top-level examples/*.goo, so the macro's own
+# //examples:all_fixtures already covers them.
+goo_script_probe(
+    name = "arena_rss_probe",
+    script = "//:scripts/arena_rss_probe.sh",
+)
+
+goo_script_probe(
+    name = "goo_test_probe",
+    script = "//:scripts/goo_test_probe.sh",
+    data = ["//examples:test_packages"],
+)
+
+# Its generated source imports only fmt, a C shim, and it never changes
+# directory, so the macro's contract is all it needs.
+goo_script_probe(
+    name = "string_literal_header_probe",
+    script = "//:scripts/string_literal_header_probe.sh",
+)
+
+# NOT DECLARED HERE. 15 of the 29 script gates are not one of the targets
+# above, each for a measured reason rather than an assumption, held in
+# docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
 #
-#   arena_rss_probe            reads tests/examples/, a SECOND fixture tree
-#   goo_test_probe             needs whole test PACKAGES with expected.norm.txt
-#   dead_package_code_probe    imports "strings", so it needs GOOROOT, which
-#                              the macro deliberately does not set. The
-#                              resolver's cwd tier (see above) means
-#                              //goostd:files in data is the likely fix,
-#                              unmeasured.
+#   7 cannot run in a sandbox at all -- podman_image_probe.sh exits 0 with no
+#     podman, so a sandboxed target would be green while asserting nothing;
+#     repro_build_probe.sh and archive_determinism_probe.sh each rebuild
+#     `git archive HEAD`, and a sandbox has no .git; far-collective,
+#     far-halo, far-jacobi and far-stencil-r2 share a helper that takes
+#     arguments and need NNG (phase 3c).
+#   5 read or compile src/** and need ten per-package filegroups first -- a
+#     glob does not cross a package boundary, so there cannot be a single
+#     //:c_sources the way //goostd:files covers the stdlib: alloc_doors,
+#     ast_free_leak, doc_claims, proof_cache_shell, release_package.
+#   3 compile C fixtures against include/ or tests/unit/ through a shell C
+#     compiler ($CC, gcc): goo_assert, goo_check, goo_testcase. They need
+#     those two filegroups and a C compiler the sandbox can see.
 #
-# The COMPILER contract is necessary for these and not sufficient. Each wants
-# its own data, and one wants a GOOROOT the macro cannot name because
-# //goostd:files is a filegroup $(rootpath) will not expand. Declaring them
-# without that data would give three red targets, and tagging them manual
-# would give three that never run -- both worse than recording the gap here.
+# 7 + 5 + 3 = 15.
+#
+# Declaring these without their data would give red targets, and tagging
+# them manual would give targets that never run -- both worse than
+# recording the gap here.
