@@ -97,30 +97,57 @@ def repo_relative(uri):
     catch. See this module's own self-test for the regression case this
     added.
 
-    An out-of-repository result gets a path with leading ".." segments --
-    still a stable, deterministic key, and the leading ".." is itself a
-    legible signal that the finding is not in this repo."""
+    FIX ROUND 1 (I2a): an out-of-repository result used to get
+    os.path.relpath(abs_path, REPO_ROOT), which is a path with leading ".."
+    segments whose COUNT depends on how deep REPO_ROOT sits on THIS
+    checkout -- a different checkout depth (a different clone path, or CI's
+    /home/runner/work/... layout) gives a DIFFERENT number of ".." segments
+    for the SAME system header, so the same finding's key silently changes
+    across machines (measured: 28 results across 2 keys flip on a
+    different checkout). Ruling: a result outside the repository keeps its
+    ABSOLUTE path as the file leg -- an absolute system path (e.g.
+    /usr/include/features.h) is already the same string on any machine with
+    the same toolchain, where a relpath is not. Only a file actually under
+    REPO_ROOT is made repo-relative."""
     if uri.startswith("file://"):
         uri = uri[len("file://"):]
     abs_path = uri if os.path.isabs(uri) else os.path.normpath(os.path.join(REPO_ROOT, uri))
-    return os.path.relpath(abs_path, REPO_ROOT), abs_path
+    rel = os.path.relpath(abs_path, REPO_ROOT)
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return abs_path, abs_path
+    return rel, abs_path
 
 
 def line_text_at(abs_path, line_no):
     """The normalised text of ONE line, 1-indexed like SARIF's own
-    region.startLine. Returns "" for a missing file, a line past its end,
-    or an absent line number -- see this module's docstring on why that is
-    still a stable (if coarser) key rather than a crash."""
-    if not line_no or not os.path.isfile(abs_path):
-        return ""
+    region.startLine. Returns (text, ok): ok is False when a line number WAS
+    expected but the file could not be read or the line does not exist in
+    it -- a real read failure, not a legitimate absence of a line to read.
+
+    FIX ROUND 1 (I4): this distinction did not exist before -- both a
+    genuine "no region at all" result and an UNREADABLE file (a stale
+    resolved path, the exact bug this module's own history section above
+    describes) hashed the same empty line text, so the second case failed
+    completely silently. merge() below now counts every ok=False here and
+    FAILS the whole run if that count is above zero: after the I2a fix,
+    every location this module resolves is either genuinely inside the
+    repository (always readable, or the tree is broken) or kept as an
+    absolute system path (also always readable on the machine that
+    produced the SARIF) -- so a nonzero count means a STALE SARIF (a moved
+    or deleted source file since the scan ran) or a resolution bug, either
+    way something this gate must not paper over with a quiet "" fingerprint."""
+    if not line_no:
+        return "", True
+    if not os.path.isfile(abs_path):
+        return "", False
     try:
         with open(abs_path, encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f, start=1):
                 if i == line_no:
-                    return normalise_line(line)
+                    return normalise_line(line), True
     except OSError:
-        return ""
-    return ""
+        return "", False
+    return "", False
 
 
 def fingerprint(rule_id, rel_path, line_text):
@@ -143,11 +170,15 @@ def find_inputs(paths):
 
 
 def merge(input_paths):
-    """Returns (doc, per_tool_counts) where per_tool_counts is a
+    """Returns (doc, per_tool_counts, unreadable) where per_tool_counts is a
     {tool_name: result_count} dict in insertion (first-seen) order, for the
-    verdict line every caller prints."""
+    verdict line every caller prints, and unreadable is the count of
+    locations line_text_at() could not read (see that function's own
+    docstring, FIX ROUND 1 / I4) -- callers must treat a nonzero unreadable
+    count as a hard failure, not just a number to print."""
     tools = {}  # tool name -> {"driver": {...}, "results": [...]}
     order = []
+    unreadable = 0
 
     for path in find_inputs(input_paths):
         with open(path, encoding="utf-8") as f:
@@ -171,7 +202,12 @@ def merge(input_paths):
                         rel_path, abs_path = repo_relative(uri)
                 region = locations[0].get("physicalLocation", {}).get("region", {}) if locations else {}
                 line_no = region.get("startLine")
-                line_text = line_text_at(abs_path, line_no) if abs_path else ""
+                if abs_path:
+                    line_text, ok = line_text_at(abs_path, line_no)
+                    if not ok:
+                        unreadable += 1
+                else:
+                    line_text = ""
                 fp = result.get("fingerprints", {})
                 fp = dict(fp)
                 fp["goo/v1"] = fingerprint(rule_id, rel_path, line_text)
@@ -190,7 +226,7 @@ def merge(input_paths):
         "version": "2.1.0",
         "runs": runs,
     }
-    return doc, counts
+    return doc, counts, unreadable
 
 
 def verify_schema_sha256():
@@ -262,6 +298,7 @@ def _write_sarif(path, tool_name, tool_version, rule_id, uri, line):
 #      same case scripts/findings_probe.sh --self-test drives end to end);
 #      a well-formed minimal doc is valid.
 def self_test():
+    global REPO_ROOT
     ok = True
     with tempfile.TemporaryDirectory() as tmp:
         sample = os.path.join(tmp, "sample.c")
@@ -277,7 +314,7 @@ def self_test():
         _write_sarif(os.path.join(a_dir, "two.sarif"), "GNU C23", "16", "-Wanalyzer-null-dereference", uri, 2)
         _write_sarif(os.path.join(b_dir, "cppcheck.sarif"), "Cppcheck", "2.21.1", "nullPointer", uri, 2)
 
-        doc, counts = merge([a_dir, b_dir])
+        doc, counts, _ = merge([a_dir, b_dir])
         if counts == {"GNU C23": 2, "Cppcheck": 1} and len(doc["runs"]) == 2:
             print("    ok: two SARIF files under one tool name merge into one run, counts summed")
         else:
@@ -292,7 +329,7 @@ def self_test():
         with open(sample, "w", encoding="utf-8") as f:
             f.write("\nint f(void) {\n    int *p = 0;\n    return *p;\n}\n")
         _write_sarif(os.path.join(a_dir, "one.sarif"), "GNU C23", "16", "-Wanalyzer-null-dereference", uri, 3)
-        doc2, _ = merge([a_dir])
+        doc2, _, _ = merge([a_dir])
         fp_after_shift = doc2["runs"][0]["results"][0]["fingerprints"]["goo/v1"]
         if fp_after_shift == fp_before:
             print("    ok: fingerprint is stable when a finding's line moves but its text does not")
@@ -303,7 +340,7 @@ def self_test():
         # 3. Now change line 3's actual TEXT -- the fingerprint must move.
         with open(sample, "w", encoding="utf-8") as f:
             f.write("\nint f(void) {\n    int *q = 0;\n    return *q;\n}\n")
-        doc3, _ = merge([a_dir])
+        doc3, _, _ = merge([a_dir])
         fp_after_edit = doc3["runs"][0]["results"][0]["fingerprints"]["goo/v1"]
         if fp_after_edit != fp_before:
             print("    ok: fingerprint changes when the line's own text changes")
@@ -323,17 +360,56 @@ def self_test():
         with open(os.path.join(no_region_path, "x.sarif"), "w", encoding="utf-8") as f:
             json.dump(no_region, f)
         try:
-            doc4, counts4 = merge([no_region_path])
+            doc4, counts4, unreadable4 = merge([no_region_path])
             has_fp = "goo/v1" in doc4["runs"][0]["results"][0]["fingerprints"]
         except Exception as e:  # noqa: BLE001 -- this IS the crash check
             print("FAIL: a result with no region raised %r" % (e,))
             ok = False
         else:
-            if has_fp:
-                print("    ok: a result with no region does not crash and still gets a fingerprint")
+            if has_fp and unreadable4 == 0:
+                print("    ok: a result with no region does not crash, still gets a fingerprint, "
+                      "and does NOT count as unreadable (I4: absence of a region is not a read failure)")
             else:
-                print("FAIL: a result with no region merged with no fingerprint")
+                print("FAIL: a result with no region merged with no fingerprint or a nonzero unreadable count "
+                      "(has_fp=%s, unreadable=%d)" % (has_fp, unreadable4))
                 ok = False
+
+        # 4b. I4: a result that DOES name a line, in a file that does not
+        # exist on disk -- this IS a read failure and must be counted.
+        missing_file = {
+            "version": "2.1.0", "$schema": "x",
+            "runs": [{"tool": {"driver": {"name": "GhostTool"}},
+                      "results": [{"ruleId": "r", "message": {"text": "x"},
+                                   "locations": [{"physicalLocation": {
+                                       "artifactLocation": {"uri": "file://" + os.path.join(tmp, "does-not-exist.c")},
+                                       "region": {"startLine": 3}}}]}]}],
+        }
+        missing_dir = os.path.join(tmp, "d")
+        os.makedirs(missing_dir)
+        with open(os.path.join(missing_dir, "x.sarif"), "w", encoding="utf-8") as f:
+            json.dump(missing_file, f)
+        _, _, unreadable_missing = merge([missing_dir])
+        if unreadable_missing == 1:
+            print("    ok: a result naming a line in a file that does not exist counts as ONE unreadable location")
+        else:
+            print("FAIL: expected exactly 1 unreadable location for a missing file, got %d" % unreadable_missing)
+            ok = False
+
+        # 4c. I2a: repo_relative() keeps an ABSOLUTE path for anything
+        # outside the repository, never a relpath -- a relpath's ".." count
+        # depends on how deep REPO_ROOT sits on the CURRENT checkout, so
+        # the same system-header finding would get a DIFFERENT key on a
+        # different clone. Unit-tested directly against the function (the
+        # merge() pipeline never rewrites a result's OWN "uri" field --
+        # only the fingerprint reflects this resolution), with a path built
+        # from REPO_ROOT's own parent, guaranteed outside it on any machine.
+        outside_path = os.path.join(os.path.dirname(REPO_ROOT), "definitely-outside-the-repo.c")
+        rel_out, abs_out = repo_relative("file://" + outside_path)
+        if rel_out == outside_path == abs_out:
+            print("    ok: a path outside the repository keeps its absolute form, not a relpath")
+        else:
+            print("FAIL: expected %r for an out-of-repo path, got rel=%r abs=%r" % (outside_path, rel_out, abs_out))
+            ok = False
 
         # 5. A RELATIVE uri must resolve against REPO_ROOT, never against
         # the SARIF FILE'S OWN directory. REGRESSION CASE: an earlier
@@ -349,7 +425,6 @@ def self_test():
         # use an absolute file:// uri, which skips the buggy join entirely.
         # REPO_ROOT is monkeypatched to a scratch tree here so this proves
         # the regression without touching a real repository file.
-        global REPO_ROOT
         saved_root = REPO_ROOT
         try:
             with tempfile.TemporaryDirectory() as scratch_root:
@@ -361,7 +436,7 @@ def self_test():
                 os.makedirs(sarif_subdir)
                 _write_sarif(os.path.join(sarif_subdir, "one.sarif"), "GNU C23", "16", "ruleA", "src/rel.c", 1)
                 _write_sarif(os.path.join(sarif_subdir, "two.sarif"), "GNU C23", "16", "ruleA", "src/rel.c", 2)
-                doc5, _ = merge([sarif_subdir])
+                doc5, _, _ = merge([sarif_subdir])
                 fps = {r["fingerprints"]["goo/v1"] for r in doc5["runs"][0]["results"]}
             if len(fps) == 2:
                 print("    ok: two results on different lines of a repo-root-relative file, resolved from a "
@@ -437,7 +512,7 @@ def main(argv):
     if not out_path or not inputs:
         sys.exit(__doc__)
 
-    doc, counts = merge(inputs)
+    doc, counts, unreadable = merge(inputs)
 
     if do_validate:
         errors = validate(doc)
@@ -455,7 +530,20 @@ def main(argv):
 
     total = sum(counts.values())
     per_tool = ", ".join("%s: %d" % (name, n) for name, n in counts.items())
-    print("sarif_merge: wrote %s -- %d results (%s)" % (out_path, total, per_tool))
+    print("sarif_merge: wrote %s -- %d results (%s), %d unreadable location(s)"
+          % (out_path, total, per_tool, unreadable))
+    if unreadable:
+        # I4: a nonzero count here means a location's source file could not
+        # be read even though the SARIF pointed at a specific line -- see
+        # line_text_at()'s own docstring on why, after the I2a fix, this can
+        # only mean a stale SARIF or a resolution bug, never a legitimate
+        # absence. Fail loudly rather than ship a silently-degraded
+        # fingerprint (the exact failure mode that hid the 287-finding
+        # collapse this task's own history already found once).
+        print("sarif_merge: FAIL -- %d location(s) could not be read; "
+              "re-run the lanes (build/sarif/* may be stale) before trusting %s"
+              % (unreadable, out_path))
+        return 1
     return 0
 
 

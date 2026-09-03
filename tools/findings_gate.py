@@ -25,6 +25,25 @@ be "D-NN" (a deviation record under docs/misra/deviations/) or
 "defect:<tool>:<id>" (a documented checker defect) or the row -- and
 therefore the whole gate run -- is red. A suppression with no justification
 is not a suppression, it is silence.
+
+FIX ROUND 1 (I1) -- THE COMPARISON KEY IS A COUNT, NOT A SET MEMBERSHIP.
+The task's own plan text ("rule, file and fingerprint as the key") and this
+module's first cut both compared the RAW SET of (tool, rule, file,
+fingerprint) 4-tuples. MEASURED: editing only the TEXT of one already-
+accepted finding (its line unchanged, its content edited) changes its
+fingerprint, so the OLD 4-tuple vanishes and a NEW one appears for the SAME
+(tool, rule, file) -- the set comparison reported this as one improvement
+(the old fingerprint) and one regression (the new one) FOR THE SAME
+UNDERLYING FINDING, and exited 1. That is nonsense: nothing regressed.
+
+The fix: the gate compares the COUNT of accepted findings per
+(tool, rule, file), shrink-only -- a count ABOVE the baseline's is red, EQUAL
+or LOWER is green, and a drop is reported as an improvement. Fingerprints
+still travel in the SARIF and in every baseline row (one row per finding,
+same 4 columns as before), but they are used ONLY to NAME which specific
+lines are new in a regression's printed output -- never as part of the
+comparison itself. Editing one finding's text now correctly stays GREEN,
+because the (tool, rule, file) count does not move.
 """
 import collections
 import fnmatch
@@ -34,19 +53,31 @@ import re
 import sys
 import tempfile
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JUSTIFICATION_RE = re.compile(r"^(D-\d+|defect:[^:\s]+:.+)$")
 
 
 def tally(sarif_path):
     """Returns (keys, per_tool) where keys is a set of
-    (tool, rule, file, fingerprint) 4-tuples and per_tool is a
-    {tool_name: result_count} Counter, for the verdict line."""
+    (tool, rule, file, fingerprint) 4-tuples (still one entry per finding,
+    used to compute per-(tool,rule,file) COUNTS and to name specific new
+    fingerprints in check()'s output -- see this module's own docstring,
+    FIX ROUND 1 / I1, on why the key itself is no longer the comparison
+    unit) and per_tool is a {tool_name: result_count} Counter, for the
+    verdict line.
+
+    FIX ROUND 1 (M6): a tool's entry is registered on EVERY run, even one
+    with zero results (`per_tool[tool] += 0` still creates the Counter key)
+    -- before this fix, a run with no results (verify-core-gates on an
+    all-green pipeline, for example) was silently absent from per_tool
+    entirely, so the verdict line named four tools when five actually ran."""
     with open(sarif_path, encoding="utf-8") as f:
         doc = json.load(f)
     keys = set()
     per_tool = collections.Counter()
     for run in doc.get("runs", []):
         tool = run.get("tool", {}).get("driver", {}).get("name", "unknown")
+        per_tool[tool] += 0
         for result in run.get("results", []):
             rule = result.get("ruleId", "")
             file_ = ""
@@ -58,6 +89,16 @@ def tally(sarif_path):
             keys.add((tool, rule, file_, fp))
             per_tool[tool] += 1
     return keys, per_tool
+
+
+def group_by_triple(keys):
+    """(tool, rule, file, fingerprint) 4-tuples -> {(tool, rule, file): set
+    of fingerprints}. len() of a triple's set is its ACCEPTED COUNT -- the
+    comparison unit after FIX ROUND 1 / I1."""
+    grouped = collections.defaultdict(set)
+    for tool, rule, file_, fp in keys:
+        grouped[(tool, rule, file_)].add(fp)
+    return grouped
 
 
 def load_suppressions(path):
@@ -116,6 +157,14 @@ def read_baseline(path):
 
 
 def write_baseline(path, keys, sarif_path):
+    # M5: a baseline must not record the machine. sarif_path arrives as an
+    # ABSOLUTE path from every real caller (scripts/findings_probe.sh always
+    # passes $REPO_ROOT/build/findings.sarif), and that absolute path used
+    # to be written verbatim into this committed file's header comment --
+    # leaking one worktree's own filesystem layout into version control.
+    # Recorded relative to REPO_ROOT instead, the same way every other path
+    # in this file already is.
+    display_path = os.path.relpath(sarif_path, REPO_ROOT) if os.path.isabs(sarif_path) else sarif_path
     with open(path, "w", encoding="utf-8") as f:
         f.write(
             "# findings-probe SHRINK-ONLY baseline. Regenerate with:\n"
@@ -123,18 +172,28 @@ def write_baseline(path, keys, sarif_path):
             "# One line per tool<TAB>rule<TAB>file<TAB>fingerprint (tools/sarif_merge.py's\n"
             "# own stable \"goo/v1\" hash -- rule id + repo-relative file + the finding's\n"
             "# own normalised line text, NOT its line number).\n"
-            "# A key here and absent from a later run is an IMPROVEMENT.\n"
-            "# A key present in a later run and absent here is a REGRESSION and fails\n"
-            "# the gate. Suppressed keys (docs/misra/findings-suppressions.tsv) never\n"
+            "# The GATE compares COUNTS per (tool, rule, file) -- see this module's own\n"
+            "# docstring, FIX ROUND 1 / I1. The fingerprint column exists to NAME which\n"
+            "# specific lines are new when a count rises; it is not itself the key.\n"
+            "# A (tool, rule, file) whose count here is above a later run's is an\n"
+            "# IMPROVEMENT. A count above what is recorded here is a REGRESSION and fails\n"
+            "# the gate. Suppressed rows (docs/misra/findings-suppressions.tsv) never\n"
             "# appear here at all. Never edit by hand.\n"
-            "# %d accepted findings, from %s.\n" % (len(keys), sarif_path)
+            "# %d accepted findings, from %s.\n" % (len(keys), display_path)
         )
         for k in sorted(keys):
             f.write("\t".join(k) + "\n")
 
 
 def check(sarif_path, baseline_path, suppressions_path):
-    """Returns (rc, lines) -- lines is the full report, ready to print."""
+    """Returns (rc, lines) -- lines is the full report, ready to print.
+
+    FIX ROUND 1 (I1): compares the COUNT of accepted fingerprints per
+    (tool, rule, file), not raw 4-tuple set membership -- see this module's
+    own docstring for the measured reason. A regression's printed line still
+    names the SPECIFIC new fingerprints (now-minus-baseline, within that
+    triple), for a human to find the actual new line; that naming is
+    cosmetic and never affects the red/green decision."""
     rows, bad = load_suppressions(suppressions_path)
     out = []
     if bad:
@@ -149,14 +208,24 @@ def check(sarif_path, baseline_path, suppressions_path):
     now_f = filter_suppressed(now_keys, rows)
     base_f = filter_suppressed(base_keys, rows)
 
-    regressions = sorted(now_f - base_f)
-    improvements = sorted(base_f - now_f)
+    now_triples = group_by_triple(now_f)
+    base_triples = group_by_triple(base_f)
+
+    regressions, improvements = [], []
+    for triple in sorted(set(now_triples) | set(base_triples)):
+        now_fps = now_triples.get(triple, set())
+        base_fps = base_triples.get(triple, set())
+        now_c, base_c = len(now_fps), len(base_fps)
+        if now_c > base_c:
+            regressions.append((triple, base_c, now_c, sorted(now_fps - base_fps)))
+        elif now_c < base_c:
+            improvements.append((triple, base_c, now_c, sorted(base_fps - now_fps)))
 
     if improvements:
-        out.append("findings-gate: %d finding(s) fixed since the baseline. Tighten it with --update-baseline."
-                    % len(improvements))
-        for tool, rule, file_, fp in improvements[:10]:
-            out.append("    %-16s %-40s %s (%s)" % (tool, rule, file_, fp[:12]))
+        out.append("findings-gate: %d (tool, rule, file) group(s) shrank since the baseline. "
+                    "Tighten it with --update-baseline." % len(improvements))
+        for (tool, rule, file_), base_c, now_c, fps in improvements[:10]:
+            out.append("    %-16s %-40s %-40s %d -> %d" % (tool, rule, file_, base_c, now_c))
 
     per_tool_str = ", ".join("%s: %d" % (n, c) for n, c in sorted(per_tool.items()))
     verdict = ("%s: %d findings (%s), %d suppressed, baseline %s (%d accepted)"
@@ -164,9 +233,12 @@ def check(sarif_path, baseline_path, suppressions_path):
                   baseline_path, len(base_keys)))
 
     if regressions:
-        out.append("findings-gate: FAIL -- %d new finding(s) not in the baseline" % len(regressions))
-        for tool, rule, file_, fp in regressions[:20]:
-            out.append("    %-16s %-40s %s (%s)" % (tool, rule, file_, fp[:12]))
+        out.append("findings-gate: FAIL -- %d (tool, rule, file) group(s) rose above the baseline"
+                    % len(regressions))
+        for (tool, rule, file_), base_c, now_c, fps in regressions[:20]:
+            new_str = ", ".join(fp[:12] for fp in fps[:3])
+            out.append("    %-16s %-40s %-40s %d -> %d  new: %s"
+                        % (tool, rule, file_, base_c, now_c, new_str))
         out.append("findings-gate: FAIL %s" % verdict)
         return 1, out
 
@@ -232,6 +304,38 @@ def self_test():
             print("    ok: a finding not in the baseline is RED")
         else:
             print("FAIL: a new finding did not go RED (rc=%d)" % rc)
+            ok = False
+
+        # I1 REGRESSION CASE: editing the TEXT of one already-accepted
+        # finding (same tool/rule/file, a DIFFERENT fingerprint, same
+        # COUNT) must stay GREEN -- the exact scenario that used to print
+        # one improvement and one regression for the same finding and exit
+        # 1 (see this module's own docstring). r1/a.c now carries "fp1x"
+        # instead of "fp1"; the baseline still says "fp1"; the count for
+        # (GNU C23, r1, a.c) is 1 in both, so nothing may fire.
+        sarif_edited = os.path.join(tmp, "edited.sarif")
+        write_sarif(sarif_edited, [result("r1", "a.c", "fp1x")])
+        rc, lines = check(sarif_edited, baseline_path, suppressions_empty)
+        if rc == 0:
+            print("    ok: editing one accepted finding's text (same count, new fingerprint) stays GREEN")
+        else:
+            print("FAIL: editing an accepted finding's text alone went RED: %r" % lines)
+            ok = False
+
+        # M6: the verdict line must name EVERY tool that ran, including one
+        # whose run produced zero results.
+        sarif_two_tools = os.path.join(tmp, "two-tools.sarif")
+        with open(sarif_two_tools, "w", encoding="utf-8") as f:
+            json.dump({"version": "2.1.0", "runs": [
+                {"tool": {"driver": {"name": "GNU C23"}}, "results": [result("r1", "a.c", "fp1")]},
+                {"tool": {"driver": {"name": "verify-core-gates"}}, "results": []},
+            ]}, f)
+        rc, lines = check(sarif_two_tools, baseline_path, suppressions_empty)
+        verdict_line = lines[-1]
+        if "verify-core-gates: 0" in verdict_line:
+            print("    ok: the verdict line names a tool that ran with zero results")
+        else:
+            print("FAIL: a zero-result tool is missing from the verdict line: %r" % verdict_line)
             ok = False
 
         # (b) a suppression row with an empty justification -> RED, even

@@ -3,11 +3,14 @@
 # One line per tool<TAB>rule<TAB>file<TAB>fingerprint (tools/sarif_merge.py's
 # own stable "goo/v1" hash -- rule id + repo-relative file + the finding's
 # own normalised line text, NOT its line number).
-# A key here and absent from a later run is an IMPROVEMENT.
-# A key present in a later run and absent here is a REGRESSION and fails
-# the gate. Suppressed keys (docs/misra/findings-suppressions.tsv) never
+# The GATE compares COUNTS per (tool, rule, file) -- see this module's own
+# docstring, FIX ROUND 1 / I1. The fingerprint column exists to NAME which
+# specific lines are new when a count rises; it is not itself the key.
+# A (tool, rule, file) whose count here is above a later run's is an
+# IMPROVEMENT. A count above what is recorded here is a REGRESSION and fails
+# the gate. Suppressed rows (docs/misra/findings-suppressions.tsv) never
 # appear here at all. Never edit by hand.
-# 2468 accepted findings, from /mnt/ssd2/Workspace/github.com/goolang/.claude/worktrees/verify-tooling-next-steps/build/findings.sarif.
+# 2468 accepted findings, from build/findings.sarif.
 Cppcheck	arrayIndexOutOfBoundsCond	src/lexer/token.c	f0d9cd535ec173191eac1a2523305a1d4a4f6b15452c3309bfb296c8a5825be5
 Cppcheck	constParameterCallback	src/runtime/concurrency.c	d44a58ad05ab10baa401cfaf92f0125b95942e8b0fe0eb658118b07129749eac
 Cppcheck	constParameterPointer	src/comptime/comptime_intrinsics.c	78967a9c3d94c318550eb1f947204bb94004bacba477d375d1ed4131cc20c0de
@@ -2077,8 +2080,8 @@ GNU C23	-Wunused-variable	src/codegen/function_codegen.c	6b95b1241fe43c049032cc9
 GNU C23	-Wunused-variable	src/codegen/nullable_codegen.c	026b793e13520a63b5b3ee5b8b55dc9559ca8fd0ce5a71bfaa8698ee17501ee6
 GNU C23	-Wunused-variable	src/codegen/nullable_codegen.c	b176d54dd7712272a749309b20271c9b8111005d952ad08990382f66dc308d5c
 GNU C23	-Wunused-variable	src/codegen/statement_codegen.c	bbec276739eb397f410caa855d43367c48f81ecc16c0a7e36428ba7978b68565
-GNU C23	note	/usr/include/features.h	34abc616079a4026caf4aba34fe0f4a7f78d4beaee54bfa5041d60f50e197f4b
-GNU C23	note	/usr/include/features.h	70b9b1120c3add69356d47c3a28397f001b2c89708c59730e753a644c5cb92e7
+GNU C23	note	/usr/include/features.h	576b247e7673ccabeb983493298b8e6cbf74b7a0a8f6035de963954108b36eef
+GNU C23	note	/usr/include/features.h	bbe0927b3328508050ee216c27898b0c9633847124ecac1b1e95ed16b3846be4
 GNU C23	note	include/token.h	9de889b6bbed599f81eb5355feed5797e16af90b78002a7b6cac0f9a8cc5716e
 GNU C23	note	src/codegen/codegen.c	591a57cfb32fe36fde3e8a67db06809f976d6181f397b2e74ee442e8b1b81da4
 GNU C23	note	src/codegen/statement_codegen.c	55d39fcbd9647dc4f4355d1da6096c6a728b7879fcca5bfaedd307e6f037e9c3
