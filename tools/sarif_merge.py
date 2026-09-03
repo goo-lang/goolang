@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""sarif_merge.py -- merge every tool's SARIF into one SARIF 2.1.0 log.
+
+Task 17 of the 2026-09-02 verification tooling plan: one findings database
+over gcc (scripts/analyzer_lanes_probe.sh), clang-tidy (converted by
+tools/clang_tidy_to_sarif.py, since clang-tidy has no native SARIF emitter),
+cppcheck (the same probe), and the probe verdicts (converted by
+tools/probe_verdicts_to_sarif.py). scripts/findings_probe.sh is the
+shrink-only gate that reads the merged file this script writes.
+
+    sarif_merge.py --out build/findings.sarif [--validate] INPUT [INPUT ...]
+    sarif_merge.py --self-test
+
+Each INPUT is a .sarif file, or a directory searched (non-recursively is not
+enough -- clang-tidy's own output nests under build/sarif/clang-tidy/.cc/ --
+so the search is recursive) for *.sarif files. Every result from every input
+is copied into ONE run per TOOL NAME (gcc's 58 per-file SARIF files, one run
+each today, become ONE "GNU C23" run here; cppcheck's single file becomes
+one "Cppcheck" run) -- this is the generalisation the task text asks for:
+docs/misra/tools/gate.py tallies one tool's (file, rule) pairs, and this
+does the same across every tool at once, keyed by (tool, rule, file,
+fingerprint) instead.
+
+STABLE FINGERPRINTS. A SARIF result's line number moves on every edit that
+adds or removes a line above it -- the same reason docs/misra/tools/gate.py's
+own tally key drops line numbers entirely (see that file's tally()
+docstring). This script keeps the file (a moved finding must still be found)
+but replaces the line NUMBER with the line's own NORMALISED TEXT, so a
+finding whose line only shifted keeps its fingerprint, while a finding whose
+line's content actually changed gets a new one (a graduated key: bloated
+compared to a random UUID, but a real position anchor is worth eight ASCII
+words of blast radius that only ever affects one document format).
+Each result's "fingerprints" map gets one key, "goo/v1", holding
+sha256("<ruleId>\\x1f<repo-relative file>\\x1f<normalised line text>").
+Normalisation is str.strip() plus collapsing internal runs of whitespace to
+one space -- enough to survive re-indentation without conflating two
+genuinely different lines. A result with no line/column region (a whole-file
+finding) or whose file cannot be read from disk (a location outside the
+repository, or already gone) hashes an empty line text -- still stable,
+just coarser: two such results on the SAME (tool, rule, file) collide, which
+matches gate.py's own (file, rule) grain for exactly this case.
+
+SCHEMA VALIDATION. --validate checks the merged document against the
+vendored docs/misra/tools/sarif-schema-2.1.0.json, ONLY after verifying that
+file's own sha256 against the sidecar docs/misra/tools/sarif-schema-2.1.0.json.sha256
+-- the schema is fetched once, by hand, from
+https://json.schemastore.org/sarif-2.1.0.json (see that file's header) and
+never re-fetched by any gate; a corrupted or hand-edited copy must fail
+loudly rather than silently validate against something else. Requires the
+`jsonschema` package (see docs/misra/tools/README.md's own note on the
+misra addon for the parallel "not in stdlib" case) -- this repository has it
+installed; scripts/findings_probe.sh's own header records the version this
+was built against.
+"""
+import glob
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCHEMA_PATH = os.path.join(REPO_ROOT, "docs", "misra", "tools", "sarif-schema-2.1.0.json")
+SCHEMA_SHA256_PATH = SCHEMA_PATH + ".sha256"
+
+WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalise_line(text):
+    """str.strip() plus collapsing internal whitespace runs to one space.
+    See this module's own docstring ("STABLE FINGERPRINTS") for why."""
+    return WHITESPACE_RE.sub(" ", text.strip())
+
+
+def repo_relative(uri, base_dir):
+    """A SARIF artifactLocation.uri is either already relative to the
+    working directory every lane runs from (REPO_ROOT -- verified: every
+    lane in scripts/analyzer_lanes_probe.sh either `cd`s there first or is
+    invoked with `directory: "."` resolved against it), or absolute (a
+    system header, e.g. /usr/include/features.h, that gcc's -fanalyzer
+    reports as a related location). os.path.relpath handles both: a
+    relative URI is joined against base_dir first so a result read from a
+    subdirectory-scoped SARIF file still resolves correctly, then relpath'd
+    against REPO_ROOT. An out-of-repository result gets a path with leading
+    ".." segments -- still a stable, deterministic key, and the leading
+    ".." is itself a legible signal that the finding is not in this repo."""
+    if uri.startswith("file://"):
+        uri = uri[len("file://"):]
+    abs_path = uri if os.path.isabs(uri) else os.path.normpath(os.path.join(base_dir, uri))
+    return os.path.relpath(abs_path, REPO_ROOT), abs_path
+
+
+def line_text_at(abs_path, line_no):
+    """The normalised text of ONE line, 1-indexed like SARIF's own
+    region.startLine. Returns "" for a missing file, a line past its end,
+    or an absent line number -- see this module's docstring on why that is
+    still a stable (if coarser) key rather than a crash."""
+    if not line_no or not os.path.isfile(abs_path):
+        return ""
+    try:
+        with open(abs_path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f, start=1):
+                if i == line_no:
+                    return normalise_line(line)
+    except OSError:
+        return ""
+    return ""
+
+
+def fingerprint(rule_id, rel_path, line_text):
+    digest = hashlib.sha256(
+        "\x1f".join((rule_id or "", rel_path, line_text)).encode("utf-8")
+    ).hexdigest()
+    return digest
+
+
+def find_inputs(paths):
+    files = []
+    for p in paths:
+        if os.path.isdir(p):
+            files.extend(sorted(glob.glob(os.path.join(p, "**", "*.sarif"), recursive=True)))
+        elif os.path.isfile(p):
+            files.append(p)
+        else:
+            sys.exit("sarif_merge: input path does not exist: %s" % p)
+    return files
+
+
+def merge(input_paths):
+    """Returns (doc, per_tool_counts) where per_tool_counts is a
+    {tool_name: result_count} dict in insertion (first-seen) order, for the
+    verdict line every caller prints."""
+    tools = {}  # tool name -> {"driver": {...}, "results": [...]}
+    order = []
+
+    for path in find_inputs(input_paths):
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        base_dir = os.path.dirname(os.path.abspath(path))
+        for run in doc.get("runs", []):
+            driver = run.get("tool", {}).get("driver", {})
+            name = driver.get("name", "unknown")
+            if name not in tools:
+                tools[name] = {"driver": dict(driver), "results": []}
+                order.append(name)
+            bucket = tools[name]["results"]
+            for result in run.get("results", []):
+                result = dict(result)  # do not mutate the caller's parsed doc
+                rule_id = result.get("ruleId", "")
+                rel_path, abs_path = "", ""
+                locations = result.get("locations") or []
+                if locations:
+                    art = locations[0].get("physicalLocation", {}).get("artifactLocation", {})
+                    uri = art.get("uri", "")
+                    if uri:
+                        rel_path, abs_path = repo_relative(uri, base_dir)
+                region = locations[0].get("physicalLocation", {}).get("region", {}) if locations else {}
+                line_no = region.get("startLine")
+                line_text = line_text_at(abs_path, line_no) if abs_path else ""
+                fp = result.get("fingerprints", {})
+                fp = dict(fp)
+                fp["goo/v1"] = fingerprint(rule_id, rel_path, line_text)
+                result["fingerprints"] = fp
+                bucket.append(result)
+
+    runs = []
+    counts = {}
+    for name in order:
+        entry = tools[name]
+        runs.append({"tool": {"driver": entry["driver"]}, "results": entry["results"]})
+        counts[name] = len(entry["results"])
+
+    doc = {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": runs,
+    }
+    return doc, counts
+
+
+def verify_schema_sha256():
+    if not os.path.isfile(SCHEMA_SHA256_PATH):
+        sys.exit("sarif_merge: no sidecar sha256 at %s" % SCHEMA_SHA256_PATH)
+    with open(SCHEMA_SHA256_PATH, encoding="utf-8") as f:
+        expected = f.read().split()[0].strip()
+    with open(SCHEMA_PATH, "rb") as f:
+        actual = hashlib.sha256(f.read()).hexdigest()
+    if actual != expected:
+        sys.exit(
+            "sarif_merge: schema sha256 mismatch (expected %s, got %s) -- "
+            "refusing to validate against a schema that does not match its "
+            "own sidecar" % (expected, actual)
+        )
+
+
+def validate(doc):
+    verify_schema_sha256()
+    try:
+        import jsonschema
+    except ImportError:
+        sys.exit(
+            "sarif_merge: --validate requires the jsonschema package "
+            "(pip install jsonschema; see docs/misra/tools/README.md)"
+        )
+    with open(SCHEMA_PATH, encoding="utf-8") as f:
+        schema = json.load(f)
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator = validator_cls(schema)
+    errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
+    return errors
+
+
+def _write_sarif(path, tool_name, tool_version, rule_id, uri, line):
+    doc = {
+        "version": "2.1.0",
+        "$schema": "x",
+        "runs": [{
+            "tool": {"driver": {"name": tool_name, "version": tool_version}},
+            "results": [{
+                "ruleId": rule_id,
+                "level": "warning",
+                "message": {"text": "x"},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": uri},
+                    "region": {"startLine": line},
+                }}],
+            }],
+        }],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f)
+
+
+# --self-test: in-memory synthetic fixtures, no repository files touched --
+# same convention as tools/pthread_return_count.py --self-test. Five cases:
+#   1. two SARIF files sharing a tool name merge into ONE run, with counts
+#      summed -- the core "generalise gate.py across tools" behaviour.
+#   2. a fingerprint is STABLE when a finding's line moves but its text does
+#      not (the whole reason the key is text, not a line number).
+#   3. a fingerprint CHANGES when the line's actual text changes, so two
+#      genuinely different findings on the same (tool, rule, file) never
+#      collide by accident.
+#   4. a result with no line/region info does not crash, and hashes an
+#      empty line text rather than raising.
+#   5. --validate's schema check: a doc missing "version" is invalid (the
+#      same case scripts/findings_probe.sh --self-test drives end to end);
+#      a well-formed minimal doc is valid.
+def self_test():
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        sample = os.path.join(tmp, "sample.c")
+        with open(sample, "w", encoding="utf-8") as f:
+            f.write("int f(void) {\n    int *p = 0;\n    return *p;\n}\n")
+        uri = "file://" + sample
+
+        a_dir = os.path.join(tmp, "a")
+        b_dir = os.path.join(tmp, "b")
+        os.makedirs(a_dir)
+        os.makedirs(b_dir)
+        _write_sarif(os.path.join(a_dir, "one.sarif"), "GNU C23", "16", "-Wanalyzer-null-dereference", uri, 2)
+        _write_sarif(os.path.join(a_dir, "two.sarif"), "GNU C23", "16", "-Wanalyzer-null-dereference", uri, 2)
+        _write_sarif(os.path.join(b_dir, "cppcheck.sarif"), "Cppcheck", "2.21.1", "nullPointer", uri, 2)
+
+        doc, counts = merge([a_dir, b_dir])
+        if counts == {"GNU C23": 2, "Cppcheck": 1} and len(doc["runs"]) == 2:
+            print("    ok: two SARIF files under one tool name merge into one run, counts summed")
+        else:
+            print("FAIL: expected 2 runs, counts {'GNU C23': 2, 'Cppcheck': 1}, got %d runs, counts %s"
+                  % (len(doc["runs"]), counts))
+            ok = False
+
+        fp_before = doc["runs"][0]["results"][0]["fingerprints"]["goo/v1"]
+
+        # 2. Shift the finding to line 3 (a blank line inserted above line 2,
+        # text unchanged) -- the fingerprint must not move.
+        with open(sample, "w", encoding="utf-8") as f:
+            f.write("\nint f(void) {\n    int *p = 0;\n    return *p;\n}\n")
+        _write_sarif(os.path.join(a_dir, "one.sarif"), "GNU C23", "16", "-Wanalyzer-null-dereference", uri, 3)
+        doc2, _ = merge([a_dir])
+        fp_after_shift = doc2["runs"][0]["results"][0]["fingerprints"]["goo/v1"]
+        if fp_after_shift == fp_before:
+            print("    ok: fingerprint is stable when a finding's line moves but its text does not")
+        else:
+            print("FAIL: fingerprint changed on a pure line shift (%s -> %s)" % (fp_before, fp_after_shift))
+            ok = False
+
+        # 3. Now change line 3's actual TEXT -- the fingerprint must move.
+        with open(sample, "w", encoding="utf-8") as f:
+            f.write("\nint f(void) {\n    int *q = 0;\n    return *q;\n}\n")
+        doc3, _ = merge([a_dir])
+        fp_after_edit = doc3["runs"][0]["results"][0]["fingerprints"]["goo/v1"]
+        if fp_after_edit != fp_before:
+            print("    ok: fingerprint changes when the line's own text changes")
+        else:
+            print("FAIL: fingerprint did not change after the line's text changed")
+            ok = False
+
+        # 4. No region at all -- must not crash, and must still fingerprint.
+        no_region = {
+            "version": "2.1.0", "$schema": "x",
+            "runs": [{"tool": {"driver": {"name": "NoRegionTool"}},
+                      "results": [{"ruleId": "r", "message": {"text": "x"},
+                                   "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}}}]}]}],
+        }
+        no_region_path = os.path.join(tmp, "c")
+        os.makedirs(no_region_path)
+        with open(os.path.join(no_region_path, "x.sarif"), "w", encoding="utf-8") as f:
+            json.dump(no_region, f)
+        try:
+            doc4, counts4 = merge([no_region_path])
+            has_fp = "goo/v1" in doc4["runs"][0]["results"][0]["fingerprints"]
+        except Exception as e:  # noqa: BLE001 -- this IS the crash check
+            print("FAIL: a result with no region raised %r" % (e,))
+            ok = False
+        else:
+            if has_fp:
+                print("    ok: a result with no region does not crash and still gets a fingerprint")
+            else:
+                print("FAIL: a result with no region merged with no fingerprint")
+                ok = False
+
+    # 5. Schema validation: missing "version" is invalid; a minimal
+    # well-formed document is valid. Uses the REAL vendored schema and its
+    # sha256 sidecar (both committed), so this also exercises
+    # verify_schema_sha256() on the untouched, correct file.
+    valid_doc = {"version": "2.1.0", "$schema": "x", "runs": []}
+    invalid_doc = {"$schema": "x", "runs": []}
+    if not validate(valid_doc):
+        print("    ok: a minimal well-formed document validates against the vendored schema")
+    else:
+        print("FAIL: a minimal well-formed document failed schema validation")
+        ok = False
+    if validate(invalid_doc):
+        print("    ok: a document missing \"version\" fails schema validation")
+    else:
+        print("FAIL: a document missing \"version\" passed schema validation")
+        ok = False
+
+    if ok:
+        print("sarif_merge.py --self-test: PASS")
+        return 0
+    print("sarif_merge.py --self-test: FAIL")
+    return 1
+
+
+def main(argv):
+    if argv == ["--self-test"]:
+        return self_test()
+
+    out_path = None
+    do_validate = False
+    inputs = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--out":
+            i += 1
+            out_path = argv[i]
+        elif a == "--validate":
+            do_validate = True
+        else:
+            inputs.append(a)
+        i += 1
+
+    if not out_path or not inputs:
+        sys.exit(__doc__)
+
+    doc, counts = merge(inputs)
+
+    if do_validate:
+        errors = validate(doc)
+        if errors:
+            print("sarif_merge: SCHEMA INVALID -- %d error(s)" % len(errors))
+            for e in errors[:20]:
+                print("    %s: %s" % ("/".join(str(p) for p in e.absolute_path), e.message))
+            return 1
+        print("sarif_merge: schema OK (%s, sha256 verified)" % SCHEMA_PATH)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=1, sort_keys=True)
+        f.write("\n")
+
+    total = sum(counts.values())
+    per_tool = ", ".join("%s: %d" % (name, n) for name, n in counts.items())
+    print("sarif_merge: wrote %s -- %d results (%s)" % (out_path, total, per_tool))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
