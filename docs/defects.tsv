@@ -31,6 +31,7 @@
 # Rows where the commit message does not say what found the defect
 # (instrument=none, note=unknown): 3 of 20.
 date	pr	phase_made	phase_found	instrument	gate_added	commit	summary	note
+2026-09-03	pending	code	test	misra scan	none	f564e5a5	fix(runtime): MISRA regressions in the wake-delay hook and time_shim	made by 3d411d91 (2026-09-02, task 8's wake-delay hook and waiter loops); two Opus code reviews of that commit did not flag it; found when task 15's misra-scan.sh (compile-command capture) forced the first fresh scan since the 2026-08-14 baseline
 2026-09-02	pending	spec	code	task review	none	9e4fb6f	fix(assert): teach the probe GOO_DEBUG beats GOO_ASSERT_OFF, name the header in its verdict, fix three stale comments	
 2026-09-02	pending	code	code	task review	none	0bc9d15	fix(probes): a case/default label can share its line with other code	
 2026-09-02	pending	code	code	task review	none	955b48a	fix(probes): reject ternary colons and a silently-crashed counter	
