@@ -24,6 +24,15 @@
 census, generated.bzl and the extracted sources — which together cost about
 110 s, most of it the source-drift self-test.
 
+## Merge order, decided 2026-09-03
+
+The verification-tooling branch (`worktree-verify-tooling-next-steps`, the
+SPIN deadlock model, the pthread-return ratchet, the assertion-density and
+warning-count gates) merges to `main` BEFORE this branch. Its gates are
+Makefile targets, so this branch then absorbs them with one parity-count
+bump and one census regeneration, instead of the reverse order costing a
+rebase of every Bazel target. Safety evidence first, then performance work.
+
 ## Pick up here
 
 `docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **task 15
