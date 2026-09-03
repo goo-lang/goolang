@@ -303,6 +303,22 @@ goo_script_probe(
     tags = ["nosan"],
 )
 
+# The FIRST automated execution of resolver tier 2: an extracted, packaged
+# toolchain must compile and run a program that imports a vendored package,
+# with no environment variable set and from an unrelated directory. Needs
+# the compiler and the runtime archive (needs_compiler defaults True),
+# scripts/package_toolchain.sh and scripts/check_stdlib_coverage.sh, and the
+# stdlib it packages. No self-test target: release-package-probe has no
+# make gate that passes --self-test.
+goo_script_probe(
+    name = "release_package_probe",
+    script = "//:scripts/release_package_probe.sh",
+    data = [
+        "//:probe_scripts",
+        "//goostd:files",
+    ],
+)
+
 # NOT DECLARED HERE. 12 of the 29 script gates are not one of the targets
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:

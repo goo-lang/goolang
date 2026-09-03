@@ -35,8 +35,13 @@ else
 	mkdir -p "$OUT"
 fi
 
-COMPILER="$ROOT/bin/goo"
-RUNTIME="$ROOT/lib/libgoo_runtime.a"
+# The Bazel probe passes the compiler and the archive it built; make and a
+# person get the tree's own. Absolute, because the copies below run from
+# wherever the caller stands.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
+RUNTIME="${GOO_RUNTIME:-$ROOT/lib/libgoo_runtime.a}"
+case "$COMPILER" in /*) ;; *) COMPILER="$PWD/$COMPILER" ;; esac
+case "$RUNTIME" in /*) ;; *) RUNTIME="$PWD/$RUNTIME" ;; esac
 for f in "$COMPILER" "$RUNTIME"; do
 	[ -f "$f" ] || { echo "package_toolchain: missing $f (run make first)" >&2; exit 1; }
 done
