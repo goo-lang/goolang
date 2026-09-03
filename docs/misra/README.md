@@ -325,7 +325,7 @@ The essential type model. Real value, but the largest and least mechanical group
 | Rule 16.7 - A switch-expression shall not have essentially Boolean type | Required | Adopted, clean | - | yes |
 | Rule 17.1 - The features of <stdarg.h> shall not be used | Required | Deviation record (D-07) | 50 | yes |
 | Rule 17.2 - Functions shall not call themselves, either directly or indirectly | Required | Deviation record (D-06) | 805 | yes |
-| Rule 17.3 - A function shall not be declared implicitly | Mandatory | Adopted, clean | 660 | yes |
+| Rule 17.3 - A function shall not be declared implicitly | Mandatory | Adopted, clean | 40 (cppcheck 2.21.1, 2026-09-03; see Known limits) | yes |
 | Rule 17.4 - All exit paths from a function with non-void return type shall have an explicit return statement with an expression | Mandatory | Adopted, enforced by other means | - | no |
 | Rule 17.5 - The function argument corresponding to a parameter declared to have an array type shall have an appropriate number of elements | Advisory | Adopted, enforced by other means | - | no |
 | Rule 17.6 - The declaration of an array parameter shall not contain the static keyword between the [ ] | Mandatory | Adopted, clean | - | yes |
@@ -438,7 +438,16 @@ Read these before trusting any number this tool produces.
   so it reports every call as an implicit declaration. C23 makes a true
   implicit declaration a constraint violation, so a build that passes
   `-std=c23 -Wall -Wextra` cannot contain one. Adding `--library=posix
-  --library=gnu` cut this from 1,666 to 660.
+  --library=gnu` cut this from 1,666 to 660 (2026-08-14 measurement, no
+  cppcheck version recorded at the time). Re-measured 2026-09-03 with
+  cppcheck 2.21.1 on the current `--project=build/compile_commands.json`
+  file list (58 files): 75 without the two `--library` flags, 40 with them.
+  Both 2026-08-14 figures are higher for two compounding reasons: the
+  2026-08-17 quarantine moved most `atomic_*`/`pthread_cond_*` callers out
+  of `src/` into `attic/src/` (the same cause already measured for Rule
+  17.7's pthread-return count, 840 -> 40, above), and the file list itself
+  has since narrowed from a hand-rolled `find src` (69 files today) to
+  `GOO_OBJS` + `COMPILER_SRCS` (58 files, task 15).
 - **Generated code is excluded.** `src/parser/parser.tab.c` and the `parser.y`
   lines its `#line` directives point at produce 1,542 findings, 912 of them
   Rule 20.13. MISRA section 6.8 treats generated code separately.
@@ -458,6 +467,15 @@ Read these before trusting any number this tool produces.
   current `src/` tree only, hence its 40 — see
   `scripts/pthread-return-baseline.txt` for the full explanation and the
   per-file baseline.
+- **Three `src/types/escape_core.c` pairs entered the baseline on
+  2026-09-03 with no code change**: Rule 10.4 (9 -> 13), Rule 10.8 (new, 2)
+  and Rule 12.2 (new, 2), all at the same two lines (`GOO_ASSERT((why &
+  ~ESCAPE_REASON_ALL) == 0)`, present since 2026-08-08). The lines predate
+  the prior 2026-08-14 baseline, so this is a scan/tooling difference since
+  that baseline was taken, not a code regression — see task 15's report
+  (`.superpowers/sdd/2026-09-02-verification-tooling-next-steps/`) for the
+  evidence that rules out the `--project` file-list switch itself as the
+  cause (the same rise already reproduced under the old `find src` list).
 - **Task 24 / 24b decision: `GOO_ASSERT` is ON by default, `GOO_ASSERT_OFF`
   is the kill switch.** First measured 2026-09-02 with 32-way parallel golden
   runs, which read 4.3% over the 2% line (full parallel numbers in the task

@@ -5,9 +5,10 @@
 #include <stdarg.h>
 
 // ANSI color codes for terminal output
+// MISRA 2.5 (2026-09-03): COLOR_BLUE had no caller in this file -- removed
+// rather than baselined, per docs/misra/README.md's fix-backlog policy.
 #define COLOR_RED     "\033[31m"
 #define COLOR_YELLOW  "\033[33m"
-#define COLOR_BLUE    "\033[34m"
 #define COLOR_CYAN    "\033[36m"
 #define COLOR_BOLD    "\033[1m"
 #define COLOR_RESET   "\033[0m"
