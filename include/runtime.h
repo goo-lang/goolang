@@ -1,7 +1,17 @@
 #ifndef RUNTIME_H
 #define RUNTIME_H
 
+// Guarded, not unconditional: the Makefile's global -D_GNU_SOURCE, applied
+// through the forced -include include/xalloc.h prelude, has already pulled
+// in glibc's features.h and set _XOPEN_SOURCE to 800 (a superset of 700)
+// before this line runs in any translation unit that reaches it -- an
+// unconditional #define here only ever redefined it to a lower, already-
+// satisfied value, which is why it warned in every one of the 29 files
+// that included this header. Reviewer-verified (fix round 1): guarding it
+// removes the warning with a byte-identical preprocessed output.
+#ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700  // For ucontext functions
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
