@@ -146,3 +146,20 @@ goo_script_probe(
     script = "//:scripts/goo_test_probe.sh",
     data = ["//examples:test_packages"],
 )
+
+# NOT DECLARED HERE. 16 of the 29 script gates are not one of the targets
+# above, each for a measured reason rather than an assumption, held in
+# docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
+#
+#   8 cannot run in a sandbox at all -- podman_image_probe.sh exits 0 with no
+#     podman, so a sandboxed target would be green while asserting nothing;
+#     repro_build_probe.sh and archive_determinism_probe.sh each rebuild
+#     `git archive HEAD`, and a sandbox has no .git; the far-* gates need NNG
+#     (phase 3c).
+#   5 compile or scan src/** and need ten per-package filegroups first -- a
+#     glob does not cross a package boundary, so there cannot be a single
+#     //:c_sources the way //goostd:files covers the stdlib.
+#
+# Declaring these without their data would give red targets, and tagging
+# them manual would give targets that never run -- both worse than
+# recording the gap here.

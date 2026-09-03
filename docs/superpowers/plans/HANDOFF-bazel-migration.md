@@ -14,6 +14,7 @@
 | 4 probe gates, task 13 (printf targets) | #332 | merged |
 | 4 probe gates, task 14 in part, 6 of 29 | **#333** | **merged** |
 | 4 probe gates, task 14 in part, the four arc_* gates, 10 of 29 | #334 | merged |
+| 4 probe gates, task 14 tail, the last three sandbox-red script gates, 13 of 29 | #TBD | open |
 
 **Parity: 224 gates** as of #331 (was 217). `make verify-core` and
 `bazel test //...` are both green. `bazel test //...` runs 165 tests
@@ -25,30 +26,24 @@ census, generated.bzl and the extracted sources — which together cost about
 
 `docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md`, **the task 14 tail,
 then 15 onward**. Tasks 1–13 and the two added ones (4b, 4c) are done. Task 14
-is a PARTIAL pass — 10 of 29 script gates — and the plan holds the measured
-cause for each of the other 19. WARNING: the 1–5 checkboxes
+is a PARTIAL pass — 13 of 29 script gates — and the plan holds the measured
+cause for each of the other 16. WARNING: the 1–5 checkboxes
 in that file were never ticked, though every artefact is present — do not read
 an empty box there as open work. 6 to 12 are ticked, with evidence.
 
-**Task 13 is done. Next is task 14's remaining three** (`arena_rss_probe`,
-`goo_test_probe`, `dead_package_code_probe`), then 15 (the bespoke EIGHT, up
-from six — the derivation gates classify there, correctly: they are
-hand-written sh_tests), 16–17 (CI, close).
+**Task 13 is done. Next is task 14's tail, the five filegroup gates, or
+move to** task 15 (the bespoke EIGHT, up from six — the derivation gates
+classify there, correctly: they are hand-written sh_tests), 16–17 (CI,
+close).
 
-**Task 14's tail is now three gates.** The four `arc_*` gates are done: `$0`
-and `${BASH_SOURCE[0]}` resolve to a symlink under `tests/probes/`, one
-directory too deep for their old `dirname` fallback, so the fix is `$PWD` —
-already the runfiles root on entry — and `GOO_PROBE_NO_SKIP` turns a missing
-valgrind into a FAIL under Bazel rather than a SKIPPED line nobody reads.
-Three script gates are still green under make and red in a sandbox: one
-reads `tests/examples/` (a second fixture tree), one needs whole test
-packages with sidecars, and one imports `strings` so it needs a GOOROOT the
-macro cannot name. The same cwd resolver tier that unblocked the four
-`arc_*` gates means that last one, `dead_package_code_probe`, most likely
-needs only `//goostd:files` in `data` too — unmeasured. Ten per-package
-filegroups under `src/` would unlock five more — a glob does not cross a
-package boundary, so there cannot be a `//:c_sources`. Eight stay out
-permanently, recorded.
+**Task 14's tail is now the five filegroup gates.** The four `arc_*` gates
+are done: `$0` and `${BASH_SOURCE[0]}` resolve to a symlink under
+`tests/probes/`, one directory too deep for their old `dirname` fallback, so
+the fix is `$PWD` — already the runfiles root on entry — and
+`GOO_PROBE_NO_SKIP` turns a missing valgrind into a FAIL under Bazel rather
+than a SKIPPED line nobody reads. Ten per-package filegroups under `src/`
+would unlock five more — a glob does not cross a package boundary, so there
+cannot be a `//:c_sources`. Eight stay out permanently, recorded.
 
 **Task 13 is done. #332 delivered 136 targets and 100 refusals**, and the
 refusal count is the deliverable there, not a shortfall.

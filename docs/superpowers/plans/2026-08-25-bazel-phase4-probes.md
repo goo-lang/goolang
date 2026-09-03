@@ -164,8 +164,8 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
 
 ### D. The tail
 
-- [~] **14. The script-backed probes.** One `sh_test` each. **10 of 29 operate.**
-      Not ticked: this is a partial pass, and the remaining 19 are recorded in
+- [~] **14. The script-backed probes.** One `sh_test` each. **13 of 29 operate.**
+      Not ticked: this is a partial pass, and the remaining 16 are recorded in
       `tests/probes/BUILD` with a measured cause each rather than declared red
       or tagged `manual` and left never-run.
 
@@ -200,17 +200,20 @@ Seventeen tasks, one logical commit each. Counts are the 2026-08-25 census;
       line is read by nobody, and the Bazel CI job now installs valgrind so
       the four gates exercise their assertions there instead of skipping them.
 
-      **3 remain**: `arena_rss_probe` reads `tests/examples/` (a second
-      fixture tree), `goo_test_probe` needs whole test packages with
-      sidecars, and `dead_package_code_probe` imports `strings` so it needs a
-      `GOOROOT` the macro cannot name — `//goostd:files` is a filegroup
-      `$(rootpath)` refuses to expand. The same cwd resolver tier that
-      unblocked the four `arc_*` gates means `dead_package_code_probe` most
-      likely needs only `//goostd:files` in `data` too — unmeasured.
+      **The last 3 are done, and the measured causes differ from the guesses
+      above.** `arena_rss_probe` read `$ROOT/examples/` through the same
+      too-deep `$0` root as the four `arc_*` gates — the "second fixture
+      tree" reading was wrong; `tests/examples/` holds three unrelated C
+      demos, and the fix is the same `$PWD` fallback. `goo_test_probe`
+      needed its two packages with sidecars in `data`, a writable work
+      directory in place of `build/`, and `GOO_RUNTIME` made absolute across
+      its `cd` into the package, the same way `COMPILER` already was.
+      `dead_package_code_probe` needed only `//goostd:files` in `data` — the
+      "needs a `GOOROOT`" reading was wrong; the cwd resolver tier that
+      unblocked the four `arc_*` gates covered it too.
 
-      *Next:* the 3 remaining sandbox failures are the cheapest remaining
-      work, one data list each. The 10 per-package filegroups unlock 5 more.
-      The 8 stay out.
+      *Next:* the 5 gates that compile or scan `src/**` need the 10
+      per-package filegroups. The 8 that cannot be sandboxed stay out.
       *Accepts:* all 28 green INSIDE the sandbox. A script reading a path not in `data` is fixed, not run outside the sandbox.
 
 - [ ] **15. The bespoke six.** `arena-free`, `arena-valgrind`, `charlit-reject`, `goostd-resolver`, `hexesc-reject`, `stencil-race-runbook`.
