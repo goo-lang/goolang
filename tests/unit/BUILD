@@ -19,3 +19,8 @@ cc_library(
         "//tests/unit/types:__pkg__",
     ],
 )
+
+# goo_check_probe (task 14) reads this as a FILE, through -I with a shell C
+# compiler, not as a cc_library dep -- the cc_library above serves the unit
+# suites, which link against it instead.
+exports_files(["goo_check.h"])

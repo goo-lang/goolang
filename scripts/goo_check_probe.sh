@@ -23,7 +23,14 @@
 set -u
 
 PROBE="goo-check-probe"
-ROOT="${GOO_CHECK_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+# A Bazel sh_test starts with $PWD already AT the runfiles root, but $0
+# resolves to <runfiles>/_main/tests/probes/goo_check_probe.sh -- a symlink
+# one directory too deep for the old dirname-based fallback to find its way
+# back to the root (measured: HDR_DIR doubled to ".../tests/tests/unit" and
+# the probe reported "goo_check.h does not exist"). git rev-parse fails in
+# the sandbox (no .git), so the fallback is $PWD itself, which IS the
+# runfiles root there and the repo root here.
+ROOT="${GOO_CHECK_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 HDR_DIR="${GOO_CHECK_HDR_DIR:-$ROOT/tests/unit}"
 # The Makefile passes CC_PROBE="$(CC)", which is "$(CCACHE) gcc" locally: TWO
 # WORDS. It is left unquoted at the call site below so the shell splits it,

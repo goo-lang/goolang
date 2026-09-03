@@ -40,6 +40,11 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# The two C-fixture probes (task 14) read this as a FILE, through -I, not as
+# a cc_library dep -- they compile throwaway fixtures against it with a bare
+# shell compiler, not with Bazel's own C++ rules.
+exports_files(["goo_assert.h"])
+
 # ---------------------------------------------------------------------------
 # Leaves
 # ---------------------------------------------------------------------------

@@ -121,7 +121,7 @@ def goo_reject_probe(name, src, stderr_contains, gooflags = None,
 
 
 def goo_script_probe(name, script, data = [], size = "medium", tags = [],
-                     needs_compiler = True):
+                     needs_compiler = True, needs_cc = False, args = []):
     """Run one of the Makefile's script-backed probe gates under Bazel.
 
     Task 14. These 29 gates are whole shell scripts, not fixture declarations,
@@ -134,6 +134,20 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
     resolver's working-directory tier, which finds ./goostd in the runfiles
     root. Scripts that touch no compiler pass needs_compiler = False and take
     neither.
+
+    needs_cc = True is a SEPARATE compiler: three gates compile small C
+    fixtures with the compiler the Makefile would use
+    (`CC_PROBE="$(CC)"`, Makefile:4633). `$(CC)` is a Make variable that only
+    resolves with the cc toolchain attached, and it IS Bazel's own C
+    compiler -- `/usr/bin/gcc` here, `gcc-14` on CI through the same
+    `--repo_env` .github/workflows/bazel.yml already passes. `-std=c23`
+    matches the recipes' `CSTD_PROBE`. `$(CC_FLAGS)` is NOT defined for
+    `sh_test` (measured) and must not be used.
+
+    args is passed straight through to sh_test. The make gates for
+    goo_check and goo_testcase run their script TWICE, the second time with
+    --self-test, and the self-test is the teeth -- so it gets a target of
+    its own rather than being folded into the first run.
 
     GOO_PROBE_NO_SKIP is set for every probe, with or without a compiler. A
     script that cannot find its tool (valgrind, for instance) prints SKIPPED
@@ -158,11 +172,19 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
         # script wants which without auditing 597 files.
         probe_data += [_COMPILER, _ARCHIVE, "//examples:all_fixtures"]
 
+    toolchains = []
+    if needs_cc:
+        env["CC_PROBE"] = "$(CC)"
+        env["CSTD_PROBE"] = "-std=c23"
+        toolchains = ["@bazel_tools//tools/cpp:current_cc_toolchain"]
+
     sh_test(
         name = name,
         srcs = [script],
+        args = args,
         data = probe_data,
         env = env,
         size = size,
         tags = tags,
+        toolchains = toolchains,
     )
