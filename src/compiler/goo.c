@@ -75,6 +75,9 @@ typedef struct CompilerOptions {
     bool emit_testmain;
     char** link_libs;
     int link_lib_count;
+    char* linker;         // --linker: overrides codegen's platform default
+    char** link_flags;    // --link-flag: extra flags for that linker
+    int link_flag_count;
     char** run_args;      // P5.3: program args after `--` (borrowed from main's argv)
     int run_arg_count;
     bool delete_output_after_run;  // P5.3: `goo run` temp binary cleanup
@@ -153,6 +156,13 @@ int main(int argc, char* argv[]) {
         }
         free(options->link_libs);
     }
+    free(options->linker);
+    if (options->link_flags) {
+        for (int i = 0; i < options->link_flag_count; i++) {
+            free(options->link_flags[i]);
+        }
+        free(options->link_flags);
+    }
     free(options);
 
     // error_cleanup(); // TODO: Update to use new error API
@@ -178,6 +188,8 @@ static void print_usage(FILE* out, const char* program_name) {
     fprintf(out, "  -v, --verbose            Verbose output\n");
     fprintf(out, "  -r, --run                Run the program after compilation (exit code = program's)\n");
     fprintf(out, "  -l, --link <lib>         Link with library\n");
+    fprintf(out, "  --linker <prog>          Program that links the executable (default: gcc)\n");
+    fprintf(out, "  --link-flag <flag>       Extra flag for that linker (repeatable)\n");
     fprintf(out, "  --emit-llvm              Emit LLVM IR instead of executable\n");
     fprintf(out, "  --emit-ast               Emit AST (for debugging)\n");
     fprintf(out, "  --emit-tokens            Emit tokens (for debugging)\n");
@@ -253,6 +265,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         {"verbose", no_argument, 0, 'v'},
         {"run", no_argument, 0, 'r'},
         {"link", required_argument, 0, 'l'},
+        {"linker", required_argument, 0, 0},
+        {"link-flag", required_argument, 0, 0},
         {"emit-llvm", no_argument, 0, 0},
         {"emit-ast", no_argument, 0, 0},
         {"emit-tokens", no_argument, 0, 0},
@@ -280,6 +294,30 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                     options->dump_packages = true;
                 } else if (strcmp(long_options[option_index].name, "emit-testmain") == 0) {
                     options->emit_testmain = true;
+                } else if (strcmp(long_options[option_index].name, "linker") == 0) {
+                    // An empty value would become an empty argv[0] and fail
+                    // inside execvp. Refuse it here, where the message can
+                    // name the option.
+                    if (optarg[0] == '\0') {
+                        fprintf(stderr, "Error: --linker needs a value\n");
+                        free(options);
+                        return NULL;
+                    }
+                    free(options->linker);   // a repeated --linker: last wins
+                    options->linker = xstrdup(optarg);
+                } else if (strcmp(long_options[option_index].name, "link-flag") == 0) {
+                    // An empty value survives all the way to execvp as an
+                    // empty argv element, which the linker reports as an
+                    // unreadable file — and which the echoed link command
+                    // cannot show, because joining on spaces hides it.
+                    if (optarg[0] == '\0') {
+                        fprintf(stderr, "Error: --link-flag needs a value\n");
+                        free(options);
+                        return NULL;
+                    }
+                    options->link_flags = xrealloc(options->link_flags,
+                                                  (options->link_flag_count + 1) * sizeof(char*));
+                    options->link_flags[options->link_flag_count++] = xstrdup(optarg);
                 } else if (strcmp(long_options[option_index].name, "version") == 0) {
                     print_version();
                     free(options);
@@ -314,7 +352,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 break;
                 
             case 'l':
-                options->link_libs = realloc(options->link_libs, 
+                options->link_libs = xrealloc(options->link_libs, 
                                            (options->link_lib_count + 1) * sizeof(char*));
                 options->link_libs[options->link_lib_count++] = xstrdup(optarg);
                 break;
@@ -1431,6 +1469,9 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // them without changing that function's signature.
     codegen->link_libs = (const char**)options->link_libs;
     codegen->link_lib_count = (size_t)options->link_lib_count;
+    codegen->linker = options->linker;
+    codegen->link_flags = (const char**)options->link_flags;
+    codegen->link_flag_count = (size_t)options->link_flag_count;
 
     // stdlib Phase 0 (Task 4): if main imports non-shim packages, resolve+parse
     // them (topological, leaves-first) and compile each INTO THIS module before

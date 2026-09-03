@@ -79,10 +79,10 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 
 # Source files (lexer + parser + AST + types + error handling + test framework)
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
-PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
+PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_state.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
-TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
-CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c
+TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
+CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/codegen_context.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c
 # Only import_resolver.c from package/ is part of the compiler. The rest of
@@ -116,7 +116,7 @@ OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
 # with its header included nowhere. Channels, select and close are probe-gated
 # and work, so their type checking happens on another path. Kept in TYPES_SRCS
 # for the standalone test targets.
-GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/lane_ownership.c
+GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/lane_ownership.c
 # P5.6 quarantine, extended 2026-08-08 by the coverage measurement.
 # ergonomic_errors.c took ZERO branches across all 810 fixtures, and a static
 # check found no caller anywhere in src/ for any of its entry points. It depends
@@ -1585,6 +1585,22 @@ link-libs-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -q -- "-ltotallybogus_xyz" build/link_libs_bogus.err; then echo "link-libs-probe: FAIL (echoed link command missing -ltotallybogus_xyz)"; cat build/link_libs_bogus.err; exit 1; fi; \
 	  if [ -e build/link_libs_bogus.out.o ]; then echo "link-libs-probe: FAIL (failed link left stray .o behind)"; exit 1; fi; \
 	  echo "link-libs-probe: PASS (positive + negative)"
+
+# --linker/--link-flag passthrough. Sibling of link-libs-probe above, and the
+# same shape: a positive case plus a value that MUST break the link, because a
+# discarded flag still satisfies "the build works". Kept as a script, not an
+# inline recipe, because Bazel phase 4 consumes a script directly (task 14,
+# one sh_test each) and is extracting printf recipes, not adding them.
+.PHONY: link-flags-probe link-flags-selftest
+link-flags-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/link_flags_probe.sh
+
+# Wired into VERIFY_ALL_DEPS, unlike some siblings. probe-teeth-probe checks
+# only that a --self-test EXISTS; running it is a separate claim, and
+# repro_build_probe.sh --self-test was found unable to execute on CI at all
+# while reading as present. Four extra hello-world compiles.
+link-flags-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/link_flags_probe.sh --self-test
 
 # P5.1: `goo -r` must propagate the child program's exit code as goo's own
 # exit code. Pre-fix, compile_file ran the program via system(), discarded
@@ -3197,6 +3213,11 @@ VERIFY_ALL_DEPS := \
     safety-baseline-check \
     doc-claims-probe \
     probe-teeth-probe \
+    census-current-probe \
+    targets-current-probe \
+    targets-current-selftest \
+    source-drift-probe \
+    source-drift-selftest \
     assert-corpus-selftest \
     golden-selftest \
     goo-check-probe \
@@ -3212,6 +3233,8 @@ VERIFY_ALL_DEPS := \
     comptime-probe \
     m10-probe \
     exit-code-probe \
+    link-flags-probe \
+    link-flags-selftest \
     switch-probe \
     methods-probe \
     pointer-write-probe \
@@ -3389,6 +3412,7 @@ VERIFY_ALL_DEPS := \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
+	test-golden-poison \
     test-golden-reject \
     spmd-bench-probe \
     stencil-race-runbook-probe \
@@ -6466,6 +6490,41 @@ doc-claims-probe:
 .PHONY: probe-teeth-probe
 probe-teeth-probe:
 	@bash scripts/probe_teeth_probe.sh
+
+# Two DERIVATION gates. Each regenerates a committed file and diffs, which is
+# what makes the file a derivation rather than a snapshot.
+#
+# Both live here, in make, and NOT only in bazel. census_current is tagged
+# `manual` in tests/probes/BUILD, so `bazel test //...` skips it (64 of 81
+# executed) -- it had no Makefile target and no workflow either, so it had
+# never run once. It caught a stale census on its first execution.
+#
+# Neither needs bazel: probe_census.sh calls parity.sh --list-make-gates, which
+# returns before list_bazel_tests. Verified with BAZEL=/nonexistent and with
+# bazel off PATH, both identical. The Makefile stays bazel-free.
+.PHONY: census-current-probe targets-current-probe targets-current-selftest
+census-current-probe:
+	@bash tests/probes/census_current.sh
+
+targets-current-probe:
+	@bash tests/probes/targets_current.sh
+
+targets-current-selftest:
+	@bash tests/probes/targets_current.sh --self-test
+
+# The THIRD derivation gate, and the only one whose derivation is expensive.
+# The 69 printf gates write their .goo sources inside their own recipes; those
+# sources are extracted to tests/probes/src/ so Bazel can reach them, and two
+# copies of a program drift. Extraction runs the real recipes (about 20 s) and
+# parses nothing -- two gates write their source with a backslash-continued
+# printf spanning 30 lines, which any line-based extraction truncates in
+# silence. The self-test costs three more extractions.
+.PHONY: source-drift-probe source-drift-selftest
+source-drift-probe:
+	@bash tools/probe_source_drift.sh
+
+source-drift-selftest:
+	@bash tools/probe_source_drift.sh --self-test
 
 # Scan the C compiler/runtime source against the adopted MISRA C:2012 subset and
 # fail on any violation not in scripts/misra-baseline.txt. Local-only gate (see

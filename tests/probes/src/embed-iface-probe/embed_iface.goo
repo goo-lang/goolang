@@ -1,0 +1,9 @@
+package main
+import "fmt"
+type I interface { M() int }
+type C struct{}
+func (c C) M() int { return 7 }
+type S struct {
+	I
+}
+func main(){ s := S{I: C{}}; fmt.Println(s.M()); var i I = s; fmt.Println(i.M()) }

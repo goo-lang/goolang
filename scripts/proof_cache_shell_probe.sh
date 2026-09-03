@@ -24,11 +24,18 @@
 set -u
 
 PROBE="proof-cache-shell-probe"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# A Bazel sh_test starts in the runfiles root, and $0 there is a symlink
+# under tests/probes/ -- one level too deep for the old dirname-based ROOT.
+# git rev-parse names the real toplevel under make and by hand; it fails in
+# the sandbox (no .git), where pwd is already the runfiles root.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-CC_BIN="${CC:-gcc}"
+# CC_PROBE first: the Bazel macro passes it from the toolchain it selected.
+# CC is what the make recipe leaves in the environment ($(CC), Makefile:4633).
+# A bare gcc is the last resort, for a person running this by hand.
+CC_BIN="${CC_PROBE:-${CC:-gcc}}"
 
 cat > "$TMP/harness.c" <<'EOF'
 #include "proof_generation.h"

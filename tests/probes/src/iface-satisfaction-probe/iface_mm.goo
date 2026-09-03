@@ -1,0 +1,6 @@
+package main
+type Shape interface { Area() int }
+type Bad struct { x int }
+func (b Bad) Area() string { return "n" }
+func main() { var c Shape = Bad{x: 1}
+ _ = c }

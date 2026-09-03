@@ -1,0 +1,9 @@
+package main
+type I interface { M() int }
+type E struct { x int }
+func (e *E) M() int { return e.x }
+type S struct {
+	E
+}
+func main() { var i I = S{E: E{x: 1}}
+ _ = i }

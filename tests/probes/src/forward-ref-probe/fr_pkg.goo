@@ -1,0 +1,4 @@
+package main
+import ("fmt"
+"fwdref")
+func main() { fmt.Println(fwdref.Triple(14)) }

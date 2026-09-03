@@ -329,29 +329,9 @@ void type_checker_init_builtins(TypeChecker* checker) {
     type_checker_add_builtin_functions(checker);
 }
 
-Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
-    if (!checker || !checker->builtin_types || kind >= TYPE_COUNT) {
-        return NULL;
-    }
-    return checker->builtin_types[kind];
-}
-
-// v1 `error` = `?*int8` (a nullable pointer). Single source of truth so the
-// `error` keyword, the n,err destructure, and errors.New stay in lockstep —
-// Phase 6's real error struct / `.Error()` changes only this.
-Type* type_checker_error_type(TypeChecker* checker) {
-    Type* t = type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
-    // Phase 6 Task 3: tag the nullable so `.Error()` dispatch (type checker +
-    // codegen) can recognize "this is the error type" without re-deriving its
-    // shape. type_nullable() always auto-derives a name (e.g. "?*int8" here),
-    // so it is never NULL at this point — overwrite it unconditionally rather
-    // than guarding on !t->name (which would never fire).
-    if (t) {
-        free(t->name);
-        t->name = xstrdup("error");
-    }
-    return t;
-}
+// type_checker_get_builtin and type_checker_error_type moved to tc_context.c.
+// They are accessors, and shim_signatures.c reached in here for both, which
+// was one of the four edges closing this package's seven-file cycle.
 
 // Go 1.18+ predeclared `any` = the empty interface (`interface{}`) — exactly
 // the Type the AST_INTERFACE_TYPE case below builds for a bodyless
@@ -614,44 +594,10 @@ void scope_pop(TypeChecker* checker) {
     scope_free(old_scope);
 }
 
-Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
-    if (!checker || !checker->current_scope) return NULL;
-    return scope_lookup_variable(checker->current_scope, name);
-}
+// type_checker_lookup_variable and type_checker_lookup_method moved to
+// tc_context.c. lane_ownership.c and ownership_checker.c reached in here for
+// the first, and embedding.c for the second.
 
-// P4.3 (packages-B): see the doc comment on the declaration (types.h) for the
-// full rationale. Dispatch is decided by the receiver type's OWNER, never by
-// which scope happens to resolve the bare mangled name first (review-fix,
-// CRITICAL): a main-package method with the same receiver-type name AND
-// method name ("Point__Scale") used to hijack cross-package dispatch because
-// the bare current-scope lookup ran first.
-//
-//   - owner set, owner != current_package (a cross-package receiver): the
-//     owning package's exports are the ONLY legitimate source — Go's rule
-//     is that methods on a package's type can only be defined in that
-//     package, so NO fallback to the current scope exists (a bare hit there
-//     is by construction a different, same-named type's method, or an
-//     out-of-package method declaration Go itself would reject). Gated on
-//     the METHOD name being exported (see the declaration comment for why
-//     the mangled name's own leading case is not sufficient).
-//   - owner == current_package (a package's own body checking/codegen'ing
-//     calls on its own types): the method Variable lives in the still-pushed
-//     package scope under the bare name — exports aren't even populated
-//     until the whole body has been checked (package_export_filter runs
-//     last) — so the current-scope lookup is the correct source, and
-//     unexported methods are correctly callable intra-package.
-//   - owner NULL (a main-declared or anonymous/builtin receiver): current
-//     scope, today's behavior.
-Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
-                                      const char* method_name, const char* mangled_name) {
-    if (!checker || !mangled_name) return NULL;
-    struct Package* owner = type_receiver_owner_package(recv_type);
-    if (owner && owner != checker->current_package) {
-        if (!method_name || method_name[0] < 'A' || method_name[0] > 'Z') return NULL;
-        return scope_lookup_variable(owner->exports, mangled_name);
-    }
-    return type_checker_lookup_variable(checker, mangled_name);
-}
 
 // Function generics Task 3: active-type-param stack. Pushed by
 // declare_function_signature and type_check_function_decl before resolving a

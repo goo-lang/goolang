@@ -1,0 +1,5 @@
+package main
+import "fmt"
+func main() { fmt.Println(helper(20)) }
+func helper(x int) int { return leaf(x) + 1 }
+func leaf(x int) int { return x * 2 }

@@ -34,3 +34,102 @@ build --copt=-Wall
 build --copt=-Wextra
 
 test --test_output=errors
+
+# ---------------------------------------------------------------------------
+# Header layering.
+#
+# Two different mechanisms, and only one of them needs this config.
+#
+# Bazel's INPUT SANDBOX already refuses a header that no transitive dep
+# supplies -- it is simply not in the sandbox, and the compile dies with
+# "file not found". That works under gcc, needs no feature, and arrives free
+# with strict_hdrs = True (tools/defs.bzl).
+#
+# LAYERING_CHECK catches the other half: a header that IS present through a
+# transitive dep but is not a DIRECT one. Measured 2026-08-30 on
+# terminating_stmt.c reaching for ast.h, which types_h supplies transitively:
+# exit 0 without the feature, exit 1 with it, naming the module.
+#
+# CLANG ONLY, also measured. The gcc toolchain does not declare the feature and
+# Bazel drops the request silently, so the deliberate defect in
+# //testing/layering BUILDS clean under the default config. An exit 0 from
+# --features=layering_check on gcc is not evidence of anything.
+#
+# Scope: only targets with strict_hdrs = True are covered. Every other target
+# still takes //include:headers, which exports all 79 headers and makes the
+# check vacuous for it. tools/verify_layering.sh reports the covered count.
+# ---------------------------------------------------------------------------
+build:layering --config=clang
+build:layering --features=layering_check
+
+# ---------------------------------------------------------------------------
+# Sanitizers. See docs/SANITIZERS.md for the recorded red/green result of each
+# config, and tools/verify_sanitizers.sh for the check that produces it.
+#
+# CLANG, not the gcc this file pins by default. Measured 2026-08-30:
+# /usr/bin/gcc on this machine cannot link -fsanitize=address at all --
+# "cannot find /usr/lib64/libasan.so.8.0.0". Clang has the runtimes.
+#
+# src/runtime IS EXCLUDED, and the exclusion is load-bearing.
+# An instrumented libgoo_runtime.a would fail the link that a compiled Goo
+# program performs, with undefined __asan_* symbols, and all 76 probe tests
+# would go red for a reason that is not a defect. The compiler itself IS
+# instrumented, which is the target worth having: 570-plus allocation sites.
+#
+# The linker half of that gap is CLOSED: src/codegen/codegen.c no longer
+# hardcodes `gcc`, and goo --linker=clang --link-flag=-fsanitize=thread links
+# the tsan runtime (scripts/link_flags_probe.sh gates it, docs/SANITIZERS.md
+# records the measurement). Lifting the exclusion still needs a select() here
+# and the two flags threaded through the probe runner. Do not lift it without
+# both, or the 76 tests go red again.
+#
+# THE EXCLUSION IS IN src/runtime/BUILD, not here, as NO_SANITIZE_COPTS on
+# each target. --per_file_copt was tried first and abandoned: its regex is
+# matched against a string this build does not document, and three plausible
+# patterns silently instrumented src/runtime anyway while a fourth
+# over-matched src/codegen/runtime_integration.c. A per-target copt is
+# checkable by reading the BUILD file, and `-fno-sanitize=all` comes after the
+# global flag so it wins.
+# ---------------------------------------------------------------------------
+build:san-base --repo_env=CC=/usr/bin/clang
+build:san-base --copt=-fno-omit-frame-pointer
+build:san-base --copt=-g
+build:san-base --strip=never
+test:san-base --test_output=errors
+# poison_test reads freed memory on purpose; asan reports exactly that.
+test:san-base --test_tag_filters=-nosan
+
+build:asan --config=san-base
+build:asan --copt=-fsanitize=address
+build:asan --linkopt=-fsanitize=address
+
+# LEAK DETECTION IS OFF, and the number behind that decision is recorded here.
+# Measured 2026-08-30, compiling examples/hello_world.goo with an asan-built
+# compiler: "1928 byte(s) leaked in 38 allocation(s)", with ZERO frames in
+# LLVM -- every one is goolang's own (type_checker.c, goo.c, types.c,
+# ast_constructors.c, parser.y). That is the documented AST-free-leak class,
+# not noise from an uninstrumented dependency.
+#
+# So the leaks are REAL and they are not this gate's job. A leak is not a
+# memory-safety violation: asan is here for use-after-free, buffer overflow
+# and double free, which are. Turning leak detection on today would make all
+# 76 probe tests red for a defect class that already has its own gate
+# (ast-free-leak-probe) and its own baseline. Give leaks a floor of their own
+# before switching this on, or the gate reports the same thing every run.
+test:asan --test_env=ASAN_OPTIONS=detect_leaks=0
+run:asan --run_under="env ASAN_OPTIONS=detect_leaks=0"
+
+build:ubsan --config=san-base
+build:ubsan --copt=-fsanitize=undefined
+build:ubsan --copt=-fno-sanitize-recover=all
+build:ubsan --linkopt=-fsanitize=undefined
+
+# TSan needs every linked object instrumented to avoid false negatives, and
+# src/runtime is excluded above for the linker reason. So this config sees the
+# compiler's own threading only, which today is none: bin/goo is single
+# threaded. Kept as a named config because the runtime's scheduler is where a
+# race would live, and closing the codegen link-flag gap is what would let it
+# cover that. Do not read a green tsan run as evidence about goroutines.
+build:tsan --config=san-base
+build:tsan --copt=-fsanitize=thread
+build:tsan --linkopt=-fsanitize=thread

@@ -17,7 +17,11 @@
 set -u
 
 PROBE="doc-claims-probe"
-ROOT="${DOC_CLAIMS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+# A Bazel sh_test starts in the runfiles root, and $0 there is a symlink
+# under tests/probes/ -- one level too deep for the old dirname-based ROOT.
+# git rev-parse names the real toplevel under make and by hand; it fails in
+# the sandbox (no .git), where pwd is already the runfiles root.
+ROOT="${DOC_CLAIMS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 fails=0
 note() { echo "    $*"; }
 
@@ -101,7 +105,11 @@ else
 		if printf '%s' "$PKGS" | tr ' ' '\n' | grep -q "^${name}:"; then
 			shipped=$((shipped+1)); continue
 		fi
-		if grep -rqil 'fixture' "$d" --include='*.go' --include='*.goo' 2>/dev/null; then
+		# -R, not -r: under Bazel "$d" is a real directory of SYMLINKED
+		# files (a sh_test's data arrives as a runfiles tree), and plain
+		# -r does not follow a symlink found while recursing, so every
+		# package read as unclassified until this was measured and fixed.
+		if grep -Rqil 'fixture' "$d" --include='*.go' --include='*.goo' 2>/dev/null; then
 			fixture=$((fixture+1)); continue
 		fi
 		bad "goostd/$name is neither in GOOSTD_PKG_DIRS nor self-declared a fixture"
@@ -132,10 +140,12 @@ fi
 # one goo_exe_dir() helper as the PREREQUISITE for any non-Linux platform,
 # because the platform ladder would otherwise be written twice. A third copy
 # makes that prerequisite quietly bigger than the ADR says.
-sites=$(grep -rl '/proc/self/exe' "$ROOT/src" --include='*.c' 2>/dev/null | wc -l)
+# -R, same reason as the fixture scan above: $ROOT/src is a directory of
+# symlinks under Bazel, and -r does not follow one found while recursing.
+sites=$(grep -Rl '/proc/self/exe' "$ROOT/src" --include='*.c' 2>/dev/null | wc -l)
 if [ "$sites" -ne 2 ]; then
 	bad "/proc/self/exe appears in $sites files; ADR 0006 documents 2"
-	note "$(grep -rl '/proc/self/exe' "$ROOT/src" --include='*.c' 2>/dev/null | tr '\n' ' ')"
+	note "$(grep -Rl '/proc/self/exe' "$ROOT/src" --include='*.c' 2>/dev/null | tr '\n' ' ')"
 else
 	note "/proc/self/exe: 2 sites, as documented"
 fi

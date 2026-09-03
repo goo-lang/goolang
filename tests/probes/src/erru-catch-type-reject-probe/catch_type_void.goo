@@ -1,0 +1,6 @@
+package main
+import "fmt"
+func f(b bool) !int { if b { return error("x") }
+ return 1 }
+func main() { x := f(true) catch e { fmt.Println(e) }
+ fmt.Println(x) }

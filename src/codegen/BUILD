@@ -6,11 +6,57 @@ load("//tools:defs.bzl", "goo_cc_library")
 # All 15 reach LLVM: 14 include codegen.h or codegen_cfctx.h directly, and
 # value_scope.c reaches it through include/value_scope.h. That is the whole
 # LLVM surface of the compiler apart from src/compiler/goo.c.
+# The two helpers that were closing cycles. See codegen_context.c's header for
+# why these two and not the other 29 that codegen.c exports.
+#
+# Measured with nm, 2026-08-30: cfctx.c reached into codegen.c for exactly
+# codegen_create_block, and runtime_integration.c for exactly codegen_error.
+# Moving the pair frees both files and takes the cycle from 14 to 12.
+goo_cc_library(
+    name = "codegen_context",
+    srcs = ["codegen_context.c"],
+    deps = [
+        "//include:codegen_h",
+        "@llvm//:llvm_c",
+    ],
+)
+
+# Already a leaf before this change, with no outgoing edge inside the package.
+# The coarse target was the only thing hiding that. No source change.
+goo_cc_library(
+    name = "type_mapping",
+    srcs = ["type_mapping.c"],
+    deps = [
+        "//include:codegen_h",
+        "@llvm//:llvm_c",
+    ],
+)
+
+goo_cc_library(
+    name = "cfctx",
+    srcs = ["cfctx.c"],
+    deps = [
+        ":codegen_context",
+        "//include:codegen_h",
+        "@llvm//:llvm_c",
+    ],
+)
+
+goo_cc_library(
+    name = "runtime_integration",
+    srcs = ["runtime_integration.c"],
+    deps = [
+        ":codegen_context",
+        "//include:codegen_h",
+        "//include:runtime_h",
+        "@llvm//:llvm_c",
+    ],
+)
+
 goo_cc_library(
     name = "codegen",
     srcs = [
         "call_codegen.c",
-        "cfctx.c",
         "codegen.c",
         "composite_codegen.c",
         "error_union_codegen.c",
@@ -20,13 +66,23 @@ goo_cc_library(
         "lowlevel_codegen.c",
         "monomorphize.c",
         "nullable_codegen.c",
-        "runtime_integration.c",
         "statement_codegen.c",
-        "type_mapping.c",
         "value_scope.c",
     ],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/compiler:__pkg__"],
     deps = [
+        ":cfctx",
+        ":codegen_context",
+        ":runtime_integration",
+        ":type_mapping",
+        "//include:block_escape_h",
+        "//include:codegen_h",
+        "//include:comptime_h",
+        "//include:embedding_h",
+        "//include:param_escape_h",
+        "//include:release_decision_h",
+        "//include:runtime_h",
+        "//include:types_h",
         "//src/ast",
         "//src/comptime",
         "//src/errors",
@@ -34,4 +90,17 @@ goo_cc_library(
         "//src/types:frontend",
         "@llvm//:llvm_c",
     ],
+)
+
+# The src-scanning probe gates (task 14) read these as FILES: alloc_doors
+# greps every .c and .h for a raw strdup, doc_claims counts /proc/self/exe
+# sites, and two others compile a named handful with a shell C compiler.
+# A glob does not cross a package boundary, so each package names its own.
+# allow_empty: most of these ten packages hold only .c files at top level --
+# their headers live in include/ -- so the "*.h" half of the pattern matches
+# nothing, and the default empty-glob error would otherwise block the build.
+filegroup(
+    name = "probe_sources",
+    srcs = glob(["*.c", "*.h"], allow_empty = True),
+    visibility = ["//tests/probes:__pkg__"],
 )

@@ -152,6 +152,12 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->link_libs = NULL;
     codegen->link_lib_count = 0;
 
+    // Driver overwrites these from --linker/--link-flag right after
+    // codegen_new, the same way it does link_libs above.
+    codegen->linker = NULL;
+    codegen->link_flags = NULL;
+    codegen->link_flag_count = 0;
+
     // WebAssembly configuration
     codegen->wasm_configured = 0;
     codegen->is_wasm_target = 0;
@@ -540,19 +546,8 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
 }
 
 // Error reporting
-void codegen_error(CodeGenerator* codegen, Position pos, const char* format, ...) {
-    if (!codegen) return;
-    
-    fprintf(stderr, "Error at %s:%d:%d: ", pos.filename ? pos.filename : "<unknown>", pos.line, pos.column);
-    
-    va_list args;
-    va_start(args, format);
-    vfprintf(stderr, format, args);
-    va_end(args);
-    
-    fprintf(stderr, "\n");
-    codegen->error_count++;
-}
+// codegen_error moved to codegen_context.c. runtime_integration.c reached in
+// here for it, and that was one of two edges closing this package's cycle.
 
 void codegen_warning(CodeGenerator* codegen, Position pos, const char* format, ...) {
     if (!codegen) return;
@@ -1527,11 +1522,8 @@ LLVMValueRef codegen_create_entry_alloca(CodeGenerator* codegen, LLVMTypeRef typ
     return alloca;
 }
 
-LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name) {
-    if (!codegen || !codegen->current_function) return NULL;
-    
-    return LLVMAppendBasicBlockInContext(codegen->context, codegen->current_function, name);
-}
+// codegen_create_block moved to codegen_context.c. cfctx.c reached in here for
+// it, and that was the other edge.
 
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block) {
     if (!codegen || !block) return;
@@ -1808,6 +1800,13 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 #else
     const char* linker_name = "gcc"; // Linux and generic Unix
 #endif
+    // --linker overrides the platform default. An instrumented
+    // libgoo_runtime.a must be linked by the driver that owns the sanitizer
+    // runtimes, and the gcc above cannot link them at all on some hosts
+    // (.bazelrc records the measurement).
+    if (codegen->linker) {
+        linker_name = codegen->linker;
+    }
 
 #ifdef __APPLE__
     char* link_triple = codegen->target_triple;
@@ -1818,12 +1817,15 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     }
 #endif
 
-    // argv layout: <linker> [-target <triple> | -no-pie] -o <exe> <obj>
-    // <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed non-NULL slots
-    // covers the larger (__APPLE__) branch with room to spare on Linux;
-    // + one slot per user lib + the NULL terminator.
+    // argv layout: <linker> [-target <triple> | -no-pie] [<link-flag>]*
+    // -o <exe> <obj> <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed
+    // non-NULL slots covers the larger (__APPLE__) branch with room to spare
+    // on Linux; + one slot per user lib, + one per --link-flag, + the NULL
+    // terminator. Both counts must be added here: this sizes the execvp
+    // argv, so an omission is an overflow rather than a dropped flag.
     size_t fixed_slots = 9;
-    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count + 1;
+    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count
+                    + codegen->link_flag_count + 1;
     char** argv = malloc(max_argv * sizeof(char*));
     char** lib_flags = codegen->link_lib_count
         ? calloc((size_t)codegen->link_lib_count, sizeof(char*))
@@ -1849,6 +1851,12 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // -no-pie: see the ordering/relocation comment preserved below.
     argv[argn++] = "-no-pie";
 #endif
+    // User link flags precede -o, so a later flag beats the default set
+    // above (--link-flag=-pie against -no-pie, for one). These are borrowed
+    // strings, so unlike lib_flags below there is nothing here to free.
+    for (size_t i = 0; i < codegen->link_flag_count; i++) {
+        argv[argn++] = (char*)codegen->link_flags[i];
+    }
     argv[argn++] = "-o";
     argv[argn++] = (char*)filename;
     argv[argn++] = object_filename;

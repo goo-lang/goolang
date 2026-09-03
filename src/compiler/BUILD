@@ -6,7 +6,11 @@ load("//tools:defs.bzl", "goo_cc_library")
 goo_cc_library(
     name = "test_discovery",
     srcs = ["test_discovery.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "//include:import_resolver_h",
+        "//include:test_discovery_h",
+    ],
 )
 
 # NO -DGOO_VERSION here, deliberately. The Makefile sets it target-specifically
@@ -34,9 +38,30 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":test_discovery",
-        "//include:headers",
+        "//include:ast_h",
+        "//include:codegen_h",
+        "//include:error_h",
+        "//include:import_resolver_h",
+        "//include:lexer_h",
+        "//include:parser_h",
         "//include:prelude",
+        "//include:runtime_h",
+        "//include:test_discovery_h",
+        "//include:types_h",
         "//src/codegen",
         "//src/types:frontend",
     ],
+)
+
+# The src-scanning probe gates (task 14) read these as FILES: alloc_doors
+# greps every .c and .h for a raw strdup, doc_claims counts /proc/self/exe
+# sites, and two others compile a named handful with a shell C compiler.
+# A glob does not cross a package boundary, so each package names its own.
+# allow_empty: most of these ten packages hold only .c files at top level --
+# their headers live in include/ -- so the "*.h" half of the pattern matches
+# nothing, and the default empty-glob error would otherwise block the build.
+filegroup(
+    name = "probe_sources",
+    srcs = glob(["*.c", "*.h"], allow_empty = True),
+    visibility = ["//tests/probes:__pkg__"],
 )

@@ -1,0 +1,10 @@
+package main
+import "fmt"
+func i() int { return 42 }
+func w() int64 { return 42 }
+func c() int64 { return 1 + 1 }
+func s() string { return "ok" }
+func n() ?int { return 5 }
+func b() byte { return 65 }
+func divmod(a int, b int) (int, int) { return a / b, a  }
+func main() { fmt.Println(i()); fmt.Println(w()); fmt.Println(c()); fmt.Println(b()) }

@@ -1,0 +1,6 @@
+package main
+type P struct { X int }
+func main(){
+	m := map[string]P{"a": P{X: 1}}
+	m["a"].X = 5
+}

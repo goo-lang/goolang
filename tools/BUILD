@@ -94,3 +94,5 @@ sh_test(
         "no-sandbox",
     ],
 )
+
+exports_files(["gen_probe_targets.py", "run_probe.sh"])

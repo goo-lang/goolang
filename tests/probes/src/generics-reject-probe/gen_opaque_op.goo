@@ -1,0 +1,3 @@
+package main
+func Add[T any](x T) T { return x + 1 }
+func main() {}

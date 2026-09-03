@@ -1,0 +1,9 @@
+package main
+type Any interface {}
+type Shape interface { Area() int }
+type Sortable interface {
+ Len() int
+ Less(i int, j int) bool
+ Swap(i int, j int)
+}
+func main() { var s Shape; _ = s }

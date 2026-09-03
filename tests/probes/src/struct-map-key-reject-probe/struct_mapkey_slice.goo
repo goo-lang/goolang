@@ -1,0 +1,8 @@
+package main
+type SliceKey struct {
+	X []int
+}
+func main(){
+	m := map[SliceKey]int{}
+	_ = m
+}

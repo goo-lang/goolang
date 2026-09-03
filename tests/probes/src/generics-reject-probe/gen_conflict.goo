@@ -1,0 +1,3 @@
+package main
+func Pair[T any](a T, b T) T { return a }
+func main() { _ = Pair(1, "x") }

@@ -73,6 +73,11 @@ static inline void goo_check_expect(int rows) {
 static inline void goo_check_row(int number, const char* description) {
     goo_check_rows++;
     printf("=== Row %d: %s ===\n", number, description);
+    // Flushed for the same reason as the FAIL line below: under Bazel stdout
+    // is a pipe and therefore block-buffered, so a suite that crashes loses
+    // every line still in the buffer -- including the row header that says
+    // WHERE it crashed.
+    fflush(stdout);
 }
 
 // One assertion. Silent when it holds -- 213 gates share one stdout, and a
@@ -84,6 +89,13 @@ static inline void goo_check(bool condition, const char* label) {
     if (!condition) {
         goo_check_failures++;
         printf("  FAIL: %s\n", label);
+        // MEASURED 2026-08-30, and the reason this line exists. Mutating
+        // defer.c so goo_defer_run left len/cap stale made this check fail AND
+        // then made a later push segfault. Bazel reported "Segmentation fault"
+        // with ZERO named checks: stdout is a pipe under a test runner, so the
+        // FAIL line was still in the buffer when the process died. A failure
+        // message that a later crash erases is a failure nobody sees.
+        fflush(stdout);
     }
 }
 

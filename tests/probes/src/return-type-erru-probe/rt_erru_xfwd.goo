@@ -1,0 +1,4 @@
+package main
+func s() !string { return error("x") }
+func f() !int { return s() }
+func main() {}

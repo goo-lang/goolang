@@ -1,0 +1,4 @@
+package main
+import "fmt"
+func int(n int) int { return n + 100 }
+func main(){ fmt.Println(int(5)) }

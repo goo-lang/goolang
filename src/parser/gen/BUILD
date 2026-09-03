@@ -18,6 +18,13 @@ genrule(
     ],
     cmd = "bison -d -o $(location parser.tab.c) $(location //src/parser:parser.y)",
     message = "Running bison on parser.y",
+    # ast_free_leak_probe (task 14) names this genrule's parser.tab.c output
+    # directly in its env, through $(rootpath) -- the two-file
+    # parser_tab_files filegroup below cannot be the target of $(rootpath)
+    # itself, since that expansion requires exactly one file. //src/parser
+    # is kept for the two wrapper targets below, though neither has ever
+    # needed it: they are in the same package as this genrule.
+    visibility = ["//tests/probes:__pkg__", "//src/parser:__pkg__"],
 )
 
 # The generated header, on an include path. parser_actions.c and
@@ -28,7 +35,7 @@ cc_library(
     name = "parser_tab",
     hdrs = ["parser.tab.h"],
     includes = ["."],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/parser:__pkg__"],
 )
 
 # The generated implementation, exposed as a source for //src/parser to
@@ -36,5 +43,14 @@ cc_library(
 filegroup(
     name = "parser_tab_c",
     srcs = ["parser.tab.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//src/parser:__pkg__"],
+)
+
+# ast_free_leak_probe compiles the generated parser with a shell C
+# compiler. Under make the two files sit in src/parser/; under Bazel they
+# are here, and the probe receives the .c path through PARSER_TAB_C.
+filegroup(
+    name = "parser_tab_files",
+    srcs = ["parser.tab.c", "parser.tab.h"],
+    visibility = ["//tests/probes:__pkg__"],
 )

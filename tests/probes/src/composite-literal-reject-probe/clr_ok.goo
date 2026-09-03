@@ -1,0 +1,10 @@
+package main
+import "fmt"
+func main(){
+	native := [1,2,3]
+	xs := []int{4,5,6}
+	ys := []string{"go","lang"}
+	ei := []int{}
+	es := []string{}
+	fmt.Println(native[0], xs[2], ys[1], len(ei), len(es))
+}
