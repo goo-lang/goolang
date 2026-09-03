@@ -167,43 +167,43 @@ goo_script_probe(
 goo_script_probe(
     name = "goo_assert_probe",
     script = "//:scripts/goo_assert_probe.sh",
+    data = ["//include:goo_assert.h"],
     needs_compiler = False,
     needs_cc = True,
-    data = ["//include:goo_assert.h"],
     tags = ["nosan"],
 )
 goo_script_probe(
     name = "goo_check_probe",
     script = "//:scripts/goo_check_probe.sh",
+    data = ["//tests/unit:goo_check.h"],
     needs_compiler = False,
     needs_cc = True,
-    data = ["//tests/unit:goo_check.h"],
     tags = ["nosan"],
 )
 goo_script_probe(
     name = "goo_check_selftest",
     script = "//:scripts/goo_check_probe.sh",
     args = ["--self-test"],
+    data = ["//tests/unit:goo_check.h"],
     needs_compiler = False,
     needs_cc = True,
-    data = ["//tests/unit:goo_check.h"],
     tags = ["nosan"],
 )
 goo_script_probe(
     name = "goo_testcase_probe",
     script = "//:scripts/goo_testcase_probe.sh",
+    data = ["//include:goo_assert.h", "//:scripts/testcase_report.sh"],
     needs_compiler = False,
     needs_cc = True,
-    data = ["//include:goo_assert.h", "//:scripts/testcase_report.sh"],
     tags = ["nosan"],
 )
 goo_script_probe(
     name = "goo_testcase_selftest",
     script = "//:scripts/goo_testcase_probe.sh",
     args = ["--self-test"],
+    data = ["//include:goo_assert.h", "//:scripts/testcase_report.sh"],
     needs_compiler = False,
     needs_cc = True,
-    data = ["//include:goo_assert.h", "//:scripts/testcase_report.sh"],
     tags = ["nosan"],
 )
 

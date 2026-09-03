@@ -23,11 +23,11 @@ set -u
 PROBE="goo-testcase-probe"
 # A Bazel sh_test starts with $PWD already AT the runfiles root, but $0
 # resolves to <runfiles>/_main/tests/probes/goo_testcase_probe.sh -- a symlink
-# one directory too deep for the old dirname-based fallback to find its way
-# back to the root (measured: INC_DIR doubled to ".../tests/include" and the
-# probe reported "goo_assert.h missing"). git rev-parse fails in the sandbox
-# (no .git), so the fallback is $PWD itself, which IS the runfiles root there
-# and the repo root here.
+# one directory too deep for the old dirname-based fallback, so ROOT gained a
+# stray tests/ segment (measured: INC_DIR resolved to ".../tests/include" and
+# the probe reported "goo_assert.h missing"). git rev-parse fails in the
+# sandbox (no .git), so the fallback is $PWD itself, which IS the runfiles
+# root there and the repo root here.
 ROOT="${GOO_TESTCASE_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 INC_DIR="${GOO_TESTCASE_INC:-$ROOT/include}"
 REPORT="${GOO_TESTCASE_REPORT:-$ROOT/scripts/testcase_report.sh}"
