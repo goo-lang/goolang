@@ -127,19 +127,24 @@ goo_script_probe(
     tags = ["nosan"],
 )
 
-# NOT MIGRATED, and each for a measured reason rather than an assumption. All
-# three pass under make; all three fail in a sandbox, and the causes differ:
+# The generated fixture imports "strings", and the compiler's last resolver
+# tier is ./goostd relative to the working directory -- the runfiles root --
+# so the stdlib is DATA here, the same shape as the four arc_* gates above.
+goo_script_probe(
+    name = "dead_package_code_probe",
+    script = "//:scripts/dead_package_code_probe.sh",
+    data = ["//goostd:files"],
+)
+
+# NOT MIGRATED, and each for a measured reason rather than an assumption.
+# goo_test_probe and arena_rss_probe pass under make and fail in a sandbox;
+# the causes differ:
 #
 #   arena_rss_probe            reads tests/examples/, a SECOND fixture tree
 #   goo_test_probe             needs whole test PACKAGES with expected.norm.txt
-#   dead_package_code_probe    imports "strings", so it needs GOOROOT, which
-#                              the macro deliberately does not set. The
-#                              resolver's cwd tier (see above) means
-#                              //goostd:files in data is the likely fix,
-#                              unmeasured.
 #
 # The COMPILER contract is necessary for these and not sufficient. Each wants
 # its own data, and one wants a GOOROOT the macro cannot name because
 # //goostd:files is a filegroup $(rootpath) will not expand. Declaring them
-# without that data would give three red targets, and tagging them manual
-# would give three that never run -- both worse than recording the gap here.
+# without that data would give red targets, and tagging them manual would
+# give targets that never run -- both worse than recording the gap here.
