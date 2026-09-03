@@ -16,7 +16,7 @@
 | 4 probe gates, task 14 in part, the four arc_* gates, 10 of 29 | #334 | merged |
 | 4 probe gates, task 14 in part, the last three sandbox failures and string_literal_header, 14 of 29 | #335 | merged |
 | 4 probe gates, task 14 in part, the three C-fixture gates, 17 of 29 | #336 | merged |
-| 4 probe gates, task 14 in part, the five src/** gates, 22 of 29 | **#337** | **open** |
+| 4 probe gates, task 14 in part, the five src/** gates, 22 of 29 | #337 | merged |
 
 **Parity: 224 gates** as of #331 (was 217). `make verify-core` and
 `bazel test //...` are both green. `bazel test //...` runs 181 tests
