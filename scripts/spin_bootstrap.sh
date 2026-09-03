@@ -29,6 +29,30 @@
 # root -- the self-test points both at scratch copies so it never touches
 # the real third_party/ tarball or build/tools/ tree.
 #
+# SPIN_BOOTSTRAP_IGNORE_PATH="1" skips step 1 (a `spin` already on PATH)
+# outright, forcing SPIN_BUILD_DIR / build-from-tarball instead.
+#
+# INCIDENT, 2026-09-03: a `spin` binary appeared at
+# /home/ddowney/.local/bin/spin partway through an unrelated task's
+# `make verify-core` run -- nothing in this script, or anything that calls
+# it, ever installs there, so this was another process on the same
+# machine, outside this repository's control. The self-test's negative
+# control (a corrupted tarball must exit 3) went red for the WRONG
+# reason: the PATH spin answered "usable" before build_spin ever looked at
+# the tarball, so the corrupted bytes were never consulted. Its
+# build-then-reuse pair went red the same way, one step later: the
+# "positive control" step also took the PATH shortcut instead of building
+# into the scratch dir, so the following "second run must reuse, not
+# rebuild" step found nothing there to reuse and built for real -- read as
+# an unwanted rebuild. Three controls had never once been exercised with a
+# real `spin` on PATH. SPIN_BOOTSTRAP_IGNORE_PATH is what the self-test
+# sets on all three (they share one build directory, so the negative
+# control, the build, and the reuse check must be scrubbed as one unit,
+# not the reuse check alone) -- see self_test() below. Control 4 (an OLD
+# PATH spin must be rejected) is deliberately NOT scrubbed: it is what
+# still exercises the PATH-preference logic itself, against a fake spin on
+# a private PATH it controls.
+#
 # Usage:
 #   scripts/spin_bootstrap.sh              # print a usable spin's path
 #   scripts/spin_bootstrap.sh --self-test  # prove it can go red and green
@@ -40,6 +64,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SPIN_VERSION_PINNED="6.5.2"
 SPIN_VERSION_MIN="6.5"
 SPIN_SHA256="e46a3bd308c4cd213cc466a8aaecfd5cedc02241190f3cb9a1d1b87e5f37080a"
+SPIN_BOOTSTRAP_IGNORE_PATH="${SPIN_BOOTSTRAP_IGNORE_PATH:-0}"
 SPIN_MAKE_CFLAGS="-O2 -DNXT -Wall -pedantic -Wno-error=implicit-function-declaration"
 
 SPIN_TARBALL="${SPIN_TARBALL:-$REPO_ROOT/third_party/spin-$SPIN_VERSION_PINNED.tar.gz}"
@@ -169,7 +194,7 @@ self_test() {
 	fi
 	echo "    ok: the appended byte landed (cmp confirms the copy differs from $real_tarball)"
 
-	SPIN_TARBALL="$W/bad.tar.gz" SPIN_BUILD_DIR="$W/build-neg" "$0" >"$W/neg.out" 2>"$W/neg.err"
+	SPIN_TARBALL="$W/bad.tar.gz" SPIN_BUILD_DIR="$W/build-neg" SPIN_BOOTSTRAP_IGNORE_PATH=1 "$0" >"$W/neg.out" 2>"$W/neg.err"
 	local rc=$?
 	if [ "$rc" -ne 3 ]; then
 		echo "$SELF: FAIL (a corrupted tarball exited $rc, want 3)"
@@ -184,9 +209,13 @@ self_test() {
 	fi
 
 	# 2. Positive control: real tarball, scratch build dir -> build + spin -V.
+	# SPIN_BOOTSTRAP_IGNORE_PATH=1 here too, and not only on control 3: this
+	# step and control 3 share $pos_build, so if THIS step took a PATH
+	# shortcut instead of really building, $pos_build would hold nothing for
+	# control 3 to prove it reused -- see the incident note above.
 	local pos_build="$W/build-pos"
 	local out rc2
-	out="$(SPIN_TARBALL="$real_tarball" SPIN_BUILD_DIR="$pos_build" "$0" 2>"$W/pos.err")"
+	out="$(SPIN_TARBALL="$real_tarball" SPIN_BUILD_DIR="$pos_build" SPIN_BOOTSTRAP_IGNORE_PATH=1 "$0" 2>"$W/pos.err")"
 	rc2=$?
 	if [ "$rc2" -ne 0 ]; then
 		echo "$SELF: FAIL (build from the real tarball exited $rc2)"
@@ -215,7 +244,7 @@ self_test() {
 	local marker="$pos_build/spin/bin/spin"
 	local mtime_before mtime_after out2 rc3
 	mtime_before="$(stat -c %Y "$marker" 2>/dev/null || echo "")"
-	out2="$(SPIN_TARBALL="$real_tarball" SPIN_BUILD_DIR="$pos_build" "$0" 2>"$W/pos2.err")"
+	out2="$(SPIN_TARBALL="$real_tarball" SPIN_BUILD_DIR="$pos_build" SPIN_BOOTSTRAP_IGNORE_PATH=1 "$0" 2>"$W/pos2.err")"
 	rc3=$?
 	mtime_after="$(stat -c %Y "$marker" 2>/dev/null || echo "")"
 	if [ "$rc3" -ne 0 ]; then
@@ -281,7 +310,7 @@ fi
 # ---------------------------------------------------------------------------
 
 # 1. PATH.
-if path_spin="$(command -v spin 2>/dev/null)" && [ -n "$path_spin" ]; then
+if [ "$SPIN_BOOTSTRAP_IGNORE_PATH" != "1" ] && path_spin="$(command -v spin 2>/dev/null)" && [ -n "$path_spin" ]; then
 	if found="$(usable_spin "$path_spin")"; then
 		echo "$PROBE: using PATH spin ($found, version >= $SPIN_VERSION_MIN)" >&2
 		printf '%s\n' "$found"
