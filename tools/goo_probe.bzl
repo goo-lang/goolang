@@ -121,7 +121,8 @@ def goo_reject_probe(name, src, stderr_contains, gooflags = None,
 
 
 def goo_script_probe(name, script, data = [], size = "medium", tags = [],
-                     needs_compiler = True, needs_cc = False, args = []):
+                     needs_compiler = True, needs_cc = False, args = [],
+                     env = {}):
     """Run one of the Makefile's script-backed probe gates under Bazel.
 
     Task 14. These 29 gates are whole shell scripts, not fixture declarations,
@@ -149,6 +150,11 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
     --self-test, and the self-test is the teeth -- so it gets a target of
     its own rather than being folded into the first run.
 
+    env is merged INTO the computed env after the contract variables above,
+    so a target can add its own. One probe (ast_free_leak) needs the
+    generated parser's path, which differs between make and Bazel, and
+    $(rootpath) is the only honest way to name a generated file.
+
     GOO_PROBE_NO_SKIP is set for every probe, with or without a compiler. A
     script that cannot find its tool (valgrind, for instance) prints SKIPPED
     and exits 0 under make, where .github/workflows/tests.yml greps the log
@@ -156,7 +162,7 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
     under Bazel the skip must be the failure itself: a script that honours the
     variable turns that branch into a FAIL and a non-zero exit instead.
     """
-    env = {"GOO_PROBE_NO_SKIP": "1"}
+    computed_env = {"GOO_PROBE_NO_SKIP": "1"}
     probe_data = list(data)
     if needs_compiler:
         # GOOROOT is deliberately NOT set. It names a DIRECTORY, and
@@ -165,8 +171,8 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
         # to its own `data`: the compiler's last resolver tier is ./goostd
         # relative to the working directory, which under Bazel is the
         # runfiles root, so the filegroup being present there is enough.
-        env["COMPILER"] = "$(rootpath %s)" % _COMPILER
-        env["GOO_RUNTIME"] = "$(rootpath %s)" % _ARCHIVE
+        computed_env["COMPILER"] = "$(rootpath %s)" % _COMPILER
+        computed_env["GOO_RUNTIME"] = "$(rootpath %s)" % _ARCHIVE
         # Fixtures too: these scripts open examples/<name>.goo by NAME, so
         # there is no per-target edge to declare and no way to know which
         # script wants which without auditing 597 files.
@@ -174,16 +180,21 @@ def goo_script_probe(name, script, data = [], size = "medium", tags = [],
 
     toolchains = []
     if needs_cc:
-        env["CC_PROBE"] = "$(CC)"
-        env["CSTD_PROBE"] = "-std=c23"
+        computed_env["CC_PROBE"] = "$(CC)"
+        computed_env["CSTD_PROBE"] = "-std=c23"
         toolchains = ["@bazel_tools//tools/cpp:current_cc_toolchain"]
+
+    # The caller's own env is layered on last, so a target can name a
+    # variable the contract above does not know about (PARSER_TAB_C, for
+    # instance) without having to duplicate COMPILER/GOO_RUNTIME/CC_PROBE.
+    computed_env.update(env)
 
     sh_test(
         name = name,
         srcs = [script],
         args = args,
         data = probe_data,
-        env = env,
+        env = computed_env,
         size = size,
         tags = tags,
         toolchains = toolchains,
