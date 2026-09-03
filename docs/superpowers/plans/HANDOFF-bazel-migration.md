@@ -14,7 +14,7 @@
 | 4 probe gates, task 13 (printf targets) | #332 | merged |
 | 4 probe gates, task 14 in part, 6 of 29 | **#333** | **merged** |
 | 4 probe gates, task 14 in part, the four arc_* gates, 10 of 29 | #334 | merged |
-| 4 probe gates, task 14 in part, the last three sandbox failures and string_literal_header, 14 of 29 | #TBD | open |
+| 4 probe gates, task 14 in part, the last three sandbox failures and string_literal_header, 14 of 29 | **#335** | **open** |
 
 **Parity: 224 gates** as of #331 (was 217). `make verify-core` and
 `bazel test //...` are both green. `bazel test //...` runs 169 tests
