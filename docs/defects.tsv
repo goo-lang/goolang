@@ -5,11 +5,15 @@
 # found it, and how far it travelled between the two. This file starts
 # that record. One row is one corrected defect, read from a fix commit.
 #
-# Source: the last 20 commits whose subject starts with "fix", read from
+# Source: the ledger started on 2026-09-02 from the last 20 commits whose
+# subject starts with "fix", read from
 # `git log --format='%h|%ad|%s' --date=short -N` and filtered to a subject
-# match, not from `git log --grep='^fix'` alone. That command matches the
-# whole commit message, not only the subject line, so its most recent 20
-# hits include seven commits whose subject does not start with "fix".
+# match, not from `git log --grep='^fix'` alone (that command matches the
+# whole commit message, not only the subject line). After that start, the
+# ledger grows by one row per corrected defect, added by hand in the fix
+# commit or PR that corrects it — it is no longer "the last 20" after the
+# first row is added this way. The 20-commit read for the starting set
+# included seven commits whose subject does not start with "fix".
 # Those seven are excluded from this ledger:
 #   c4130ab  subject is "test(bazel): prove both compilers emit identical IR"
 #   7e189ed  subject is "docs(build): phase 3 plan, IR equivalence without NNG"
