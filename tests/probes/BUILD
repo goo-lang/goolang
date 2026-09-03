@@ -136,6 +136,9 @@ goo_script_probe(
     data = ["//goostd:files"],
 )
 
+# No extra data: the four arena_*_reclaim_probe.goo fixtures this script
+# reads by name are top-level examples/*.goo, so the macro's own
+# //examples:all_fixtures already covers them.
 goo_script_probe(
     name = "arena_rss_probe",
     script = "//:scripts/arena_rss_probe.sh",
@@ -151,14 +154,22 @@ goo_script_probe(
 # above, each for a measured reason rather than an assumption, held in
 # docs/superpowers/plans/2026-08-25-bazel-phase4-probes.md, task 14:
 #
-#   8 cannot run in a sandbox at all -- podman_image_probe.sh exits 0 with no
+#   7 cannot run in a sandbox at all -- podman_image_probe.sh exits 0 with no
 #     podman, so a sandboxed target would be green while asserting nothing;
 #     repro_build_probe.sh and archive_determinism_probe.sh each rebuild
-#     `git archive HEAD`, and a sandbox has no .git; the far-* gates need NNG
-#     (phase 3c).
-#   5 compile or scan src/** and need ten per-package filegroups first -- a
+#     `git archive HEAD`, and a sandbox has no .git; far-collective,
+#     far-halo, far-jacobi and far-stencil-r2 share a helper that takes
+#     arguments and need NNG (phase 3c).
+#   5 read or compile src/** and need ten per-package filegroups first -- a
 #     glob does not cross a package boundary, so there cannot be a single
-#     //:c_sources the way //goostd:files covers the stdlib.
+#     //:c_sources the way //goostd:files covers the stdlib: alloc_doors,
+#     ast_free_leak, doc_claims, proof_cache_shell, release_package.
+#   3 compile C fixtures against include/ or tests/unit/ through a shell C
+#     compiler ($CC, gcc): goo_assert, goo_check, goo_testcase. They need
+#     those two filegroups and a C compiler the sandbox can see.
+#   1 takes no COMPILER contract yet -- string_literal_header_probe.sh
+#     hardcodes $ROOT/bin/goo, generates its own source, and reads nothing
+#     else. Nothing else stands in its way. Unmeasured.
 #
 # Declaring these without their data would give red targets, and tagging
 # them manual would give targets that never run -- both worse than

@@ -22,6 +22,12 @@
 # NEVER read through a pipe — a pipeline reports its LAST stage's status, which
 # would silently mask a compiler abort here.
 set -u
+# ROOT resolves one directory too deep under a Bazel sh_test, the same
+# $0-derived bug the arc_* and arena_rss scripts had. Harmless here: ROOT
+# only feeds the COMPILER default below, and the macro always sets
+# COMPILER, so the wrong value is never read. Every other path in this
+# script is relative to $PWD. Do not add a new $ROOT/... path here without
+# checking that this still holds.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # COMPILER is the contract a Bazel sh_test uses to point this probe at the
 # compiler it built: bin/goo does not exist inside the sandbox. Unset, this
