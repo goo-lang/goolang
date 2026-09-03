@@ -223,6 +223,7 @@ SRC_PROBE_SOURCES = [
     "//src/errors:probe_sources", "//src/lexer:probe_sources",
     "//src/package:probe_sources", "//src/parser:probe_sources",
     "//src/runtime:probe_sources", "//src/types:probe_sources",
+    "//:src_orphan_sources",
 ]
 
 # ARC header-feasibility audit rider: only goo_alloc/goo_realloc/goo_free may

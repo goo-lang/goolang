@@ -61,8 +61,9 @@ fail() { echo "alloc-doors-probe: FAIL — $1"; exit 1; }
 #                              is outside GOO_SRCS (quarantined by P5.6), so it
 #                              is not in the shipped compiler either way.
 # Under Bazel the generated parser is a build output of the separate
-# //src/parser/gen package, which this probe's data never names, so the
-# parser.tab.c exclusion above is normally unused there.
+# //src/parser/gen package, and //src/parser:probe_sources excludes
+# parser.tab.c/.tab.h from its own glob, so this probe's data never
+# stages them there: the parser.tab.c exclusion above is unused under Bazel.
 # --------------------------------------------------------------------------
 scan_strdup() {
     local root="$1"
@@ -70,10 +71,18 @@ scan_strdup() {
     # plain `-type f` matches a symlink's own type (l), never the regular
     # file it points to -- so without -L this found nothing under Bazel and
     # reported zero offenders, PASSING while scanning no file at all.
+    #
+    # xargs -r: with no file found (an empty or missing tree), plain xargs
+    # still runs awk once, on stdin, rather than not at all -- silently
+    # trading "scanned nothing" for "read whatever fd 0 happened to be".
+    # -r makes an empty file list run awk zero times instead, so the caller
+    # sees zero offenders for the honest reason (no input), not a stdin
+    # accident. The ordinary run's own floor check, below, is what actually
+    # catches an empty or partial tree; self-test's controls never trip it.
     ( cd "$root" && find -L src -type f \( -name '*.c' -o -name '*.h' \) \
         ! -path 'src/parser/parser.tab.c' \
         ! -path 'src/types/dependent_types.c' \
-        -print0 2>/dev/null | xargs -0 awk '
+        -print0 2>/dev/null | xargs -0 -r awk '
       # Skip whole-line comments, matching the runtime scan below: a doc comment
       # may legitimately NAME strdup while explaining why the code stopped
       # calling it.
@@ -170,7 +179,29 @@ echo "  runtime.c: only goo_alloc, goo_realloc and goo_free name a libc allocato
 
 # --------------------------------------------------------------------------
 # Second door: no bare strdup anywhere in src/. See the header comment.
+#
+# FLOOR (ordinary run only -- self-test's controls scan tiny scratch trees
+# through scan_strdup directly and never reach this check). 72 files are
+# scanned today: the ten src/* probe_sources filegroups plus the one orphan
+# src/ide/lsp_enhanced.c reaches stage 73 (git ls-files, minus the generated
+# parser.tab.c/.tab.h src/parser's own glob now excludes), and this scan's
+# own dependent_types.c exemption drops one more. An empty or unstaged
+# runfiles tree, or a src/* package silently dropped from SRC_PROBE_SOURCES,
+# lands far below 40 and would otherwise report "0 offenders" -- a clean
+# scan indistinguishable from one that saw nothing. 40 leaves headroom for a
+# deliberate deletion sweep to move the floor on purpose; it is not meant to
+# track 72 exactly.
 # --------------------------------------------------------------------------
+scanned="$(cd "$ROOT" && find -L src -type f \( -name '*.c' -o -name '*.h' \) \
+    ! -path 'src/parser/parser.tab.c' \
+    ! -path 'src/types/dependent_types.c' \
+    2>/dev/null | wc -l | tr -d ' ')"
+FLOOR=40
+if [ "$scanned" -lt "$FLOOR" ]; then
+    echo "alloc-doors-probe: FAIL (scanned $scanned files, floor is $FLOOR — an empty or partial tree proves nothing)"
+    exit 1
+fi
+
 strdup_offenders="$(scan_strdup "$ROOT")"
 if [ -n "$strdup_offenders" ]; then
     echo "$strdup_offenders" | head -20
@@ -180,4 +211,4 @@ if [ -n "$strdup_offenders" ]; then
 fi
 
 echo "  src/: no bare strdup — every string copy goes through xstrdup"
-echo "alloc-doors-probe: PASS"
+echo "alloc-doors-probe: PASS (scanned $scanned files)"
