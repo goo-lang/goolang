@@ -80,7 +80,7 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 # Source files (lexer + parser + AST + types + error handling + test framework)
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
-AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
+AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/ast/json_writer.c $(SRCDIR)/ast/program_dump.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
@@ -3408,6 +3408,7 @@ VERIFY_ALL_DEPS := \
     nil-deref-probe \
     goo-test-probe \
     proof-cache-shell-probe \
+    json-writer-test \
     archive-determinism-probe \
     repro-build-probe \
     podman-image-probe
@@ -5064,6 +5065,16 @@ obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(TEST_UNIT_DIR)/goo
 obj-header-test: obj_header_test
 	@echo "Running ARC object-header tests..."
 	./obj_header_test
+
+# Phase 0 (program dump): the writer is byte-exact by contract. Rows compare
+# whole strings, so a key reorder or an indent change is a red row, not a
+# style nit.
+json_writer_test: $(TEST_UNIT_DIR)/ast/json_writer_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRCDIR)/ast/json_writer.c
+	$(CC) $(CFLAGS) -o $@ $< $(SRCDIR)/ast/json_writer.c
+
+json-writer-test: json_writer_test
+	@echo "Running JSON writer tests..."
+	./json_writer_test
 
 # ARC step 1, race gate. The ordinary build CANNOT see a data race on the
 # reference count: rows 12-14 of obj_header_test caught the non-atomic version
