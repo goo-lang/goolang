@@ -1502,6 +1502,45 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         return false;
     }
 
+    // Program dump, typed stage: every file as checked, type ids + one
+    // release plan per file. Short-circuits before codegen -- the dump needs
+    // no LLVM and no output file -- so it frees exactly what the failure
+    // path above frees (codegen under LLVM_AVAILABLE, the type checker,
+    // ENTRY_CLEANUP) before returning.
+    if (options->emit_program) {
+        const char** dump_names = calloc(nfiles, sizeof(char*));
+        if (!dump_names) {
+#if LLVM_AVAILABLE
+            codegen_free(codegen);
+#endif
+            type_checker_free(type_checker);
+            ENTRY_CLEANUP();
+            return false;
+        }
+        for (size_t fi = 0; fi < nfiles; fi++) {
+            dump_names[fi] = fi < options->input_file_count ? options->input_files[fi] : kTestMainName;
+        }
+        // Same plan codegen would build (codegen.c:378-384), built here so
+        // the dump needs no LLVM and no output file. GOO_ARC_RELEASE=0
+        // yields NULL plans, emitted as null -- the kill switch is visible
+        // in the dump.
+        ReleasePlan** plans = calloc(nfiles, sizeof(ReleasePlan*));
+        const char* arc_off = getenv("GOO_ARC_RELEASE");
+        if (!(arc_off && strcmp(arc_off, "0") == 0)) {
+            for (size_t fi = 0; fi < nfiles; fi++) plans[fi] = release_plan_analyze(asts[fi]);
+        }
+        program_dump_write(stdout, asts, dump_names, nfiles, plans, PROGRAM_DUMP_TYPED);
+        for (size_t fi = 0; fi < nfiles; fi++) if (plans[fi]) release_plan_free(plans[fi]);
+        free(plans);
+        free(dump_names);
+#if LLVM_AVAILABLE
+        codegen_free(codegen);
+#endif
+        type_checker_free(type_checker);
+        ENTRY_CLEANUP();
+        return true;
+    }
+
     // Phase 4: Code Generation
     if (options->verbose) {
         printf("Phase 4: Code generation...\n");

@@ -8,29 +8,270 @@
 #include "types.h"
 #include "token.h"
 #include "escape_core.h"
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-// ---- type table ------------------------------------------------------------
+// Forward declarations: the type table's key builder (below) needs to name a
+// kind that aborts (die_kind) and to render every reachable kind's name
+// (type_kind_name) -- both bodies come later in the file, grouped with the
+// rest of the helpers/types sections they belong to. begin_node (helpers
+// section) calls type_id, so the type table itself has to stay ahead of it;
+// these two declarations are what let it do that without moving die_kind out
+// of the group it belongs to.
+static void die_kind(const char* what, int kind);
+static const char* type_kind_name(TypeKind k);
+
+// ---- type table -------------------------------------------------------
+//
+// STRUCTURAL dedup: one id per distinct type SHAPE, not one per Type* the
+// walker happens to visit. Composite types are not interned by the checker
+// (type_slice et al. allocate a fresh Type on every occurrence), so two
+// nodes typed `[]int` in the same file can hold two different Type* -- first
+// -visit pointer identity would give the format two ids for one shape, and
+// every consumer of the dump would have to dedup it again.
+//
+// A pointer memo sits in front of a string-keyed table: a Type* seen before
+// resolves in the memo directly (O(1), no key rebuild). A Type* not yet
+// memoized has its key built -- recursing into components bottom-up for a
+// composite, so a component's id is always resolved before it is folded
+// into the parent's own key -- and either finds a matching entry (a
+// same-shaped Type* reached through a different pointer) or mints a new one.
+//
+// Cycle safety: `struct Node { next *Node }` types Node's own shell Type* as
+// both the struct and the pointee of its own field. A NOMINAL type's key is
+// name+kind+package alone -- it never inspects fields -- so type_id(Node)
+// completes and memoizes in one step, with no recursion, before anything
+// (emit_type_entry) ever visits Node's fields and asks for type_id(Node)
+// again. A composite can only cycle back to itself through a named type this
+// way (every composite constructor in types.c builds from an already
+// -complete component), so no equivalent guard is needed there.
 
 typedef struct {
     Type** items;
     size_t count, cap;
 } TypeTable;
 
-static TypeTable g_types;
+// Type* -> already-assigned id, so a repeat visit of the SAME pointer is
+// O(1) and never re-derives its key.
+typedef struct {
+    Type** items;
+    long long* ids;
+    size_t count, cap;
+} TypeMemo;
 
+// Structural key -> id. Linear scan; the table stays small (one entry per
+// distinct SHAPE in one file, not per node visited), so this is not worth a
+// hash map.
+typedef struct {
+    char** keys;      // owned
+    long long* ids;
+    size_t count, cap;
+} TypeKeyTable;
+
+static TypeTable g_types;
+static TypeMemo g_memo;
+static TypeKeyTable g_keys;
+static long long g_types_visited;   // typestats: type_id() calls with t != NULL
+
+// Minimal growable string builder for the dedup key. Kept local to this file
+// -- the key format has no reader outside type_id itself.
+typedef struct { char* buf; size_t len, cap; } StrBuf;
+
+static void sb_init(StrBuf* sb) {
+    sb->cap = 64; sb->len = 0;
+    sb->buf = malloc(sb->cap);
+    if (!sb->buf) abort();
+    sb->buf[0] = '\0';
+}
+
+static void sb_append(StrBuf* sb, const char* s) {
+    size_t slen = strlen(s);
+    if (sb->len + slen + 1 > sb->cap) {
+        while (sb->len + slen + 1 > sb->cap) sb->cap *= 2;
+        sb->buf = realloc(sb->buf, sb->cap);
+        if (!sb->buf) abort();
+    }
+    memcpy(sb->buf + sb->len, s, slen + 1);
+    sb->len += slen;
+}
+
+// A bounded numeric/short-field formatter -- never used to interpolate an
+// arbitrary-length string (a channel endpoint, a name), which goes through
+// sb_append directly so it can never be truncated by tmp's fixed size.
+static void sb_appendf(StrBuf* sb, const char* fmt, ...) {
+    char tmp[128];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    sb_append(sb, tmp);
+}
+
+static long long memo_lookup(Type* t) {
+    for (size_t i = 0; i < g_memo.count; i++) if (g_memo.items[i] == t) return g_memo.ids[i];
+    return -1;
+}
+
+static void memo_add(Type* t, long long id) {
+    if (g_memo.count == g_memo.cap) {
+        g_memo.cap = g_memo.cap ? g_memo.cap * 2 : 64;
+        g_memo.items = realloc(g_memo.items, g_memo.cap * sizeof(Type*));
+        g_memo.ids = realloc(g_memo.ids, g_memo.cap * sizeof(long long));
+        if (!g_memo.items || !g_memo.ids) abort();
+    }
+    g_memo.items[g_memo.count] = t;
+    g_memo.ids[g_memo.count] = id;
+    g_memo.count++;
+}
+
+static long long key_lookup(const char* key) {
+    for (size_t i = 0; i < g_keys.count; i++) if (strcmp(g_keys.keys[i], key) == 0) return g_keys.ids[i];
+    return -1;
+}
+
+// Takes ownership of `key` (kept in the table, never freed here).
+static void key_add(char* key, long long id) {
+    if (g_keys.count == g_keys.cap) {
+        g_keys.cap = g_keys.cap ? g_keys.cap * 2 : 64;
+        g_keys.keys = realloc(g_keys.keys, g_keys.cap * sizeof(char*));
+        g_keys.ids = realloc(g_keys.ids, g_keys.cap * sizeof(long long));
+        if (!g_keys.keys || !g_keys.ids) abort();
+    }
+    g_keys.keys[g_keys.count] = key;
+    g_keys.ids[g_keys.count] = id;
+    g_keys.count++;
+}
+
+static long long type_id(Type* t);   // forward: the key builder below recurses through it
+
+// Builds the malloc'd structural key for `t`. Separators are ':', which no
+// Goo identifier or package name contains, so no escaping is needed for any
+// key this compiler's own type names can produce.
+static char* type_key(Type* t) {
+    StrBuf sb; sb_init(&sb);
+    sb_append(&sb, type_kind_name(t->kind));   // aborts by name for the 4 attic kinds
+    switch (t->kind) {
+        case TYPE_STRUCT:
+            if (t->data.struct_type.name) {
+                sb_append(&sb, ":"); sb_append(&sb, t->data.struct_type.name);
+                sb_append(&sb, ":"); sb_append(&sb, t->owner_package ? t->owner_package->name : "");
+            } else {
+                sb_append(&sb, ":ANON");
+                for (size_t i = 0; i < t->data.struct_type.field_count; i++) {
+                    StructField* f = &t->data.struct_type.fields[i];
+                    sb_append(&sb, ":"); sb_append(&sb, f->name ? f->name : "");
+                    sb_appendf(&sb, ":%lld", type_id(f->type));
+                }
+            }
+            break;
+        case TYPE_ENUM:
+            if (t->data.enum_type.name) {
+                sb_append(&sb, ":"); sb_append(&sb, t->data.enum_type.name);
+                sb_append(&sb, ":"); sb_append(&sb, t->owner_package ? t->owner_package->name : "");
+            } else {
+                // Every AST_ENUM_TYPE body is reached only through a named
+                // `type X enum {...}` declaration (type_check_type_decl
+                // stamps the shell's name before this dump ever runs), so
+                // this arm is not expected to fire on any fixture. Keyed
+                // structurally, same shape as an anonymous struct, if it
+                // ever does.
+                sb_append(&sb, ":ANON");
+                for (size_t i = 0; i < t->data.enum_type.variant_count; i++) {
+                    EnumVariant* v = &t->data.enum_type.variants[i];
+                    sb_append(&sb, ":"); sb_append(&sb, v->name ? v->name : "");
+                    sb_appendf(&sb, ":%lld:%d", type_id(v->payload), v->tag);
+                }
+            }
+            break;
+        case TYPE_INTERFACE:
+            if (t->data.interface.name) {
+                sb_append(&sb, ":"); sb_append(&sb, t->data.interface.name);
+                sb_append(&sb, ":"); sb_append(&sb, t->owner_package ? t->owner_package->name : "");
+            } else {
+                sb_append(&sb, ":ANON");
+                for (InterfaceMethod* m = t->data.interface.methods; m; m = m->next) {
+                    sb_append(&sb, ":"); sb_append(&sb, m->name ? m->name : "");
+                    sb_appendf(&sb, ":%lld", type_id(m->type));
+                }
+            }
+            break;
+        case TYPE_ARRAY:
+            sb_appendf(&sb, ":%lld:%zu:%d", type_id(t->data.array.element_type),
+                       t->data.array.length, t->data.array.comptime_length);
+            break;
+        case TYPE_SLICE:
+            sb_appendf(&sb, ":%lld", type_id(t->data.slice.element_type));
+            break;
+        case TYPE_MAP:
+            sb_appendf(&sb, ":%lld:%lld", type_id(t->data.map.key_type), type_id(t->data.map.value_type));
+            break;
+        case TYPE_CHANNEL:
+            sb_appendf(&sb, ":%lld:%d:", type_id(t->data.channel.element_type), (int)t->data.channel.pattern);
+            sb_append(&sb, t->data.channel.endpoint ? t->data.channel.endpoint : "");
+            break;
+        case TYPE_FUNCTION:
+            sb_appendf(&sb, ":%d:%d", t->data.function.is_variadic, t->data.function.has_comptime_params);
+            for (size_t i = 0; i < t->data.function.param_count; i++)
+                sb_appendf(&sb, ":%lld", type_id(t->data.function.param_types[i]));
+            sb_appendf(&sb, ":%lld", type_id(t->data.function.return_type));
+            break;
+        case TYPE_POINTER:
+            sb_appendf(&sb, ":%lld", type_id(t->data.pointer.pointee_type));
+            break;
+        case TYPE_REFERENCE:
+            sb_appendf(&sb, ":%lld:%d", type_id(t->data.reference.referenced_type), t->data.reference.is_mutable);
+            break;
+        case TYPE_ERROR_UNION:
+            sb_appendf(&sb, ":%lld:%lld", type_id(t->data.error_union.value_type), type_id(t->data.error_union.error_type));
+            break;
+        case TYPE_NULLABLE:
+            sb_appendf(&sb, ":%lld", type_id(t->data.nullable.base_type));
+            break;
+        case TYPE_QUALIFIED:
+            sb_appendf(&sb, ":%lld:%d:%d", type_id(t->data.qualified.base_type),
+                       (int)t->data.qualified.ownership, (int)t->data.qualified.mutability);
+            break;
+        case TYPE_PARAM:
+            sb_append(&sb, ":"); sb_append(&sb, t->data.type_param.name ? t->data.type_param.name : "");
+            sb_appendf(&sb, ":%d:%lld", t->data.type_param.index, type_id(t->data.type_param.constraint));
+            break;
+        default:
+            break;   // scalars (VOID..CHAR, PACKAGE, UNKNOWN, POISON): kind alone
+    }
+    return sb.buf;
+}
+
+// t == NULL is not a type table entry -- emit_type_ref writes JSON null for
+// it directly and never reaches here. Every other call either hits the
+// pointer memo (repeat visit of the same Type*) or the key table (a
+// different Type* with the same shape) before it ever mints a new id.
 static long long type_id(Type* t) {
     if (!t) return -1;
-    for (size_t i = 0; i < g_types.count; i++) if (g_types.items[i] == t) return (long long)i;
+    g_types_visited++;
+    long long memoized = memo_lookup(t);
+    if (memoized >= 0) return memoized;
+
+    char* key = type_key(t);
+    long long existing = key_lookup(key);
+    if (existing >= 0) {
+        free(key);
+        memo_add(t, existing);
+        return existing;
+    }
+
     if (g_types.count == g_types.cap) {
         g_types.cap = g_types.cap ? g_types.cap * 2 : 64;
         g_types.items = realloc(g_types.items, g_types.cap * sizeof(Type*));
         if (!g_types.items) abort();
     }
     g_types.items[g_types.count] = t;
-    return (long long)g_types.count++;
+    long long id = (long long)g_types.count++;
+
+    key_add(key, id);   // key_add owns key from here on
+    memo_add(t, id);
+    return id;
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -518,9 +759,134 @@ static void emit_node(JsonW* w, ASTNode* n) {
     }
 }
 
-// ---- types (Task 5 fills emit_type_entry) ----------------------------------
+// ---- types -------------------------------------------------------------
 
-static void emit_type_entry(JsonW* w, size_t id, Type* t);
+// One name per TypeKind, in enum order (include/types.h:14-75). 31 of its 35
+// members return a name here; the other 4 -- TYPE_CONCEPT, TYPE_PARAM_HKT,
+// TYPE_CONSTRUCTOR, TYPE_APPLICATION -- are the constraint-inference/HKT
+// frameworks quarantined out of bin/goo (P5.6): a live Type* of one of these
+// kinds reaching the dump is a real finding, so each aborts BY NAME rather
+// than falling through a generic default.
+static const char* type_kind_name(TypeKind k) {
+    switch (k) {
+        case TYPE_VOID: return "VOID";
+        case TYPE_BOOL: return "BOOL";
+        case TYPE_INT8: return "INT8";
+        case TYPE_INT16: return "INT16";
+        case TYPE_INT32: return "INT32";
+        case TYPE_INT64: return "INT64";
+        case TYPE_UINT8: return "UINT8";
+        case TYPE_UINT16: return "UINT16";
+        case TYPE_UINT32: return "UINT32";
+        case TYPE_UINT64: return "UINT64";
+        case TYPE_FLOAT32: return "FLOAT32";
+        case TYPE_FLOAT64: return "FLOAT64";
+        case TYPE_STRING: return "STRING";
+        case TYPE_CHAR: return "CHAR";
+        case TYPE_ARRAY: return "ARRAY";
+        case TYPE_SLICE: return "SLICE";
+        case TYPE_MAP: return "MAP";
+        case TYPE_CHANNEL: return "CHANNEL";
+        case TYPE_FUNCTION: return "FUNCTION";
+        case TYPE_POINTER: return "POINTER";
+        case TYPE_REFERENCE: return "REFERENCE";
+        case TYPE_STRUCT: return "STRUCT";
+        case TYPE_ENUM: return "ENUM";
+        case TYPE_INTERFACE: return "INTERFACE";
+        case TYPE_ERROR_UNION: return "ERROR_UNION";
+        case TYPE_NULLABLE: return "NULLABLE";
+        case TYPE_QUALIFIED: return "QUALIFIED";
+        case TYPE_PARAM: return "PARAM";
+        case TYPE_PACKAGE: return "PACKAGE";
+        case TYPE_UNKNOWN: return "UNKNOWN";
+        case TYPE_POISON: return "POISON";
+        case TYPE_CONCEPT:
+        case TYPE_PARAM_HKT:
+        case TYPE_CONSTRUCTOR:
+        case TYPE_APPLICATION:
+            die_kind("type", k); return NULL;
+        case TYPE_COUNT: break;   // sentinel, never a real kind
+    }
+    die_kind("type", k); return NULL;
+}
+
+static void emit_type_ref(JsonW* w, const char* key, Type* t) { jw_key(w, key); if (t) jw_int(w, type_id(t)); else jw_null(w); }
+
+static void emit_type_entry(JsonW* w, size_t id, Type* t) {
+    jw_begin_object(w);
+    emit_int(w, "id", (long long)id);
+    emit_str(w, "kind", type_kind_name(t->kind));
+    emit_int(w, "size", (long long)t->size);
+    emit_int(w, "align", (long long)t->align);
+    // Every entry, regardless of kind -- NULL for a type declared in main or
+    // anonymous/builtin (Type.owner_package's own contract, types.h:256-276).
+    emit_str(w, "package", t->owner_package ? t->owner_package->name : NULL);
+    switch (t->kind) {
+        case TYPE_ARRAY:
+            emit_type_ref(w, "element", t->data.array.element_type);
+            emit_int(w, "length", (long long)t->data.array.length);
+            emit_bool(w, "comptime_length", t->data.array.comptime_length); break;
+        case TYPE_SLICE: emit_type_ref(w, "element", t->data.slice.element_type); break;
+        case TYPE_MAP: emit_type_ref(w, "key", t->data.map.key_type); emit_type_ref(w, "value", t->data.map.value_type); break;
+        case TYPE_CHANNEL:
+            emit_type_ref(w, "element", t->data.channel.element_type);
+            emit_str(w, "pattern", chan_pattern_name(t->data.channel.pattern));
+            emit_str(w, "endpoint", t->data.channel.endpoint); break;
+        case TYPE_FUNCTION:
+            jw_key(w, "params"); jw_begin_array(w);
+            for (size_t i = 0; i < t->data.function.param_count; i++) jw_int(w, type_id(t->data.function.param_types[i]));
+            jw_end_array(w);
+            emit_type_ref(w, "return", t->data.function.return_type);
+            emit_bool(w, "is_variadic", t->data.function.is_variadic);
+            emit_bool(w, "has_comptime_params", t->data.function.has_comptime_params); break;
+        case TYPE_POINTER: emit_type_ref(w, "pointee", t->data.pointer.pointee_type); break;
+        case TYPE_REFERENCE: emit_type_ref(w, "referenced", t->data.reference.referenced_type); emit_bool(w, "is_mutable", t->data.reference.is_mutable); break;
+        case TYPE_STRUCT:
+            // "name" only for a NOMINAL struct (`type X struct {...}`). An
+            // anonymous result-tuple/comma-ok struct carries no name field
+            // at all here, never a null one.
+            if (t->data.struct_type.name) emit_str(w, "name", t->data.struct_type.name);
+            jw_key(w, "fields"); jw_begin_array(w);
+            for (size_t i = 0; i < t->data.struct_type.field_count; i++) {
+                StructField* f = &t->data.struct_type.fields[i];
+                jw_begin_object(w);
+                emit_str(w, "name", f->name); emit_type_ref(w, "type", f->type);
+                emit_int(w, "offset", (long long)f->offset); emit_str(w, "ownership", ownership_name(f->ownership));
+                emit_bool(w, "is_embedded", f->is_embedded);
+                jw_end_object(w);
+            }
+            jw_end_array(w); break;
+        case TYPE_ENUM:
+            if (t->data.enum_type.name) emit_str(w, "name", t->data.enum_type.name);
+            jw_key(w, "variants"); jw_begin_array(w);
+            for (size_t i = 0; i < t->data.enum_type.variant_count; i++) {
+                EnumVariant* v = &t->data.enum_type.variants[i];
+                jw_begin_object(w); emit_str(w, "name", v->name); emit_type_ref(w, "payload", v->payload); emit_int(w, "tag", v->tag); jw_end_object(w);
+            }
+            jw_end_array(w); break;
+        case TYPE_INTERFACE:
+            if (t->data.interface.name) emit_str(w, "name", t->data.interface.name);
+            emit_bool(w, "is_synthesized", t->data.interface.is_synthesized);
+            emit_int(w, "method_count", (long long)t->data.interface.method_count);
+            jw_key(w, "methods"); jw_begin_array(w);
+            for (InterfaceMethod* m = t->data.interface.methods; m; m = m->next) {
+                jw_begin_object(w); emit_str(w, "name", m->name); emit_type_ref(w, "type", m->type); jw_end_object(w);
+            }
+            jw_end_array(w); break;
+        case TYPE_ERROR_UNION: emit_type_ref(w, "value", t->data.error_union.value_type); emit_type_ref(w, "error", t->data.error_union.error_type); break;
+        case TYPE_NULLABLE: emit_type_ref(w, "base", t->data.nullable.base_type); break;
+        case TYPE_QUALIFIED: emit_type_ref(w, "base", t->data.qualified.base_type); emit_str(w, "ownership", ownership_name(t->data.qualified.ownership)); break;
+        case TYPE_PARAM: emit_str(w, "param_name", t->data.type_param.name); emit_int(w, "index", t->data.type_param.index); emit_type_ref(w, "constraint", t->data.type_param.constraint); break;
+        default:
+            // Scalars (VOID..CHAR, PACKAGE, UNKNOWN, POISON): a fixed,
+            // non-truncating display string set once at type_new time. A
+            // composite never reaches this arm -- see the "Do NOT use
+            // Type.name" note on the type table above.
+            emit_str(w, "name", t->name);
+            break;
+    }
+    jw_end_object(w);
+}
 
 static void emit_type_table(JsonW* w) {
     jw_key(w, "types");
@@ -531,9 +897,40 @@ static void emit_type_table(JsonW* w) {
     jw_end_array(w);
 }
 
-// ---- plan (Task 5 fills emit_plan) ----------------------------------------
+// ---- plan ----------------------------------------------------------------
 
-static void emit_plan(JsonW* w, ReleasePlan* plan);
+static void emit_pos_list(JsonW* w, const char* key, ASTNode** nodes, size_t count) {
+    jw_key(w, key); jw_begin_array(w);
+    for (size_t i = 0; i < count; i++) {
+        jw_begin_array(w); jw_int(w, nodes[i]->pos.line); jw_int(w, nodes[i]->pos.column); jw_int(w, nodes[i]->pos.offset); jw_end_array(w);
+    }
+    jw_end_array(w);
+}
+
+static void emit_plan(JsonW* w, ReleasePlan* plan) {
+    jw_begin_array(w);
+    for (size_t i = 0; i < plan->count; i++) {
+        ReleasePlanFunction* f = &plan->functions[i];
+        jw_begin_object(w);
+        emit_str(w, "function", f->function_name);
+        jw_key(w, "locals"); jw_begin_array(w);
+        for (size_t j = 0; j < f->count; j++) {
+            ReleaseDecision* d = &f->decisions[j];
+            char buf[ESCAPE_REASON_NAMES_MAX];
+            jw_begin_object(w);
+            emit_str(w, "name", d->local_name);
+            emit_str(w, "verdict", release_verdict_name(d->verdict));
+            emit_str(w, "reasons", escape_reason_names(d->diagnostic_reasons, buf, sizeof buf));
+            emit_bool(w, "owns_elems", d->owns_elems);
+            jw_end_object(w);
+        }
+        jw_end_array(w);
+        emit_pos_list(w, "owned_keys", f->owned_keys, f->owned_key_count);
+        emit_pos_list(w, "owned_concat_operands", f->owned_concat_operands, f->owned_concat_count);
+        jw_end_object(w);
+    }
+    jw_end_array(w);
+}
 
 // ---- entry -----------------------------------------------------------------
 
@@ -544,6 +941,9 @@ void program_dump_write(FILE* out, ASTNode** files, const char** filenames,
     g_selftest = getenv("GOO_DUMP_SELFTEST");
     g_nodes_emitted = 0;
     g_types.count = 0;
+    g_memo.count = 0;
+    g_keys.count = 0;
+    g_types_visited = 0;
 
     jw_begin_object(&w);
     emit_int(&w, "goo_program_dump", 1);
@@ -568,9 +968,12 @@ void program_dump_write(FILE* out, ASTNode** files, const char** filenames,
     jw_end_object(&w);
     fputc('\n', out);
     fflush(out);
-}
 
-// Placeholders that Task 5 replaces. They exist so this task links; the typed
-// stage is not wired into the driver until Task 5, so neither is reachable.
-static void emit_type_entry(JsonW* w, size_t id, Type* t) { (void)w; (void)id; (void)t; abort(); }
-static void emit_plan(JsonW* w, ReleasePlan* plan)          { (void)w; (void)plan; abort(); }
+    // Teeth for the dedup: a positive control proving the structural table
+    // actually collapses repeats, not just a count that happens to be
+    // small. See type_id's own doc comment for what each number means.
+    if (g_selftest && strcmp(g_selftest, "typestats") == 0) {
+        fprintf(stderr, "program-dump: types visited=%lld distinct_pointers=%zu table=%zu\n",
+                g_types_visited, g_memo.count, g_types.count);
+    }
+}
