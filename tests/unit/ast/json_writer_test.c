@@ -8,7 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define JW_ROWS 6
+#define JW_ROWS 9
 
 static char* capture(void (*fn)(JsonW*)) {
     char* buf = NULL; size_t n = 0;
@@ -36,6 +36,17 @@ static void row6(JsonW* w) {
     jw_key(w, "o"); jw_begin_object(w); jw_key(w, "k"); jw_begin_array(w); jw_end_array(w); jw_end_object(w);
     jw_end_object(w);
 }
+// A well-formed multi-byte UTF-8 sequence (é is 0xC3 0xA9) passes through
+// verbatim: the corpus has real text like this ("café", "中文", "°C") and it
+// must not be mangled by the invalid-byte fallback below.
+static void row7(JsonW* w) { jw_string(w, "café"); }
+// A literal value is a raw byte sequence, not necessarily valid UTF-8
+// (`"\xff"` decodes to one such byte). A lone invalid byte falls back to
+// \u00XX so the output stays valid JSON.
+static void row8(JsonW* w) { jw_string_len(w, "\xff", 1); }
+// A multi-byte lead with no continuation byte in the buffer (the buffer
+// ends right after it) gets the same fallback, not a read past the end.
+static void row9(JsonW* w) { jw_string_len(w, "\xc3", 1); }
 
 int main(void) {
     goo_check_expect(JW_ROWS);
@@ -58,6 +69,15 @@ int main(void) {
 
     goo_check_row(6, "nested empty containers stay on one line");
     s = capture(row6); goo_check(strcmp(s, "{\n  \"o\": {\n    \"k\": []\n  }\n}") == 0, s); free(s);
+
+    goo_check_row(7, "well-formed multi-byte UTF-8 sequence passes through unchanged");
+    s = capture(row7); goo_check(strcmp(s, "\"café\"") == 0, s); free(s);
+
+    goo_check_row(8, "single invalid byte falls back to \\u00XX");
+    s = capture(row8); goo_check(strcmp(s, "\"\\u00ff\"") == 0, s); free(s);
+
+    goo_check_row(9, "multi-byte sequence cut short at the buffer end falls back to \\u00XX");
+    s = capture(row9); goo_check(strcmp(s, "\"\\u00c3\"") == 0, s); free(s);
 
     return goo_check_done("json_writer_test");
 }
