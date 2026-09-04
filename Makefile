@@ -3412,6 +3412,8 @@ VERIFY_ALL_DEPS := \
     goo-test-probe \
     proof-cache-shell-probe \
     json-writer-test \
+    program-dump-selftest \
+    program-dump-probe \
     archive-determinism-probe \
     repro-build-probe \
     podman-image-probe
@@ -5354,6 +5356,15 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 # needed, so it is stable everywhere.
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
+
+# Phase 0 (front-end migration): the program dump is the interchange every
+# later differential gate compares. Determinism + structure over every
+# fixture, and an abort-by-name on any kind the walker does not cover.
+program-dump-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/program_dump_probe.sh
+
+program-dump-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/program_dump_probe.sh --self-test
 
 # proof_cache_create() must not hand its argument to a shell. It used to build
 # `mkdir -p %s` into a 512-byte buffer and call system(), so a ';' in the path
