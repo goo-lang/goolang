@@ -108,7 +108,7 @@ if [ "${1:-}" = "--self-test" ]; then
     if [ "$rc" -lt 128 ]; then echo "program-dump-probe --self-test: FAIL (badkind exited $rc, not an abort)"; exit 1; fi
     grep -q "program-dump: unsupported AST node kind" "$tmp/err5" || { echo "program-dump-probe --self-test: FAIL (badkind did not name the kind on stderr)"; exit 1; }
     rm -rf "$tmp"
-    echo "program-dump-probe --self-test: PASS (nonce breaks determinism, missing pos is refused, missing type id is refused, badkind aborts and names the kind)"
+    echo "program-dump-probe --self-test: PASS (nonce breaks determinism, missing pos is refused, missing type id is refused, badkind aborts with a synthetic out-of-range kind)"
     exit 0
 fi
 
@@ -116,4 +116,24 @@ ok=1
 echo "=== program-dump-probe: dump every fixture at both stages ==="
 parse_fixtures | run_fixtures --emit-ast-json || ok=0
 typed_fixtures | run_fixtures --emit-program || ok=0
+
+# The ARC kill switch (GOO_ARC_RELEASE=0) is a documented valid typed-stage
+# configuration: goo.c never calls release_plan_analyze under it, so every
+# file's "plan" is null instead of the list emit_plan otherwise writes
+# (format spec, "The release plan"). Neither run_fixtures call above sets
+# this -- both dump with ARC on -- so a checker regression on a null
+# typed-stage plan would stay dormant until someone diffs an ARC-off dump
+# by hand. One fixture exercises the path; the point is coverage, not a
+# second full sweep.
+arc_off_fixture=examples/erru_catch_probe.goo
+arc_off_tmp=$(mktemp)
+if ! GOO_ARC_RELEASE=0 "$GOO" --emit-program -o /dev/null "$arc_off_fixture" > "$arc_off_tmp" 2>/dev/null; then
+    echo "  FAIL  $arc_off_fixture (--emit-program under GOO_ARC_RELEASE=0: dump failed)"; ok=0
+elif ! $CHECK "$arc_off_tmp" >/dev/null 2>&1; then
+    echo "  FAIL  $arc_off_fixture (--emit-program under GOO_ARC_RELEASE=0: checker refused a null plan)"; ok=0
+else
+    echo "  --emit-program (GOO_ARC_RELEASE=0): $arc_off_fixture accepted, plan: null"
+fi
+rm -f "$arc_off_tmp"
+
 if [ $ok = 1 ]; then echo "program-dump-probe: PASS"; else echo "program-dump-probe: FAIL"; exit 1; fi

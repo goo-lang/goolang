@@ -183,10 +183,14 @@ def check_types(types):
 
 # emit_plan (src/compiler/program_dump.c) writes one object per function
 # with exactly these four keys, and one object per local under "locals"
-# with exactly these four. release_plan_analyze returns NULL only on
-# allocation failure (never for an empty function or file), so a non-NULL
-# plan is always this list shape -- requiring a list here is safe, and
-# checking each key catches a writer that starts dropping one silently.
+# with exactly these four. A non-NULL plan is always this list shape (the
+# only other way to get NULL out of release_plan_analyze is an allocation
+# failure), so requiring a list is safe -- but "plan": null is ALSO a
+# valid typed-stage value: GOO_ARC_RELEASE=0 is the documented ARC kill
+# switch, and under it goo.c never calls release_plan_analyze at all,
+# leaving every plans[fi] NULL (format spec, lines 56-57 and 383-384). The
+# caller in main() only reaches this function when the plan is present,
+# so a null plan at the typed stage is accepted before it ever gets here.
 _PLAN_FUNC_KEYS = ("function", "locals", "owned_keys", "owned_concat_operands")
 _PLAN_LOCAL_KEYS = ("name", "verdict", "reasons", "owns_elems")
 
@@ -219,7 +223,12 @@ def main():
         walk(f["imports"], stage == "typed", len(types), f"files[{fi}].imports")
         walk(f["decls"], stage == "typed", len(types), f"files[{fi}].decls")
         if stage == "parse" and f["plan"] is not None: fail(f"files[{fi}]: parse stage must have plan: null")
-        if stage == "typed": check_plan(f["plan"], fi)
+        # A typed-stage plan is EITHER null (GOO_ARC_RELEASE=0, the ARC kill
+        # switch -- a documented valid state, format spec lines 56-57 and
+        # 383-384) or the list emit_plan writes. Only the second shape gets
+        # the structural check; a null plan here is accepted, not skipped
+        # by accident.
+        if stage == "typed" and f["plan"] is not None: check_plan(f["plan"], fi)
     print("ok")
 
 if __name__ == "__main__": main()
