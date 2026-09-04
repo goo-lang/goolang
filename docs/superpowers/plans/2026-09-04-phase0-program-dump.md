@@ -1478,8 +1478,9 @@ git commit -m "feat(gates): frontend_diff harness with self-test"
 
 ```python
 #!/usr/bin/env python3
-"""Regenerate catalogue/diagnostics.tsv from the checker's type_error and
-type_error_union call sites (src/types/*.c). The format string is the third
+"""Regenerate catalogue/diagnostics.tsv from the checker's type_error call
+sites (src/types/*.c). type_error_union is a TYPE CONSTRUCTOR, not an
+emitter, and is deliberately not matched. The format string is the third
 argument (types.h:1338: type_error(checker, pos, format, ...)). Adjacent
 string literals are joined the way the C compiler joins them.
 
@@ -1531,7 +1532,7 @@ if __name__ == '__main__': main()
 - [ ] **Step 2: Generate the catalogue and check its size**
 
 Run: `mkdir -p catalogue && python3 scripts/extract_diagnostics.py > catalogue/diagnostics.tsv && wc -l catalogue/diagnostics.tsv`
-Expected: roughly 300 lines (there are 304 `type_error(` sites and 5 `type_error_union(` sites; duplicates collapse). If the count is under 250, the argument-skipping loop is wrong for some call shape: open the first file and compare the call it missed against the regex.
+Expected: 280 lines (304 `type_error(` sites; duplicates collapse, and two ternary sites contribute two rows each). `type_error_union(` is a type constructor and is not a diagnostic. If the count is under 250, the argument-skipping loop is wrong for some call shape: open the first file and compare the call it missed against the regex.
 
 - [ ] **Step 3: Write the drift probe with teeth**
 

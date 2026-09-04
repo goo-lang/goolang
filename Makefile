@@ -3198,6 +3198,8 @@ VERIFY_ALL_DEPS := \
     doc-claims-probe \
     probe-teeth-probe \
     frontend-diff-selftest \
+    diagnostics-drift-selftest \
+    diagnostics-drift-probe \
     assert-corpus-selftest \
     golden-selftest \
     goo-check-probe \
@@ -5082,6 +5084,15 @@ json-writer-test: json_writer_test
 # could report "0 differ" between a real front end and an empty one.
 frontend-diff-selftest:
 	@bash scripts/frontend_diff.sh --self-test
+
+# The type checker's diagnostic strings, as a table the Haskell front end
+# reads. Reject fixtures match stderr substrings, so verbatim text is the
+# parity contract; this gate keeps the table equal to the source.
+diagnostics-drift-probe:
+	@bash scripts/diagnostics_drift_probe.sh
+
+diagnostics-drift-selftest:
+	@bash scripts/diagnostics_drift_probe.sh --self-test
 
 # ARC step 1, race gate. The ordinary build CANNOT see a data race on the
 # reference count: rows 12-14 of obj_header_test caught the non-atomic version
