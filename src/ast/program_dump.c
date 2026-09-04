@@ -44,6 +44,47 @@ static void die_kind(const char* what, int kind) {
     abort();
 }
 
+// One name per ASTNodeType, in include/ast.h order. The static_assert pins
+// the count to AST_NODE_COUNT: a kind added to the enum without a name here
+// is a compile error, not an out-of-range read inside the abort message. The
+// probe's red rows are only useful because they name the kind.
+static const char* const ast_kind_names[] = {
+    "AST_PROGRAM", "AST_PACKAGE_DECL", "AST_IMPORT_SPEC", "AST_FUNC_DECL", "AST_VAR_DECL",
+    "AST_CONST_DECL", "AST_TYPE_DECL", "AST_CONCEPT_DECL", "AST_HKT_PARAM", "AST_BLOCK_STMT",
+    "AST_EXPR_STMT", "AST_IF_STMT", "AST_IF_LET_STMT", "AST_FOR_STMT", "AST_RETURN_STMT",
+    "AST_BREAK_STMT", "AST_CONTINUE_STMT", "AST_DEFER_STMT", "AST_GO_STMT", "AST_SELECT_STMT",
+    "AST_SELECT_CASE", "AST_SWITCH_STMT", "AST_CASE_CLAUSE", "AST_DEFAULT_CLAUSE",
+    "AST_UNSAFE_STMT", "AST_ASM_STMT", "AST_IDENTIFIER", "AST_LITERAL", "AST_BINARY_EXPR",
+    "AST_UNARY_EXPR", "AST_POSTFIX_EXPR", "AST_CALL_EXPR", "AST_INDEX_EXPR",
+    "AST_SELECTOR_EXPR", "AST_SLICE_EXPR", "AST_TYPE_ASSERT_EXPR", "AST_PAREN_EXPR",
+    "AST_BASIC_TYPE", "AST_ARRAY_TYPE", "AST_SLICE_TYPE", "AST_MAP_TYPE", "AST_CHAN_TYPE",
+    "AST_FUNC_TYPE", "AST_INTERFACE_TYPE", "AST_STRUCT_TYPE", "AST_POINTER_TYPE",
+    "AST_REFERENCE_TYPE", "AST_ERROR_UNION_TYPE", "AST_NULLABLE_TYPE", "AST_TRY_EXPR",
+    "AST_CATCH_EXPR", "AST_COMPTIME_BLOCK", "AST_OWNERSHIP_QUAL", "AST_UNSAFE_PTR_TYPE",
+    "AST_PTR_ARITHMETIC", "AST_PTR_DEREF", "AST_ADDR_OF", "AST_PORT_IO", "AST_MMIO_ACCESS",
+    "AST_EXTERN_DECL", "AST_ATTRIBUTE", "AST_VOLATILE_EXPR", "AST_PARALLEL_FOR",
+    "AST_PARALLEL_REDUCE", "AST_BARRIER_CALL", "AST_ATOMIC_EXPR", "AST_THREAD_LOCAL_DECL",
+    "AST_MATCH_EXPR", "AST_MATCH_CASE", "AST_PATTERN", "AST_GUARD_CONDITION", "AST_KERNEL_DECL",
+    "AST_KERNEL_LAUNCH", "AST_GPU_MEMORY_ALLOC", "AST_GPU_MEMORY_COPY", "AST_GPU_SYNC",
+    "AST_GPU_INTRINSIC", "AST_CONTRACT_CLAUSE", "AST_REQUIRES_CLAUSE", "AST_ENSURES_CLAUSE",
+    "AST_INVARIANT_CLAUSE", "AST_ASSERT_STMT", "AST_ASSUME_STMT", "AST_CONTRACT_BLOCK",
+    "AST_WASM_EXPORT", "AST_WASM_IMPORT", "AST_WASM_MEMORY", "AST_WASM_TABLE",
+    "AST_WASM_GLOBAL", "AST_WASM_TYPE", "AST_WASM_START", "AST_WASM_ELEM", "AST_WASM_DATA",
+    "AST_JS_INTEROP", "AST_DOM_ACCESS", "AST_STRUCT_LITERAL", "AST_ENUM_TYPE",
+    "AST_ENUM_VARIANT", "AST_SLICE_INDEX_EXPR", "AST_MULTI_ASSIGN", "AST_ARRAY_LITERAL",
+    "AST_KEYED_ELEMENT", "AST_FUNC_LIT", "AST_SLICE_CONVERSION", "AST_TYPE_ASSERT",
+    "AST_TYPE_SWITCH", "AST_TYPE_CASE", "AST_ARENA_BLOCK", "AST_LABEL_STMT",
+    "AST_BREAK_LABEL_STMT", "AST_CONTINUE_LABEL_STMT", "AST_GOTO_STMT", "AST_FALLTHROUGH_STMT",
+};
+static_assert(sizeof(ast_kind_names) / sizeof(ast_kind_names[0]) == AST_NODE_COUNT,
+              "ast_kind_names must list every ASTNodeType in enum order");
+
+static void die_ast_kind(int kind) {
+    const char* name = (kind >= 0 && kind < AST_NODE_COUNT) ? ast_kind_names[kind] : "out of range";
+    fprintf(stderr, "program-dump: unsupported AST node kind %d (%s)\n", kind, name);
+    abort();
+}
+
 static void emit_node(JsonW* w, ASTNode* n);
 
 static void emit_list(JsonW* w, const char* key, ASTNode* head) {
@@ -123,7 +164,7 @@ static void emit_node(JsonW* w, ASTNode* n) {
         }
         // Tasks 3-5 add every other live kind here.
         default:
-            die_kind("AST node", n->type);
+            die_ast_kind(n->type);
     }
 }
 
