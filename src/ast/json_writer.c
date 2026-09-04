@@ -48,6 +48,28 @@ void jw_end_object(JsonW* w)   { close_container(w, '}'); }
 void jw_begin_array(JsonW* w)  { open_container(w, '[', false); }
 void jw_end_array(JsonW* w)    { close_container(w, ']'); }
 
+// Returns the length (2-4) of the well-formed UTF-8 sequence starting at
+// s[i] in a buffer of n bytes, or 0 if s[i] does not start one (a stray
+// continuation byte, an overlong/surrogate lead, or a lead with no room for
+// its continuations). A Goo string literal is a raw byte sequence, not
+// necessarily valid UTF-8 (`"\xff"` decodes to one such byte), so a lone
+// invalid byte must be escaped byte-wise to keep the JSON output well-formed
+// -- but a GENUINE multi-byte character next to it (the corpus has "café",
+// "中文", "°C") must still pass through untouched, which is what this check
+// buys: only a byte that fails it falls back to \u00XX below.
+static size_t utf8_seq_len(const unsigned char* s, size_t n, size_t i) {
+    unsigned char c = s[i], lo2 = 0x80, hi2 = 0xBF;
+    size_t len;
+    if (c >= 0xC2 && c <= 0xDF) len = 2;
+    else if (c >= 0xE0 && c <= 0xEF) { len = 3; if (c == 0xE0) lo2 = 0xA0; if (c == 0xED) hi2 = 0x9F; }
+    else if (c >= 0xF0 && c <= 0xF4) { len = 4; if (c == 0xF0) lo2 = 0x90; if (c == 0xF4) hi2 = 0x8F; }
+    else return 0;
+    if (i + len > n) return 0;
+    if (s[i + 1] < lo2 || s[i + 1] > hi2) return 0;
+    for (size_t k = 2; k < len; k++) if (s[i + k] < 0x80 || s[i + k] > 0xBF) return 0;
+    return len;
+}
+
 static void write_escaped(JsonW* w, const char* s, size_t n) {
     fputc('"', w->out);
     for (size_t i = 0; i < n; i++) {
@@ -59,8 +81,13 @@ static void write_escaped(JsonW* w, const char* s, size_t n) {
             case '\t': fputs("\\t", w->out); break;
             case '\r': fputs("\\r", w->out); break;
             default:
-                if (c < 0x20) fprintf(w->out, "\\u%04x", c);
-                else fputc(c, w->out);   // UTF-8 bytes pass through verbatim
+                if (c < 0x20) { fprintf(w->out, "\\u%04x", c); break; }
+                if (c < 0x80) { fputc(c, w->out); break; }   // ASCII, verbatim
+                {
+                    size_t len = utf8_seq_len((const unsigned char*)s, n, i);
+                    if (len) { fwrite(s + i, 1, len, w->out); i += len - 1; }   // valid UTF-8, verbatim
+                    else fprintf(w->out, "\\u%04x", c);                        // invalid lone byte
+                }
         }
     }
     fputc('"', w->out);

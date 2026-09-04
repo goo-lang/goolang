@@ -144,6 +144,35 @@ static const char* ownership_name(OwnershipKind k) {
     die_kind("ownership", k); return NULL;
 }
 
+static const char* pattern_name(PatternType p) {
+    switch (p) {
+        case PATTERN_LITERAL: return "PATTERN_LITERAL";
+        case PATTERN_IDENTIFIER: return "PATTERN_IDENTIFIER";
+        case PATTERN_WILDCARD: return "PATTERN_WILDCARD";
+        case PATTERN_DESTRUCTURE: return "PATTERN_DESTRUCTURE";
+        case PATTERN_TYPE: return "PATTERN_TYPE";
+        case PATTERN_OR: return "PATTERN_OR";
+    }
+    die_kind("pattern", p); return NULL;
+}
+
+static const char* chan_pattern_name(ChannelPattern p) {
+    switch (p) {
+        case CHAN_PATTERN_BASIC: return "CHAN_PATTERN_BASIC";
+        case CHAN_PATTERN_PUB: return "CHAN_PATTERN_PUB";
+        case CHAN_PATTERN_SUB: return "CHAN_PATTERN_SUB";
+        case CHAN_PATTERN_REQ: return "CHAN_PATTERN_REQ";
+        case CHAN_PATTERN_REP: return "CHAN_PATTERN_REP";
+        case CHAN_PATTERN_PUSH: return "CHAN_PATTERN_PUSH";
+        case CHAN_PATTERN_PULL: return "CHAN_PATTERN_PULL";
+    }
+    die_kind("channel pattern", p); return NULL;
+}
+
+// token_type_string is the lexer's own name table (src/lexer/token.c:247);
+// reusing it keeps the operator spelling identical to --emit-tokens.
+static void emit_tok(JsonW* w, const char* key, TokenType t) { emit_str(w, key, token_type_string(t)); }
+
 // ---- nodes -----------------------------------------------------------------
 
 static void emit_node(JsonW* w, ASTNode* n) {
@@ -305,7 +334,185 @@ static void emit_node(JsonW* w, ASTNode* n) {
             emit_int(w, "count", (long long)m->count); emit_bool(w, "is_short_decl", m->is_short_decl);
             jw_end_object(w); break;
         }
-        // Tasks 4-5 add every other live kind here (expressions, types).
+        case AST_IDENTIFIER: {
+            begin_node(w, n, "IDENTIFIER"); emit_str(w, "name", ((IdentifierNode*)n)->name); jw_end_object(w); break;
+        }
+        case AST_LITERAL: {
+            LiteralNode* l = (LiteralNode*)n;
+            begin_node(w, n, "LITERAL");
+            emit_tok(w, "literal_type", l->literal_type);
+            jw_key(w, "value"); jw_string_len(w, l->value, l->length);
+            emit_int(w, "length", (long long)l->length);
+            jw_end_object(w); break;
+        }
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)n;
+            begin_node(w, n, "BINARY_EXPR"); emit_tok(w, "op", b->operator); emit_child(w, "left", b->left); emit_child(w, "right", b->right); jw_end_object(w); break;
+        }
+        case AST_UNARY_EXPR: {
+            UnaryExprNode* u = (UnaryExprNode*)n;
+            begin_node(w, n, "UNARY_EXPR"); emit_tok(w, "op", u->operator); emit_child(w, "operand", u->operand); jw_end_object(w); break;
+        }
+        case AST_POSTFIX_EXPR: {
+            PostfixExprNode* p = (PostfixExprNode*)n;
+            begin_node(w, n, "POSTFIX_EXPR"); emit_tok(w, "op", p->operator); emit_child(w, "operand", p->operand); jw_end_object(w); break;
+        }
+        case AST_CALL_EXPR: {
+            CallExprNode* c = (CallExprNode*)n;
+            begin_node(w, n, "CALL_EXPR");
+            emit_child(w, "function", c->function); emit_list(w, "args", c->args);
+            emit_bool(w, "has_spread", c->has_spread);
+            jw_key(w, "type_args"); jw_begin_array(w);
+            if (g_stage == PROGRAM_DUMP_TYPED) for (size_t i = 0; i < c->type_arg_count; i++) jw_int(w, type_id(c->type_args[i]));
+            jw_end_array(w);
+            jw_key(w, "comptime_value_args"); jw_begin_array(w);
+            for (size_t i = 0; i < c->comptime_value_arg_count; i++) jw_int(w, (long long)c->comptime_value_args[i]);
+            jw_end_array(w);
+            jw_end_object(w); break;
+        }
+        case AST_INDEX_EXPR: {
+            IndexExprNode* e = (IndexExprNode*)n;
+            begin_node(w, n, "INDEX_EXPR"); emit_child(w, "expr", e->expr); emit_child(w, "index", e->index); jw_end_object(w); break;
+        }
+        case AST_SELECTOR_EXPR: {
+            SelectorExprNode* e = (SelectorExprNode*)n;
+            begin_node(w, n, "SELECTOR_EXPR"); emit_child(w, "expr", e->expr); emit_str(w, "selector", e->selector); jw_end_object(w); break;
+        }
+        case AST_SLICE_EXPR: {   // SliceLitNode: the enum slot is reused for slice literals
+            SliceLitNode* s = (SliceLitNode*)n;
+            begin_node(w, n, "SLICE_LIT"); emit_list(w, "elements", s->elements); emit_child(w, "elem_type", s->elem_type); jw_end_object(w); break;
+        }
+        case AST_PAREN_EXPR: {   // MapLitNode: the enum slot is reused for map literals
+            MapLitNode* m = (MapLitNode*)n;
+            begin_node(w, n, "MAP_LIT"); emit_child(w, "map_type", m->map_type); emit_list(w, "keys", m->keys); emit_list(w, "values", m->values); jw_end_object(w); break;
+        }
+        case AST_SLICE_INDEX_EXPR: {
+            SliceIndexExprNode* e = (SliceIndexExprNode*)n;
+            begin_node(w, n, "SLICE_INDEX_EXPR"); emit_child(w, "expr", e->expr); emit_child(w, "low", e->low); emit_child(w, "high", e->high); jw_end_object(w); break;
+        }
+        case AST_STRUCT_LITERAL: {
+            StructLiteralNode* s = (StructLiteralNode*)n;
+            begin_node(w, n, "STRUCT_LITERAL");
+            emit_str(w, "type_name", s->type_name); emit_bool(w, "is_keyed", s->is_keyed);
+            jw_key(w, "field_names"); jw_begin_array(w);
+            if (s->field_names) for (size_t i = 0; i < s->field_count; i++) jw_string(w, s->field_names[i]);
+            jw_end_array(w);
+            emit_list(w, "field_values", s->field_values);
+            emit_int(w, "field_count", (long long)s->field_count);
+            jw_end_object(w); break;
+        }
+        case AST_ARRAY_LITERAL: {
+            ArrayLitNode* a = (ArrayLitNode*)n;
+            begin_node(w, n, "ARRAY_LITERAL"); emit_child(w, "array_type", a->array_type); emit_list(w, "elements", a->elements); jw_end_object(w); break;
+        }
+        case AST_KEYED_ELEMENT: {
+            KeyedElementNode* k = (KeyedElementNode*)n;
+            begin_node(w, n, "KEYED_ELEMENT"); emit_child(w, "key", k->key); emit_child(w, "value", k->value); jw_end_object(w); break;
+        }
+        case AST_FUNC_LIT: {
+            FuncLitNode* f = (FuncLitNode*)n;
+            begin_node(w, n, "FUNC_LIT");
+            emit_list(w, "params", f->params); emit_child(w, "return_type", f->return_type); emit_child(w, "body", f->body);
+            emit_names(w, "captured_names", f->captured_names, f->captured_count);
+            jw_end_object(w); break;
+        }
+        case AST_SLICE_CONVERSION: {
+            SliceConvNode* s = (SliceConvNode*)n;
+            begin_node(w, n, "SLICE_CONVERSION"); emit_child(w, "slice_type", s->slice_type); emit_child(w, "operand", s->operand); jw_end_object(w); break;
+        }
+        case AST_TYPE_ASSERT: {
+            TypeAssertNode* t = (TypeAssertNode*)n;
+            begin_node(w, n, "TYPE_ASSERT"); emit_child(w, "expr", t->expr); emit_child(w, "asserted_type", t->asserted_type); jw_end_object(w); break;
+        }
+        case AST_TRY_EXPR: {
+            begin_node(w, n, "TRY_EXPR"); emit_child(w, "expr", ((TryExprNode*)n)->expr); jw_end_object(w); break;
+        }
+        case AST_CATCH_EXPR: {
+            CatchExprNode* c = (CatchExprNode*)n;
+            begin_node(w, n, "CATCH_EXPR"); emit_child(w, "expr", c->expr); emit_str(w, "error_var", c->error_var); emit_child(w, "catch_body", c->catch_body); jw_end_object(w); break;
+        }
+        case AST_MATCH_EXPR: {
+            MatchExprNode* m = (MatchExprNode*)n;
+            begin_node(w, n, "MATCH_EXPR"); emit_child(w, "expr", m->expr); emit_list(w, "cases", m->cases); jw_end_object(w); break;
+        }
+        case AST_MATCH_CASE: {
+            MatchCaseNode* c = (MatchCaseNode*)n;
+            begin_node(w, n, "MATCH_CASE"); emit_child(w, "pattern", c->pattern); emit_child(w, "guard", c->guard); emit_list(w, "body", c->body); jw_end_object(w); break;
+        }
+        case AST_GUARD_CONDITION: {
+            begin_node(w, n, "GUARD_CONDITION"); emit_child(w, "condition", ((GuardConditionNode*)n)->condition); jw_end_object(w); break;
+        }
+        case AST_PATTERN: {
+            PatternNode* p = (PatternNode*)n;
+            begin_node(w, n, "PATTERN");
+            emit_str(w, "pattern_type", pattern_name(p->pattern_type));
+            switch (p->pattern_type) {
+                case PATTERN_LITERAL: emit_child(w, "literal", p->data.literal.literal); break;
+                case PATTERN_IDENTIFIER: emit_str(w, "name", p->data.identifier.name); emit_child(w, "id_type", p->data.identifier.type); break;
+                case PATTERN_WILDCARD: break;
+                case PATTERN_DESTRUCTURE:
+                case PATTERN_TYPE: emit_str(w, "type_name", p->data.destructure.type_name); emit_list(w, "fields", p->data.destructure.fields); break;
+                case PATTERN_OR: emit_list(w, "patterns", p->data.or_pattern.patterns); break;
+            }
+            jw_end_object(w); break;
+        }
+        case AST_BASIC_TYPE: {
+            BasicTypeNode* t = (BasicTypeNode*)n;
+            begin_node(w, n, "BASIC_TYPE"); emit_str(w, "name", t->name); emit_str(w, "package", t->package); jw_end_object(w); break;
+        }
+        case AST_ARRAY_TYPE: {
+            ArrayTypeNode* t = (ArrayTypeNode*)n;
+            begin_node(w, n, "ARRAY_TYPE"); emit_child(w, "length", t->length); emit_child(w, "element_type", t->element_type); jw_end_object(w); break;
+        }
+        case AST_SLICE_TYPE: {
+            begin_node(w, n, "SLICE_TYPE"); emit_child(w, "element_type", ((SliceTypeNode*)n)->element_type); jw_end_object(w); break;
+        }
+        case AST_MAP_TYPE: {
+            MapTypeNode* t = (MapTypeNode*)n;
+            begin_node(w, n, "MAP_TYPE"); emit_child(w, "key_type", t->key_type); emit_child(w, "value_type", t->value_type); jw_end_object(w); break;
+        }
+        case AST_CHAN_TYPE: {
+            ChanTypeNode* t = (ChanTypeNode*)n;
+            begin_node(w, n, "CHAN_TYPE"); emit_child(w, "element_type", t->element_type);
+            emit_str(w, "pattern", chan_pattern_name(t->pattern)); emit_str(w, "endpoint", t->endpoint);
+            jw_end_object(w); break;
+        }
+        case AST_FUNC_TYPE: {
+            FuncTypeNode* t = (FuncTypeNode*)n;
+            begin_node(w, n, "FUNC_TYPE"); emit_list(w, "params", t->params); emit_child(w, "return_type", t->return_type); jw_end_object(w); break;
+        }
+        case AST_INTERFACE_TYPE: {
+            begin_node(w, n, "INTERFACE_TYPE"); emit_list(w, "methods", ((InterfaceTypeNode*)n)->methods); jw_end_object(w); break;
+        }
+        case AST_STRUCT_TYPE: {
+            StructTypeNode* t = (StructTypeNode*)n;
+            begin_node(w, n, "STRUCT_TYPE"); emit_list(w, "fields", t->fields); emit_bool(w, "is_result_tuple", t->is_result_tuple); jw_end_object(w); break;
+        }
+        case AST_ENUM_TYPE: {
+            begin_node(w, n, "ENUM_TYPE"); emit_list(w, "variants", ((EnumTypeNode*)n)->variants); jw_end_object(w); break;
+        }
+        case AST_ENUM_VARIANT: {
+            EnumVariantNode* v = (EnumVariantNode*)n;
+            begin_node(w, n, "ENUM_VARIANT"); emit_str(w, "name", v->name); emit_list(w, "fields", v->fields); jw_end_object(w); break;
+        }
+        case AST_POINTER_TYPE: {
+            begin_node(w, n, "POINTER_TYPE"); emit_child(w, "element_type", ((PointerTypeNode*)n)->element_type); jw_end_object(w); break;
+        }
+        case AST_REFERENCE_TYPE: {
+            ReferenceTypeNode* t = (ReferenceTypeNode*)n;
+            begin_node(w, n, "REFERENCE_TYPE"); emit_child(w, "element_type", t->element_type); emit_bool(w, "is_mutable", t->is_mutable); jw_end_object(w); break;
+        }
+        case AST_UNSAFE_PTR_TYPE: {
+            begin_node(w, n, "UNSAFE_PTR_TYPE"); emit_child(w, "element_type", ((UnsafePtrTypeNode*)n)->element_type); jw_end_object(w); break;
+        }
+        case AST_ERROR_UNION_TYPE: {
+            ErrorUnionTypeNode* t = (ErrorUnionTypeNode*)n;
+            begin_node(w, n, "ERROR_UNION_TYPE"); emit_child(w, "value_type", t->value_type); emit_child(w, "error_type", t->error_type); jw_end_object(w); break;
+        }
+        case AST_NULLABLE_TYPE: {
+            begin_node(w, n, "NULLABLE_TYPE"); emit_child(w, "base_type", ((NullableTypeNode*)n)->base_type); jw_end_object(w); break;
+        }
+        // Task 5 adds nothing new here — every kind above is parse+typed common.
         default:
             die_ast_kind(n->type);
     }
