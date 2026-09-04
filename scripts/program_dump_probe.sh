@@ -21,6 +21,10 @@
 # drops the first node's pos, so the structural check MUST fail. Both need the
 # fixture to dump at all, so a dump failure is reported as such, never as
 # "the nonce did not change the dump" (an abort leaves both files empty).
+# GOO_DUMP_SELFTEST=badkind forces die_ast_kind on the first node emitted, so
+# invariant 3 (every unhandled kind aborts by name) has an active tooth: the
+# process must abort (exit >= 128) and name the kind on stderr. This also
+# exercises the rc >= 128 branch below, which no other fixture ever takes.
 set -u
 cd "$(dirname "$0")/.."
 GOO=${COMPILER:-./bin/goo}
@@ -93,8 +97,18 @@ if [ "${1:-}" = "--self-test" ]; then
         echo "program-dump-probe --self-test: FAIL (dump of $f under notype failed: $(head -1 "$tmp/err"))"; exit 1
     fi
     if $CHECK "$tmp/4" >/dev/null 2>&1; then echo "program-dump-probe --self-test: FAIL (checker accepted a typed-stage node without a type id)"; exit 1; fi
+    # Fourth tooth (invariant 3): badkind forces die_ast_kind on the first
+    # node, which must abort (exit >= 128) and name the kind on stderr. The
+    # regression this guards is a `case AST_X: break;` added to quiet a real
+    # abort on some future fixture, which would drop the node silently and
+    # leave the process exiting 0 -- so both checks below matter, not just
+    # the exit status.
+    GOO_DUMP_SELFTEST=badkind "$GOO" --emit-ast-json -o /dev/null "$f" > "$tmp/5" 2> "$tmp/err5"
+    rc=$?
+    if [ "$rc" -lt 128 ]; then echo "program-dump-probe --self-test: FAIL (badkind exited $rc, not an abort)"; exit 1; fi
+    grep -q "program-dump: unsupported AST node kind" "$tmp/err5" || { echo "program-dump-probe --self-test: FAIL (badkind did not name the kind on stderr)"; exit 1; }
     rm -rf "$tmp"
-    echo "program-dump-probe --self-test: PASS (nonce breaks determinism, missing pos is refused, missing type id is refused)"
+    echo "program-dump-probe --self-test: PASS (nonce breaks determinism, missing pos is refused, missing type id is refused, badkind aborts and names the kind)"
     exit 0
 fi
 

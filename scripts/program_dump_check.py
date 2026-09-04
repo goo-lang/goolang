@@ -5,12 +5,17 @@ SHAPE every node and type must have, and that every id resolves, so a new
 kind needs no change here and a malformed one is still refused."""
 import json, re, sys
 
+# ADDR_OF and PTR_DEREF are deliberately absent: the walker never emits
+# either kind, because the parser never constructs them -- `&x` and `*x`
+# parse as UNARY_EXPR with TOKEN_BIT_AND / TOKEN_MULTIPLY (controller notes,
+# "Rules for case arms"). Listing them here would check a shape that can
+# never appear in a dump.
 EXPR_KINDS = {
     "IDENTIFIER", "LITERAL", "BINARY_EXPR", "UNARY_EXPR", "POSTFIX_EXPR",
     "CALL_EXPR", "INDEX_EXPR", "SELECTOR_EXPR", "SLICE_LIT", "MAP_LIT",
     "SLICE_INDEX_EXPR", "STRUCT_LITERAL", "ARRAY_LITERAL", "FUNC_LIT",
-    "SLICE_CONVERSION", "TYPE_ASSERT", "TRY_EXPR", "CATCH_EXPR", "ADDR_OF",
-    "PTR_DEREF", "MATCH_EXPR",
+    "SLICE_CONVERSION", "TYPE_ASSERT", "TRY_EXPR", "CATCH_EXPR",
+    "MATCH_EXPR",
 }
 
 def fail(msg):
@@ -176,6 +181,27 @@ def check_types(types):
                         if nested_key in r and not resolves(r[nested_key]):
                             fail(f"types[{i}].{key}.{nested_key}: id {r[nested_key]} does not resolve")
 
+# emit_plan (src/compiler/program_dump.c) writes one object per function
+# with exactly these four keys, and one object per local under "locals"
+# with exactly these four. release_plan_analyze returns NULL only on
+# allocation failure (never for an empty function or file), so a non-NULL
+# plan is always this list shape -- requiring a list here is safe, and
+# checking each key catches a writer that starts dropping one silently.
+_PLAN_FUNC_KEYS = ("function", "locals", "owned_keys", "owned_concat_operands")
+_PLAN_LOCAL_KEYS = ("name", "verdict", "reasons", "owns_elems")
+
+def check_plan(plan, fi):
+    if not isinstance(plan, list): fail(f"files[{fi}]: typed stage plan must be a list")
+    for pi, pf in enumerate(plan):
+        for k in _PLAN_FUNC_KEYS:
+            if k not in pf: fail(f"files[{fi}].plan[{pi}]: missing {k}")
+        for li, loc in enumerate(pf.get("locals", [])):
+            for k in _PLAN_LOCAL_KEYS:
+                if k not in loc: fail(f"files[{fi}].plan[{pi}].locals[{li}]: missing {k}")
+            v = loc.get("verdict")
+            if not isinstance(v, str) or not v:
+                fail(f"files[{fi}].plan[{pi}].locals[{li}]: verdict must be a non-empty string")
+
 def main():
     with open(sys.argv[1]) as fh: d = json.load(fh)
     if d.get("goo_program_dump") != 1: fail("missing goo_program_dump: 1")
@@ -193,6 +219,7 @@ def main():
         walk(f["imports"], stage == "typed", len(types), f"files[{fi}].imports")
         walk(f["decls"], stage == "typed", len(types), f"files[{fi}].decls")
         if stage == "parse" and f["plan"] is not None: fail(f"files[{fi}]: parse stage must have plan: null")
+        if stage == "typed": check_plan(f["plan"], fi)
     print("ok")
 
 if __name__ == "__main__": main()

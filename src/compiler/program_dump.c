@@ -442,6 +442,18 @@ static void emit_tok(JsonW* w, const char* key, TokenType t) { emit_str(w, key, 
 // ---- nodes -----------------------------------------------------------------
 
 static void emit_node(JsonW* w, ASTNode* n) {
+    // Teeth for invariant 3 (GOO_DUMP_SELFTEST=badkind): force the FIRST node
+    // emitted through the same abort path an unhandled kind would take,
+    // regardless of whether n->type is actually handled below. The
+    // regression this guards is not someone deleting the die_ast_kind call
+    // -- it is someone adding a `case AST_X: break;` arm to quiet an abort on
+    // a new fixture, which would drop the node silently. -1 is not a real
+    // ASTNodeType, so die_ast_kind's own bounds check names it "out of
+    // range", making plain that this is the synthetic control, not a claim
+    // that n->type is unsupported.
+    if (g_selftest && strcmp(g_selftest, "badkind") == 0 && g_nodes_emitted == 0) {
+        die_ast_kind(-1);
+    }
     switch (n->type) {
         case AST_PACKAGE_DECL: {
             PackageDeclNode* p = (PackageDeclNode*)n;
@@ -687,7 +699,9 @@ static void emit_node(JsonW* w, ASTNode* n) {
             FuncLitNode* f = (FuncLitNode*)n;
             begin_node(w, n, "FUNC_LIT");
             emit_list(w, "params", f->params); emit_child(w, "return_type", f->return_type); emit_child(w, "body", f->body);
-            emit_names(w, "captured_names", f->captured_names, f->captured_count);
+            // Guarded like STRUCT_LITERAL's field_names above: a NULL names
+            // pointer must never reach emit_names's loop with a nonzero count.
+            emit_names(w, "captured_names", f->captured_names, f->captured_names ? f->captured_count : 0);
             jw_end_object(w); break;
         }
         case AST_SLICE_CONVERSION: {

@@ -429,17 +429,36 @@ only meaningful when both were produced under the same configuration.
 enforced: its `nonce` tooth forces two runs of the same fixture to
 differ, and the determinism check must then fail.
 
-**2. The type table is closed under reference, and ids are structural.**
-`types[i].id == i` for every entry. Every id any node's `"type"` field or
-any type entry's own fields (`element`, `pointee`, a struct field's
-`type`, and so on) names resolves to an entry inside the table — there is
-no dangling reference. Because ids come from a structural key rather than
-from visit order, one id always means one type shape: two spellings of
-`[]int` share an id, and two structs with the same name declared in
-different packages do not. The same self-test proves the structural
-checks around this are enforced too: its `nopos` tooth drops a node's
-position and `notype` drops one typed-stage node's type id, and
-`scripts/program_dump_check.py` must refuse both.
+**2. The type table is closed under reference. Its ids are structural for
+IDENTITY, and ordinal for NUMBER.** `types[i].id == i` for every entry.
+Every id any node's `"type"` field or any type entry's own fields
+(`element`, `pointee`, a struct field's `type`, and so on) names resolves
+to an entry inside the table — there is no dangling reference. A
+structural key decides IDENTITY: two spellings of `[]int` share an id,
+and two structs with the same name declared in different packages do not
+(`type_id`, `src/compiler/program_dump.c:250`).
+
+The NUMBER assigned to a key is a different thing: it is the order in
+which the key was first visited, not a property of the shape itself.
+`type_id` mints an id as `g_types.count++` the first time a given key is
+seen (`src/compiler/program_dump.c:270`), and that visit order is one
+specific interleaving — a node's own type is registered in `begin_node`
+before any of its children are visited, and `emit_type_table` appends a
+composite type's component types to the table as it walks entries
+already inside it (`src/compiler/program_dump.c:938-945`). A second
+producer that reaches the same set of type shapes through a different
+walk order will assign the same keys different numbers, and `cmp` will
+reject the resulting dump on every fixture that uses more than one type,
+even though nothing about the program itself differs. To reach a
+byte-identical dump, a second producer must reproduce this exact visit
+order, not merely agree on which shapes exist. A future alternative, not
+implemented today, is for a consumer or the differential harness to
+renumber both type tables by a canonical structural order before
+comparing them, so numbering stops being part of what `cmp` has to agree
+on. The same self-test proves the structural checks around identity are
+actually enforced: its `nopos` tooth drops a node's position and `notype`
+drops one typed-stage node's type id, and `scripts/program_dump_check.py`
+must refuse both.
 
 **3. Every unhandled kind aborts by name.** `emit_node`'s `default` arm
 calls `die_ast_kind`, which prints `program-dump: unsupported AST node
@@ -450,15 +469,26 @@ differential gate pass on a fixture it never actually compared — the
 abort is what makes `scripts/program_dump_probe.sh`'s coverage claim
 true.
 
-Unlike invariants 1 and 2, this one has NO active self-test tooth today.
-Nothing in `scripts/program_dump_probe.sh --self-test` drives an
-unhandled kind through `emit_node` to prove `die_ast_kind` actually
-fires. The guarantee here is a STATIC one: it rests on reading the
-`default` arm (unconditional, calls `die_ast_kind` with no exception) and
-on the fact that no fixture in the current corpus reaches an
-unimplemented kind — not on an active test that would catch a regression
-here the way the `nonce`/`nopos`/`notype` teeth catch one for invariants
-1 and 2.
+This invariant now has an active self-test tooth, like invariants 1 and
+2. `GOO_DUMP_SELFTEST=badkind` forces `die_ast_kind` to fire on the FIRST
+node `emit_node` visits, bypassing the ordinary `switch` entirely, and
+`scripts/program_dump_probe.sh --self-test`'s fourth control requires the
+process to exit with status 128 or more and to print `program-dump:
+unsupported AST node kind` on stderr. That is also the first fixture ever
+to take the probe's own `rc >= 128` branch in `run_fixtures`
+(`scripts/program_dump_probe.sh:53`).
+
+The regression this tooth defends against is not someone deleting the
+call to `die_ast_kind` — a `git diff` would show that. It is someone
+adding a `case AST_X: break;` arm to quiet an abort raised by some future
+fixture, which drops that node from the dump silently and leaves the
+process exiting 0. Nothing else in the probe would notice: the dump would
+still parse, still pass `program_dump_check.py`, and still be
+deterministic. The `badkind` control cannot catch that specific future
+arm before it is written, but it does prove the abort mechanism itself —
+the `default` arm, the message, the abort — still fires today, so a
+change that stops the mechanism from working (rather than one that adds a
+new, correctly-argued exemption) is caught immediately.
 
 ## The version rule
 

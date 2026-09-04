@@ -1,5 +1,7 @@
 # Phase 0: Program Dump, Differential Harness, Diagnostic Catalogue — Implementation Plan
 
+> **Superseded path:** This plan names `src/ast/program_dump.c` throughout. The file moved to `src/compiler/program_dump.c` in Step 3. Read the code at that path, not at the path this plan gives.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give `bin/goo` a deterministic, versioned JSON dump of the parsed and the typed program (with release plan), a harness that diffs two producers of that dump across every golden fixture, and a machine-readable catalogue of the type checker's diagnostic strings — the three things every later front-end migration step is measured against.
