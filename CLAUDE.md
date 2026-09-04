@@ -107,6 +107,22 @@ that rule and link into no binary: `types/proof_smt.c`,
 (`scripts/ast_free_leak_probe.sh`). Both probes are in `verify-core`. Do not
 remove those seven without moving the probes first.
 
+**Program dump (Phase 0 front-end migration).** `bin/goo --emit-ast-json
+<file>` emits the parsed program as JSON (parse stage, no type ids).
+`bin/goo --emit-program <file>` emits the same tree after type checking,
+with type ids and a release plan (typed stage). Format:
+docs/superpowers/specs/2026-09-04-program-dump-format.md. Gated in
+`verify-core` by `program-dump-probe` (every golden fixture, both stages,
+determinism plus structure) and `program-dump-selftest` (teeth: a per-run
+nonce must break the determinism check, a dropped `pos` and a dropped
+typed-stage `type` id must both be refused). `scripts/frontend_diff.sh`
+diffs two producers of the dump over the same fixtures — the gate every
+later front-end swap is measured by — and is itself gated by
+`frontend-diff-selftest` until a second producer exists. The type
+checker's diagnostic strings live in `catalogue/diagnostics.tsv`, kept
+equal to the source by `diagnostics-drift-probe`, because the Haskell
+front end matches reject fixtures on verbatim stderr text.
+
 ## `goo test`
 
 `goo test [dir]` (default `.`) runs one package's tests. It compiles the
