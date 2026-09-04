@@ -3197,6 +3197,7 @@ VERIFY_ALL_DEPS := \
     safety-baseline-check \
     doc-claims-probe \
     probe-teeth-probe \
+    frontend-diff-selftest \
     assert-corpus-selftest \
     golden-selftest \
     goo-check-probe \
@@ -5075,6 +5076,12 @@ json_writer_test: $(TEST_UNIT_DIR)/ast/json_writer_test.c $(TEST_UNIT_DIR)/goo_c
 json-writer-test: json_writer_test
 	@echo "Running JSON writer tests..."
 	./json_writer_test
+
+# The frontend_diff harness itself has teeth: identical producers report 0,
+# one rewritten fixture reports 1 and is named. Without this a broken harness
+# could report "0 differ" between a real front end and an empty one.
+frontend-diff-selftest:
+	@bash scripts/frontend_diff.sh --self-test
 
 # ARC step 1, race gate. The ordinary build CANNOT see a data race on the
 # reference count: rows 12-14 of obj_header_test caught the non-atomic version
