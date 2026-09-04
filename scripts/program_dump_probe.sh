@@ -84,8 +84,17 @@ if [ "${1:-}" = "--self-test" ]; then
         echo "program-dump-probe --self-test: FAIL (dump of $f failed: $(head -1 "$tmp/err"))"; exit 1
     fi
     if $CHECK "$tmp/3" >/dev/null 2>&1; then echo "program-dump-probe --self-test: FAIL (checker accepted a node without pos)"; exit 1; fi
+    # Third tooth (fix round 1, finding 2): nonce and nopos above both run
+    # against --emit-ast-json, the PARSE stage, which carries no type ids at
+    # all -- nothing proved that a TYPED-stage node missing its type id is
+    # actually refused. notype drops exactly one ordinary (non-callee)
+    # IDENTIFIER/BINARY_EXPR node's "type" field; the checker must reject it.
+    if ! GOO_DUMP_SELFTEST=notype "$GOO" --emit-program -o /dev/null "$f" > "$tmp/4" 2> "$tmp/err"; then
+        echo "program-dump-probe --self-test: FAIL (dump of $f under notype failed: $(head -1 "$tmp/err"))"; exit 1
+    fi
+    if $CHECK "$tmp/4" >/dev/null 2>&1; then echo "program-dump-probe --self-test: FAIL (checker accepted a typed-stage node without a type id)"; exit 1; fi
     rm -rf "$tmp"
-    echo "program-dump-probe --self-test: PASS (nonce breaks determinism, missing pos is refused)"
+    echo "program-dump-probe --self-test: PASS (nonce breaks determinism, missing pos is refused, missing type id is refused)"
     exit 0
 fi
 

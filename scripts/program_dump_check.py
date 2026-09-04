@@ -20,17 +20,21 @@ def fail(msg):
 # by literal name, inside the checker itself -- never routed through the
 # ordinary type_check_identifier/type_check_literal/type_check_expression
 # pass that stamps node_type -- so a node in one of them legitimately
-# carries no "type" in the typed-stage dump, and any EXPRESSION NESTED
-# inside it (a `2+3` array length, say) never gets stamped either, since
-# the whole subtree is consumed by constant-folding or a type-name lookup
-# rather than the ordinary checker walk. Closing the gap (giving each of
-# these a real type, or dropping them from EXPR_KINDS) is Phase 1 work, not
-# this task's; each comment below names one fixture that reproduces it
+# carries no "type" in the typed-stage dump. Closing the gap (giving each
+# of these a real type, or dropping them from EXPR_KINDS) is Phase 1 work,
+# not this task's; each comment below names one fixture that reproduces it
 # (there are more).
 #
-# _UNCHECKED_SUBTREES(node) names the child KEYS of `node` whose entire
-# subtree the walk below must stop requiring a type for. A single node
-# lacking a type is handled separately by known_unstamped, below.
+# Two mechanisms, chosen per finding, deliberately kept separate and as
+# NARROW as the checker's own behavior allows (fix round 1, finding 1):
+# _unchecked_subtrees(node) names child KEYS whose entire subtree is
+# consumed by constant-folding or a type-name lookup, so no descendant
+# anywhere below is stamped either (a `2+3` array length is the standing
+# example). known_unstamped(path, kind, node, parent) instead judges ONE
+# node at a time, for a shape where only that exact node -- never its
+# siblings or descendants -- goes unstamped; over-using the subtree form
+# here would hide a real regression the way the pre-fix-round CALL_EXPR
+# rule did (measured: 7033 nodes exempted, only 672 genuinely unstamped).
 def _unchecked_subtrees(node):
     k = node.get("kind")
     if k == "ARRAY_TYPE":
@@ -44,19 +48,6 @@ def _unchecked_subtrees(node):
         # (`{2: v}`) is resolved via goo_fold_const_int, never
         # type_check_expression.
         return {"key"}
-    if k == "CALL_EXPR":
-        # type_check_call_expr (src/types/expression_checker.c) recognizes
-        # a builtin name (append/len/cap/make/...), make_chan, a named-type
-        # conversion (IntSlice(x)), or an explicit generic instantiation
-        # (Id[T](x), callee kind INDEX_EXPR) by NAME/lookup/shape and
-        # handles the call itself, never calling type_check_expression on
-        # call->function. Confirmed by contrast: a plain user-function
-        # callee (`work()` in examples/arc_release_probe.goo) DOES get a
-        # type id through the ordinary path.
-        # examples/append_probe.goo (append), examples/chan_probe.goo
-        # (make_chan), examples/named_type_conv_probe.goo (IntSlice),
-        # examples/generic_explicit_inst_probe.goo (Id[T]).
-        return {"function"}
     return set()
 
 # make_chan/new/make's FIRST argument is a TYPE, resolved via type_from_ast
@@ -67,6 +58,38 @@ def _unchecked_subtrees(node):
 _TYPE_ARG0_BUILTINS = {"make_chan", "new", "make"}
 
 def known_unstamped(path, kind, node, parent):
+    if (path.endswith(".function") and kind in ("IDENTIFIER", "INDEX_EXPR")
+            and parent and parent.get("kind") == "CALL_EXPR"):
+        # type_check_call_expr (src/types/expression_checker.c) recognizes a
+        # builtin name (append/len/cap/make/...), make_chan, a named-type
+        # conversion (IntSlice(x)), or an explicit generic instantiation
+        # (Id[T](x), callee kind INDEX_EXPR) by NAME/lookup/shape and
+        # handles the call itself, never calling type_check_expression on
+        # call->function. Scoped to exactly the callee NODE, and to
+        # IDENTIFIER/INDEX_EXPR only: a SELECTOR_EXPR callee (`buf.
+        # WriteString(s)`) and a FUNC_LIT callee (an IIFE) are ALWAYS
+        # stamped (measured: 2774 and 17 occurrences, 0 unstamped either
+        # way), so leaving those out of this rule means a future stamping
+        # regression on either is still caught. Confirmed by contrast: a
+        # plain user-function IDENTIFIER callee (`work()` in
+        # examples/arc_release_probe.goo) DOES get a type id through the
+        # ordinary path -- this rule still allows it to lack one, since
+        # IDENTIFIER genuinely mixes both cases and the two can't be told
+        # apart from the dump alone.
+        # examples/append_probe.goo (append), examples/chan_probe.goo
+        # (make_chan), examples/named_type_conv_probe.goo (IntSlice),
+        # examples/generic_explicit_inst_probe.goo (Id[T]).
+        return True
+    if (kind == "IDENTIFIER" and (path.endswith(".function.expr") or path.endswith(".function.index"))
+            and parent and parent.get("kind") == "INDEX_EXPR"):
+        # examples/generic_explicit_inst_probe.goo: `Id[T](x)` parses its
+        # callee as INDEX_EXPR(expr=Id, index=T); type_check_generic_call_
+        # explicit handles the whole node before either child ever reaches
+        # type_check_expression. Gated on the immediate parent being the
+        # INDEX_EXPR callee itself, so an ordinary SELECTOR_EXPR callee's
+        # OWN "expr" (the receiver, e.g. `buf` in `buf.WriteString(s)`) is
+        # NOT covered by this arm and stays checked normally.
+        return True
     if kind == "IDENTIFIER" and node.get("name") == "_":
         # examples/type_assert_valptr_probe.goo: `_ = vAsValue` -- the
         # blank identifier is a discard target, never a resolved Variable.
@@ -128,7 +151,18 @@ def walk(node, typed, ntypes, path, parent=None):
             continue
         walk(v, typed and key not in unchecked, ntypes, f"{path}.{key}", node)
 
+# A list entry under "fields", "methods" or "variants" is itself an object
+# carrying ONE more type reference: a struct FIELD's "type", an interface
+# METHOD's "type", or an enum VARIANT's "payload" (fix round 1, finding 3
+# -- 803 such references measured across the corpus, none previously
+# walked). Closure under reference is a global constraint of the whole
+# table: a dangling id three levels down is exactly as real a defect as a
+# dangling top-level one, so both need the same resolves-or-fail check.
+_NESTED_TYPE_REF_KEYS = ("type", "payload")
+
 def check_types(types):
+    def resolves(r):
+        return not isinstance(r, int) or 0 <= r < len(types)
     for i, t in enumerate(types):
         if t.get("id") != i: fail(f"types[{i}]: id {t.get('id')} out of order")
         if not isinstance(t.get("kind"), str): fail(f"types[{i}]: kind missing")
@@ -136,9 +170,11 @@ def check_types(types):
             refs = v if isinstance(v, list) else [v]
             for r in refs:
                 if key.endswith("_type") or key in ("element", "key", "value", "pointee", "referenced", "base", "return", "constraint", "payload", "error", "params"):
-                    if isinstance(r, int) and not (0 <= r < len(types)): fail(f"types[{i}].{key}: id {r} does not resolve")
-                if isinstance(r, dict) and "type" in r and isinstance(r["type"], int) and not (0 <= r["type"] < len(types)):
-                    fail(f"types[{i}].{key}: member type id {r['type']} does not resolve")
+                    if not resolves(r): fail(f"types[{i}].{key}: id {r} does not resolve")
+                if isinstance(r, dict):
+                    for nested_key in _NESTED_TYPE_REF_KEYS:
+                        if nested_key in r and not resolves(r[nested_key]):
+                            fail(f"types[{i}].{key}.{nested_key}: id {r[nested_key]} does not resolve")
 
 def main():
     with open(sys.argv[1]) as fh: d = json.load(fh)

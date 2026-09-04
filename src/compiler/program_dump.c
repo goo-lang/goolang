@@ -280,6 +280,18 @@ static ProgramDumpStage g_stage;
 static const char* g_selftest;   // GOO_DUMP_SELFTEST, or NULL
 static int g_nodes_emitted;
 static const char* g_current_file; // name of the file entry a node's pos is compared against
+// Teeth for GOO_DUMP_SELFTEST=notype (fix round 1, finding 2): a positive
+// control proving the typed-stage "every EXPR_KINDS node has a type id" rule
+// is actually enforced, not just satisfied by every fixture so far. g_in_callee
+// is nonzero for the whole subtree emitted as a CALL_EXPR's own "function"
+// field (set around that one emit_child call, below) -- callee position is
+// where a real, allowlisted gap lives (program_dump_check.py's
+// known_unstamped), so the dropped node must sit outside it to prove the
+// CHECK, not exercise an already-known exemption. g_notype_dropped ensures
+// exactly one node loses its "type" -- dropping every one would just look
+// like the parse stage and prove nothing extra.
+static int g_in_callee;
+static int g_notype_dropped;
 
 static void die_kind(const char* what, int kind) {
     fprintf(stderr, "program-dump: unsupported %s kind %d\n", what, kind);
@@ -372,7 +384,20 @@ static void begin_node(JsonW* w, ASTNode* n, const char* kind) {
         emit_str(w, "file", n->pos.filename);
     }
     g_nodes_emitted++;
-    if (g_stage == PROGRAM_DUMP_TYPED && n->node_type) emit_int(w, "type", type_id(n->node_type));
+    if (g_stage == PROGRAM_DUMP_TYPED && n->node_type) {
+        long long tid = type_id(n->node_type);   // register the type either way -- see notype's own note below
+        // Teeth: drop exactly one ordinary (non-callee) IDENTIFIER/BINARY_EXPR
+        // node's "type" field, so program_dump_check.py must refuse the
+        // result. Excluded from a callee position on purpose -- that gap is
+        // already known and allowlisted, so dropping one there would test
+        // nothing new.
+        if (g_selftest && strcmp(g_selftest, "notype") == 0 && !g_in_callee && !g_notype_dropped
+            && (strcmp(kind, "IDENTIFIER") == 0 || strcmp(kind, "BINARY_EXPR") == 0)) {
+            g_notype_dropped = 1;
+        } else {
+            emit_int(w, "type", tid);
+        }
+    }
 }
 
 static const char* ownership_name(OwnershipKind k) {
@@ -601,7 +626,15 @@ static void emit_node(JsonW* w, ASTNode* n) {
         case AST_CALL_EXPR: {
             CallExprNode* c = (CallExprNode*)n;
             begin_node(w, n, "CALL_EXPR");
-            emit_child(w, "function", c->function); emit_list(w, "args", c->args);
+            // g_in_callee spans the callee's whole subtree (not just c->function
+            // itself), so the notype self-test never targets a node that lives
+            // under a known, allowlisted callee gap (e.g. a receiver identifier
+            // under a SELECTOR_EXPR callee, or the base/index under an INDEX_EXPR
+            // explicit-generic-instantiation callee).
+            g_in_callee++;
+            emit_child(w, "function", c->function);
+            g_in_callee--;
+            emit_list(w, "args", c->args);
             emit_bool(w, "has_spread", c->has_spread);
             jw_key(w, "type_args"); jw_begin_array(w);
             if (g_stage == PROGRAM_DUMP_TYPED) for (size_t i = 0; i < c->type_arg_count; i++) jw_int(w, type_id(c->type_args[i]));
@@ -944,6 +977,8 @@ void program_dump_write(FILE* out, ASTNode** files, const char** filenames,
     g_memo.count = 0;
     g_keys.count = 0;
     g_types_visited = 0;
+    g_in_callee = 0;
+    g_notype_dropped = 0;
 
     jw_begin_object(&w);
     emit_int(&w, "goo_program_dump", 1);

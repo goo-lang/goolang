@@ -1525,6 +1525,15 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         // yields NULL plans, emitted as null -- the kill switch is visible
         // in the dump.
         ReleasePlan** plans = calloc(nfiles, sizeof(ReleasePlan*));
+        if (!plans) {
+            free(dump_names);
+#if LLVM_AVAILABLE
+            codegen_free(codegen);
+#endif
+            type_checker_free(type_checker);
+            ENTRY_CLEANUP();
+            return false;
+        }
         const char* arc_off = getenv("GOO_ARC_RELEASE");
         if (!(arc_off && strcmp(arc_off, "0") == 0)) {
             for (size_t fi = 0; fi < nfiles; fi++) plans[fi] = release_plan_analyze(asts[fi]);
