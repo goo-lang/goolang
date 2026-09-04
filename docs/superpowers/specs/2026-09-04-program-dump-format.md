@@ -364,7 +364,7 @@ is part of the nominal key.
 
 `Type.name` (a `snprintf`'d display string, truncated at 64 or 128 bytes
 for `[10]int`-, `[]int`-, `map[K]V`-, and channel-shaped names —
-`src/types/types.c:157,205,226,260,315`) is never part of a composite's
+`src/types/types.c:159,207,228,262`) is never part of a composite's
 key or dump, exactly because it can truncate. Only scalar and nominal
 entries use it, where it cannot.
 
@@ -405,10 +405,12 @@ per user-defined function/method:
 `RELEASE_NO_NOT_OWNED`, `RELEASE_NO_ARENA`, `RELEASE_NO_LOOP_SCOPE`,
 `RELEASE_NO_REBOUND`, `RELEASE_NO_ALIASED`, `RELEASE_NO_BLOCK_ESCAPE`,
 `RELEASE_NO_NO_BINDING`, `RELEASE_NO_UNKNOWN` (`include/release_decision.h`).
-`reasons` is diagnostic only — CLAUDE.md's memory-model section says
-plainly that nothing in the compiler may branch on it, and a consumer of
-the dump should treat it the same way: read it to explain a verdict, never
-to derive one. `owned_keys` and `owned_concat_operands` are each a list of
+`reasons` is diagnostic only. `include/release_decision.h:320` says
+plainly, of this same field: "NOTHING MAY BRANCH ON THIS." (the field
+itself, `diagnostic_reasons`, is declared at line 237, with its own
+comment at lines 221-223). A consumer of the dump should hold to the
+same rule: read `reasons` to explain a verdict, never to derive one.
+`owned_keys` and `owned_concat_operands` are each a list of
 source positions (not nodes), naming the map-index-assignment keys and
 string-concatenation operands the plan judged to be fresh temporaries.
 
@@ -423,6 +425,9 @@ compiler faithfully by emitting `"plan": null` in that case. The dump is
 not a function of the source alone — it is a function of the source AND
 the compiler configuration, and a differential comparison of two dumps is
 only meaningful when both were produced under the same configuration.
+`scripts/program_dump_probe.sh --self-test` proves this is actually
+enforced: its `nonce` tooth forces two runs of the same fixture to
+differ, and the determinism check must then fail.
 
 **2. The type table is closed under reference, and ids are structural.**
 `types[i].id == i` for every entry. Every id any node's `"type"` field or
@@ -431,7 +436,10 @@ any type entry's own fields (`element`, `pointee`, a struct field's
 no dangling reference. Because ids come from a structural key rather than
 from visit order, one id always means one type shape: two spellings of
 `[]int` share an id, and two structs with the same name declared in
-different packages do not.
+different packages do not. The same self-test proves the structural
+checks around this are enforced too: its `nopos` tooth drops a node's
+position and `notype` drops one typed-stage node's type id, and
+`scripts/program_dump_check.py` must refuse both.
 
 **3. Every unhandled kind aborts by name.** `emit_node`'s `default` arm
 calls `die_ast_kind`, which prints `program-dump: unsupported AST node
@@ -441,6 +449,16 @@ node or type silently skipped, rather than refused, would let a
 differential gate pass on a fixture it never actually compared — the
 abort is what makes `scripts/program_dump_probe.sh`'s coverage claim
 true.
+
+Unlike invariants 1 and 2, this one has NO active self-test tooth today.
+Nothing in `scripts/program_dump_probe.sh --self-test` drives an
+unhandled kind through `emit_node` to prove `die_ast_kind` actually
+fires. The guarantee here is a STATIC one: it rests on reading the
+`default` arm (unconditional, calls `die_ast_kind` with no exception) and
+on the fact that no fixture in the current corpus reaches an
+unimplemented kind — not on an active test that would catch a regression
+here the way the `nonce`/`nopos`/`notype` teeth catch one for invariants
+1 and 2.
 
 ## The version rule
 
@@ -473,7 +491,7 @@ on the shape.
   a `Scope` — it never adds a node to the AST, so there is nothing for
   the walker to visit.
 - **Monomorphized instances.** `codegen_generate_function_instance`
-  (`monomorphize.c:129-223`) re-walks the SAME template AST once per
+  (`monomorphize.c:129-227`) re-walks the SAME template AST once per
   instantiation. A generic function's body therefore carries only the
   abstract type stamps from the original type-check pass, never a
   concrete per-instantiation type. Phase 1 of the strangler plan moves
