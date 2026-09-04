@@ -38,6 +38,7 @@ static long long type_id(Type* t) {
 static ProgramDumpStage g_stage;
 static const char* g_selftest;   // GOO_DUMP_SELFTEST, or NULL
 static int g_nodes_emitted;
+static const char* g_current_file; // name of the file entry a node's pos is compared against
 
 static void die_kind(const char* what, int kind) {
     fprintf(stderr, "program-dump: unsupported %s kind %d\n", what, kind);
@@ -122,6 +123,13 @@ static void begin_node(JsonW* w, ASTNode* n, const char* kind) {
         jw_int(w, n->pos.line); jw_int(w, n->pos.column); jw_int(w, n->pos.offset);
         jw_end_array(w);
     }
+    // A node whose position names a file other than the current file entry
+    // (e.g. a synthesized node carrying source from elsewhere) records that
+    // file explicitly, so the dump does not silently attribute it to the
+    // wrong file.
+    if (n->pos.filename && (!g_current_file || strcmp(n->pos.filename, g_current_file) != 0)) {
+        emit_str(w, "file", n->pos.filename);
+    }
     g_nodes_emitted++;
     if (g_stage == PROGRAM_DUMP_TYPED && n->node_type) emit_int(w, "type", type_id(n->node_type));
 }
@@ -162,7 +170,142 @@ static void emit_node(JsonW* w, ASTNode* n) {
             emit_child(w, "body", f->body);
             jw_end_object(w); break;
         }
-        // Tasks 3-5 add every other live kind here.
+        case AST_VAR_DECL: {
+            VarDeclNode* v = (VarDeclNode*)n;
+            begin_node(w, n, "VAR_DECL");
+            emit_names(w, "names", v->names, v->name_count);
+            emit_child(w, "decl_type", v->type);
+            emit_list(w, "values", v->values);
+            emit_str(w, "ownership", ownership_name(v->ownership));
+            emit_bool(w, "is_short_decl", v->is_short_decl);
+            emit_bool(w, "is_variadic_param", v->is_variadic_param);
+            emit_bool(w, "is_captured", v->is_captured);
+            emit_bool(w, "is_embedded", v->is_embedded);
+            emit_bool(w, "is_comptime_param", v->is_comptime_param);
+            jw_end_object(w); break;
+        }
+        case AST_CONST_DECL: {
+            ConstDeclNode* c = (ConstDeclNode*)n;
+            begin_node(w, n, "CONST_DECL");
+            emit_names(w, "names", c->names, c->name_count);
+            emit_child(w, "decl_type", c->type);
+            emit_list(w, "values", c->values);
+            emit_bool(w, "is_comptime", c->is_comptime);
+            jw_end_object(w); break;
+        }
+        case AST_TYPE_DECL: {
+            TypeDeclNode* t = (TypeDeclNode*)n;
+            begin_node(w, n, "TYPE_DECL"); emit_str(w, "name", t->name); emit_child(w, "decl_type", t->type); jw_end_object(w); break;
+        }
+        case AST_EXTERN_DECL: {
+            ExternDeclNode* e = (ExternDeclNode*)n;
+            begin_node(w, n, "EXTERN_DECL");
+            emit_str(w, "name", e->name); emit_str(w, "abi", e->abi);
+            emit_list(w, "params", e->params); emit_child(w, "return_type", e->return_type);
+            emit_str(w, "library", e->library);
+            jw_end_object(w); break;
+        }
+        case AST_ATTRIBUTE: {
+            AttributeNode* a = (AttributeNode*)n;
+            begin_node(w, n, "ATTRIBUTE"); emit_str(w, "name", a->name); emit_list(w, "args", a->args); jw_end_object(w); break;
+        }
+        case AST_BLOCK_STMT: {
+            begin_node(w, n, "BLOCK_STMT"); emit_list(w, "statements", ((BlockStmtNode*)n)->statements); jw_end_object(w); break;
+        }
+        case AST_EXPR_STMT: {
+            begin_node(w, n, "EXPR_STMT"); emit_child(w, "expr", ((ExprStmtNode*)n)->expr); jw_end_object(w); break;
+        }
+        case AST_IF_STMT: {
+            IfStmtNode* s = (IfStmtNode*)n;
+            begin_node(w, n, "IF_STMT");
+            emit_child(w, "condition", s->condition); emit_child(w, "then", s->then_stmt); emit_child(w, "else", s->else_stmt);
+            jw_end_object(w); break;
+        }
+        case AST_IF_LET_STMT: {
+            IfLetStmtNode* s = (IfLetStmtNode*)n;
+            begin_node(w, n, "IF_LET_STMT");
+            emit_str(w, "var_name", s->var_name); emit_child(w, "nullable_expr", s->nullable_expr);
+            emit_child(w, "then", s->then_stmt); emit_child(w, "else", s->else_stmt);
+            jw_end_object(w); break;
+        }
+        case AST_FOR_STMT: {
+            ForStmtNode* s = (ForStmtNode*)n;
+            begin_node(w, n, "FOR_STMT");
+            emit_child(w, "init", s->init); emit_child(w, "condition", s->condition); emit_child(w, "post", s->post);
+            emit_child(w, "range_expr", s->range_expr); emit_str(w, "key_name", s->key_name); emit_str(w, "value_name", s->value_name);
+            emit_child(w, "body", s->body);
+            jw_end_object(w); break;
+        }
+        case AST_RETURN_STMT: {
+            begin_node(w, n, "RETURN_STMT"); emit_list(w, "values", ((ReturnStmtNode*)n)->values); jw_end_object(w); break;
+        }
+        case AST_BREAK_STMT:       begin_node(w, n, "BREAK_STMT"); jw_end_object(w); break;
+        case AST_CONTINUE_STMT:    begin_node(w, n, "CONTINUE_STMT"); jw_end_object(w); break;
+        case AST_FALLTHROUGH_STMT: begin_node(w, n, "FALLTHROUGH_STMT"); jw_end_object(w); break;
+        case AST_DEFER_STMT: {
+            begin_node(w, n, "DEFER_STMT"); emit_child(w, "call", ((DeferStmtNode*)n)->call); jw_end_object(w); break;
+        }
+        case AST_GO_STMT: {
+            begin_node(w, n, "GO_STMT"); emit_child(w, "call", ((GoStmtNode*)n)->call); jw_end_object(w); break;
+        }
+        case AST_SELECT_STMT: {
+            begin_node(w, n, "SELECT_STMT"); emit_list(w, "cases", ((SelectStmtNode*)n)->cases); jw_end_object(w); break;
+        }
+        case AST_SELECT_CASE: {
+            SelectCaseNode* c = (SelectCaseNode*)n;
+            begin_node(w, n, "SELECT_CASE");
+            emit_child(w, "comm", c->comm); emit_list(w, "body", c->body);
+            emit_str(w, "bind_name", c->bind_name); emit_int(w, "is_declare", c->is_declare);
+            jw_end_object(w); break;
+        }
+        case AST_SWITCH_STMT: {
+            SwitchStmtNode* s = (SwitchStmtNode*)n;
+            begin_node(w, n, "SWITCH_STMT"); emit_child(w, "tag", s->tag); emit_list(w, "cases", s->cases); jw_end_object(w); break;
+        }
+        case AST_CASE_CLAUSE: {
+            CaseClauseNode* c = (CaseClauseNode*)n;
+            begin_node(w, n, "CASE_CLAUSE"); emit_list(w, "exprs", c->exprs); emit_list(w, "body", c->body); jw_end_object(w); break;
+        }
+        case AST_TYPE_SWITCH: {
+            TypeSwitchNode* s = (TypeSwitchNode*)n;
+            begin_node(w, n, "TYPE_SWITCH");
+            emit_child(w, "bind_name", s->bind_name); emit_child(w, "expr", s->expr); emit_list(w, "cases", s->cases);
+            jw_end_object(w); break;
+        }
+        case AST_TYPE_CASE: {
+            TypeCaseNode* c = (TypeCaseNode*)n;
+            begin_node(w, n, "TYPE_CASE"); emit_list(w, "types", c->types); emit_list(w, "body", c->body); jw_end_object(w); break;
+        }
+        case AST_UNSAFE_STMT: {
+            begin_node(w, n, "UNSAFE_STMT"); emit_child(w, "body", ((UnsafeStmtNode*)n)->body); jw_end_object(w); break;
+        }
+        case AST_ARENA_BLOCK: {
+            begin_node(w, n, "ARENA_BLOCK"); emit_child(w, "body", ((ArenaBlockNode*)n)->body); jw_end_object(w); break;
+        }
+        case AST_COMPTIME_BLOCK: {
+            begin_node(w, n, "COMPTIME_BLOCK"); emit_child(w, "body", ((ComptimeBlockNode*)n)->body); jw_end_object(w); break;
+        }
+        case AST_LABEL_STMT: {
+            LabelStmtNode* s = (LabelStmtNode*)n;
+            begin_node(w, n, "LABEL_STMT"); emit_str(w, "name", s->name); emit_child(w, "stmt", s->stmt); jw_end_object(w); break;
+        }
+        case AST_BREAK_LABEL_STMT: {
+            begin_node(w, n, "BREAK_LABEL_STMT"); emit_str(w, "label", ((BreakLabelStmtNode*)n)->label); jw_end_object(w); break;
+        }
+        case AST_CONTINUE_LABEL_STMT: {
+            begin_node(w, n, "CONTINUE_LABEL_STMT"); emit_str(w, "label", ((ContinueLabelStmtNode*)n)->label); jw_end_object(w); break;
+        }
+        case AST_GOTO_STMT: {
+            begin_node(w, n, "GOTO_STMT"); emit_str(w, "label", ((GotoStmtNode*)n)->label); jw_end_object(w); break;
+        }
+        case AST_MULTI_ASSIGN: {
+            MultiAssignNode* m = (MultiAssignNode*)n;
+            begin_node(w, n, "MULTI_ASSIGN");
+            emit_list(w, "targets", m->targets); emit_list(w, "values", m->values);
+            emit_int(w, "count", (long long)m->count); emit_bool(w, "is_short_decl", m->is_short_decl);
+            jw_end_object(w); break;
+        }
+        // Tasks 4-5 add every other live kind here (expressions, types).
         default:
             die_ast_kind(n->type);
     }
@@ -203,6 +346,7 @@ void program_dump_write(FILE* out, ASTNode** files, const char** filenames,
     jw_begin_array(&w);
     for (size_t i = 0; i < nfiles; i++) {
         ProgramNode* p = (ProgramNode*)files[i];
+        g_current_file = filenames[i];
         jw_begin_object(&w);
         emit_str(&w, "file", filenames[i]);
         emit_str(&w, "package", p->package_name);
