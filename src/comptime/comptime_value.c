@@ -559,7 +559,7 @@ ASTNode* comptime_value_to_ast(const ComptimeValue* value) {
     switch (value->type) {
         case COMPTIME_VALUE_INT: {
             char buffer[32];
-            snprintf(buffer, sizeof(buffer), "%lld", value->int_value);
+            snprintf(buffer, sizeof(buffer), "%lld", (long long)value->int_value);
             return (ASTNode*)ast_literal_new(TOKEN_INT, buffer, pos);
         }
             
