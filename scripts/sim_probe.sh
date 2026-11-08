@@ -161,11 +161,13 @@ run_seed() {
 read_header() {
     local h="" re_steps=' steps=([0-9]+)' re_limit=' verdict=limit-([a-z0-9-]+) '
     local re_model=' preempt_ppm=([0-9]+) preempt_e_min=([0-9]+) preempt_e_max=([0-9]+) step_cost_ns=([0-9]+)'
-    HDR_STEPS="?"; HDR_MODEL="?"; HDR_LIMIT=""
+    local re_verdict=' verdict=([a-z0-9-]+) '
+    HDR_STEPS="?"; HDR_MODEL="?"; HDR_LIMIT=""; HDR_VERDICT=""
     [ -f "$1" ] && IFS= read -r h < "$1"
     [ -n "$h" ] || return 0
     [[ $h =~ $re_steps ]] && HDR_STEPS="${BASH_REMATCH[1]}"
     [[ $h =~ $re_limit ]] && HDR_LIMIT="${BASH_REMATCH[1]}"
+    [[ $h =~ $re_verdict ]] && HDR_VERDICT="${BASH_REMATCH[1]}"
     if [[ $h =~ $re_model ]]; then
         HDR_MODEL="preempt ppm=${BASH_REMATCH[1]} e=${BASH_REMATCH[2]}..${BASH_REMATCH[3]} step_cost_ns=${BASH_REMATCH[4]}"
     elif [[ $h == *preempt_* ]]; then
@@ -255,6 +257,11 @@ run_seeds() {
         steps="$HDR_STEPS"
         if [ "$rc" -eq 0 ] && [ ! -f "$dir/$seed.trace" ]; then
             tool_failure "seed $seed of $bin exited 0 and wrote no trace; every ending writes one"
+        fi
+        # Exit 0 reads pass only when the header agrees. A runtime path that
+        # calls exit(0) before main returns writes verdict=exit.
+        if [ "$rc" -eq 0 ] && [ "$HDR_VERDICT" != "pass" ]; then
+            tool_failure "seed $seed of $bin exited 0 but its trace header says 'verdict=${HDR_VERDICT:-none}', not 'verdict=pass'"
         fi
         if [ "$rc" -eq 15 ]; then
             [ -n "$HDR_LIMIT" ] || tool_failure "seed $seed of $bin exited 15 with no 'verdict=limit-<name>' in its trace header"
@@ -487,6 +494,11 @@ self_test() {
     mkdir -p "$W/e_trace"
     make_stub "$W/stub_notrace" 0 ""
     ( run_seeds "$W/stub_notrace" 1 1 "$W/e_trace" >/dev/null 2>&1 ); stub_check "$?" 2 "exit 0 with no trace must be a tool failure"
+    make_stub "$W/stub_exit0" 0 "exit"
+    ( run_seeds "$W/stub_exit0" 1 1 "$W/e_trace" >/dev/null 2>&1 ); stub_check "$?" 2 "exit 0 with verdict=exit in the header must be a tool failure"
+    make_stub "$W/stub_pass" 0 "pass"
+    mkdir -p "$W/e_pass"
+    run_seeds "$W/stub_pass" 1 2 "$W/e_pass" >/dev/null; stub_check "${COUNTS[pass]:-0}" 2 "exit 0 with verdict=pass in the header must read pass"
     make_stub "$W/stub_limit" 15 "limit-foo"
     mkdir -p "$W/e_limit"
     run_seeds "$W/stub_limit" 1 3 "$W/e_limit" >/dev/null; stub_check "${COUNTS[limit-foo]:-0}" 3 "exit 15 must read limit-<name> from the header"
