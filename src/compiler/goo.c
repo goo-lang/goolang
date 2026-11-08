@@ -1151,7 +1151,6 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 
         // ast_root is a bison global: snapshot into this file's slot and null
         // it, so the next file's parse cannot clobber a pointer we own.
-        extern ASTNode* ast_root;
         ast_root = NULL;
         if (parse_input(sources[fi], fname) != 0) {
             fprintf(stderr, "Error: Parse failed\n");
@@ -1337,7 +1336,6 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         // must strdup their names because those are built at runtime.
         static const char kTestMainName[] = "_testmain.goo";
 
-        extern ASTNode* ast_root;
         ast_root = NULL;
         if (parse_input(testmain_src, kTestMainName) != 0 || !ast_root) {
             // Generated source that will not parse is a compiler bug, not a
