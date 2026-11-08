@@ -121,7 +121,8 @@ ValueInfo* codegen_generate_nullable_access(CodeGenerator* codegen, TypeChecker*
     codegen_set_insert_point(codegen, null_block);
     
     // Generate a null pointer access error
-    LLVMValueRef error_message = LLVMBuildGlobalStringPtr(codegen->builder, 
+    // Emitted for its side effect (a module-level string); the handle is unused until the panic call below exists.
+    LLVMBuildGlobalStringPtr(codegen->builder, 
         access_description ? access_description : "null pointer access", "null_error");
     
     // Call panic function (for now, just unreachable)
@@ -173,7 +174,8 @@ ValueInfo* codegen_generate_if_let_nullable(CodeGenerator* codegen, TypeChecker*
     
     // Non-null block: extract value and execute then statement
     codegen_set_insert_point(codegen, non_null_block);
-    LLVMValueRef unwrapped_value = codegen_nullable_get_value(codegen, nullable_value);
+    // Emitted for its side effect (the extractvalue instruction); the handle is unused until var_name binding exists.
+    codegen_nullable_get_value(codegen, nullable_value);
     
     // TODO: Add unwrapped value to scope with var_name if provided
     // For now, just execute the then statement

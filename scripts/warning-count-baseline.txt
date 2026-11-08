@@ -12,5 +12,5 @@
 # EXCEEDS its row. A compiler with no row here FAILS the gate outright --
 # it never passes on an unknown compiler. The gate never writes this file
 # itself; only this flag does.
-gcc-16	22
-gcc-14	23
+gcc-16	15
+gcc-14	16
