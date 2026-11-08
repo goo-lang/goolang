@@ -39,6 +39,9 @@
 enum { NONZERO_STATUS = 3, WORKERS = 2, MISSED_STATUS = 1, WAIT_POLLS_MAX = 100 };
 static const uint64_t HANDLER_SLEEP_NS = 1000;
 static const uint64_t NAP_NS = 1000;
+/* free-cond-with-waiters polls for the waiter with this nap, WAIT_POLLS_MAX
+ * times: 100 ms of virtual time, past the 16.8 ms longest preemption. */
+static const uint64_t LOCK_POLL_NAP_NS = 1000000;
 
 /* concurrency.c's scheduler: the lock-order case takes its mutex. */
 extern goo_scheduler_t* g_scheduler;
@@ -176,21 +179,32 @@ static int case_free_held_mutex(void) {
     return missed("free-held-mutex");
 }
 
+static volatile uint32_t g_waiter_locked;
+
 static void* wait_on_shared_cond(void* arg) {
     goo_mutex_lock(g_shared_mutex);
+    g_waiter_locked = 1;
     goo_cond_wait(g_shared_cond, g_shared_mutex);
     goo_mutex_unlock(g_shared_mutex);
     return arg;
 }
 
-/* While main sleeps, the waiter is the only runnable thread, so it parks
- * on the condvar before main wakes, on every seed. */
+/* The waiter is parked on the condvar before the free, on every seed: main
+ * waits until the waiter holds the mutex, then takes the mutex, which it
+ * gets only when goo_cond_wait releases it and parks the waiter. A timed
+ * nap is not enough: with seeded preemption a decision costs virtual time,
+ * so main's nap can end before the waiter runs (fix round 1). */
 static int case_free_cond_with_waiters(void) {
     g_shared_mutex = goo_mutex_new();
     g_shared_cond = goo_cond_new();
+    g_waiter_locked = 0;
     goo_thread_t* waiter = goo_thread_create(wait_on_shared_cond, nullptr);
     GOO_ASSERT(waiter != nullptr);
-    goo_platform_sleep_ns(NAP_NS);
+    for (uint32_t i = 0; i < WAIT_POLLS_MAX && g_waiter_locked == 0; i++) {
+        goo_platform_sleep_ns(LOCK_POLL_NAP_NS);
+    }
+    GOO_ASSERT(g_waiter_locked == 1);
+    goo_mutex_lock(g_shared_mutex);            /* the waiter is parked now */
     goo_cond_free(g_shared_cond);
     return missed("free-cond-with-waiters");
 }

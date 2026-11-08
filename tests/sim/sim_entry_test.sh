@@ -45,7 +45,7 @@ run_case() {
 has_line() { grep -qxF -- "$2" "$1"; }
 
 # Fact 1 and fact 2.
-for seed in 1 2 3 4 5 6 7 8; do
+for seed in 1 2 3 4 5 6 7 8 33 58; do
     run_case coroutine0 "$seed"
     out="$WORK/coroutine0.$seed.out"
     trace="$WORK/trace/$seed.trace"
@@ -57,9 +57,15 @@ for seed in 1 2 3 4 5 6 7 8; do
         continue
     fi
     head -1 "$trace" | grep -q ' verdict=pass ' || fail "coroutine0 seed=$seed: trace header is not verdict=pass: $(head -1 "$trace")"
-    # Line 3 is the first record: step 1, time 0, the real thread (-) at
-    # "start", and the pick is coroutine 0.
-    [ "$(sed -n 3p "$trace")" = "1 0 - start 0" ] || fail "coroutine0 seed=$seed: first record is '$(sed -n 3p "$trace")', want '1 0 - start 0'"
+    # The first "start" record is the real thread (-) picking coroutine 0.
+    # Seeded preemption (spec section 6) can deschedule coroutine 0 at that
+    # decision first, so "preempt 0" records by the real thread may come
+    # before it, and nothing else may. Step and time are not compared: with
+    # preemption on, each decision costs virtual time. Seeds 33 and 58 have
+    # a preempt record first at the default ppm.
+    first_start="$(awk 'NR > 2 && $4 == "start" { print $3 " " $5; exit }
+        NR > 2 && !($3 == "-" && $4 == "preempt" && $5 == "0") { print "other: " $0; exit }' "$trace")"
+    [ "$first_start" = "- 0" ] || fail "coroutine0 seed=$seed: want the first start record '- start 0' after only 'preempt 0' records; got '$first_start'"
     # The handler's sleep is a seam call made after main returned: the trace
     # must show coroutine 0 at a sleep, so the exit path did reach the seam.
     grep -q '^[0-9]* [0-9]* 0 sleep ' "$trace" || fail "coroutine0 seed=$seed: the trace shows no sleep by coroutine 0"
@@ -107,4 +113,4 @@ if [ "$FAILS" -ne 0 ]; then
     echo "sim-entry-test: FAIL ($FAILS checks, $BIN, work dir $WORK)"
     exit 1
 fi
-echo "sim-entry-test: PASS ($BIN: main is coroutine 0 on seeds 1-8, the exit path stays on coroutine 0, status 3 passes through, stdout survives sim-deadlock, 12 violation cases fire their own check on seeds 1-4)"
+echo "sim-entry-test: PASS ($BIN: main is coroutine 0 on seeds 1-8, 33 and 58, the exit path stays on coroutine 0, status 3 passes through, stdout survives sim-deadlock, 12 violation cases fire their own check on seeds 1-4)"
