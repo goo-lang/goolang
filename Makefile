@@ -5628,10 +5628,16 @@ sim-entry-test: build/sim/sim_entry_test
 # runtime-deadlock-abort on one of seeds 1..256, with a byte-identical replay,
 # and proves the driver's own rules. --cc passes the Makefile's compiler to
 # the mutant build, because CI runs `make CC=gcc-14` and a bare gcc rejects
-# -std=c23 there. The sim archive is a prerequisite, not RUNTIME_LIB.
+# -std=c23 there. The sim archive is a prerequisite, not RUNTIME_LIB. The
+# probe recipe unsets every variable that changes the model, a limit or the
+# wake hook, so an ambient value cannot turn verify-core's PASS into a pass
+# under a weaker model (the self-test clears the same set itself).
 .PHONY: sim-false-deadlock-probe sim-false-deadlock-selftest
 sim-false-deadlock-probe: $(SIM_RUNTIME_LIB)
-	@bash scripts/sim_probe.sh false_deadlock_test --seeds 256
+	@env -u GOO_SIM_PREEMPT_PPM -u GOO_SIM_STEP_LIMIT -u GOO_SIM_TIME_LIMIT_NS \
+	    -u GOO_SIM_FAULT_SPURIOUS_WAKE -u GOO_SIM_FAULT_THREAD_CREATE_EAGAIN \
+	    -u GOO_TEST_WAKE_DELAY_NS \
+	    bash scripts/sim_probe.sh false_deadlock_test --seeds 256
 sim-false-deadlock-selftest: $(SIM_RUNTIME_LIB)
 	@bash scripts/sim_probe.sh --self-test --cc "$(CC)"
 
