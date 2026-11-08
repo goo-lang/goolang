@@ -5600,12 +5600,13 @@ $(SIM_RUNTIME_LIB): $(SIM_RUNTIME_OBJS) | $(BUILDDIR)
 sim-runtime-lib: $(SIM_RUNTIME_LIB)
 
 # A program under test: its own main renamed, so sim_main.o's main runs it
-# as coroutine 0. The concurrency programs build with the flags
+# as coroutine 0. GOO_SIM_BUILD lets a concurrency program drop a check that
+# only the production build needs (false_deadlock_test's hook refusal). The concurrency programs build with the flags
 # scripts/false_deadlock_probe.sh builds them with; a program in tests/sim
 # includes sim.h and asserts, so it takes the runtime's CFLAGS.
 build/sim/%: tests/concurrency/%.c $(SIM_RUNTIME_LIB) $(BUILDDIR)/sim/sim_main.o
 	@mkdir -p build/sim
-	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. -Dmain=goo_sim_program_main $< $(BUILDDIR)/sim/sim_main.o $(SIM_RUNTIME_LIB) -lm -o $@
+	$(CC) -std=c23 -D_GNU_SOURCE -DGOO_SIM_BUILD -Iinclude -I. -Dmain=goo_sim_program_main $< $(BUILDDIR)/sim/sim_main.o $(SIM_RUNTIME_LIB) -lm -o $@
 build/sim/%: tests/sim/%.c $(SIM_RUNTIME_LIB) $(BUILDDIR)/sim/sim_main.o
 	@mkdir -p build/sim
 	$(CC) $(CFLAGS) -Itests/sim -Dmain=goo_sim_program_main $< $(BUILDDIR)/sim/sim_main.o $(SIM_RUNTIME_LIB) -lm -o $@

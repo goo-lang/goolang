@@ -54,21 +54,19 @@ The spike passes when all three hold:
 Numbers recorded by the spike: seeds to first failure, wall time per seed,
 the verdict table for every program, and which limits were hit.
 
-**Open item (Task 6a, 2026-11-08): control 1 cannot run on the committed
-program as written.** `false_deadlock_test.c` refuses to run when
-`GOO_TEST_WAKE_DELAY_NS` is unset (it returns 1), and mutant 2 of
-`scripts/false_deadlock_probe.sh --self-test` depends on that refusal.
-`scripts/sim_probe.sh` sets the hook to 1 ns when it is unset. Task 6a
-measured both conditions; the numbers are in the Task 6a report:
+**The hook refusal (ruling, Task 6a fix round 1).** `false_deadlock_test.c`
+refuses to run with `GOO_TEST_WAKE_DELAY_NS` unset in the PRODUCTION build,
+because mutant 2 of `scripts/false_deadlock_probe.sh --self-test` needs the
+refusal. The sim build compiles the refusal out: the Makefile's
+`build/sim/%` rule for `tests/concurrency` sets `GOO_SIM_BUILD`.
+`scripts/sim_probe.sh` still sets the hook to 1 ns when it is unset, and its
+own self-test builds without the define.
 
-- hook at 1 ns (the smallest value the program accepts), preemption at the
-  default: the mutant aborts on 44 of seeds 1..256, the first at seed 11,
-  and the replay is byte-identical. With preemption off, 0 of 256.
-- hook unset, on a scratch copy of the program with the refusal removed:
-  the mutant aborts on 31 of 256, the first at seed 5, replay
-  byte-identical. The corrected runtime passes 256 of 256.
-
-The controller decides how the committed program meets the "unset" rule.
+**Measured (Task 6a fix round 1, the committed program, hook unset, default
+model, seeds 1..256).** The mutant aborts on 33 seeds, the first at seed 18
+(114 steps), and the replay is byte-identical. With preemption off, the
+mutant aborts on 0 seeds. The corrected runtime passes 256 of 256, at most
+659 steps.
 
 ## 4. Decision record
 
@@ -208,11 +206,45 @@ the OS may give. Preemption is the normal behaviour of every preemptive OS,
 and a run without it models an OS that never deschedules a thread, which
 does not exist. The faults of section 7 stay OFF by default.
 
-**Determinism.** The preemption draw uses the same seeded generator as the
-pick, one draw per decision. With `GOO_SIM_PREEMPT_PPM=0` the model draws
-NO random number, so every trace is byte-identical to the trace of the same
-seed before the model existed. `sim_sched_test` T5 pins this on the T1-T3
+**Step cost and the wake rule (fix round 1, I1).** With the model on
+(ppm > 0), each scheduling decision costs `SIM_STEP_COST_NS` = 1,000 ns of
+virtual time, and at each decision every sleeper whose deadline is at or
+before the new time becomes runnable before the pick. This covers a
+preempted coroutine and an ordinary sleeper. Reason: the clock otherwise
+advances only when nothing is runnable. A coroutine that spins through seam
+calls without a sleep (a `goo_mutex_try_lock` loop, or a `select` with
+`default` through `goo_chan_try_send`) stays runnable, so the clock moves
+only when the seed preempts every runnable coroutine at once, and with a
+rare preemption it does not move at all: the run ends in a false
+`step-limit`. `sim_sched_test` T9b shows it at ppm 1: with the step cost the
+sleeper wakes after 5,004 steps, and without it (a mutant) the run is
+`step-limit`. When a preemption leaves nothing runnable, the clock jumps to
+the deadline, and the cost of that next decision is inside the jump. At
+ppm 0 neither rule applies.
+
+**Determinism.** The preemption model uses the same seeded generator as the
+pick: one test draw per decision, and two more draws on a hit (the exponent
+and the mantissa of `d`). The step cost draws nothing. With
+`GOO_SIM_PREEMPT_PPM=0` the model draws NO random number and charges no
+step cost, so every trace is byte-identical to the trace of the same seed
+before the model existed. `sim_sched_test` T5 pins this on the T1-T3
 traces.
+
+**When the time limit binds (M3).** Under the default model the mean `d` is
+the mean over the 14 exponents of `(2^e + 2^(e+1) - 1) / 2`, which is
+1,797,448.6 ns. A decision preempts with p = 15,625 / 10^6 = 1/64, so a
+decision adds at most 1,000 + 1,797,448.6 / 64 = 1,000 + 28,085.1 =
+29,085.1 ns on average. With the default time limit of 10^10 ns:
+
+- when every `d` is on the clock's path (one runnable coroutine, so each
+  preemption makes the clock jump), the time limit binds after about
+  10^10 / 29,085.1 = 343,818 decisions (356,060 without the step cost);
+- when no `d` is on the clock's path (another coroutine is always
+  runnable), only the step cost moves the clock, and the time limit binds
+  after 10^10 / 1,000 = 10,000,000 decisions.
+
+The default step limit is 1,000,000 decisions. Thus in the first case the
+time limit binds first, and in the second case the step limit binds first.
 
 **Trace.** A preemption appends one record with `what` = `preempt`, the
 preempted coroutine as the choice, and `d` as a sixth field:
@@ -227,9 +259,12 @@ limit bounds a chain of preemptions; the time limit also applies. A
 preempted coroutine is a sleeper with a deadline: it is not runnable, and it
 cannot cause `sim-deadlock`.
 
-**What the trace header does not say.** The header names the seed, not the
-ppm or the faults. A replay must use the same `GOO_SIM_PREEMPT_PPM` and the
-same fault flags as the first run.
+**The trace header names the model.** A replay under a different model is
+a different experiment. With the model on, the header has
+` preempt_ppm=<ppm> preempt_e_min=10 preempt_e_max=23 step_cost_ns=1000`
+after `seed=`. At ppm 0 the header has no such field, so a ppm-0 trace keeps
+its pre-model bytes: no field means the model is off. The fault flags are
+still not in the header.
 
 ## 7. Checks, faults, verdicts, and the simulator's own rules
 
