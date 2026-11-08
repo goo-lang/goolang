@@ -40,15 +40,35 @@ The spike passes when all three hold:
    wake-site mutant that `scripts/false_deadlock_probe.sh --self-test`
    already produces) reaches the verdict `runtime-deadlock-abort` on
    `tests/concurrency/false_deadlock_test.c` within the seed budget. That is
-   the false deadlock, a real defect, found from a seed.
+   the false deadlock, a real defect, found from a seed. The mutant runs
+   with `GOO_TEST_WAKE_DELAY_NS` UNSET and seeded preemption (section 6) at
+   its default. The hand-set wake window is not part of the pass bar: the
+   seed must open the window, as a loaded OS does.
 2. **Negative control.** The corrected runtime reaches `pass` on every seed
-   of the same budget, for the same program.
+   of the same budget, for the same program, under the same preemption
+   model.
 3. **Replay.** The failing seed of control 1, run again, produces a trace
    byte-identical to the first. The harness asserts this on every non-pass
    verdict, always.
 
 Numbers recorded by the spike: seeds to first failure, wall time per seed,
 the verdict table for every program, and which limits were hit.
+
+**Open item (Task 6a, 2026-11-08): control 1 cannot run on the committed
+program as written.** `false_deadlock_test.c` refuses to run when
+`GOO_TEST_WAKE_DELAY_NS` is unset (it returns 1), and mutant 2 of
+`scripts/false_deadlock_probe.sh --self-test` depends on that refusal.
+`scripts/sim_probe.sh` sets the hook to 1 ns when it is unset. Task 6a
+measured both conditions; the numbers are in the Task 6a report:
+
+- hook at 1 ns (the smallest value the program accepts), preemption at the
+  default: the mutant aborts on 44 of seeds 1..256, the first at seed 11,
+  and the replay is byte-identical. With preemption off, 0 of 256.
+- hook unset, on a scratch copy of the program with the refusal removed:
+  the mutant aborts on 31 of 256, the first at seed 5, replay
+  byte-identical. The corrected runtime passes 256 of 256.
+
+The controller decides how the committed program meets the "unset" rule.
 
 ## 4. Decision record
 
@@ -325,9 +345,16 @@ branch owns those files, and the make gate comes first.
 - Trace ring roll-off on long runs: the count is kept, and the replay
   compares the retained window plus the count, so a mismatch is still a
   mismatch.
-- A program under test that reads real time: none of the five does; the
-  seam has no wall-clock call, so such a read would not compile against the
-  sim archive.
+- A program under test that reads real time. This spec said first that
+  none of the five does, and that such a read would not compile against the
+  sim archive. Both parts were wrong. The risk occurred once:
+  `tests/concurrency/false_deadlock_test.c:57` called `nanosleep` directly,
+  which is libc, not the seam, so it linked and slept 1 ms in REAL time
+  under the simulator, at no cost in virtual time. Task 6a corrected it: the
+  sleep goes through `goo_platform_sleep_ns`, which is the same `nanosleep`
+  in production. No gate catches the next such call; the runtime-seam grep
+  gate (`scripts/runtime_seam_probe.sh`) scans `concurrency.c`,
+  `channels.c` and `sync.c` in `src/runtime`, not the programs under test.
 - Wall time: 1,000 seeds of a stress program may exceed the spike's budget;
   the report records the per-seed time and the gate's 256-seed budget is set
   from it.

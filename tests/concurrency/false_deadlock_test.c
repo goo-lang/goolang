@@ -36,10 +36,10 @@
 // GREEN (runtime after the fix): exit 0 and the OK line below.
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "goo_os.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 // Each handover opens the window once. Four is enough to make a missed first
 // window (main may not be in the poll loop yet) irrelevant, and keeps the
@@ -52,9 +52,13 @@ static atomic_long g_sum;
 // Long enough that the receiver is always parked on not_empty before the
 // sender parks the value; far shorter than the wake delay, so it never
 // dominates the run.
+//
+// Through the seam, not nanosleep: in production goo_platform_sleep_ns is
+// the same nanosleep, and under tests/sim it is a sleep in VIRTUAL time.
+// A direct nanosleep slept in real time under the simulator and cost no
+// virtual time, so the sender never really waited for the receiver there.
 static void nap_ms(long ms) {
-    struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
+    goo_platform_sleep_ns((uint64_t)ms * 1000000u);
 }
 
 static void sender(void* arg) {
