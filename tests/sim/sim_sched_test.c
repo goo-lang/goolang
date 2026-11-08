@@ -18,6 +18,11 @@
  * itself runs on a simulated thread's coroutine. Its result selects
  * approach A (pass) or the named fallback B (fail).
  *
+ * T1-T4 run with seeded preemption OFF (ppm 0). T5-T8 are Task 6a's tests
+ * of the preemption model (spec section 6, "Seeded preemption"): T5 pins
+ * the T1-T3 traces to the bytes they had before the model existed, T6-T8
+ * run the model ON.
+ *
  * Usage: sim_sched_test <trace-base-dir> */
 #include "sim.h"
 
@@ -35,6 +40,9 @@ enum {
     CHOICES_MAX = 4096,
     STEP_LIMIT = 100000,
     CO_STACK_BYTES = 65536,
+    PREEMPT_PPM_T6 = 250000,         /* about 25 preemptions in T6's ~100 decisions */
+    PREEMPT_PPM_T7 = 500000,         /* no preemption in 64 decisions: 2^-64 */
+    ONE_YIELDER_DECISIONS = 64,
 };
 static const uint64_t TIME_LIMIT_NS = 10ull * 1000 * 1000 * 1000;
 
@@ -52,15 +60,26 @@ static void* yield_n(void* arg) {
     return arg;
 }
 
-[[noreturn]] static void run_two_yielders(uint64_t seed, const char* dir, uint32_t n) {
+[[noreturn]] static void run_two_yielders(uint64_t seed, const char* dir, uint32_t n, uint32_t ppm) {
     static uint32_t count;
     count = n;
-    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, dir);
+    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, ppm, dir);
     uint32_t a = sim_thread_spawn(yield_n, &count);
     uint32_t b = sim_thread_spawn(yield_n, &count);
     GOO_ASSERT(a != b);
     sim_run_until_done();
     sim_exit_with(SIM_PASS, "two-yielders");
+}
+
+/* T7's child: one coroutine, so every preemption leaves nothing runnable
+ * and the clock must jump by exactly that preemption's d. */
+[[noreturn]] static void run_one_yielder(uint64_t seed, const char* dir, uint32_t ppm) {
+    static uint32_t count = ONE_YIELDER_DECISIONS;
+    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, ppm, dir);
+    uint32_t id = sim_thread_spawn(yield_n, &count);
+    GOO_ASSERT(id == 0);
+    sim_run_until_done();
+    sim_exit_with(SIM_PASS, "one-yielder");
 }
 
 /* T3's coroutine, in the shape of concurrency.c: getcontext + makecontext
@@ -130,7 +149,7 @@ static void* progress_yielder(void* arg) {
 }
 
 [[noreturn]] static void run_nesting(uint64_t seed, const char* dir) {
-    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, dir);
+    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, 0, dir);
     (void)sim_thread_spawn(nesting_worker, nullptr);
     (void)sim_thread_spawn(progress_yielder, nullptr);
     sim_run_until_done();
@@ -147,7 +166,7 @@ static void* progress_yielder(void* arg) {
  * exited. It must die by SIGABRT at sim_current()'s assertion. */
 [[noreturn]] static void run_real_thread_call(uint64_t seed, const char* dir) {
     static uint32_t count = 3;
-    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, dir);
+    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, 0, dir);
     (void)sim_thread_spawn(yield_n, &count);
     sim_run_until_done();
     sim_thread_t* self = sim_current();       /* the assertion under test */
@@ -157,7 +176,7 @@ static void* progress_yielder(void* arg) {
 
 /* ---- the parent's side ---- */
 
-enum workload { WORK_YIELD_10, WORK_YIELD_50, WORK_NESTING };
+enum workload { WORK_YIELD_10, WORK_YIELD_50, WORK_NESTING, WORK_YIELD_50_PREEMPT, WORK_ONE_YIELDER_PREEMPT };
 
 static int run_child(enum workload work, uint64_t seed, const char* dir) {
     if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
@@ -171,8 +190,10 @@ static int run_child(enum workload work, uint64_t seed, const char* dir) {
         return -1;
     }
     if (pid == 0) {
-        if (work == WORK_YIELD_10) run_two_yielders(seed, dir, 10);
-        if (work == WORK_YIELD_50) run_two_yielders(seed, dir, 50);
+        if (work == WORK_YIELD_10) run_two_yielders(seed, dir, 10, 0);
+        if (work == WORK_YIELD_50) run_two_yielders(seed, dir, 50, 0);
+        if (work == WORK_YIELD_50_PREEMPT) run_two_yielders(seed, dir, 50, PREEMPT_PPM_T6);
+        if (work == WORK_ONE_YIELDER_PREEMPT) run_one_yielder(seed, dir, PREEMPT_PPM_T7);
         run_nesting(seed, dir);
     }
     int status = 0;
@@ -374,6 +395,187 @@ static int test_real_thread_call(void) {
     return 0;
 }
 
+/* ---- Task 6a: seeded preemption ---- */
+
+/* FNV-1a 64 of a trace file's bytes. */
+static uint64_t fnv1a64(const char* buf, long n) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (long i = 0; i < n; i++) {
+        h ^= (unsigned char)buf[i];
+        h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+/* T5's pins: the trace bytes T1-T3 wrote at commit 3acb6b8f, before the
+ * preemption model existed, measured from the files themselves
+ * (.superpowers/sdd/2026-09-03-deterministic-simulation/task-6a-evidence/
+ * ref-head). A change here is a change to what every ppm-0 run does: make
+ * it on purpose, with the new reference traces in the commit message. */
+static const struct trace_pin {
+    const char* leaf;
+    uint64_t    seed;
+    long        bytes;
+    uint64_t    fnv1a64;
+} k_off_pins[] = {
+    { "t1a", 7,  467,  0x728c7380e248f791ull },
+    { "t2a", 7,  1674, 0xef8dd1dc81d557e0ull },
+    { "t2b", 8,  1674, 0x754673ed9fa8acd3ull },
+    { "t3a", 11, 347,  0xde19fcda8946433aull },
+};
+
+/* T5, off is identical: with ppm 0 the model draws no random number, so
+ * T1-T3's traces keep their pre-model bytes. Reads the files T1-T3 wrote. */
+static int test_off_identical(void) {
+    char dir[256];
+    for (size_t i = 0; i < sizeof k_off_pins / sizeof k_off_pins[0]; i++) {
+        const struct trace_pin* pin = &k_off_pins[i];
+        dir_join(dir, sizeof dir, pin->leaf);
+        long n = read_trace(dir, pin->seed, g_file_a);
+        if (n < 0) return -1;
+        uint64_t h = fnv1a64(g_file_a, n);
+        if (n != pin->bytes || h != pin->fnv1a64) {
+            fprintf(stderr, "sim_sched_test: T5 %s/%llu.trace is %ld bytes, fnv1a64 0x%016llx; "
+                    "pinned %ld bytes, 0x%016llx\n", pin->leaf, (unsigned long long)pin->seed,
+                    n, (unsigned long long)h, pin->bytes, (unsigned long long)pin->fnv1a64);
+            return -1;
+        }
+    }
+    printf("sim_sched_test: T5 off is identical: PASS (4 ppm-0 traces equal their pre-model bytes)\n");
+    return 0;
+}
+
+typedef struct preempt_scan {
+    uint32_t count;          /* preempt records */
+    uint64_t sum_ns;         /* the sum of their d */
+    uint32_t real_thread;    /* preempt records whose choice is the real thread ("-") */
+    uint32_t out_of_bound;   /* d outside [2^SIM_PREEMPT_EXPONENT_MIN, SIM_PREEMPT_NS_MAX] */
+    uint32_t malformed;      /* a preempt record without its d_ns= field */
+} preempt_scan_t;
+
+/* One record line: "step now_ns thread preempt choice d_ns=<d>". */
+static void scan_preempt_line(const char* line, const char* eol, preempt_scan_t* scan) {
+    const char* what = line;
+    for (uint32_t field = 0; field < 3 && what < eol; field++) {
+        what = memchr(what, ' ', (size_t)(eol - what));
+        if (what == nullptr) return;
+        what++;
+    }
+    if ((size_t)(eol - what) < 8 || memcmp(what, "preempt ", 8) != 0) return;
+    scan->count++;
+    const char* choice = what + 8;
+    if (choice[0] == '-') scan->real_thread++;
+    const char* d = strstr(choice, " d_ns=");
+    if (d == nullptr || d > eol) {
+        scan->malformed++;
+        return;
+    }
+    unsigned long long d_ns = strtoull(d + 6, nullptr, 10);
+    if (d_ns < (1ull << SIM_PREEMPT_EXPONENT_MIN) || d_ns > SIM_PREEMPT_NS_MAX) scan->out_of_bound++;
+    scan->sum_ns += d_ns;
+}
+
+static preempt_scan_t scan_preempts(const char* trace) {
+    preempt_scan_t scan = { 0 };
+    for (const char* line = trace; *line != '\0';) {
+        const char* eol = strchr(line, '\n');
+        if (eol == nullptr) break;
+        if (line[0] != '#') scan_preempt_line(line, eol, &scan);
+        line = eol + 1;
+    }
+    return scan;
+}
+
+/* T6, on is deterministic: with the model on, seed 7 twice gives the same
+ * bytes, seed 8 gives other bytes, and both runs really preempted. */
+static int test_on_deterministic(void) {
+    char da[256], db[256], dc[256];
+    dir_join(da, sizeof da, "t6a");
+    dir_join(db, sizeof db, "t6b");
+    dir_join(dc, sizeof dc, "t6c");
+    if (run_child(WORK_YIELD_50_PREEMPT, 7, da) != 0) return -1;
+    if (run_child(WORK_YIELD_50_PREEMPT, 7, db) != 0) return -1;
+    if (run_child(WORK_YIELD_50_PREEMPT, 8, dc) != 0) return -1;
+    long na = read_trace(da, 7, g_file_a);
+    long nb = read_trace(db, 7, g_file_b);
+    if (na < 0 || nb < 0) return -1;
+    if (na != nb || memcmp(g_file_a, g_file_b, (size_t)na) != 0) {
+        fprintf(stderr, "sim_sched_test: T6 seed 7 traces differ with preemption on (%ld vs %ld bytes)\n", na, nb);
+        return -1;
+    }
+    preempt_scan_t s7 = scan_preempts(g_file_a);
+    long nc = read_trace(dc, 8, g_file_b);
+    if (nc < 0) return -1;
+    preempt_scan_t s8 = scan_preempts(g_file_b);
+    if (s7.count == 0 || s8.count == 0) {
+        fprintf(stderr, "sim_sched_test: T6 no preempt record at ppm %d (seed 7: %u, seed 8: %u)\n",
+                PREEMPT_PPM_T6, s7.count, s8.count);
+        return -1;
+    }
+    if (na == nc && memcmp(g_file_a, g_file_b, (size_t)na) == 0) {
+        fprintf(stderr, "sim_sched_test: T6 seeds 7 and 8 wrote the same trace\n");
+        return -1;
+    }
+    printf("sim_sched_test: T6 on is deterministic: PASS (seed 7 replays, %u preemptions; seed 8 differs, %u)\n",
+           s7.count, s8.count);
+    return 0;
+}
+
+/* T7, a preemption happens and costs time: one coroutine, 64 decisions, a
+ * ppm that makes a preemption certain; the virtual clock at the end is at
+ * least the sum of every d. Nothing else advances this clock. */
+static int test_preempt_costs_time(void) {
+    char dir[256];
+    dir_join(dir, sizeof dir, "t7");
+    if (run_child(WORK_ONE_YIELDER_PREEMPT, 3, dir) != 0) return -1;
+    long n = read_trace(dir, 3, g_file_a);
+    if (n < 0) return -1;
+    preempt_scan_t scan = scan_preempts(g_file_a);
+    unsigned long long now_ns = header_field(g_file_a, "now_ns=");
+    if (scan.count == 0) {
+        fprintf(stderr, "sim_sched_test: T7 no preempt record in %d decisions at ppm %d\n",
+                ONE_YIELDER_DECISIONS, PREEMPT_PPM_T7);
+        return -1;
+    }
+    if (now_ns < scan.sum_ns) {
+        fprintf(stderr, "sim_sched_test: T7 the clock ends at %llu ns, below the %llu ns of %u preemptions\n",
+                now_ns, (unsigned long long)scan.sum_ns, scan.count);
+        return -1;
+    }
+    printf("sim_sched_test: T7 a preemption costs time: PASS (%u preemptions, sum d %llu ns, clock %llu ns)\n",
+           scan.count, (unsigned long long)scan.sum_ns, now_ns);
+    return 0;
+}
+
+/* T8, the bounds, read from every trace T6 and T7 wrote: no preempt record
+ * names the real thread, and every d is inside its bound. The simulator
+ * asserts both as well; this reads what the trace shows. */
+static int test_preempt_bounds(void) {
+    static const struct { const char* leaf; uint64_t seed; } runs[] = {
+        { "t6a", 7 }, { "t6c", 8 }, { "t7", 3 },
+    };
+    char dir[256];
+    uint32_t total = 0;
+    for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
+        dir_join(dir, sizeof dir, runs[i].leaf);
+        if (read_trace(dir, runs[i].seed, g_file_a) < 0) return -1;
+        preempt_scan_t scan = scan_preempts(g_file_a);
+        if (scan.real_thread != 0 || scan.out_of_bound != 0 || scan.malformed != 0) {
+            fprintf(stderr, "sim_sched_test: T8 %s: %u on the real thread, %u out of bound, %u malformed\n",
+                    runs[i].leaf, scan.real_thread, scan.out_of_bound, scan.malformed);
+            return -1;
+        }
+        total += scan.count;
+    }
+    if (total == 0) {
+        fprintf(stderr, "sim_sched_test: T8 no preempt record to check\n");
+        return -1;
+    }
+    printf("sim_sched_test: T8 preemption bounds: PASS (%u records, none on the real thread, d in [%llu, %u] ns)\n",
+           total, 1ull << SIM_PREEMPT_EXPONENT_MIN, SIM_PREEMPT_NS_MAX);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc != 2 || strlen(argv[1]) >= sizeof g_base_dir - 8) {
         fprintf(stderr, "usage: sim_sched_test <trace-base-dir>\n");
@@ -389,10 +591,14 @@ int main(int argc, char** argv) {
     if (test_seeds_differ() != 0) { printf("sim_sched_test: T2 seeds differ: FAIL\n"); failed++; }
     if (test_nesting() != 0) { printf("sim_sched_test: T3 nesting: FAIL\n"); failed++; }
     if (test_real_thread_call() != 0) { printf("sim_sched_test: T4 real-thread call: FAIL\n"); failed++; }
+    if (test_off_identical() != 0) { printf("sim_sched_test: T5 off is identical: FAIL\n"); failed++; }
+    if (test_on_deterministic() != 0) { printf("sim_sched_test: T6 on is deterministic: FAIL\n"); failed++; }
+    if (test_preempt_costs_time() != 0) { printf("sim_sched_test: T7 a preemption costs time: FAIL\n"); failed++; }
+    if (test_preempt_bounds() != 0) { printf("sim_sched_test: T8 preemption bounds: FAIL\n"); failed++; }
     if (failed != 0) {
-        printf("sim_sched_test: %d of 4 FAILED\n", failed);
+        printf("sim_sched_test: %d of 8 FAILED\n", failed);
         return 1;
     }
-    printf("sim_sched_test: 4 of 4 PASS\n");
+    printf("sim_sched_test: 8 of 8 PASS\n");
     return 0;
 }

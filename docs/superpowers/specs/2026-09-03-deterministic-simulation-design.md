@@ -144,6 +144,73 @@ distinct verdict when exceeded:**
 | `GOO_SIM_STEP_LIMIT` (env) | default 1,000,000 | the run bound |
 | `GOO_SIM_TIME_LIMIT_NS` (env) | default 10 s virtual | the clock bound |
 
+### Seeded preemption (Task 6a, 2026-11-08)
+
+**Why.** Task 6 found that the wake-site mutant read `pass` on 256 of 256
+seeds at a 1 ns wake delay. The virtual clock advanced only when nothing was
+runnable, so scheduler latency cost zero virtual time. A real OS deschedules
+a running thread for milliseconds under load, and that is the window in
+which the task 8 false deadlock occurs in production. The simulator now
+models it, under the seed.
+
+**Where.** At every scheduling decision the simulator already makes (each
+run of the seeded pick in `sim_yield_point`), and only there.
+
+**What.** After the pick selects the coroutine `c` that runs next, the seed
+decides whether the OS deschedules `c`:
+
+- With probability `P` parts per million, `c` does not run now. It is
+  parked as a sleeper with the deadline `now + d`, and the pick runs again
+  over the coroutines that remain runnable, or the clock jumps if none
+  remain. The second pick is a decision too, so it can also preempt. When
+  its deadline comes, `c` is runnable again and continues from the point
+  where it is parked. A preemption is NOT a seam call: the program and the
+  runtime see it only as elapsed virtual time.
+- `d` is log-uniform: an integer exponent `e` uniform in
+  `[SIM_PREEMPT_EXPONENT_MIN, SIM_PREEMPT_EXPONENT_MAX]`, then an integer
+  uniform in `[2^e, 2^(e+1))`, in nanoseconds.
+
+**Parameters.** Fixed by the Task 6a brief before any measurement. They do
+not change after a result is seen.
+
+| Name | Value | Meaning |
+|---|---|---|
+| `GOO_SIM_PREEMPT_PPM` (env) | default 15,625 (`SIM_PREEMPT_PPM_DEFAULT`) | 1 decision in 64; 0 is off; above 1,000,000 is a usage error (exit 64) |
+| `SIM_PREEMPT_EXPONENT_MIN` | 10 | about 1 us |
+| `SIM_PREEMPT_EXPONENT_MAX` | 23 | 8.4 ms to 16.8 ms at the top |
+| `SIM_PREEMPT_NS_MAX` | 16,777,215 | `2^24 - 1`; written as a literal, so a raised exponent trips the bound assertion |
+
+A Linux CFS slice is a few milliseconds, and a thread descheduled for up to
+about 16 ms under load is ordinary.
+
+**Default: ON.** Preemption is not a fault. A fault is an error return that
+the OS may give. Preemption is the normal behaviour of every preemptive OS,
+and a run without it models an OS that never deschedules a thread, which
+does not exist. The faults of section 7 stay OFF by default.
+
+**Determinism.** The preemption draw uses the same seeded generator as the
+pick, one draw per decision. With `GOO_SIM_PREEMPT_PPM=0` the model draws
+NO random number, so every trace is byte-identical to the trace of the same
+seed before the model existed. `sim_sched_test` T5 pins this on the T1-T3
+traces.
+
+**Trace.** A preemption appends one record with `what` = `preempt`, the
+preempted coroutine as the choice, and `d` as a sixth field:
+`<step> <now_ns> <thread> preempt <coroutine> d_ns=<d>`. The record stays 40
+bytes: `d` takes the 4 bytes that were alignment padding. Every other record
+keeps its five fields.
+
+**Bounds.** `d` is at most `SIM_PREEMPT_NS_MAX`, and the simulator asserts
+it. A preemption never targets the real thread (`SIM_NONE`), and the
+simulator asserts that too. Each preemption takes one step, so the step
+limit bounds a chain of preemptions; the time limit also applies. A
+preempted coroutine is a sleeper with a deadline: it is not runnable, and it
+cannot cause `sim-deadlock`.
+
+**What the trace header does not say.** The header names the seed, not the
+ppm or the faults. A replay must use the same `GOO_SIM_PREEMPT_PPM` and the
+same fault flags as the first run.
+
 ## 7. Checks, faults, verdicts, and the simulator's own rules
 
 **Invariants checked at every seam call**, each an immediate `invariant`

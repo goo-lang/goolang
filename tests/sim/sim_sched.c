@@ -30,11 +30,16 @@ typedef struct sim_trace_record {
     uint32_t thread;                 /* who reached the point; SIM_NONE = the real thread */
     char     what[SIM_WHAT_BYTES];   /* the seam call, NUL-padded */
     uint32_t choice;                 /* the thread picked or woken; SIM_NONE = back to the real thread */
+    uint32_t preempt_ns;             /* a preempt record's d; 0 on every other record */
 } sim_trace_record_t;
 /* The brief's record is 36 bytes of fields, 40 with alignment; the spec's
  * table says 32. The brief's fields are kept verbatim, so the ring is
- * 2.5 MiB, not 2 MiB. Pinned here so a field change is a visible decision. */
+ * 2.5 MiB, not 2 MiB. Pinned here so a field change is a visible decision.
+ * Task 6a put preempt_ns in the 4 bytes that were alignment padding. */
 static_assert(sizeof(sim_trace_record_t) == 40, "trace record size");
+static_assert(SIM_PREEMPT_NS_MAX <= UINT32_MAX, "a preempt record holds d in 32 bits");
+static_assert(SIM_PREEMPT_EXPONENT_MIN <= SIM_PREEMPT_EXPONENT_MAX, "a non-empty exponent range");
+static_assert(SIM_PREEMPT_PPM_DEFAULT <= SIM_PPM_ONE, "the default is a probability");
 static_assert(SIM_WAITERS_MAX >= SIM_THREADS_MAX, "every thread can wait on one object");
 static_assert(SIM_OUT_BUFFER_BYTES > 2 * SIM_OUT_LINE_BYTES_MAX, "a flush leaves room for one line");
 
@@ -45,6 +50,7 @@ static uint64_t           g_seed;
 static uint64_t           g_rng;                        /* xorshift64* state; never 0 */
 static uint64_t           g_step, g_step_limit;
 static uint64_t           g_now_ns, g_time_limit_ns;
+static uint32_t           g_preempt_ppm;                /* 0 = the model is off */
 static ucontext_t         g_sched_ctx;                  /* the real thread's own context */
 static sim_trace_record_t g_trace[SIM_TRACE_ENTRIES];
 static uint64_t           g_trace_count;                /* total appended; the ring keeps the last SIM_TRACE_ENTRIES */
@@ -72,9 +78,10 @@ uint32_t sim_random_below(uint32_t n) {
 
 /* ---- the trace ring and its writer ---- */
 
-static void trace_append(const char* what, uint32_t choice) {
+static void trace_append(const char* what, uint32_t choice, uint32_t preempt_ns) {
     GOO_ASSERT(what != nullptr);
     GOO_ASSERT(choice < g_thread_count || choice == SIM_NONE);
+    GOO_ASSERT(preempt_ns <= SIM_PREEMPT_NS_MAX);
     sim_trace_record_t* rec = &g_trace[g_trace_count % SIM_TRACE_ENTRIES];
     memset(rec, 0, sizeof *rec);
     rec->step = g_step;
@@ -84,6 +91,7 @@ static void trace_append(const char* what, uint32_t choice) {
         rec->what[i] = what[i];
     }
     rec->choice = choice;
+    rec->preempt_ns = preempt_ns;
     g_trace_count++;
     GOO_ASSERT(rec->what[SIM_WHAT_BYTES - 1] == '\0');
 }
@@ -205,7 +213,10 @@ static void trace_write(const char* label, const char* detail) {
         out_u64(rec->now_ns);   out_str(" ");
         out_thread(rec->thread); out_str(" ");
         out_text(rec->what);    out_str(" ");
-        out_thread(rec->choice); out_str("\n");
+        out_thread(rec->choice);
+        /* Only a preempt record has a d, so a ppm-0 trace keeps its bytes. */
+        if (rec->preempt_ns != 0) { out_str(" d_ns="); out_u64(rec->preempt_ns); }
+        out_str("\n");
         if (g_out_len > SIM_OUT_BUFFER_BYTES - SIM_OUT_LINE_BYTES_MAX) out_flush();
     }
     out_flush();
@@ -342,24 +353,87 @@ static void switch_to(uint32_t next) {
     sim_exit_with(SIM_INVARIANT, "an exited thread was resumed");
 }
 
-void sim_yield_point(const char* what) {
-    GOO_ASSERT(g_initialized);
+static void step_begin(const char* what) {
     GOO_ASSERT(what != nullptr);
     g_step++;
     if (g_step > g_step_limit) sim_exit_with(SIM_STEP_LIMIT, what);
+}
+
+/* The seeded pick, with the clock jump when nothing is runnable. Returns a
+ * coroutine, never SIM_NONE: the last exit hands the real thread its own
+ * context back, and nothing runnable with no sleeper is sim-deadlock. */
+static uint32_t pick_or_advance(const char* what) {
     uint32_t next = runnable_pick();
-    if (next == SIM_NONE) {
-        if (all_exited()) {
-            trace_append(what, SIM_NONE);
-            return_to_scheduler();
-        }
-        /* nothing runnable: advance the clock, or it is a simulated deadlock */
-        if (!any_sleeper()) sim_exit_with(SIM_DEADLOCK, what);
-        clock_advance_to_earliest_sleeper();
-        next = runnable_pick();
-        GOO_ASSERT(next != SIM_NONE);
+    if (next != SIM_NONE) return next;
+    if (all_exited()) {
+        trace_append(what, SIM_NONE, 0);
+        return_to_scheduler();
     }
-    trace_append(what, next);
+    /* nothing runnable: advance the clock, or it is a simulated deadlock */
+    if (!any_sleeper()) sim_exit_with(SIM_DEADLOCK, what);
+    clock_advance_to_earliest_sleeper();
+    next = runnable_pick();
+    GOO_ASSERT(next != SIM_NONE);
+    GOO_ASSERT(g_threads[next].state == SIM_RUNNABLE);
+    return next;
+}
+
+/* ---- seeded preemption (spec section 6, "Seeded preemption") ---- */
+
+/* One draw per decision while the model is on. With ppm 0 there is NO
+ * draw, so the generator, and so every trace, is what it was before the
+ * model existed. */
+static bool preempt_drawn(void) {
+    GOO_ASSERT(g_preempt_ppm <= SIM_PPM_ONE);
+    if (g_preempt_ppm == 0) return false;
+    uint32_t draw = sim_random_below(SIM_PPM_ONE);
+    GOO_ASSERT(draw < SIM_PPM_ONE);
+    return draw < g_preempt_ppm;
+}
+
+/* Log-uniform: an exponent e uniform in [MIN, MAX], then a mantissa
+ * uniform in [2^e, 2^(e+1)). The bound check can fail: SIM_PREEMPT_NS_MAX
+ * is a literal, so an exponent raised past it trips here. */
+static uint32_t preempt_duration_ns(void) {
+    uint32_t exponent = SIM_PREEMPT_EXPONENT_MIN
+        + sim_random_below(SIM_PREEMPT_EXPONENT_MAX - SIM_PREEMPT_EXPONENT_MIN + 1);
+    GOO_ASSERT(exponent < 32);
+    uint64_t base_ns = 1ull << exponent;
+    uint64_t d_ns = base_ns + sim_random_below((uint32_t)base_ns);
+    GOO_ASSERT(d_ns >= (1ull << SIM_PREEMPT_EXPONENT_MIN));
+    GOO_ASSERT(d_ns <= SIM_PREEMPT_NS_MAX);
+    return (uint32_t)d_ns;
+}
+
+/* The OS deschedules coroutine id for d: it becomes a sleeper with the
+ * deadline now + d, and resumes later from the point where it is parked.
+ * That is not a seam call: the program sees only the elapsed time. */
+static void preempt(uint32_t id) {
+    GOO_ASSERT(id != SIM_NONE);              /* never the real thread */
+    GOO_ASSERT(id < g_thread_count);
+    GOO_ASSERT(g_threads[id].state == SIM_RUNNABLE);
+    uint32_t d_ns = preempt_duration_ns();
+    uint64_t wake_at_ns = (d_ns > UINT64_MAX - g_now_ns) ? UINT64_MAX : g_now_ns + d_ns;
+    g_threads[id].state = SIM_SLEEP;
+    g_threads[id].wake_at_ns = wake_at_ns;
+    trace_append("preempt", id, d_ns);
+    GOO_ASSERT(g_threads[id].wake_at_ns > g_now_ns);
+}
+
+void sim_yield_point(const char* what) {
+    GOO_ASSERT(g_initialized);
+    GOO_ASSERT(what != nullptr);
+    step_begin(what);
+    uint32_t next = pick_or_advance(what);
+    /* Each preemption is one more decision: it takes a step, so the step
+     * limit bounds this loop, and the pick runs again without `next`. */
+    for (uint64_t preempt_rounds = 0; preempt_drawn(); preempt_rounds++) {
+        GOO_ASSERT(preempt_rounds < g_step_limit);
+        preempt(next);
+        step_begin(what);
+        next = pick_or_advance(what);
+    }
+    trace_append(what, next, 0);
     switch_to(next);
     GOO_ASSERT(g_current == SIM_NONE || g_threads[g_current].state == SIM_RUNNABLE);
     GOO_ASSERT(g_current == SIM_NONE || g_threads[g_current].state != SIM_EXITED);
@@ -382,9 +456,11 @@ static void thread_trampoline(void) {
 
 /* ---- the public surface ---- */
 
-void sim_init(uint64_t seed, uint64_t step_limit, uint64_t time_limit_ns, const char* trace_dir) {
+void sim_init(uint64_t seed, uint64_t step_limit, uint64_t time_limit_ns,
+              uint32_t preempt_ppm, const char* trace_dir) {
     GOO_ASSERT(step_limit > 0);
     GOO_ASSERT(time_limit_ns > 0);
+    GOO_ASSERT(preempt_ppm <= SIM_PPM_ONE);
     GOO_ASSERT(trace_dir != nullptr);
     size_t dir_bytes = strnlen(trace_dir, SIM_TRACE_DIR_BYTES);
     GOO_ASSERT(dir_bytes > 0);
@@ -404,6 +480,7 @@ void sim_init(uint64_t seed, uint64_t step_limit, uint64_t time_limit_ns, const 
     g_step_limit = step_limit;
     g_now_ns = 0;
     g_time_limit_ns = time_limit_ns;
+    g_preempt_ppm = preempt_ppm;
     g_trace_count = 0;
     g_trace_written = 0;
     g_exit_label = nullptr;
@@ -496,7 +573,7 @@ uint32_t sim_wake_one(const void* on, enum sim_state why) {
     if (n == 0) return 0;
     uint32_t id = waiters[sim_random_below(n)];
     make_runnable(id);
-    trace_append("wake_one", id);
+    trace_append("wake_one", id, 0);
     GOO_ASSERT(g_threads[id].state == SIM_RUNNABLE);
     GOO_ASSERT(g_threads[id].wait_on == nullptr);
     return 1;

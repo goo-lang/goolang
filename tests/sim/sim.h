@@ -18,6 +18,20 @@
 #define SIM_MUTEXES_MAX    64u
 #define SIM_TRACE_ENTRIES  65536u
 
+/* Seeded preemption (spec section 6, "Seeded preemption"): at each
+ * scheduling decision the seed deschedules the picked coroutine with
+ * probability ppm / SIM_PPM_ONE, for a log-uniform d: an exponent e uniform
+ * in [SIM_PREEMPT_EXPONENT_MIN, SIM_PREEMPT_EXPONENT_MAX], then d uniform in
+ * [2^e, 2^(e+1)) ns, so about 1 us to 16.8 ms. Fixed by the Task 6a brief
+ * before any measurement. SIM_PREEMPT_NS_MAX is written out, not derived
+ * from the exponent, so that a raised exponent trips the bound assertion
+ * at run time instead of moving the bound with it. */
+#define SIM_PPM_ONE               1000000u
+#define SIM_PREEMPT_PPM_DEFAULT   15625u    /* 1 in 64 decisions; GOO_SIM_PREEMPT_PPM=0 is off */
+#define SIM_PREEMPT_EXPONENT_MIN  10u
+#define SIM_PREEMPT_EXPONENT_MAX  23u
+#define SIM_PREEMPT_NS_MAX        16777215u /* 2^(SIM_PREEMPT_EXPONENT_MAX + 1) - 1 */
+
 enum sim_verdict {
     SIM_PASS = 0, SIM_RUNTIME_DEADLOCK = 2, SIM_DEADLOCK = 10, SIM_INVARIANT = 11,
     SIM_STEP_LIMIT = 12, SIM_TIME_LIMIT = 13, SIM_REPLAY_MISMATCH = 14, SIM_LIMIT = 15,
@@ -38,8 +52,11 @@ typedef struct sim_thread {
 } sim_thread_t;
 
 /* trace_dir must be non-NULL and shorter than 256 bytes; the trace goes to
- * <trace_dir>/<seed>.trace. */
-void      sim_init(uint64_t seed, uint64_t step_limit, uint64_t time_limit_ns, const char* trace_dir);
+ * <trace_dir>/<seed>.trace. preempt_ppm is at most SIM_PPM_ONE; 0 turns the
+ * preemption model off, and then the run draws exactly the random numbers
+ * it drew before the model existed. */
+void      sim_init(uint64_t seed, uint64_t step_limit, uint64_t time_limit_ns,
+                   uint32_t preempt_ppm, const char* trace_dir);
 /* Returns the new thread's id. A full table is the verdict SIM_LIMIT
  * ("limit-threads"): sim_exit_with, never a return. Slots are never reused,
  * so an exited thread's result stays readable for a join. */

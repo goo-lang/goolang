@@ -10,6 +10,9 @@
  *   GOO_SIM_TRACE_DIR                   required; the trace is <dir>/<seed>.trace
  *   GOO_SIM_FAULT_SPURIOUS_WAKE         0 or 1, default 0
  *   GOO_SIM_FAULT_THREAD_CREATE_EAGAIN  0 or 1, default 0
+ *   GOO_SIM_PREEMPT_PPM                 decimal 0..1000000, default
+ *                                       SIM_PREEMPT_PPM_DEFAULT (15625);
+ *                                       0 turns seeded preemption off
  * A malformed value is a usage error, exit 64, before the run starts: a
  * typo must not quietly fall back to a default and run a different test.
  *
@@ -80,6 +83,11 @@ int main(void) {
     uint64_t time_limit_ns = env_u64("GOO_SIM_TIME_LIMIT_NS", 10000000000ull);
     if (step_limit == 0) usage_exit("GOO_SIM_STEP_LIMIT", "greater than 0");
     if (time_limit_ns == 0) usage_exit("GOO_SIM_TIME_LIMIT_NS", "greater than 0");
+    /* ON by default: preemption is not a fault but what every preemptive OS
+     * does, so a run without it models an OS that never deschedules a
+     * thread (spec section 6, "Seeded preemption"). */
+    uint64_t preempt_ppm = env_u64("GOO_SIM_PREEMPT_PPM", SIM_PREEMPT_PPM_DEFAULT);
+    if (preempt_ppm > SIM_PPM_ONE) usage_exit("GOO_SIM_PREEMPT_PPM", "at most 1000000");
     const char* trace_dir = getenv("GOO_SIM_TRACE_DIR");
     if (trace_dir == nullptr) usage_exit("GOO_SIM_TRACE_DIR", "set to a directory");
     if (trace_dir[0] == '\0') usage_exit("GOO_SIM_TRACE_DIR", "set to a directory");
@@ -87,7 +95,7 @@ int main(void) {
     sim_os_set_faults(env_flag("GOO_SIM_FAULT_SPURIOUS_WAKE"),
                       env_flag("GOO_SIM_FAULT_THREAD_CREATE_EAGAIN"));
 
-    sim_init(seed, step_limit, time_limit_ns, trace_dir);
+    sim_init(seed, step_limit, time_limit_ns, (uint32_t)preempt_ppm, trace_dir);
     uint32_t id = sim_thread_spawn(program_thread, nullptr);
     GOO_ASSERT(id == 0);
     sim_run_until_done();
