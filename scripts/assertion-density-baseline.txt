@@ -8,4 +8,4 @@
 # The gate requires BOTH to hold or improve: the assertion count may not
 # fall, and the density (assertions / executable lines) may not fall. The
 # gate never writes this file itself.
-31 40440
+32 40458

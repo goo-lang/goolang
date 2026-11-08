@@ -452,6 +452,11 @@ static uint64_t goo_test_wake_delay_ns(void) {
             }
         }
         v = (parsed > 0) ? parsed : 0;
+        // The comment above claims two racing threads compute one number from
+        // one environment. A thread that stored first must hold OUR value; a
+        // different one means the environment changed under the runtime.
+        GOO_ASSERT(atomic_load_explicit(&cached, memory_order_relaxed) < 0 ||
+                   atomic_load_explicit(&cached, memory_order_relaxed) == v);
         atomic_store_explicit(&cached, v, memory_order_relaxed);
     }
     return (uint64_t)v;
