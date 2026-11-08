@@ -181,6 +181,14 @@ static void out_header(const char* label, const char* detail, uint64_t retained)
     GOO_ASSERT(label != nullptr);
     GOO_ASSERT(detail != nullptr);
     out_str("# goo-sim trace v1 seed="); out_u64(g_seed);
+    /* The model is part of the experiment, so the header names it. At ppm 0
+     * there are no fields, so a ppm-0 trace keeps its pre-model bytes. */
+    if (g_preempt_ppm != 0) {
+        out_str(" preempt_ppm=");   out_u64(g_preempt_ppm);
+        out_str(" preempt_e_min="); out_u64(SIM_PREEMPT_EXPONENT_MIN);
+        out_str(" preempt_e_max="); out_u64(SIM_PREEMPT_EXPONENT_MAX);
+        out_str(" step_cost_ns=");  out_u64(SIM_STEP_COST_NS);
+    }
     out_str(" steps=");    out_u64(g_step);
     out_str(" now_ns=");   out_u64(g_now_ns);
     out_str(" records=");  out_u64(g_trace_count);
@@ -304,6 +312,20 @@ static uint32_t runnable_pick(void) {
     return pick;
 }
 
+/* Makes every sleeper whose deadline is at or before now runnable. */
+static uint32_t wake_due_sleepers(void) {
+    GOO_ASSERT(g_thread_count <= SIM_THREADS_MAX);
+    uint32_t woken = 0;
+    for (uint32_t i = 0; i < g_thread_count; i++) {
+        if (g_threads[i].state == SIM_SLEEP && g_threads[i].wake_at_ns <= g_now_ns) {
+            make_runnable(i);
+            woken++;
+        }
+    }
+    GOO_ASSERT(woken <= g_thread_count);
+    return woken;
+}
+
 static void clock_advance_to_earliest_sleeper(void) {
     uint64_t earliest = UINT64_MAX;
     GOO_ASSERT(any_sleeper());
@@ -315,13 +337,7 @@ static void clock_advance_to_earliest_sleeper(void) {
     GOO_ASSERT(earliest > g_now_ns);   /* a sleeper due now was woken by the last advance */
     g_now_ns = earliest;
     if (g_now_ns > g_time_limit_ns) sim_exit_with(SIM_TIME_LIMIT, "virtual clock");
-    uint32_t woken = 0;
-    for (uint32_t i = 0; i < g_thread_count; i++) {
-        if (g_threads[i].state == SIM_SLEEP && g_threads[i].wake_at_ns <= g_now_ns) {
-            make_runnable(i);
-            woken++;
-        }
-    }
+    uint32_t woken = wake_due_sleepers();
     GOO_ASSERT(woken >= 1);
 }
 
@@ -353,10 +369,24 @@ static void switch_to(uint32_t next) {
     sim_exit_with(SIM_INVARIANT, "an exited thread was resumed");
 }
 
+/* With the model on, a decision costs SIM_STEP_COST_NS, and every sleeper
+ * due by then (a preempted coroutine or an ordinary sleeper) is runnable
+ * before the pick. A spinner then cannot hold the clock still. */
+static void step_cost(void) {
+    GOO_ASSERT(g_preempt_ppm > 0);
+    GOO_ASSERT(g_now_ns <= g_time_limit_ns);
+    uint64_t room_ns = g_time_limit_ns - g_now_ns;
+    if (room_ns < SIM_STEP_COST_NS) sim_exit_with(SIM_TIME_LIMIT, "virtual clock");
+    g_now_ns += SIM_STEP_COST_NS;
+    (void)wake_due_sleepers();
+}
+
+/* One scheduling decision: a step, and with the model on its cost. */
 static void step_begin(const char* what) {
     GOO_ASSERT(what != nullptr);
     g_step++;
     if (g_step > g_step_limit) sim_exit_with(SIM_STEP_LIMIT, what);
+    if (g_preempt_ppm > 0) step_cost();
 }
 
 /* The seeded pick, with the clock jump when nothing is runnable. Returns a
@@ -380,9 +410,9 @@ static uint32_t pick_or_advance(const char* what) {
 
 /* ---- seeded preemption (spec section 6, "Seeded preemption") ---- */
 
-/* One draw per decision while the model is on. With ppm 0 there is NO
- * draw, so the generator, and so every trace, is what it was before the
- * model existed. */
+/* One test draw per decision while the model is on, and two more on a hit
+ * (preempt_duration_ns). With ppm 0 there is NO draw, so the generator, and
+ * so every trace, is what it was before the model existed. */
 static bool preempt_drawn(void) {
     GOO_ASSERT(g_preempt_ppm <= SIM_PPM_ONE);
     if (g_preempt_ppm == 0) return false;

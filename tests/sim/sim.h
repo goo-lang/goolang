@@ -31,6 +31,12 @@
 #define SIM_PREEMPT_EXPONENT_MIN  10u
 #define SIM_PREEMPT_EXPONENT_MAX  23u
 #define SIM_PREEMPT_NS_MAX        16777215u /* 2^(SIM_PREEMPT_EXPONENT_MAX + 1) - 1 */
+/* With the model on (ppm > 0) each scheduling decision costs this much
+ * virtual time, and every sleeper due by then is runnable before the pick.
+ * Without it a coroutine that spins through seam calls holds the clock
+ * still, and a sleeper or a preempted coroutine never resumes (fix round 1,
+ * I1). Off at ppm 0, so a ppm-0 trace keeps its pre-model bytes. */
+#define SIM_STEP_COST_NS          1000u
 
 enum sim_verdict {
     SIM_PASS = 0, SIM_RUNTIME_DEADLOCK = 2, SIM_DEADLOCK = 10, SIM_INVARIANT = 11,

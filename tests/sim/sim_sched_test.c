@@ -21,7 +21,9 @@
  * T1-T4 run with seeded preemption OFF (ppm 0). T5-T8 are Task 6a's tests
  * of the preemption model (spec section 6, "Seeded preemption"): T5 pins
  * the T1-T3 traces to the bytes they had before the model existed, T6-T8
- * run the model ON.
+ * run the model ON. T9 is fix round 1's I1: a sleeper under a coroutine
+ * that spins through seam calls must wake, because with the model on each
+ * decision costs SIM_STEP_COST_NS of virtual time.
  *
  * Usage: sim_sched_test <trace-base-dir> */
 #include "sim.h"
@@ -43,7 +45,9 @@ enum {
     PREEMPT_PPM_T6 = 250000,         /* about 25 preemptions in T6's ~100 decisions */
     PREEMPT_PPM_T7 = 500000,         /* no preemption in 64 decisions: 2^-64 */
     ONE_YIELDER_DECISIONS = 64,
+    SPIN_PPM_RARE = 1,               /* T9b: the model is on, a preemption is rare */
 };
+static const uint64_t SPIN_SLEEP_NS = 5ull * 1000 * 1000;   /* T9: 5,000 decisions of step cost */
 static const uint64_t TIME_LIMIT_NS = 10ull * 1000 * 1000 * 1000;
 
 static char g_base_dir[200];
@@ -69,6 +73,38 @@ static void* yield_n(void* arg) {
     GOO_ASSERT(a != b);
     sim_run_until_done();
     sim_exit_with(SIM_PASS, "two-yielders");
+}
+
+/* T9's children: one coroutine sleeps, the other spins through seam calls
+ * until the sleeper is back. With no step cost and no preemption, the
+ * spinner stays runnable, the clock never moves, and the sleeper never
+ * wakes: the run ends in step-limit. */
+static volatile uint32_t g_sleeper_done;
+
+static void* spinner(void* arg) {
+    for (uint32_t i = 0; i < STEP_LIMIT && g_sleeper_done == 0; i++) {
+        sim_yield_point("spin");
+    }
+    GOO_ASSERT(g_sleeper_done == 1);
+    return arg;
+}
+
+static void* sleeper(void* arg) {
+    uint64_t wake_at_ns = sim_now_ns() + SPIN_SLEEP_NS;
+    sim_sleep_until(wake_at_ns);
+    GOO_ASSERT(sim_now_ns() >= wake_at_ns);
+    g_sleeper_done = 1;
+    return arg;
+}
+
+[[noreturn]] static void run_spin_sleeper(uint64_t seed, const char* dir, uint32_t ppm) {
+    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, ppm, dir);
+    g_sleeper_done = 0;
+    (void)sim_thread_spawn(sleeper, nullptr);
+    (void)sim_thread_spawn(spinner, nullptr);
+    sim_run_until_done();
+    GOO_ASSERT(g_sleeper_done == 1);
+    sim_exit_with(SIM_PASS, "spin-sleeper");
 }
 
 /* T7's child: one coroutine, so every preemption leaves nothing runnable
@@ -176,7 +212,10 @@ static void* progress_yielder(void* arg) {
 
 /* ---- the parent's side ---- */
 
-enum workload { WORK_YIELD_10, WORK_YIELD_50, WORK_NESTING, WORK_YIELD_50_PREEMPT, WORK_ONE_YIELDER_PREEMPT };
+enum workload {
+    WORK_YIELD_10, WORK_YIELD_50, WORK_NESTING, WORK_YIELD_50_PREEMPT, WORK_ONE_YIELDER_PREEMPT,
+    WORK_SPIN_DEFAULT, WORK_SPIN_RARE,
+};
 
 static int run_child(enum workload work, uint64_t seed, const char* dir) {
     if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
@@ -194,6 +233,8 @@ static int run_child(enum workload work, uint64_t seed, const char* dir) {
         if (work == WORK_YIELD_50) run_two_yielders(seed, dir, 50, 0);
         if (work == WORK_YIELD_50_PREEMPT) run_two_yielders(seed, dir, 50, PREEMPT_PPM_T6);
         if (work == WORK_ONE_YIELDER_PREEMPT) run_one_yielder(seed, dir, PREEMPT_PPM_T7);
+        if (work == WORK_SPIN_DEFAULT) run_spin_sleeper(seed, dir, SIM_PREEMPT_PPM_DEFAULT);
+        if (work == WORK_SPIN_RARE) run_spin_sleeper(seed, dir, SPIN_PPM_RARE);
         run_nesting(seed, dir);
     }
     int status = 0;
@@ -576,6 +617,34 @@ static int test_preempt_bounds(void) {
     return 0;
 }
 
+/* T9, a sleeper under a spinner wakes: at the default ppm (T9a) and at
+ * ppm 1 (T9b), where a preemption is rare and only the step cost moves the
+ * clock. Both must pass, with the clock past the sleep. */
+static int test_spin_sleeper(void) {
+    static const struct { const char* leaf; enum workload work; const char* name; } runs[] = {
+        { "t9a", WORK_SPIN_DEFAULT, "T9a default ppm" },
+        { "t9b", WORK_SPIN_RARE,    "T9b ppm 1" },
+    };
+    char dir[256];
+    for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
+        dir_join(dir, sizeof dir, runs[i].leaf);
+        if (run_child(runs[i].work, 5, dir) != 0) {
+            fprintf(stderr, "sim_sched_test: %s: the sleeper under a spinner did not finish\n", runs[i].name);
+            return -1;
+        }
+        if (read_trace(dir, 5, g_file_a) < 0) return -1;
+        unsigned long long now_ns = header_field(g_file_a, "now_ns=");
+        if (now_ns < SPIN_SLEEP_NS) {
+            fprintf(stderr, "sim_sched_test: %s: the clock ends at %llu ns, before the sleep ends\n", runs[i].name, now_ns);
+            return -1;
+        }
+        printf("sim_sched_test: %s: steps=%llu now_ns=%llu\n", runs[i].name,
+               header_field(g_file_a, "steps="), now_ns);
+    }
+    printf("sim_sched_test: T9 a sleeper under a spinner wakes: PASS\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc != 2 || strlen(argv[1]) >= sizeof g_base_dir - 8) {
         fprintf(stderr, "usage: sim_sched_test <trace-base-dir>\n");
@@ -595,10 +664,11 @@ int main(int argc, char** argv) {
     if (test_on_deterministic() != 0) { printf("sim_sched_test: T6 on is deterministic: FAIL\n"); failed++; }
     if (test_preempt_costs_time() != 0) { printf("sim_sched_test: T7 a preemption costs time: FAIL\n"); failed++; }
     if (test_preempt_bounds() != 0) { printf("sim_sched_test: T8 preemption bounds: FAIL\n"); failed++; }
+    if (test_spin_sleeper() != 0) { printf("sim_sched_test: T9 a sleeper under a spinner wakes: FAIL\n"); failed++; }
     if (failed != 0) {
-        printf("sim_sched_test: %d of 8 FAILED\n", failed);
+        printf("sim_sched_test: %d of 9 FAILED\n", failed);
         return 1;
     }
-    printf("sim_sched_test: 8 of 8 PASS\n");
+    printf("sim_sched_test: 9 of 9 PASS\n");
     return 0;
 }
