@@ -14,6 +14,11 @@
 #      the seed picks how.
 #   3. The program's stdio output survives a non-pass verdict, which ends the
 #      process with _exit.
+#   4. Each invariant check of tests/sim/sim_os.c fires on its own violation
+#      (spec section 7). Read from the exit status AND the trace header's
+#      verdict and detail, so the check that fired is the one the case broke.
+#      Seeds 1..4 each, because a case with two threads must fire on every
+#      interleaving, not on one lucky seed.
 # The instrument of fact 2 -- sim_current() aborts on the real thread -- is
 # proved able to fire by T4 in tests/sim/sim_sched_test.c.
 #
@@ -71,8 +76,35 @@ run_case verdict-output 1
 [ "$RC" -eq 10 ] || fail "verdict-output exit=$RC (want 10, sim-deadlock)"
 has_line "$WORK/verdict-output.1.out" "output-before-verdict" || fail "verdict-output: the program's stdout line was lost at the verdict"
 
+# Fact 4. $1 case, $2 exit status, $3 the header's "verdict=... detail=..."
+# tail, which ends the header line.
+expect_verdict() {
+    local seed header
+    for seed in 1 2 3 4; do
+        run_case "$1" "$seed"
+        header="$(head -1 "$WORK/trace/$seed.trace" 2>/dev/null)"
+        [ "$RC" -eq "$2" ] || fail "$1 seed=$seed exit=$RC (want $2); stderr: $(head -c 300 "$WORK/$1.$seed.err")"
+        case "$header" in
+            *" $3") ;;
+            *) fail "$1 seed=$seed: trace header does not end with '$3': $header" ;;
+        esac
+    done
+}
+expect_verdict lock-order             11 "verdict=invariant detail=lock-order"
+expect_verdict recursive-lock         11 "verdict=invariant detail=recursive-lock"
+expect_verdict unlock-not-held        11 "verdict=invariant detail=unlock-not-held"
+expect_verdict wait-without-mutex     11 "verdict=invariant detail=wait-without-mutex"
+expect_verdict wait-other-owner       11 "verdict=invariant detail=wait-without-mutex"
+expect_verdict exit-holding-mutex     11 "verdict=invariant detail=exit-holding-mutex"
+expect_verdict free-held-mutex        11 "verdict=invariant detail=free-held-mutex"
+expect_verdict free-cond-with-waiters 11 "verdict=invariant detail=free-cond-with-waiters"
+expect_verdict join-self              11 "verdict=invariant detail=join-self"
+expect_verdict join-detached          11 "verdict=invariant detail=join-detached"
+expect_verdict unknown-mutex          11 "verdict=invariant detail=unknown-mutex"
+expect_verdict limit-mutexes          15 "verdict=limit-mutexes detail=mutexes"
+
 if [ "$FAILS" -ne 0 ]; then
     echo "sim-entry-test: FAIL ($FAILS checks, $BIN, work dir $WORK)"
     exit 1
 fi
-echo "sim-entry-test: PASS ($BIN: main is coroutine 0 on seeds 1-8, the exit path stays on coroutine 0, status 3 passes through, stdout survives sim-deadlock)"
+echo "sim-entry-test: PASS ($BIN: main is coroutine 0 on seeds 1-8, the exit path stays on coroutine 0, status 3 passes through, stdout survives sim-deadlock, 12 violation cases fire their own check on seeds 1-4)"

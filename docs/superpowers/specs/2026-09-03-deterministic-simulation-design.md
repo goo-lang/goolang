@@ -161,7 +161,7 @@ Lost signals are out: POSIX does not permit them.
 
 | Verdict | Exit | Meaning |
 |---|---|---|
-| `pass` | 0 | every coroutine exited, program's own checks passed |
+| `pass` | 0 | the program's main returned 0 on coroutine 0, and its own result check held |
 | `runtime-deadlock-abort` | 2 | the runtime's `goo_deadlock_abort` |
 | `sim-deadlock` | 10 | nothing runnable, nothing sleeping |
 | `invariant` | 11 | a section 7 check failed |
@@ -170,6 +170,15 @@ Lost signals are out: POSIX does not permit them.
 | `replay-mismatch` | 14 | the driver's replay produced a different trace |
 | `limit-<name>` | 15 | a section 6 table limit hit |
 | crash | signal | assertion or fault in the runtime or simulator |
+
+**What `pass` means (ruling, 2026-11-08, Task 5).** An earlier draft said
+"every coroutine exited". That cannot hold without a runtime change: the
+workers leave their loop only through `goo_scheduler_shutdown`, and no
+program under test calls it. So a return from the program's main is
+`exit(status)` on coroutine 0, as in production, where the workers still
+run when main returns. The limit: a program that does not wait for its
+goroutines can leave one stuck and still pass. Go and the production
+runtime behave the same way.
 
 **The simulator follows Tiger Style** (`docs/TIGER_STYLE.md` at
 tigerbeetle/tigerbeetle), because a harness that judges the runtime holds a
