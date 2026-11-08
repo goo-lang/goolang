@@ -177,12 +177,15 @@ bytes of its `pthread_mutex_t`, which only `goo_os_posix.c` uses (the sim
 archive never links it), so `struct goo_mutex` does not change. A lookup is
 O(1) and checks, each on its own line, the magic, the index range, that the
 slot names this address, and the generation. A free clears the magic and
-changes the slot's generation; a new mutex takes the head of a free list or
+changes the slot's generation, and keeps the object (fix round 2): freed
+mutex storage is never returned to `malloc`, because a new mutex at the
+freed address would make the stale pointer equal to a live handle, and a
+use after free would then lock the wrong mutex with no verdict; a new mutex takes the head of a free list or
 the next untouched slot, so no seam call walks the table. A handle the seam
 did not make, a freed handle, a copy at another address, and stale bytes
 written back at a reused address each read `unknown-mutex`
-(`sim_entry_test` cases `unknown-mutex`, `freed-mutex`, `copied-mutex`,
-`stale-generation`). No trace record names a slot or a handle.
+(`sim_entry_test` cases `unknown-mutex`, `freed-mutex`, `freed-then-new`,
+`copied-mutex`, `stale-generation`). No trace record names a slot or a handle.
 
 ### Seeded preemption (Task 6a, 2026-11-08)
 
@@ -347,7 +350,12 @@ all coroutines exit or a verdict fires, exit with the verdict code.
 
 **Programs under test, unchanged:** `tests/concurrency/false_deadlock_test.c`,
 `deadlock_poll_test.c`, `mt_scheduler_stress.c`, `chan_mt_stress.c`,
-`fanin_stress.c`.
+`fanin_stress.c`. One exception (ruling, Task 7 fix round 2): under
+`GOO_SIM_BUILD`, `fanin_stress.c` runs 64 batches per shape instead of 4000,
+because 8,000 batches need about 30 s of virtual time and 1.1 M steps per
+seed at the default model, over both default run limits. The value is sized
+so that the worst seed uses under 10% of each limit; the production build is
+unchanged.
 
 **Driver.** `scripts/sim_probe.sh <program> --seeds N [--faults ...]` loops
 over seeds, one process per seed, exit status read with no pipe. Output: one
