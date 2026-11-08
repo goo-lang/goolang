@@ -23,7 +23,9 @@
  *
  * Tiger Style (spec section 7): the tables are static and sized by sim.h;
  * the mutex and condvar OBJECTS come from goo_alloc, as production makes
- * them, because the runtime owns their lifetime. */
+ * them. The runtime decides WHEN to free one; this file decides whether the
+ * storage returns to malloc, and for a mutex it does not (see FREED STORAGE
+ * IS NEVER REUSED below). */
 #include "sim.h"
 
 #include "runtime.h"
@@ -64,7 +66,10 @@ typedef struct sim_mutex_slot {
  * every freed handle reads unknown-mutex, exactly. The cost is the size of
  * a goo_mutex_t for each free; the runtime frees a mutex only at scheduler
  * shutdown, goo_chan_free and a wait-group free, and no program under test
- * reaches them in a loop. The generation still decides when the bytes of a
+ * reaches them in a loop. Should one do so, the count of frees is bounded by
+ * SIM_QUARANTINE_MAX, and the next free ends the run with the verdict
+ * limit-freed-mutexes: memory use then stays bounded, and the run says why
+ * it stopped. The generation still decides when the bytes of a
  * freed mutex are written into the new mutex that takes its slot (the free
  * list is last in, first out). */
 typedef struct sim_mutex_tag {
@@ -93,6 +98,9 @@ static sim_mutex_slot_t  g_mutexes[SIM_MUTEXES_MAX];
  * untouched slot. Zero is "empty", so no loop at start-up walks the table. */
 static uint32_t          g_slots_touched;
 static uint32_t          g_free_head_plus_one;            /* 0 = the free list is empty */
+/* Mutexes freed so far. Their storage is kept (see FREED STORAGE above), so
+ * this is the quarantine's size, and SIM_QUARANTINE_MAX bounds it. */
+static uint32_t          g_quarantined;
 static struct goo_thread g_handles[SIM_THREADS_MAX];
 static uint32_t          g_held_count[SIM_THREADS_MAX];   /* mutexes each thread holds now */
 static bool              g_fault_spurious_wake;
@@ -142,7 +150,6 @@ static sim_mutex_slot_t* slot_of(const goo_mutex_t* mutex) {
     sim_mutex_slot_t* slot = &g_mutexes[tag.slot];
     if (slot->mutex != mutex) sim_exit_with(SIM_INVARIANT, "unknown-mutex");   /* free, or another mutex */
     if (slot->generation != tag.generation) sim_exit_with(SIM_INVARIANT, "unknown-mutex");
-    GOO_ASSERT(tag.slot < g_slots_touched);
     return slot;
 }
 
@@ -157,14 +164,12 @@ static uint32_t slot_take_free(void) {
         return index;
     }
     if (g_slots_touched == SIM_MUTEXES_MAX) sim_exit_with(SIM_LIMIT, "mutexes");
-    GOO_ASSERT(g_slots_touched < SIM_MUTEXES_MAX);
     GOO_ASSERT(g_mutexes[g_slots_touched].mutex == nullptr);
     return g_slots_touched++;
 }
 
 static void slot_register(goo_mutex_t* mutex) {
     GOO_ASSERT(mutex != nullptr);
-    GOO_ASSERT(tag_read(mutex).magic != SIM_MUTEX_MAGIC);   /* goo_mutex_new zeroed it */
     uint32_t index = slot_take_free();
     sim_mutex_slot_t* slot = &g_mutexes[index];
     slot->mutex = mutex;
@@ -253,6 +258,8 @@ void goo_mutex_free(goo_mutex_t* mutex) {
     sim_mutex_slot_t* slot = slot_of(mutex);
     if (slot->held != 0) sim_exit_with(SIM_INVARIANT, "free-held-mutex");
     GOO_ASSERT(mutex->locked == 0);            /* the mirror agrees with the table */
+    if (g_quarantined == SIM_QUARANTINE_MAX) sim_exit_with(SIM_LIMIT, "freed-mutexes");
+    g_quarantined++;
     slot_unregister(mutex, slot);
     GOO_ASSERT(slot->mutex == nullptr);
     GOO_ASSERT(tag_read(mutex).magic == 0);

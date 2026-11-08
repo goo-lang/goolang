@@ -15,7 +15,17 @@
 #define SIM_THREADS_MAX    17u      /* GOO_MAX_OS_THREADS (16) workers + main */
 #define SIM_STACK_BYTES    262144u
 #define SIM_WAITERS_MAX    17u
-#define SIM_MUTEXES_MAX    16384u   /* live mutexes; fanin_stress needs 8,001 (Task 7 fix round 1) */
+/* Live mutexes. The scheduler mutex plus one per channel, and codegen frees
+ * no channel, so a program that makes many channels holds many mutexes. The
+ * sim build of the heaviest program (fanin_stress) needs about 129; 16,384
+ * is a power of two that leaves headroom for programs not yet written.
+ * History: 64 until Task 7 fix round 1, because the full fanin_stress (8,001
+ * mutexes) stopped at limit-mutexes in batch 64. */
+#define SIM_MUTEXES_MAX    16384u
+/* Mutexes freed over a run. A freed mutex keeps its storage (sim_os.c), so
+ * the count bounds that memory: about 16,384 times sizeof(goo_mutex_t).
+ * The next free past it is the verdict limit-freed-mutexes. */
+#define SIM_QUARANTINE_MAX 16384u
 #define SIM_TRACE_ENTRIES  65536u
 
 /* Seeded preemption (spec section 6, "Seeded preemption"): at each

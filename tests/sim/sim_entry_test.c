@@ -25,11 +25,13 @@
  *   wait-other-owner, exit-holding-mutex, free-held-mutex,
  *   free-cond-with-waiters, join-self, join-detached, unknown-mutex,
  *   freed-mutex, freed-then-new, copied-mutex, stale-generation,
- *   limit-mutexes.
- * The last four check the mutex HANDLE (Task 7 fix rounds 1 and 2): a
- * handle that the seam freed, a copy of a live mutex at another address,
- * and the bytes of a freed mutex written over the new mutex that reuses its
- * slot must each read unknown-mutex, as the stranger does.
+ *   limit-mutexes, limit-freed-mutexes.
+ * The four cases freed-mutex, freed-then-new, copied-mutex and
+ * stale-generation check the mutex HANDLE (Task 7 fix rounds 1 and 2): a
+ * handle that the seam freed (alone, and while a new mutex exists), a copy
+ * of a live mutex at another address, and the bytes of a freed mutex written
+ * over the new mutex that reuses its slot must each read unknown-mutex, as
+ * the stranger does. The two limit cases end with exit 15.
  * unlock-not-owner is Task 6's case (tests/sim/sim_invariant_test.c).
  *
  * Usage: SIM_ENTRY_CASE=<case> GOO_SIM_TRACE_DIR=<dir> build/sim/sim_entry_test */
@@ -316,6 +318,17 @@ static int case_limit_mutexes(void) {
     return missed("limit-mutexes");
 }
 
+/* One free more than the quarantine holds. Each pair is a new mutex and a
+ * free, so the live table never fills: only the quarantine can stop it. */
+static int case_limit_freed_mutexes(void) {
+    for (uint32_t i = 0; i <= SIM_QUARANTINE_MAX; i++) {
+        goo_mutex_t* mutex = goo_mutex_new();
+        GOO_ASSERT(mutex != nullptr);
+        goo_mutex_free(mutex);
+    }
+    return missed("limit-freed-mutexes");
+}
+
 typedef struct entry_case {
     const char* name;
     int (*run)(void);
@@ -341,6 +354,7 @@ static const entry_case_t CASES[] = {
     { "copied-mutex", case_copied_mutex },
     { "stale-generation", case_stale_generation },
     { "limit-mutexes", case_limit_mutexes },
+    { "limit-freed-mutexes", case_limit_freed_mutexes },
 };
 
 int main(void) {
