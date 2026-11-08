@@ -13,18 +13,20 @@
 # THE BAR IS 0, SO THERE IS NO BASELINE FILE. src/ and include/ hold 0 cases
 # on 2026-11-08, and the gate fails on ANY case. A baseline of 0 needs no file.
 #
-# THE RULE THIS COUNTS. A line that matches '//' followed by anything, then a
-# backslash as the LAST character. A backslash followed by a space is not a
-# splice in C (the compiler splices only backslash-newline), so the pattern
-# anchors the backslash at end of line with no trailing-space allowance.
+# THE RULE THIS COUNTS. gcc and clang splice a backslash, any run of spaces or
+# tabs, an optional carriage return, and the newline (the space form is a GNU
+# extension that -Wcomment warns on as "multi-line comment"). This project
+# builds with both, so all of those forms are a splice here. The probe counts a
+# line with '//' followed by anything, then a backslash, then only
+# [[:space:]] (spaces, tabs, CR) to the end of the line. A CRLF file is
+# therefore read the way the compilers read it.
 #
 # KNOWN LIMIT, WHICH ERRS TOWARD A FALSE POSITIVE. The pattern does not know
 # whether a '//' sits inside a string literal or inside a /* */ comment, so
 # such a line that also ends in a backslash is reported. A false positive is
 # loud (a human reads the line and rewrites it). A false negative would be
 # silent, and the pattern has none that is known: every real splice in a //
-# comment has a '//' before a final backslash. A CRLF file hides the final
-# backslash behind a carriage return; the tree is LF.
+# comment has a '//' before a final backslash and trailing whitespace only.
 #
 # FILE LIST. `git ls-files` for *.c and *.h under src/ and include/. Never
 # `find`: it returns the ignored bison output src/parser/parser.tab.c.
@@ -39,7 +41,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # MISRA_R3_2_ROOT overrides the tree that is read. The self-test points it at
 # a scratch git repository.
 ROOT="${MISRA_R3_2_ROOT:-$REPO_ROOT}"
-PATTERN='//.*\\$'
+PATTERN='//.*\\[[:space:]]*$'
 
 # scan: print "FILES <n>" on the first line and then each hit as
 # file:line:text. Return 0 for green, 1 for red, 2 when the instrument is
@@ -112,15 +114,40 @@ if [ "${1:-}" = "--self-test" ]; then
 		echo "    ok (a): one // line ending in a backslash is RED: $(head -n1 "$W/out.log")"
 	fi
 
-	# (b) backslash then a space does not splice -> GREEN
+	# (b) backslash then a space -> RED. gcc and clang splice it (a GNU
+	# extension that -Wcomment reports as "multi-line comment").
 	mk
 	printf '%s\n' '// this comment ends in a backslash and a space \ ' >>"$W/t/$TARGET_REL"
 	if ! grep -qF 'and a space \ ' "$W/t/$TARGET_REL"; then
 		echo "$SELF: FAIL (b: the injection did not land)"; bad=1
 	elif run; then
-		echo "    ok (b): a backslash then a space is GREEN: $(cat "$W/out.log")"
+		echo "$SELF: FAIL (b: backslash and space stayed GREEN)"; bad=1
 	else
-		echo "$SELF: FAIL (b: backslash and space went RED)"; sed 's/^/        /' "$W/out.log"; bad=1
+		echo "    ok (b): a backslash then a space is RED: $(head -n1 "$W/out.log")"
+	fi
+
+	# (e) backslash then CR+LF -> RED. The compilers read CR+LF as a line end.
+	mk
+	printf '// this comment ends in a backslash and CRLF \\\r\n' >>"$W/t/$TARGET_REL"
+	if ! LC_ALL=C grep -qP 'CRLF \\\r$' "$W/t/$TARGET_REL"; then
+		echo "$SELF: FAIL (e: the injection did not land)"; bad=1
+	elif run; then
+		echo "$SELF: FAIL (e: backslash then CRLF stayed GREEN)"; bad=1
+	else
+		echo "    ok (e): a backslash then CR+LF is RED: $(head -n1 "$W/out.log")"
+	fi
+
+	# (f) the documented false positive: a '//' inside a string literal on a
+	# line that ends in a backslash. RED by a KNOWN LIMIT (the pattern does not
+	# parse strings). A false positive is loud; a false negative is silent.
+	mk
+	printf '%s\n' 'static const char *u = "http://a\' >>"$W/t/$TARGET_REL"
+	if ! grep -qF '"http://a\' "$W/t/$TARGET_REL"; then
+		echo "$SELF: FAIL (f: the injection did not land)"; bad=1
+	elif run; then
+		echo "$SELF: FAIL (f: the known false positive went GREEN -- the limit text is out of date)"; bad=1
+	else
+		echo "    ok (f): \"http://a\\\" at line end is RED by a known limit: $(head -n1 "$W/out.log")"
 	fi
 
 	# (d) positive control: an empty file list must FAIL, not pass
