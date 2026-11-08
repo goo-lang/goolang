@@ -52,9 +52,21 @@ typedef struct sim_mutex_slot {
  * goo_os_posix.c uses, and the sim archive never links that file. A handle
  * the seam did not make (a stranger, a copy, freed bytes, stale bytes at a
  * reused address) fails one of the checks in slot_of and reads
- * unknown-mutex. The magic is cleared before the free, so a freed handle
- * whose memory is not reused fails on the magic; malloc's own free-list
- * words also land at those offsets. */
+ * unknown-mutex.
+ *
+ * FREED STORAGE IS NEVER REUSED (Task 7 fix round 2). goo_mutex_free clears
+ * the tag and keeps the object: it does not return it to malloc. Two reasons.
+ * A read of a freed object is undefined in C, and slot_of reads the tag of
+ * whatever handle it gets. And with reuse, malloc could put a new mutex at
+ * the freed address: the stale pointer would then BE the new live handle,
+ * with its valid tag, and a use after free would lock the wrong mutex with
+ * no verdict. Kept, the storage holds magic 0 until the process ends, so
+ * every freed handle reads unknown-mutex, exactly. The cost is the size of
+ * a goo_mutex_t for each free; the runtime frees a mutex only at scheduler
+ * shutdown, goo_chan_free and a wait-group free, and no program under test
+ * reaches them in a loop. The generation still decides when the bytes of a
+ * freed mutex are written into the new mutex that takes its slot (the free
+ * list is last in, first out). */
 typedef struct sim_mutex_tag {
     uint64_t magic;                  /* SIM_MUTEX_MAGIC while the seam owns the mutex */
     uint32_t slot;
@@ -244,7 +256,7 @@ void goo_mutex_free(goo_mutex_t* mutex) {
     slot_unregister(mutex, slot);
     GOO_ASSERT(slot->mutex == nullptr);
     GOO_ASSERT(tag_read(mutex).magic == 0);
-    goo_free(mutex);
+    /* No goo_free: see FREED STORAGE IS NEVER REUSED above. */
 }
 
 void goo_mutex_lock(goo_mutex_t* mutex) {
