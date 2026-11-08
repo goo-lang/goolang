@@ -460,6 +460,6 @@ if [ -n "$(ls -A "$TRACE_DIR")" ]; then
     echo "$PROBE: PASS ($ARTEFACT, trace dir $TRACE_DIR)"
 else
     rmdir "$TRACE_DIR"
-    echo "$PROBE: PASS ($ARTEFACT, trace dir $TRACE_DIR, removed: every seed passed)"
+    echo "$PROBE: PASS ($ARTEFACT, trace dir $TRACE_DIR, removed: every seed reached $EXPECT)"
 fi
 exit 0
