@@ -554,7 +554,7 @@ bool comptime_value_to_bool(const ComptimeValue* value) {
 ASTNode* comptime_value_to_ast(const ComptimeValue* value) {
     if (!value) return NULL;
     
-    Position pos = {0, 0, 0};
+    Position pos = {0, 0, 0, NULL};
     
     switch (value->type) {
         case COMPTIME_VALUE_INT: {
