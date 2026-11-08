@@ -644,8 +644,28 @@ for run in d.get('runs', []):
 	exit 0
 fi
 
+# --cppcheck-lane <compile_commands.json> <out dir> <jobs>: the cppcheck lane
+# alone, on a database the caller chose, through the SAME run_cppcheck_lane
+# the real run uses. Task 17b: scripts/findings_probe.sh's repeatability
+# control runs it twice on the runtime units with the database order
+# reversed, so the control exercises the lane, not a copy of its flags.
+if [ "${1:-}" = "--cppcheck-lane" ]; then
+	if [ "$#" -ne 4 ]; then
+		echo "usage: $0 --cppcheck-lane <compile_commands.json> <out dir> <jobs>" >&2
+		exit 2
+	fi
+	lane_out="$(run_cppcheck_lane "$2" "$3" "$4" "$MISRA_JSON" "$MISRA_SUPPRESSIONS")"
+	printf '%s\n' "$lane_out"
+	lane_summary="$(printf '%s\n' "$lane_out" | grep '^CPPCHECK_SUMMARY ')"
+	if ! printf '%s\n' "$lane_summary" | grep -q ' exit=0 ' || printf '%s\n' "$lane_summary" | grep -q ' checked=0 '; then
+		echo "$PROBE --cppcheck-lane: FAIL ($2: $lane_summary)" >&2
+		exit 1
+	fi
+	exit 0
+fi
+
 if [ -n "${1:-}" ]; then
-	echo "usage: $0 [--self-test]" >&2
+	echo "usage: $0 [--self-test | --cppcheck-lane <compile_commands.json> <out dir> <jobs>]" >&2
 	exit 2
 fi
 

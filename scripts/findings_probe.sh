@@ -59,8 +59,10 @@
 #                                                  # (no pipeline re-run) -- what
 #                                                  # --self-test drives against
 #                                                  # synthetic fixtures
-#   scripts/findings_probe.sh --self-test         # six synthetic cases, see below;
-#                                                  # never runs the real pipeline
+#   scripts/findings_probe.sh --self-test         # six synthetic cases and one
+#                                                  # cppcheck repeatability control,
+#                                                  # see below; never runs the real
+#                                                  # pipeline
 #
 # Environment overrides:
 #   FINDINGS_SARIF         merged output (default: build/findings.sarif)
@@ -117,9 +119,9 @@ if [ "${1:-}" = "--check-only" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# --self-test: six SYNTHETIC cases; the real pipeline is NOT run (fix round
-# 1 / M1: it used to fall through into the pipeline as case (d), so
-# verify-core ran every lane three times).
+# --self-test: six SYNTHETIC cases and one control on the real runtime units;
+# the real pipeline is NOT run (fix round 1 / M1: it used to fall through
+# into the pipeline as case (d), so verify-core ran every lane three times).
 #   (a) a synthetic SARIF with one result not in the baseline -> RED
 #   (b) a suppression row with an empty justification -> RED
 #   (c) a merged file that fails schema validation (dropped "version") -> RED
@@ -128,6 +130,9 @@ fi
 #   (e) a SARIF with 21 runs (the GitHub limit is 20) -> RED, task 18.
 #   (f) a suppressed result is annotated, still schema-valid, and still
 #       present in the file, task 18.
+#   (g) the cppcheck lane on the runtime units, at -j1, forward and with the
+#       database reversed: any (rule, file) count that differs -> RED, task
+#       17b. About 7s; the only case that runs a real analyser.
 # The real merged file is gated by `make findings-probe`, not here.
 # Each drives run_check_only end to end (validate, THEN gate), through THIS
 # script's own entry point -- not tools/findings_gate.py directly, which
@@ -249,10 +254,74 @@ sys.exit(0 if len(r) == 1 and r[0]['suppressions'] == [{'kind': 'external', 'jus
 		fail=1
 	fi
 
+	# (g) repeatability, task 17b: the cppcheck lane, run twice at -j1 on the
+	# REAL runtime units, the second time with the database order reversed,
+	# must give the same count for every (rule, file). misra.py's CTU pass
+	# keys a cross-unit finding (an unused macro, rule 2.5, among others) by
+	# NAME and reports it at the location in the FIRST unit summary it reads,
+	# and that order follows -j's completion order. A name defined in two
+	# files therefore moved its finding between them from run to run, which
+	# made the shrink-only gate red with no change, and could make it green
+	# over a real regression. -j1 makes the order the database order, so
+	# reversing the database is a repeatable stand-in for -j's reordering.
+	# RED before the GOO_PLATFORM_* names got one definition site
+	# (include/runtime.h 4 + src/runtime/platform.h 6, reversed: platform.h 10).
+	# REORDER_SCOPE widens the scan (for example to "src/"); the default is
+	# the runtime units, which is where the defect was measured.
+	reorder_scope="${REORDER_SCOPE:-src/runtime/}"
+	if ! "$REPO_ROOT/tools/gen_compile_commands.sh" "$W/cc-full.json" >"$W/g-gen.log" 2>&1; then
+		cat "$W/g-gen.log"
+		echo "$SELF: FAIL (the repeatability control could not derive the compile database)"
+		exit 1
+	fi
+	python3 - "$W/cc-full.json" "$reorder_scope" "$W/cc-fwd.json" "$W/cc-rev.json" <<'PYEOF'
+import json, sys
+full, scope, fwd, rev = sys.argv[1:5]
+units = [e for e in json.load(open(full)) if e["file"].startswith(scope)]
+if len(units) < 2:
+    sys.exit("repeatability control: %d unit(s) under %r, need at least 2 to reorder" % (len(units), scope))
+json.dump(units, open(fwd, "w"))
+json.dump(units[::-1], open(rev, "w"))
+PYEOF
+	rc_g=0
+	bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" --cppcheck-lane "$W/cc-fwd.json" "$W/cppcheck-fwd" 1 >"$W/g-fwd.log" 2>&1 || rc_g=$?
+	bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" --cppcheck-lane "$W/cc-rev.json" "$W/cppcheck-rev" 1 >"$W/g-rev.log" 2>&1 || rc_g=$?
+	out_g="$(python3 - "$W/cppcheck-fwd/cppcheck.sarif" "$W/cppcheck-rev/cppcheck.sarif" <<'PYEOF' 2>&1
+import collections, json, sys
+
+def counts(path):
+    c = collections.Counter()
+    for run in json.load(open(path))["runs"]:
+        for r in run.get("results", []):
+            locs = r.get("locations") or [{}]
+            uri = locs[0].get("physicalLocation", {}).get("artifactLocation", {}).get("uri", "")
+            c[(r.get("ruleId", ""), uri)] += 1
+    return c
+
+fwd, rev = counts(sys.argv[1]), counts(sys.argv[2])
+if sum(fwd.values()) == 0:
+    sys.exit("forward run has 0 results: the lane analysed nothing, so equal counts prove nothing")
+moved = sorted(k for k in set(fwd) | set(rev) if fwd[k] != rev[k])
+for rule, uri in moved:
+    print("    %s %s: forward %d, reversed %d" % (rule, uri, fwd[(rule, uri)], rev[(rule, uri)]))
+print("%d results forward, %d reversed, %d (rule, file) group(s) differ" % (sum(fwd.values()), sum(rev.values()), len(moved)))
+sys.exit(1 if moved else 0)
+PYEOF
+)" || rc_g=$?
+	if [ "$rc_g" -eq 0 ]; then
+		echo "    ok: the cppcheck lane gives the same (rule, file) counts with the $reorder_scope database reversed at -j1"
+		echo "        ${out_g##*$'\n'}"
+	else
+		echo "$SELF: FAIL (the cppcheck lane is not repeatable on $reorder_scope: a reversed database order changes the counts)"
+		printf '%s\n' "$out_g"
+		cat "$W/g-fwd.log" "$W/g-rev.log" | grep -v '^CPPCHECK_SUMMARY ' || true
+		fail=1
+	fi
+
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "$SELF: PASS (a/b/c/e red and d/f green, on synthetic fixtures; the real pipeline runs in findings-probe)"
+	echo "$SELF: PASS (a/b/c/e red and d/f green, on synthetic fixtures; g repeatable on the real $reorder_scope units; the real pipeline runs in findings-probe)"
 	exit 0
 fi
 
