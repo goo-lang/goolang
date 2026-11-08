@@ -163,7 +163,7 @@ FULL_CFLAGS_LINE="$(grep -E '^CFLAGS[[:space:]]*=' "$REPO_ROOT/Makefile" | head 
 # see them as warnings: drop the make variable from the standalone line here, and
 # pass WERROR= to the sandboxed make below.
 FULL_CFLAGS_LINE="${FULL_CFLAGS_LINE//\$(WERROR)/}"
-FLAGS="$(printf '%s\n' "$FULL_CFLAGS_LINE" | grep -oE -- '-Wall|-Wextra|-std=[A-Za-z0-9]+' | tr '\n' ' ' | sed 's/ $//')"
+FLAGS="$(printf '%s\n' "$FULL_CFLAGS_LINE" | grep -oE -- '-Wall|-Wextra|-Wpedantic|-std=[A-Za-z0-9]+' | tr '\n' ' ' | sed 's/ $//')"
 [ -n "$FLAGS" ] || FLAGS="-Wall -Wextra -std=c23"
 [ -n "$FULL_CFLAGS_LINE" ] || FULL_CFLAGS_LINE="-Wall -Wextra -std=c23 -g -I. -Iinclude -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h"
 

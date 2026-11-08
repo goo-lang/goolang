@@ -27,7 +27,7 @@ CC = $(CCACHE) gcc
 # a person with a newer compiler that adds warnings can build with `make WERROR=`.
 # CI and verify-core use the default.
 WERROR ?= -Werror
-CFLAGS = -Wall -Wextra $(WERROR) -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h
+CFLAGS = -Wall -Wextra -Wpedantic $(WERROR) -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
 # Incremental, header-aware builds ("only rebuild what changed"). -MMD writes a
