@@ -8,11 +8,25 @@ merged SARIF across every tool at once, using its stable "goo/v1" fingerprint
 in place of a line number for the same reason gate.py's own tally() drops
 line numbers -- see that file's docstring, and sarif_merge.py's.
 
-    findings_gate.py check <sarif> <baseline.tsv> <suppressions.tsv>
-    findings_gate.py write <sarif> <baseline.tsv> <suppressions.tsv>
+    findings_gate.py check <sarif> <baseline-prefix> <suppressions.tsv>
+    findings_gate.py write <sarif> <baseline-prefix> <suppressions.tsv>
 
 check exits 1 on a regression (a key present now, absent from the baseline).
 write records the current, non-suppressed keys as the new baseline.
+
+FIX ROUND 1 (I2b) -- THE BASELINE IS KEYED BY TOOLCHAIN SIGNATURE.
+<baseline-prefix> is a path prefix, not a file. The gate derives a
+toolchain signature from the merged SARIF's own tool.driver versions
+(gcc<major>-tidy<major>-cppcheck<major>.<minor>, for example
+gcc16-tidy23-cppcheck2.22) and reads <prefix>.<signature>.tsv. MEASURED
+(2026-11-08): a toolchain upgrade from LLVM 22 / Cppcheck 2.21 to LLVM 23 /
+Cppcheck 2.22 moved clang-tidy by -3 and Cppcheck by +2 baseline rows with
+no code change. A baseline for one toolchain is therefore not evidence about
+another. When no file matches the current signature the gate FAILS LOUDLY,
+names the exact command to make one, and writes a CANDIDATE baseline for
+that signature next to the SARIF (under build/) so CI can upload it as an
+artifact for a person to commit. It never passes against a missing
+baseline, and it never compares against a baseline of a different signature.
 
 SUPPRESSIONS. <suppressions.tsv>: tool<TAB>rule<TAB>file-glob<TAB>justification,
 one per line (blank lines and "#" comments skipped). A suppressed
@@ -50,11 +64,50 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JUSTIFICATION_RE = re.compile(r"^(D-\d+|defect:[^:\s]+:.+)$")
+DEVIATIONS_DIR = os.path.join(REPO_ROOT, "docs", "misra", "deviations")
+UPDATE_COMMAND = "scripts/findings_probe.sh --update-baseline"
+
+
+def _major(version):
+    m = re.match(r"\s*(\d+)", version or "")
+    return m.group(1) if m else None
+
+
+def _major_minor(version):
+    m = re.match(r"\s*(\d+)\.(\d+)", version or "")
+    return "%s.%s" % m.groups() if m else None
+
+
+def toolchain_signature(sarif_path):
+    """gcc<major>-tidy<major>-cppcheck<major>.<minor>, read from the merged
+    SARIF's own driver versions -- never from the machine, so the signature
+    names the toolchain that PRODUCED the findings. A tool absent from the
+    file, or with an unparseable version, contributes '<tool>unknown', which
+    matches no committed baseline and therefore fails loudly."""
+    with open(sarif_path, encoding="utf-8") as f:
+        doc = json.load(f)
+    gcc = tidy = cppcheck = None
+    for run in doc.get("runs", []):
+        driver = run.get("tool", {}).get("driver", {})
+        name = driver.get("name")
+        version = driver.get("semanticVersion") or driver.get("version")
+        if name == "GNU C23":
+            gcc = _major(version)
+        elif name == "clang-tidy":
+            tidy = _major(version)
+        elif name == "Cppcheck":
+            cppcheck = _major_minor(version)
+    return "gcc%s-tidy%s-cppcheck%s" % (gcc or "unknown", tidy or "unknown", cppcheck or "unknown")
+
+
+def baseline_file(prefix, signature):
+    return "%s.%s.tsv" % (prefix, signature)
 
 
 def tally(sarif_path):
@@ -101,10 +154,15 @@ def group_by_triple(keys):
     return grouped
 
 
-def load_suppressions(path):
+def load_suppressions(path, deviations_dir=None):
     """Returns (rows, bad) where rows is a list of
     (tool, rule, file_glob, justification) and bad is a list of
-    (line_no, raw_line, reason) for every row this gate must refuse."""
+    (line_no, raw_line, reason) for every row this gate must refuse.
+
+    FIX ROUND 1 (I3): a "D-NN" justification must name a record that EXISTS
+    as <deviations_dir>/D-NN.md. The shape alone let D-99 through."""
+    if deviations_dir is None:
+        deviations_dir = DEVIATIONS_DIR
     rows, bad = [], []
     if not os.path.isfile(path):
         return rows, bad
@@ -120,6 +178,11 @@ def load_suppressions(path):
             tool, rule, file_glob, justification = parts
             if not JUSTIFICATION_RE.match(justification):
                 bad.append((lineno, line, "justification %r is neither D-NN nor defect:<tool>:<id>" % justification))
+                continue
+            if justification.startswith("D-") and \
+                    not os.path.isfile(os.path.join(deviations_dir, justification + ".md")):
+                bad.append((lineno, line, "deviation record %s.md does not exist under %s"
+                            % (justification, deviations_dir)))
                 continue
             rows.append((tool, rule, file_glob, justification))
     return rows, bad
@@ -185,7 +248,7 @@ def write_baseline(path, keys, sarif_path):
             f.write("\t".join(k) + "\n")
 
 
-def check(sarif_path, baseline_path, suppressions_path):
+def check(sarif_path, baseline_prefix, suppressions_path, deviations_dir=None):
     """Returns (rc, lines) -- lines is the full report, ready to print.
 
     FIX ROUND 1 (I1): compares the COUNT of accepted fingerprints per
@@ -194,7 +257,7 @@ def check(sarif_path, baseline_path, suppressions_path):
     names the SPECIFIC new fingerprints (now-minus-baseline, within that
     triple), for a human to find the actual new line; that naming is
     cosmetic and never affects the red/green decision."""
-    rows, bad = load_suppressions(suppressions_path)
+    rows, bad = load_suppressions(suppressions_path, deviations_dir)
     out = []
     if bad:
         out.append("findings-gate: FAIL -- %d suppression row(s) in %s have no valid justification:"
@@ -204,6 +267,19 @@ def check(sarif_path, baseline_path, suppressions_path):
         return 1, out
 
     now_keys, per_tool = tally(sarif_path)
+    signature = toolchain_signature(sarif_path)
+    baseline_path = baseline_file(baseline_prefix, signature)
+    if not os.path.isfile(baseline_path):
+        candidate = os.path.join(os.path.dirname(os.path.abspath(sarif_path)),
+                                 os.path.basename(baseline_path))
+        write_baseline(candidate, filter_suppressed(now_keys, rows), sarif_path)
+        out.append("findings-gate: FAIL -- no baseline for toolchain signature %s (%s is absent)."
+                    % (signature, baseline_path))
+        out.append("    A baseline for another toolchain is not evidence about this one.")
+        out.append("    A candidate baseline was written to %s." % candidate)
+        out.append("    To accept it: run `%s` on this toolchain and commit the file, or copy the candidate to %s."
+                    % (UPDATE_COMMAND, baseline_path))
+        return 1, out
     base_keys = read_baseline(baseline_path)
     now_f = filter_suppressed(now_keys, rows)
     base_f = filter_suppressed(base_keys, rows)
@@ -228,9 +304,9 @@ def check(sarif_path, baseline_path, suppressions_path):
             out.append("    %-16s %-40s %-40s %d -> %d" % (tool, rule, file_, base_c, now_c))
 
     per_tool_str = ", ".join("%s: %d" % (n, c) for n, c in sorted(per_tool.items()))
-    verdict = ("%s: %d findings (%s), %d suppressed, baseline %s (%d accepted)"
+    verdict = ("%s: %d findings (%s), %d suppressed, toolchain %s, baseline %s (%d accepted)"
                % (sarif_path, sum(per_tool.values()), per_tool_str, len(now_keys) - len(now_f),
-                  baseline_path, len(base_keys)))
+                  signature, baseline_path, len(base_keys)))
 
     if regressions:
         out.append("findings-gate: FAIL -- %d (tool, rule, file) group(s) rose above the baseline"
@@ -251,7 +327,7 @@ def main(argv):
         return self_test()
     if len(argv) != 4 or argv[0] not in ("check", "write"):
         sys.exit(__doc__)
-    mode, sarif_path, baseline_path, suppressions_path = argv
+    mode, sarif_path, baseline_prefix, suppressions_path = argv
 
     if mode == "write":
         rows, bad = load_suppressions(suppressions_path)
@@ -262,12 +338,13 @@ def main(argv):
                 print("    line %d: %s (%s)" % (lineno, line, reason))
             return 1
         keys, _ = tally(sarif_path)
+        baseline_path = baseline_file(baseline_prefix, toolchain_signature(sarif_path))
         write_baseline(baseline_path, filter_suppressed(keys, rows), sarif_path)
         print("findings-gate: wrote %s -- %d accepted findings (from %s)"
               % (baseline_path, len(filter_suppressed(keys, rows)), sarif_path))
         return 0
 
-    rc, lines = check(sarif_path, baseline_path, suppressions_path)
+    rc, lines = check(sarif_path, baseline_prefix, suppressions_path)
     print("\n".join(lines))
     return rc
 
@@ -277,29 +354,41 @@ def main(argv):
 # call proves the module's own logic in isolation).
 def self_test():
     ok = True
+    sig = "gcc16-tidy23-cppcheck2.22"
     with tempfile.TemporaryDirectory() as tmp:
+        def drivers(extra_tool_results=()):
+            # The three drivers the signature reads; GNU C23 carries the results.
+            return [
+                {"tool": {"driver": {"name": "GNU C23", "version": "16.2.1 20261029"}},
+                 "results": list(extra_tool_results)},
+                {"tool": {"driver": {"name": "clang-tidy", "version": "23.1.4"}}, "results": []},
+                {"tool": {"driver": {"name": "Cppcheck", "semanticVersion": "2.22.0"}}, "results": []},
+            ]
+
         def write_sarif(path, results):
-            doc = {"version": "2.1.0", "runs": [{
-                "tool": {"driver": {"name": "GNU C23"}},
-                "results": results,
-            }]}
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(doc, f)
+                json.dump({"version": "2.1.0", "runs": drivers(results)}, f)
 
         def result(rule, file_, fp):
             return {"ruleId": rule, "message": {"text": "x"},
                     "locations": [{"physicalLocation": {"artifactLocation": {"uri": file_}}}],
                     "fingerprints": {"goo/v1": fp}}
 
-        baseline_path = os.path.join(tmp, "baseline.tsv")
-        write_baseline(baseline_path, {("GNU C23", "r1", "a.c", "fp1")}, "seed")
+        prefix = os.path.join(tmp, "baseline")
+        write_baseline(baseline_file(prefix, sig), {("GNU C23", "r1", "a.c", "fp1")}, "seed")
+        devs = os.path.join(tmp, "deviations")
+        os.mkdir(devs)
+        open(os.path.join(devs, "D-01.md"), "w", encoding="utf-8").close()
+
+        def run_check(sarif, suppressions):
+            return check(sarif, prefix, suppressions, devs)
 
         # (a) a result NOT in the baseline -> RED.
         sarif_a = os.path.join(tmp, "a.sarif")
         write_sarif(sarif_a, [result("r1", "a.c", "fp1"), result("r2", "b.c", "fp2")])
         suppressions_empty = os.path.join(tmp, "empty-suppressions.tsv")
         open(suppressions_empty, "w", encoding="utf-8").close()
-        rc, _ = check(sarif_a, baseline_path, suppressions_empty)
+        rc, _ = run_check(sarif_a, suppressions_empty)
         if rc == 1:
             print("    ok: a finding not in the baseline is RED")
         else:
@@ -307,15 +396,10 @@ def self_test():
             ok = False
 
         # I1 REGRESSION CASE: editing the TEXT of one already-accepted
-        # finding (same tool/rule/file, a DIFFERENT fingerprint, same
-        # COUNT) must stay GREEN -- the exact scenario that used to print
-        # one improvement and one regression for the same finding and exit
-        # 1 (see this module's own docstring). r1/a.c now carries "fp1x"
-        # instead of "fp1"; the baseline still says "fp1"; the count for
-        # (GNU C23, r1, a.c) is 1 in both, so nothing may fire.
+        # finding (same count, new fingerprint) must stay GREEN.
         sarif_edited = os.path.join(tmp, "edited.sarif")
         write_sarif(sarif_edited, [result("r1", "a.c", "fp1x")])
-        rc, lines = check(sarif_edited, baseline_path, suppressions_empty)
+        rc, lines = run_check(sarif_edited, suppressions_empty)
         if rc == 0:
             print("    ok: editing one accepted finding's text (same count, new fingerprint) stays GREEN")
         else:
@@ -324,48 +408,79 @@ def self_test():
 
         # M6: the verdict line must name EVERY tool that ran, including one
         # whose run produced zero results.
-        sarif_two_tools = os.path.join(tmp, "two-tools.sarif")
-        with open(sarif_two_tools, "w", encoding="utf-8") as f:
-            json.dump({"version": "2.1.0", "runs": [
-                {"tool": {"driver": {"name": "GNU C23"}}, "results": [result("r1", "a.c", "fp1")]},
-                {"tool": {"driver": {"name": "verify-core-gates"}}, "results": []},
-            ]}, f)
-        rc, lines = check(sarif_two_tools, baseline_path, suppressions_empty)
-        verdict_line = lines[-1]
-        if "verify-core-gates: 0" in verdict_line:
-            print("    ok: the verdict line names a tool that ran with zero results")
+        rc, lines = run_check(sarif_edited, suppressions_empty)
+        if "clang-tidy: 0" in lines[-1] and "toolchain %s" % sig in lines[-1]:
+            print("    ok: the verdict line names a zero-result tool and the toolchain signature")
         else:
-            print("FAIL: a zero-result tool is missing from the verdict line: %r" % verdict_line)
+            print("FAIL: the verdict line misses a zero-result tool or the signature: %r" % lines[-1])
             ok = False
 
-        # (b) a suppression row with an empty justification -> RED, even
-        # though the finding it would have suppressed is otherwise clean.
+        # I2b: a toolchain with no baseline file is RED, names the update
+        # command, and leaves a candidate baseline beside the SARIF. A
+        # baseline for ANOTHER signature must not be used.
+        sarif_other = os.path.join(tmp, "other.sarif")
+        with open(sarif_other, "w", encoding="utf-8") as f:
+            runs = drivers([result("r1", "a.c", "fp1")])
+            runs[1]["tool"]["driver"]["version"] = "24.0.0"
+            json.dump({"version": "2.1.0", "runs": runs}, f)
+        rc, lines = run_check(sarif_other, suppressions_empty)
+        candidate = os.path.join(tmp, "baseline.gcc16-tidy24-cppcheck2.22.tsv")
+        if rc == 1 and any(UPDATE_COMMAND in l for l in lines) and os.path.isfile(candidate):
+            print("    ok: a toolchain with no baseline is RED, names the command, and writes a candidate")
+        else:
+            print("FAIL: a missing-signature baseline did not fail loudly (rc=%d, candidate=%s): %r"
+                  % (rc, os.path.isfile(candidate), lines))
+            ok = False
+
+        # (b) a suppression row with an empty justification -> RED.
         bad_suppressions = os.path.join(tmp, "bad-suppressions.tsv")
         with open(bad_suppressions, "w", encoding="utf-8") as f:
             f.write("GNU C23\tr2\tb.c\t\n")
-        rc, lines = check(sarif_a, baseline_path, bad_suppressions)
+        rc, lines = run_check(sarif_a, bad_suppressions)
         if rc == 1 and any("no valid justification" in l for l in lines):
             print("    ok: a suppression row with an empty justification is RED")
         else:
             print("FAIL: an empty-justification suppression row did not go RED: %r" % lines)
             ok = False
 
-        # (c) a merged file that fails schema validation -> RED. This
-        # module has no schema logic of its own (tools/sarif_merge.py
-        # --validate-only owns that); scripts/findings_probe.sh's own
-        # --self-test drives that check directly. Documented here so the
-        # four cases stay numbered the same in both places.
-        print("    ok: (c) schema validation is exercised by scripts/findings_probe.sh's own self-test")
+        # I3: a well-shaped justification naming a record that does not
+        # exist (D-99) is RED.
+        missing_record = os.path.join(tmp, "missing-record.tsv")
+        with open(missing_record, "w", encoding="utf-8") as f:
+            f.write("GNU C23\tr2\tb.c\tD-99\n")
+        rc, lines = run_check(sarif_a, missing_record)
+        if rc == 1 and any("D-99.md does not exist" in l for l in lines):
+            print("    ok: a suppression naming a nonexistent deviation record (D-99) is RED")
+        else:
+            print("FAIL: a suppression naming D-99 did not go RED: %r" % lines)
+            ok = False
 
-        # (d) the SAME sarif, now WITH a suppression that actually matches
-        # r2 (a real justification this time) -> only r1 is compared, which
-        # is already in the baseline -> GREEN.
+        # (c) a merged file that fails schema validation -> RED. M4: this
+        # drives tools/sarif_merge.py --validate-only for real. A copy of
+        # sarif_a without its required "version" field must exit nonzero.
+        invalid = os.path.join(tmp, "invalid.sarif")
+        with open(sarif_a, encoding="utf-8") as f:
+            doc = json.load(f)
+        del doc["version"]
+        with open(invalid, "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        proc = subprocess.run([sys.executable, os.path.join(REPO_ROOT, "tools", "sarif_merge.py"),
+                               "--validate-only", invalid], capture_output=True, text=True)
+        if proc.returncode != 0 and "SCHEMA INVALID" in proc.stdout + proc.stderr:
+            print("    ok: a schema-invalid merged file makes sarif_merge.py --validate-only exit nonzero")
+        else:
+            print("FAIL: a schema-invalid file did not fail validation (rc=%d): %s%s"
+                  % (proc.returncode, proc.stdout, proc.stderr))
+            ok = False
+
+        # (d) the SAME sarif, now WITH a suppression naming a record that
+        # exists (D-01) -> only r1 is compared, already in the baseline -> GREEN.
         real_suppressions = os.path.join(tmp, "real-suppressions.tsv")
         with open(real_suppressions, "w", encoding="utf-8") as f:
             f.write("GNU C23\tr2\tb.c\tD-01\n")
-        rc, lines = check(sarif_a, baseline_path, real_suppressions)
+        rc, lines = run_check(sarif_a, real_suppressions)
         if rc == 0:
-            print("    ok: suppressing the new finding's (tool, rule, file) with a valid justification is GREEN")
+            print("    ok: suppressing the new finding's (tool, rule, file) with an existing record is GREEN")
         else:
             print("FAIL: a validly-suppressed new finding still went RED: %r" % lines)
             ok = False

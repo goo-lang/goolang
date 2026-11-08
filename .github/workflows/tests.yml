@@ -160,3 +160,18 @@ jobs:
           name: verify-core-log
           path: verify-core.log
           retention-days: 14
+
+      - name: Upload the generated findings baseline
+        # A runner whose toolchain signature has no committed baseline fails
+        # findings-probe loudly and writes a candidate here. A person commits
+        # that file as scripts/findings-baseline.<signature>.tsv. On a green
+        # run the candidate is absent, and the SARIF is the only upload.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: findings-baseline-candidate
+          path: |
+            build/findings-baseline.*.tsv
+            build/findings.sarif
+          if-no-files-found: ignore
+          retention-days: 14

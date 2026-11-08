@@ -14,7 +14,7 @@
 #                 a suppression with no justification is not a suppression, it
 #                 is silence.
 #
-# Empty today: scripts/findings-baseline.tsv already accepts every finding
+# Empty today: scripts/findings-baseline.<signature>.tsv already accepts every finding
 # present at the time findings-probe was added (task 17), so nothing here
 # needs a SEPARATE, permanent exclusion yet. Add a row only for a finding
 # that should never count again regardless of the baseline -- for example a

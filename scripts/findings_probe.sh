@@ -26,12 +26,15 @@
 #   5. tools/sarif_merge.py --validate  -- one build/findings.sarif, schema-
 #      checked against the vendored docs/misra/tools/sarif-schema-2.1.0.json.
 #   6. tools/findings_gate.py check     -- the shrink-only comparison
-#      against scripts/findings-baseline.tsv, filtered through
-#      docs/misra/findings-suppressions.tsv. See that module's own
-#      docstring for the (tool, rule, file, fingerprint) key and the
-#      suppression policy (every row needs a docs/misra/deviations/D-NN.md
-#      record or a documented checker defect, generalising
-#      docs/misra/misra-suppressions.txt's own rule across every tool).
+#      against scripts/findings-baseline.<signature>.tsv, filtered through
+#      docs/misra/findings-suppressions.tsv. The signature
+#      (gcc<major>-tidy<major>-cppcheck<major>.<minor>) is read from the
+#      merged SARIF's own driver versions; a toolchain with no baseline file
+#      fails loudly. See that module's own docstring for the count-per-
+#      (tool, rule, file) comparison and the suppression policy (every row
+#      needs an EXISTING docs/misra/deviations/D-NN.md record or a
+#      documented checker defect, generalising docs/misra/
+#      misra-suppressions.txt's own rule across every tool).
 #
 # UNDER `make verify-core`, this means the three analyser lanes run TWICE --
 # once as analyzer-lanes-probe's own VERIFY_ALL_DEPS entry, once again as
@@ -49,11 +52,14 @@
 #                                                  # (no pipeline re-run) -- what
 #                                                  # --self-test drives against
 #                                                  # synthetic fixtures
-#   scripts/findings_probe.sh --self-test         # four cases, see below
+#   scripts/findings_probe.sh --self-test         # four synthetic cases, see below;
+#                                                  # never runs the real pipeline
 #
 # Environment overrides:
 #   FINDINGS_SARIF         merged output (default: build/findings.sarif)
-#   FINDINGS_BASELINE      shrink-only baseline (default: scripts/findings-baseline.tsv)
+#   FINDINGS_BASELINE      shrink-only baseline PREFIX; the file read is
+#                          <prefix>.<toolchain signature>.tsv (default prefix:
+#                          scripts/findings-baseline)
 #   FINDINGS_SUPPRESSIONS  suppression list (default: docs/misra/findings-suppressions.tsv)
 #   SARIF_GCC_DIR / SARIF_TIDY_DIR / SARIF_CPPCHECK_DIR  same meaning and
 #                          defaults as scripts/analyzer_lanes_probe.sh; passed
@@ -66,7 +72,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 FINDINGS_SARIF="${FINDINGS_SARIF:-$REPO_ROOT/build/findings.sarif}"
-FINDINGS_BASELINE="${FINDINGS_BASELINE:-$REPO_ROOT/scripts/findings-baseline.tsv}"
+FINDINGS_BASELINE="${FINDINGS_BASELINE:-$REPO_ROOT/scripts/findings-baseline}"
 FINDINGS_SUPPRESSIONS="${FINDINGS_SUPPRESSIONS:-$REPO_ROOT/docs/misra/findings-suppressions.tsv}"
 export SARIF_GCC_DIR="${SARIF_GCC_DIR:-$REPO_ROOT/build/sarif/gcc}"
 export SARIF_TIDY_DIR="${SARIF_TIDY_DIR:-$REPO_ROOT/build/sarif/clang-tidy}"
@@ -99,12 +105,15 @@ if [ "${1:-}" = "--check-only" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# --self-test: four cases from the task 17 dispatch notes.
+# --self-test: four SYNTHETIC cases; the real pipeline is NOT run (fix round
+# 1 / M1: it used to fall through into the pipeline as case (d), so
+# verify-core ran every lane three times).
 #   (a) a synthetic SARIF with one result not in the baseline -> RED
 #   (b) a suppression row with an empty justification -> RED
 #   (c) a merged file that fails schema validation (dropped "version") -> RED
-#   (d) the REAL merged file (this run's own build/findings.sarif, produced
-#       fresh below) -> GREEN
+#   (d) positive control: the same SARIF against a matching baseline -> GREEN
+#       (without it, (a)-(c) prove only that the gate can say no).
+# The real merged file is gated by `make findings-probe`, not here.
 # Each drives run_check_only end to end (validate, THEN gate), through THIS
 # script's own entry point -- not tools/findings_gate.py directly, which
 # has its own, separate --self-test for the module's logic in isolation.
@@ -114,30 +123,31 @@ if [ "${1:-}" = "--self-test" ]; then
 	W="$(mktemp -d)"
 	trap 'rm -rf "$W"' EXIT
 	fail=0
+	SIG="gcc1-tidy1-cppcheck1.0" # the signature write_sarif's driver versions yield
 
 	write_sarif() { # $1 = out path, $2 = ruleId, $3 = file, $4 = fingerprint
 		python3 -c "
 import json, sys
 out, rule, file_, fp = sys.argv[1:5]
-doc = {'version': '2.1.0', '\$schema': 'x', 'runs': [{
-    'tool': {'driver': {'name': 'GNU C23'}},
-    'results': [{'ruleId': rule, 'message': {'text': 'x'},
-                 'locations': [{'physicalLocation': {'artifactLocation': {'uri': file_}}}],
-                 'fingerprints': {'goo/v1': fp}}],
-}]}
+doc = {'version': '2.1.0', '\$schema': 'x', 'runs': [
+    {'tool': {'driver': {'name': 'GNU C23', 'version': '1.0'}},
+     'results': [{'ruleId': rule, 'message': {'text': 'x'},
+                  'locations': [{'physicalLocation': {'artifactLocation': {'uri': file_}}}],
+                  'fingerprints': {'goo/v1': fp}}]},
+    {'tool': {'driver': {'name': 'clang-tidy', 'version': '1.0'}}, 'results': []},
+    {'tool': {'driver': {'name': 'Cppcheck', 'semanticVersion': '1.0.0'}}, 'results': []},
+]}
 json.dump(doc, open(out, 'w'))
 " "$1" "$2" "$3" "$4"
 	}
 
 	# (a) one result, empty baseline, empty suppressions -> RED. The env
 	# prefix is INSIDE the command substitution, scoped to run_check_only's
-	# own subshell -- an assignment-only command with no trailing command
-	# word (unlike this one) would instead leak into the CALLING shell and
-	# corrupt $FINDINGS_BASELINE for the real pipeline below.
+	# own subshell.
 	write_sarif "$W/a.sarif" "r1" "a.c" "fp1"
-	: >"$W/empty-baseline.tsv"
+	: >"$W/empty.$SIG.tsv"
 	: >"$W/empty-suppressions.tsv"
-	out_a="$(FINDINGS_BASELINE="$W/empty-baseline.tsv" FINDINGS_SUPPRESSIONS="$W/empty-suppressions.tsv" \
+	out_a="$(FINDINGS_BASELINE="$W/empty" FINDINGS_SUPPRESSIONS="$W/empty-suppressions.tsv" \
 		run_check_only "$W/a.sarif" 2>&1)" && rc_a=0 || rc_a=$?
 	if [ "${rc_a:-0}" -ne 0 ]; then
 		echo "    ok: a finding not in the baseline is RED"
@@ -147,10 +157,9 @@ json.dump(doc, open(out, 'w'))
 	fi
 
 	# (b) the SAME finding, now suppressed by a row with an EMPTY
-	# justification -- must be RED for the suppression row itself, not
-	# merely fail to suppress.
+	# justification -- must be RED for the suppression row itself.
 	printf 'GNU C23\tr1\ta.c\t\n' >"$W/bad-suppressions.tsv"
-	out_b="$(FINDINGS_BASELINE="$W/empty-baseline.tsv" FINDINGS_SUPPRESSIONS="$W/bad-suppressions.tsv" \
+	out_b="$(FINDINGS_BASELINE="$W/empty" FINDINGS_SUPPRESSIONS="$W/bad-suppressions.tsv" \
 		run_check_only "$W/a.sarif" 2>&1)" && rc_b=0 || rc_b=$?
 	if [ "${rc_b:-0}" -ne 0 ] && printf '%s\n' "$out_b" | grep -q "no valid justification"; then
 		echo "    ok: a suppression row with an empty justification is RED"
@@ -161,16 +170,15 @@ json.dump(doc, open(out, 'w'))
 
 	# (c) a merged file missing the required top-level "version" field ->
 	# RED at the SCHEMA VALIDATION step, before the gate comparison ever
-	# runs (so this fails even against baseline/suppressions that would
-	# otherwise be green).
+	# runs (so this fails even against a baseline that would otherwise be green).
 	python3 -c "
 import json
 doc = json.load(open('$W/a.sarif'))
 del doc['version']
 json.dump(doc, open('$W/c.sarif', 'w'))
 "
-	printf 'GNU C23\tr1\ta.c\tfp1\n' >"$W/matching-baseline.tsv"
-	out_c="$(FINDINGS_BASELINE="$W/matching-baseline.tsv" FINDINGS_SUPPRESSIONS="$W/empty-suppressions.tsv" \
+	printf 'GNU C23\tr1\ta.c\tfp1\n' >"$W/matching.$SIG.tsv"
+	out_c="$(FINDINGS_BASELINE="$W/matching" FINDINGS_SUPPRESSIONS="$W/empty-suppressions.tsv" \
 		run_check_only "$W/c.sarif" 2>&1)" && rc_c=0 || rc_c=$?
 	if [ "${rc_c:-0}" -ne 0 ] && printf '%s\n' "$out_c" | grep -q "SCHEMA INVALID"; then
 		echo "    ok: a merged file missing \"version\" fails schema validation, before the gate ever runs"
@@ -179,20 +187,27 @@ json.dump(doc, open('$W/c.sarif', 'w'))
 		fail=1
 	fi
 
+	# (d) positive control: the valid SARIF against the matching baseline.
+	out_d="$(FINDINGS_BASELINE="$W/matching" FINDINGS_SUPPRESSIONS="$W/empty-suppressions.tsv" \
+		run_check_only "$W/a.sarif" 2>&1)" && rc_d=0 || rc_d=$?
+	if [ "${rc_d:-0}" -eq 0 ]; then
+		echo "    ok: a valid file whose finding is in the baseline is GREEN"
+	else
+		echo "$SELF: FAIL (a matching baseline did not go GREEN): $out_d"
+		fail=1
+	fi
+
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "    (d) the real merged file is checked below, as this run's own gate pass"
-	echo "$SELF: PASS (a/b/c red as required; (d) continues into the real run)"
-	# Falls through into the real pipeline below, so (d) is THIS run's own
-	# verdict against build/findings.sarif -- not a fourth synthetic case,
-	# since "the real merged file" only exists after that pipeline runs.
+	echo "$SELF: PASS (a/b/c red and d green, on synthetic fixtures; the real pipeline runs in findings-probe)"
+	exit 0
 fi
 
 MODE=gate
 case "${1:-}" in
 	--update-baseline) MODE=update ;;
-	--self-test|"")    ;;
+	"")                ;;
 	*) echo "usage: $0 [--update-baseline|--self-test|--check-only]" >&2; exit 2 ;;
 esac
 
@@ -214,7 +229,7 @@ set -e
 echo "$PROBE: analyzer-lanes-probe exited $lanes_rc, pthread-return-probe exited $pthread_rc" \
 	"(a nonzero exit here becomes a goo/gate-failed finding below, not an abort)"
 
-CLANG_TIDY_VERSION="$(clang-tidy --version | sed -n 's/^[[:space:]]*LLVM version[[:space:]]*//p')"
+CLANG_TIDY_VERSION="$(clang-tidy --version | sed -n 's/.*LLVM version[[:space:]]*//p')"
 python3 "$REPO_ROOT/tools/clang_tidy_to_sarif.py" \
 	--out "$SARIF_TIDY_DIR/clang-tidy.sarif" --version "$CLANG_TIDY_VERSION" "$SARIF_TIDY_DIR"
 
