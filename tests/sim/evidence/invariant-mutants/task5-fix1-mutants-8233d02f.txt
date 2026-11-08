@@ -1,0 +1,19 @@
+work dir: <work>
+== M0_control driver exit=0
+sim-entry-test: PASS (<work>/M0_control.bin: main is coroutine 0 on seeds 1-8, 33 and 58, the exit path stays on coroutine 0, status 3 passes through, stdout survives sim-deadlock, 12 violation cases fire their own check on seeds 1-4)
+== M1_lookup_fails driver exit=1
+sim-entry-test: FAIL: lock-order seed=1 exit=1 (want 11); stderr: sim_entry_test: the lock-order check did not fire
+sim-entry-test: FAIL: lock-order seed=1: trace header does not end with 'verdict=invariant detail=lock-order': # goo-sim trace v1 seed=1 preempt_ppm=15625 preempt_e_min=10 preempt_e_max=23 step_cost_ns=1000 steps=5 now_ns=5000 records=5 retained=5 verdict=program-exit detail=main returned
+sim-entry-test: FAIL: lock-order seed=2 exit=1 (want 11); stderr: sim_entry_test: the lock-order check did not fire
+== M2_check_removed driver exit=1
+sim-entry-test: FAIL: lock-order seed=1 exit=1 (want 11); stderr: sim_entry_test: the lock-order check did not fire
+sim-entry-test: FAIL: lock-order seed=1: trace header does not end with 'verdict=invariant detail=lock-order': # goo-sim trace v1 seed=1 preempt_ppm=15625 preempt_e_min=10 preempt_e_max=23 step_cost_ns=1000 steps=5 now_ns=5000 records=5 retained=5 verdict=program-exit detail=main returned
+sim-entry-test: FAIL: lock-order seed=2 exit=1 (want 11); stderr: sim_entry_test: the lock-order check did not fire
+== M3_recursive_removed driver exit=1
+sim-entry-test: FAIL: recursive-lock seed=1 exit=10 (want 11); stderr: 
+sim-entry-test: FAIL: recursive-lock seed=1: trace header does not end with 'verdict=invariant detail=recursive-lock': # goo-sim trace v1 seed=1 preempt_ppm=15625 preempt_e_min=10 preempt_e_max=23 step_cost_ns=1000 steps=3 now_ns=3000 records=2 retained=2 verdict=sim-deadlock detail=wait_mutex
+sim-entry-test: FAIL: recursive-lock seed=2 exit=10 (want 11); stderr: 
+== M4_wrong_detail driver exit=1
+sim-entry-test: FAIL: join-detached seed=1: trace header does not end with 'verdict=invariant detail=join-detached': # goo-sim trace v1 seed=1 preempt_ppm=15625 preempt_e_min=10 preempt_e_max=23 step_cost_ns=1000 steps=3 now_ns=3000 records=3 retained=3 verdict=invariant detail=join-self
+sim-entry-test: FAIL: join-detached seed=2: trace header does not end with 'verdict=invariant detail=join-detached': # goo-sim trace v1 seed=2 preempt_ppm=15625 preempt_e_min=10 preempt_e_max=23 step_cost_ns=1000 steps=3 now_ns=3000 records=3 retained=3 verdict=invariant detail=join-self
+sim-entry-test: FAIL: join-detached seed=3: trace header does not end with 'verdict=invariant detail=join-detached': # goo-sim trace v1 seed=3 preempt_ppm=15625 preempt_e_min=10 preempt_e_max=23 step_cost_ns=1000 steps=4 now_ns=4000 records=4 retained=4 verdict=invariant detail=join-self
