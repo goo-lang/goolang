@@ -3428,6 +3428,7 @@ VERIFY_ALL_DEPS := \
     goo-assert-probe \
     assertion-density-probe \
     pthread-return-probe \
+    misra-r3-2-probe \
     warning-count-probe \
     spin-bootstrap-probe \
     spin-deadlock-model-probe \
@@ -5543,6 +5544,13 @@ assertion-density-probe:
 pthread-return-probe:
 	@bash scripts/pthread_return_probe.sh
 	@bash scripts/pthread_return_probe.sh --self-test
+
+# MISRA Rule 3.2 (no line-splice in a // comment). Grep over git ls-files, bar 0,
+# no baseline file. Replaces the closed Cobra track (docs/misra/cobra-calibration.md).
+.PHONY: misra-r3-2-probe
+misra-r3-2-probe:
+	@bash scripts/misra_r3_2_probe.sh
+	@bash scripts/misra_r3_2_probe.sh --self-test
 
 # The warning-count gate (Holzmann's Power of Ten, rule 10: compile with all
 # warnings on, stop the build on one). Today's build is warning-heavy, so
