@@ -27,7 +27,21 @@ int main(void) {
     // 2 senders reproduced the hang reliably in review; 3 intermittently.
     // Run both shapes, many batches — each batch is a fresh channel so a
     // lost wakeup cannot be rescued by later traffic.
+#ifdef GOO_SIM_BUILD
+    // Under the deterministic simulator (tests/sim, build/sim/% sets
+    // GOO_SIM_BUILD) one seed covers FEWER batches than production: the
+    // simulator explores interleavings by seed, so more seeds add more than
+    // more batches in one seed. Sized from a measurement (Task 7 fix round 2,
+    // 2026-11-08, the 4000-batch program, seeds 1..64, default model): the
+    // worst seed took 138.7 steps and 3.879 ms of virtual time per batch, and
+    // the virtual clock binds first. The bar is 10% of each default run
+    // limit: 100,000 steps and 1 s. 1 s / 3.879 ms = 257 batches; half of
+    // that, for the spread of a short run, is 128 = 2 shapes x 64:
+    // about 0.50 s and 17,800 steps.
+    const int BATCHES = 64;
+#else
     const int BATCHES = 4000;
+#endif
     for (int senders = 2; senders <= 3; senders++) {
         for (int b = 0; b < BATCHES; b++) {
             g_ch = goo_make_chan(sizeof(int), 0);   // UNBUFFERED: rendezvous path
