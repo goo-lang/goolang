@@ -164,7 +164,8 @@ distinct verdict when exceeded:**
 | `SIM_THREADS_MAX` | 17 | `GOO_MAX_OS_THREADS` (16) workers plus main |
 | `SIM_STACK_BYTES` | 262,144 | one worker's scheduler frames; goroutine stacks are the runtime's own |
 | `SIM_WAITERS_MAX` | 17 | one entry per thread per condvar |
-| `SIM_MUTEXES_MAX` | 16,384 | LIVE mutexes: the scheduler mutex plus one per channel, and no program under test frees a channel; `fanin_stress` needs 8,001 (one per batch), and ordinary Go programs make many channels. A power of two with headroom. Was 64 until Task 7 fix round 1 |
+| `SIM_MUTEXES_MAX` | 16,384 | LIVE mutexes: the scheduler mutex plus one per channel, and no program under test frees a channel. Headroom, not the need of one program: the sim build of `fanin_stress` needs about 129, and ordinary Go programs make many channels. A power of two. Was 64 until Task 7 fix round 1, when the full `fanin_stress` (8,001 mutexes) stopped at `limit-mutexes` in batch 64 |
+| `SIM_QUARANTINE_MAX` | 16,384 | mutexes FREED over a run: a freed mutex keeps its storage (below), so the count bounds that memory. The next free is `limit-freed-mutexes` (Task 8) |
 | `SIM_TRACE_ENTRIES` | 65,536 | 32 bytes each, 2 MiB; older entries roll off, the count is kept |
 | `GOO_SIM_STEP_LIMIT` (env) | default 1,000,000 | the run bound |
 | `GOO_SIM_TIME_LIMIT_NS` (env) | default 10 s virtual | the clock bound |
@@ -423,3 +424,61 @@ branch owns those files, and the make gate comes first.
 - Wall time: 1,000 seeds of a stress program may exceed the spike's budget;
   the report records the per-seed time and the gate's 256-seed budget is set
   from it.
+
+## 12. Result (Task 8, 2026-11-08)
+
+**Decision: YES.** All three conditions of section 3 hold, and no stress
+program has an open finding. `sim-false-deadlock-probe` and
+`sim-false-deadlock-selftest` join `VERIFY_ALL_DEPS`. The consequences are in
+section 9, step 5.
+
+Every number below was measured again on 2026-11-08 at commit `2d8f3ab0`
+(the code that Task 7 left), on one machine (Linux 7.2.15, Fedora 45), with
+the wake hook UNSET, the default preemption model (ppm 15,625, exponents
+10..23, step cost 1,000 ns), faults off, and the default limits. The
+instrument is `scripts/sim_probe.sh`, one process per seed. Commit
+`a3fee154` (Task 8) changes no trace record: 100 traces of five programs at
+ppm 0 and at the default model are byte-identical to the `2d8f3ab0` build,
+and the 1,000-seed total of 291,275 steps for `false_deadlock_test` is the
+same before and after.
+
+| Condition | Result | Instrument |
+|---|---|---|
+| 1. Positive control: the wake-site mutant reaches `runtime-deadlock-abort` | 33 of seeds 1..256 abort; the first is seed 18, at 114 steps; the replay is byte-identical | `bash scripts/sim_probe.sh --self-test`, part (a) |
+| 2. Negative control: the corrected runtime passes every seed | `pass` on 1000 of 1000 (seeds 1..1000), at most 910 steps | `bash scripts/sim_probe.sh false_deadlock_test --seeds 1000` |
+| 3. Replay | seed 18 replays byte for byte; the driver replays every non-pass seed, always | the same self-test |
+
+| Program | Seeds | Verdicts | Max steps |
+|---|---|---|---|
+| `mt_scheduler_stress` | 1..1000 | pass 1000 | 32,136 |
+| `chan_mt_stress` | 1..1000 | pass 1000 | 28,189 |
+| `fanin_stress` (64 batches per shape in the sim build) | 1..1000 | pass 1000 | 19,752 |
+| `deadlock_poll_test` (`--expect runtime-deadlock-abort`) | 1..1000 | runtime-deadlock-abort 1000, as built | 388 |
+
+Command for the last four rows: `bash scripts/sim_probe.sh <program> --seeds
+1000`, with `--expect runtime-deadlock-abort` for `deadlock_poll_test`. No
+run hit a limit. The full table, with the wall time and the ppm-0 rows, is in
+`tests/sim/README.md`.
+
+**Two facts about the method.**
+
+- The first preemption model could not open the timing window. With the hook
+  at 1 ns and no seeded preemption, the mutant passed 256 of 256 seeds,
+  because virtual time advances only when nothing can run, so scheduler
+  latency cost no time. Task 6a added seeded preemption (section 6), with the
+  parameters fixed before any measurement. With preemption off, the mutant
+  still passes 256 of 256 seeds: the seed, through the model, opens the
+  window.
+- The simulator found one real runtime defect, recorded and not fixed by this
+  plan. `sync.Mutex` is a `PTHREAD_MUTEX_DEFAULT` mutex that a worker OS
+  thread owns. Go allows an unlock from another goroutine, and that goroutine
+  can run on another worker. POSIX makes that unlock undefined behaviour. The
+  simulator reports it as `invariant`, detail `unlock-not-owner`
+  (`tests/sim/sim_invariant_test.c`, self-test part (b)).
+
+**The gate.** `sim-false-deadlock-probe` runs `false_deadlock_test` over 256
+seeds, and `sim-false-deadlock-selftest` runs the self-test. The wall time of
+both inside `make verify-core` is in the Task 8 report; the section 9
+target was about 20 s together. A defect that needs many batches in one
+process (the production `fanin_stress` runs 4000) is out of the sim build's
+reach; only the wall-clock `fanin-stress` gate covers it.

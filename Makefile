@@ -3298,6 +3298,8 @@ VERIFY_ALL_DEPS := \
     fanin-stress \
     false-deadlock-probe \
     false-deadlock-selftest \
+    sim-false-deadlock-probe \
+    sim-false-deadlock-selftest \
     deadlock-poll-probe \
     deadlock-poll-selftest \
     deadlock-probe \
@@ -5617,6 +5619,21 @@ build/sim/%: tests/sim/%.c $(SIM_RUNTIME_LIB) $(BUILDDIR)/sim/sim_main.o
 .PHONY: sim-entry-test
 sim-entry-test: build/sim/sim_entry_test
 	@bash tests/sim/sim_entry_test.sh build/sim/sim_entry_test $(SIM_BUILD_DIR)/entry_test
+
+# The simulation gate (Task 8 of the 2026-09-03 deterministic-simulation
+# plan; the decision is the spec's section 12). The corrected runtime must
+# pass 256 seeds of false_deadlock_test with the wake hook unset, under the
+# default seeded-preemption model. The seed budget is the spec's section 9
+# gate budget. Teeth: the self-test builds the wake-site mutant and demands
+# runtime-deadlock-abort on one of seeds 1..256, with a byte-identical replay,
+# and proves the driver's own rules. --cc passes the Makefile's compiler to
+# the mutant build, because CI runs `make CC=gcc-14` and a bare gcc rejects
+# -std=c23 there. The sim archive is a prerequisite, not RUNTIME_LIB.
+.PHONY: sim-false-deadlock-probe sim-false-deadlock-selftest
+sim-false-deadlock-probe: $(SIM_RUNTIME_LIB)
+	@bash scripts/sim_probe.sh false_deadlock_test --seeds 256
+sim-false-deadlock-selftest: $(SIM_RUNTIME_LIB)
+	@bash scripts/sim_probe.sh --self-test --cc "$(CC)"
 
 # Vendored SPIN (task 4 of the 2026-09-02 verification tooling plan; Track
 # B's Promela gate over the runtime deadlock detector, tasks 5-7, is not yet

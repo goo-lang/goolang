@@ -11,11 +11,21 @@ same interleaving and the same trace, byte for byte.
 The design, and the authority for everything below, is
 `docs/superpowers/specs/2026-09-03-deterministic-simulation-design.md`.
 
-**Status: a spike, with no gate.** Nothing here runs in `make verify-core`
-or `make verify`. The only gate on this work is `runtime-seam-probe`, the
+**Status: the spike answered YES, and two gates run it.**
+`sim-false-deadlock-probe` (the corrected runtime passes 256 seeds of
+`false_deadlock_test`) and `sim-false-deadlock-selftest` (the probe can go
+red: the wake-site mutant aborts, with replay) are in `VERIFY_ALL_DEPS`, so
+`make verify-core` runs them. `runtime-seam-probe` is the third gate: the
 grep gate that keeps `pthread_` and `_Thread_local` out of the scheduler
-files so that no call escapes the seam. Whether a simulator gate joins
-`VERIFY_ALL_DEPS` is decided in Task 8 of the plan, not here.
+files so that no call escapes the seam. The other programs below, and
+`sim-entry-test`, are run by hand; the result and the numbers are in the
+spec's "Result" section.
+
+**What the simulator cannot reach.** The sim build runs 64 batches per shape
+of `fanin_stress`, not the production 4000. A defect that needs many batches
+in ONE process is out of the sim build's reach: more seeds explore more
+interleavings, but not a longer run. Only the wall-clock `fanin-stress` gate
+covers that class.
 
 | File | Role |
 |---|---|
@@ -24,7 +34,7 @@ files so that no call escapes the seam. Whether a simulator gate joins
 | `sim_os.c` | the seam (`goo_os.h`) over the simulator, plus the invariant checks |
 | `sim_main.c` | process entry: reads the environment, runs the program's `main` as coroutine 0 |
 | `sim_sched_test.c` | scheduler tests T1-T9 (`make sim-sched-test`) |
-| `sim_entry_test.c`, `sim_entry_test.sh` | process-entry facts and the 15 violation cases (`make sim-entry-test`) |
+| `sim_entry_test.c`, `sim_entry_test.sh` | process-entry facts and the 17 violation cases (`make sim-entry-test`) |
 | `sim_invariant_test.c` | a `sync.Mutex` unlocked on a thread that does not own it; the driver's self-test part (b) |
 | `evidence/` | the scripts and logs behind the numbers below (see `evidence/README.md`) |
 
@@ -70,20 +80,31 @@ unset`, or `HAND-SET` when `GOO_TEST_WAKE_DELAY_NS` is in the environment).
   so it runs with `--expect runtime-deadlock-abort`, and a seed that reads
   `pass` there fails. `replay-mismatch` cannot be expected.
 - **Traces.** The trace dir is a fresh `mktemp -d` under `$TMPDIR`. A seed
-  that succeeds keeps no trace; a seed that fails keeps its trace (and
-  `.out`, `.err`), and the verdict line names the dir.
+  that succeeds keeps no trace. A seed that fails keeps its trace (and
+  `.out`, `.err`), but only for the first 8 such seeds: a program that fails
+  on every seed would keep about 200 MB otherwise. Every seed still runs and
+  replays. The verdict line says how many seeds kept files and names the
+  dir.
+- **A tool failure, never a pass:** a seed that exits 0 with no trace (every
+  ending writes one), and an exit 15 whose header has no `limit-<name>`.
+- **Ambient variables.** A `GOO_TEST_WAKE_DELAY_NS`, or a `GOO_SIM_*`
+  variable the probe does not set itself (for example `GOO_SIM_STEP_LIMIT`),
+  is named in the verdict line as `HAND-SET`.
 - **Probe exit:** 0 every seed succeeded; 1 a seed failed; 14 a replay
   differed; 2 a tool failure (usage, build, a broken self-test pipeline).
   Note that 2 is also the runtime's `runtime-deadlock-abort` code for ONE
   seed; the probe's own 2 is always a tool failure.
-- **`--self-test`** proves the probe can go red: (a) the wake-site mutant
+- **`--self-test [--cc "<compiler>"]`** proves the probe can go red: (a) the wake-site mutant
   aborts on at least one of seeds 1..256 and replays byte for byte; (b)
   `sim_invariant_test` reads `invariant` with `unlock-not-owner`; (c) the
   tracked runtime through the mutant's pipeline, and the make-built
   `false_deadlock_test`, pass seeds 1..32; (d) `--expect
   runtime-deadlock-abort` is met by `deadlock_poll_test` and NOT met by
-  `false_deadlock_test`. It clears every `GOO_SIM_*` variable and the wake
-  hook first.
+  `false_deadlock_test`; (e) the driver's own rules (no trace, a named
+  limit, the cap, the ambient label) against stub programs. It clears every
+  `GOO_SIM_*` variable, the wake hook, `CC_PROBE`, `CC` and `CFLAGS` first,
+  and builds the mutant with the compiler of `--cc` (default `gcc`; the
+  Makefile gate passes `$(CC)`, because CI builds with `make CC=gcc-14`).
 
 ## The environment contract (`sim_main.c`)
 
@@ -148,15 +169,21 @@ the user outside this plan.
 | `SIM_STACK_BYTES` | 262,144 per coroutine | no verdict of its own |
 | `SIM_WAITERS_MAX` | 17 per wait object | none: a `static_assert` keeps it at least `SIM_THREADS_MAX`, so it cannot fill |
 | `SIM_MUTEXES_MAX` | 16,384 LIVE mutexes (64 until Task 7 fix round 1) | `limit-mutexes` |
+| `SIM_QUARANTINE_MAX` | 16,384 mutexes FREED over a run (their storage is kept) | `limit-freed-mutexes` |
 | `SIM_TRACE_ENTRIES` | 65,536 records; older records roll off, the count is kept | none |
 
 A mutex slot is freed only by `goo_mutex_free`. No program under test
 frees a channel, and codegen emits no `goo_chan_free`, so every channel a
 program makes holds a slot until the process ends. `fanin_stress` makes one
 channel per batch: 8,000 in the full program (8,001 slots), 128 in the sim
-build. The first cut's 64 slots stopped the full program in batch 64 on
-every seed. 16,384 is a power of two with
-headroom, because ordinary Go programs make many channels.
+build (about 129 slots). The table is sized for headroom, not for that
+program: ordinary Go programs make many channels, and 16,384 is a power of
+two. History: the first cut's 64 slots stopped the full program in batch 64
+on every seed.
+
+A freed mutex keeps its storage (see "The mutex handle"), so the frees are
+counted: the 16,385th free ends the run with `limit-freed-mutexes`, and the
+memory is bounded at about 16,384 times `sizeof(goo_mutex_t)`.
 
 **The mutex handle.** Each `goo_mutex_t` carries a tag -- a magic number,
 its slot index and the slot's generation -- in the bytes of its
@@ -168,7 +195,8 @@ generation, and keeps the object: freed mutex storage is never returned to
 `malloc`, so a freed handle can never share an address with a live mutex,
 and every tag read is of live storage. A new mutex takes the head of a free
 list or the next untouched slot. No seam call walks the table, so 16,384 slots cost a lock what 64 did.
-The `limit-mutexes` case makes 16,385 mutexes in about 3 ms.
+The `limit-mutexes` case makes 16,385 mutexes in about 3 ms; the
+`limit-freed-mutexes` case makes and frees 16,385.
 
 ## Read a trace
 
