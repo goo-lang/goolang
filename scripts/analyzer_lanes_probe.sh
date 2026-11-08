@@ -709,6 +709,17 @@ if [ "${cppcheck_exit:-none}" != "0" ] || [ "${cppcheck_checked:-0}" = "0" ]; th
 fi
 
 echo "$PROBE: capture $COMPILE_COMMANDS_OUT, $entry_count entries"
+# The compiler the lane RAN is the first non-ccache token of the capture's
+# own arguments (under `make CC=gcc-14` that is gcc-14), not the gcc on PATH.
+# The merged SARIF's driver version, which feeds the toolchain signature,
+# comes from that same compiler.
+GCC_VERSION="$(python3 - "$COMPILE_COMMANDS_OUT" <<'PYEOF'
+import json, subprocess, sys
+args = json.load(open(sys.argv[1]))[0]["arguments"]
+cc = next(a for a in args if not a.endswith("ccache"))
+print(cc + ": " + subprocess.run([cc, "--version"], capture_output=True, text=True).stdout.splitlines()[0])
+PYEOF
+)"
 echo "$PROBE: gcc lane  -- $GCC_VERSION"
 echo "$PROBE: gcc lane  -- $gcc_fails/$entry_count compile failures, $gcc_results analyser results, ${gcc_wall}s wall, SARIF in $SARIF_GCC_DIR"
 echo "$PROBE: clang-tidy lane -- $CLANG_TIDY_VERSION, a .clang-tidy found on any file's directory walk: $([ "$tidy_config_found" = "1" ] && echo yes || echo no)"

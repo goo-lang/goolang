@@ -6659,7 +6659,7 @@ analyzer-lanes-selftest:
 # database over gcc, clang-tidy, cppcheck, the pthread-return-probe ratchet
 # and the gate log those probes print, with a shrink-only gate that
 # generalises docs/misra/tools/gate.py's own (file, rule) tally into
-# (tool, rule, file, fingerprint) across every one of them. Re-runs
+# (tool, rule, file) result counts across every one of them. Re-runs
 # analyzer-lanes-probe and pthread-return-probe itself (see
 # scripts/findings_probe.sh's own header on why: it must also work
 # standalone, with no Makefile dependency graph to rely on), so this adds

@@ -107,7 +107,11 @@ def convert_gate_log(paths):
             "%s -- refusing to report zero failures from a log that shows "
             "no gate ran at all" % ", ".join(paths)
         )
-    driver = {"name": "verify-core-gates"}
+    # The name says what it reads: only the logs scripts/findings_probe.sh
+    # captures (analyzer-lanes-probe and pthread-return-probe), NOT all of
+    # `make verify-core`. A count of 0 here says nothing about verify-core.
+    driver = {"name": "findings-probe-subgates",
+              "fullDescription": {"text": "FAIL lines of analyzer-lanes-probe and pthread-return-probe only"}}
     return {
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",

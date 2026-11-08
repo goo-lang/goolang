@@ -3,16 +3,25 @@
 
 The generalisation of docs/misra/tools/gate.py the task text asks for:
 that file tallies cppcheck's own (file, rule) pairs from ONE tool's plain
-text; this tallies (tool, rule, file, fingerprint) from tools/sarif_merge.py's
-merged SARIF across every tool at once, using its stable "goo/v1" fingerprint
-in place of a line number for the same reason gate.py's own tally() drops
-line numbers -- see that file's docstring, and sarif_merge.py's.
+text; this counts the results per (tool, rule, file) from tools/sarif_merge.py's
+merged SARIF across every tool at once. Each result also carries its stable
+"goo/v1" fingerprint, which stands in for a line number for the same reason
+gate.py's own tally() drops line numbers -- see that file's docstring, and
+sarif_merge.py's.
 
     findings_gate.py check <sarif> <baseline-prefix> <suppressions.tsv>
     findings_gate.py write <sarif> <baseline-prefix> <suppressions.tsv>
 
-check exits 1 on a regression (a key present now, absent from the baseline).
-write records the current, non-suppressed keys as the new baseline.
+check exits 1 on a regression (a (tool, rule, file) group with more results
+now than the baseline holds rows for it).
+write records one baseline row for each current, non-suppressed result.
+
+FIX ROUND 2 (N1) -- EACH RESULT IS COUNTED. Two results on different lines
+can share one fingerprint (the same text twice). A SET of 4-tuples counted
+them once, and 545 results were invisible to the gate on the real file. The
+tally is now a Counter of 4-tuples, the baseline keeps one row for each
+result (duplicate rows are legal), and the verdict line adds up:
+findings = accepted + suppressed + new.
 
 FIX ROUND 1 (I2b) -- THE BASELINE IS KEYED BY TOOLCHAIN SIGNATURE.
 <baseline-prefix> is a path prefix, not a file. The gate derives a
@@ -111,22 +120,21 @@ def baseline_file(prefix, signature):
 
 
 def tally(sarif_path):
-    """Returns (keys, per_tool) where keys is a set of
-    (tool, rule, file, fingerprint) 4-tuples (still one entry per finding,
-    used to compute per-(tool,rule,file) COUNTS and to name specific new
-    fingerprints in check()'s output -- see this module's own docstring,
-    FIX ROUND 1 / I1, on why the key itself is no longer the comparison
-    unit) and per_tool is a {tool_name: result_count} Counter, for the
+    """Returns (keys, per_tool) where keys is a Counter of
+    (tool, rule, file, fingerprint) 4-tuples, one count for each RESULT
+    (FIX ROUND 2 / N1: not one for each distinct fingerprint). It gives the
+    per-(tool,rule,file) COUNTS and the fingerprints that name new results
+    in check()'s output. per_tool is a {tool_name: result_count} Counter, for the
     verdict line.
 
     FIX ROUND 1 (M6): a tool's entry is registered on EVERY run, even one
     with zero results (`per_tool[tool] += 0` still creates the Counter key)
-    -- before this fix, a run with no results (verify-core-gates on an
+    -- before this fix, a run with no results (findings-probe-subgates on an
     all-green pipeline, for example) was silently absent from per_tool
     entirely, so the verdict line named four tools when five actually ran."""
     with open(sarif_path, encoding="utf-8") as f:
         doc = json.load(f)
-    keys = set()
+    keys = collections.Counter()
     per_tool = collections.Counter()
     for run in doc.get("runs", []):
         tool = run.get("tool", {}).get("driver", {}).get("name", "unknown")
@@ -139,18 +147,17 @@ def tally(sarif_path):
                 art = locations[0].get("physicalLocation", {}).get("artifactLocation", {})
                 file_ = art.get("uri", "")
             fp = result.get("fingerprints", {}).get("goo/v1", "")
-            keys.add((tool, rule, file_, fp))
+            keys[(tool, rule, file_, fp)] += 1
             per_tool[tool] += 1
     return keys, per_tool
 
 
 def group_by_triple(keys):
-    """(tool, rule, file, fingerprint) 4-tuples -> {(tool, rule, file): set
-    of fingerprints}. len() of a triple's set is its ACCEPTED COUNT -- the
-    comparison unit after FIX ROUND 1 / I1."""
-    grouped = collections.defaultdict(set)
-    for tool, rule, file_, fp in keys:
-        grouped[(tool, rule, file_)].add(fp)
+    """Counter of 4-tuples -> {(tool, rule, file): Counter of fingerprints}.
+    The sum of a triple's Counter is its COUNT -- the comparison unit."""
+    grouped = collections.defaultdict(collections.Counter)
+    for (tool, rule, file_, fp), n in keys.items():
+        grouped[(tool, rule, file_)][fp] += n
     return grouped
 
 
@@ -201,11 +208,12 @@ def is_suppressed(tool, rule, file_, suppressions):
 
 
 def filter_suppressed(keys, suppressions):
-    return {k for k in keys if not is_suppressed(k[0], k[1], k[2], suppressions)}
+    return collections.Counter(
+        {k: n for k, n in keys.items() if not is_suppressed(k[0], k[1], k[2], suppressions)})
 
 
 def read_baseline(path):
-    keys = set()
+    keys = collections.Counter()
     if not os.path.isfile(path):
         return keys
     with open(path, encoding="utf-8") as f:
@@ -215,7 +223,7 @@ def read_baseline(path):
                 continue
             parts = line.split("\t")
             if len(parts) == 4:
-                keys.add(tuple(parts))
+                keys[tuple(parts)] += 1
     return keys
 
 
@@ -232,7 +240,7 @@ def write_baseline(path, keys, sarif_path):
         f.write(
             "# findings-probe SHRINK-ONLY baseline. Regenerate with:\n"
             "#   scripts/findings_probe.sh --update-baseline\n"
-            "# One line per tool<TAB>rule<TAB>file<TAB>fingerprint (tools/sarif_merge.py's\n"
+            "# One line per RESULT: tool<TAB>rule<TAB>file<TAB>fingerprint (tools/sarif_merge.py's\n"
             "# own stable \"goo/v1\" hash -- rule id + repo-relative file + the finding's\n"
             "# own normalised line text, NOT its line number).\n"
             "# The GATE compares COUNTS per (tool, rule, file) -- see this module's own\n"
@@ -242,16 +250,17 @@ def write_baseline(path, keys, sarif_path):
             "# IMPROVEMENT. A count above what is recorded here is a REGRESSION and fails\n"
             "# the gate. Suppressed rows (docs/misra/findings-suppressions.tsv) never\n"
             "# appear here at all. Never edit by hand.\n"
-            "# %d accepted findings, from %s.\n" % (len(keys), display_path)
+            "# %d accepted findings, from %s.\n" % (sum(keys.values()), display_path)
         )
         for k in sorted(keys):
-            f.write("\t".join(k) + "\n")
+            for _ in range(keys[k]):
+                f.write("\t".join(k) + "\n")
 
 
 def check(sarif_path, baseline_prefix, suppressions_path, deviations_dir=None):
     """Returns (rc, lines) -- lines is the full report, ready to print.
 
-    FIX ROUND 1 (I1): compares the COUNT of accepted fingerprints per
+    FIX ROUND 1 (I1) and ROUND 2 (N1): compares the COUNT of results per
     (tool, rule, file), not raw 4-tuple set membership -- see this module's
     own docstring for the measured reason. A regression's printed line still
     names the SPECIFIC new fingerprints (now-minus-baseline, within that
@@ -288,14 +297,16 @@ def check(sarif_path, baseline_prefix, suppressions_path, deviations_dir=None):
     base_triples = group_by_triple(base_f)
 
     regressions, improvements = [], []
+    new_total = 0
     for triple in sorted(set(now_triples) | set(base_triples)):
-        now_fps = now_triples.get(triple, set())
-        base_fps = base_triples.get(triple, set())
-        now_c, base_c = len(now_fps), len(base_fps)
+        now_fps = now_triples.get(triple, collections.Counter())
+        base_fps = base_triples.get(triple, collections.Counter())
+        now_c, base_c = sum(now_fps.values()), sum(base_fps.values())
         if now_c > base_c:
-            regressions.append((triple, base_c, now_c, sorted(now_fps - base_fps)))
+            new_total += now_c - base_c
+            regressions.append((triple, base_c, now_c, sorted((now_fps - base_fps).elements())))
         elif now_c < base_c:
-            improvements.append((triple, base_c, now_c, sorted(base_fps - now_fps)))
+            improvements.append((triple, base_c, now_c, sorted((base_fps - now_fps).elements())))
 
     if improvements:
         out.append("findings-gate: %d (tool, rule, file) group(s) shrank since the baseline. "
@@ -304,9 +315,13 @@ def check(sarif_path, baseline_prefix, suppressions_path, deviations_dir=None):
             out.append("    %-16s %-40s %-40s %d -> %d" % (tool, rule, file_, base_c, now_c))
 
     per_tool_str = ", ".join("%s: %d" % (n, c) for n, c in sorted(per_tool.items()))
-    verdict = ("%s: %d findings (%s), %d suppressed, toolchain %s, baseline %s (%d accepted)"
-               % (sarif_path, sum(per_tool.values()), per_tool_str, len(now_keys) - len(now_f),
-                  signature, baseline_path, len(base_keys)))
+    # findings = accepted + suppressed + new (N1: each term counts results).
+    findings = sum(per_tool.values())
+    suppressed = sum(now_keys.values()) - sum(now_f.values())
+    accepted = findings - suppressed - new_total
+    verdict = ("%s: %d findings (%s) = %d accepted + %d suppressed + %d new, toolchain %s, baseline %s (%d rows)"
+               % (sarif_path, findings, per_tool_str, accepted, suppressed, new_total,
+                  signature, baseline_path, sum(base_keys.values())))
 
     if regressions:
         out.append("findings-gate: FAIL -- %d (tool, rule, file) group(s) rose above the baseline"
@@ -341,7 +356,7 @@ def main(argv):
         baseline_path = baseline_file(baseline_prefix, toolchain_signature(sarif_path))
         write_baseline(baseline_path, filter_suppressed(keys, rows), sarif_path)
         print("findings-gate: wrote %s -- %d accepted findings (from %s)"
-              % (baseline_path, len(filter_suppressed(keys, rows)), sarif_path))
+              % (baseline_path, sum(filter_suppressed(keys, rows).values()), sarif_path))
         return 0
 
     rc, lines = check(sarif_path, baseline_prefix, suppressions_path)
@@ -375,7 +390,7 @@ def self_test():
                     "fingerprints": {"goo/v1": fp}}
 
         prefix = os.path.join(tmp, "baseline")
-        write_baseline(baseline_file(prefix, sig), {("GNU C23", "r1", "a.c", "fp1")}, "seed")
+        write_baseline(baseline_file(prefix, sig), collections.Counter({("GNU C23", "r1", "a.c", "fp1"): 1}), "seed")
         devs = os.path.join(tmp, "deviations")
         os.mkdir(devs)
         open(os.path.join(devs, "D-01.md"), "w", encoding="utf-8").close()
@@ -404,6 +419,18 @@ def self_test():
             print("    ok: editing one accepted finding's text (same count, new fingerprint) stays GREEN")
         else:
             print("FAIL: editing an accepted finding's text alone went RED: %r" % lines)
+            ok = False
+
+        # N1: three results that share one fingerprint (the same text on three
+        # lines) against a baseline of ONE row must be RED. A set of keys
+        # counted them as one finding and passed.
+        sarif_dup = os.path.join(tmp, "dup.sarif")
+        write_sarif(sarif_dup, [result("r1", "a.c", "fp1")] * 3)
+        rc, lines = run_check(sarif_dup, suppressions_empty)
+        if rc == 1 and "1 -> 3" in "\n".join(lines) and "1 accepted + 0 suppressed + 2 new" in lines[-1]:
+            print("    ok: three results with one fingerprint against a baseline of one are RED")
+        else:
+            print("FAIL: duplicate-fingerprint results were not counted (rc=%d): %r" % (rc, lines))
             ok = False
 
         # M6: the verdict line must name EVERY tool that ran, including one
