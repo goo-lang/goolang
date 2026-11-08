@@ -95,6 +95,16 @@ misra-c2012-7.3
 misra-c2012-17.3
 
 # ---------------------------------------------------------------------------
+# Third-party headers. The LLVM C API headers are not project code: MISRA
+# Compliance treats them as adopted code, and a finding located in one has no
+# fix in this repository. Task 17b measured 98 MISRA findings there once the
+# 16 LLVM units were really analysed (Core.h 94, Types.h 3, Error.h 1).
+# MISRA IDs only: any other cppcheck ID in these headers, and above all
+# preprocessorErrorDirective, stays visible.
+# ---------------------------------------------------------------------------
+misra-c2012-*:*/llvm-c/*
+
+# ---------------------------------------------------------------------------
 # Not MISRA. cppcheck cannot resolve the LLVM C++ header guard when it
 # preprocesses llvm-c/DataTypes.h as C.
 #
