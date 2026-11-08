@@ -166,7 +166,7 @@ distinct verdict when exceeded:**
 | `SIM_WAITERS_MAX` | 17 | one entry per thread per condvar |
 | `SIM_MUTEXES_MAX` | 16,384 | LIVE mutexes: the scheduler mutex plus one per channel, and no program under test frees a channel. Headroom, not the need of one program: the sim build of `fanin_stress` needs about 129, and ordinary Go programs make many channels. A power of two. Was 64 until Task 7 fix round 1, when the full `fanin_stress` (8,001 mutexes) stopped at `limit-mutexes` in batch 64 |
 | `SIM_QUARANTINE_MAX` | 16,384 | mutexes FREED over a run: a freed mutex keeps its storage (below), so the count bounds that memory. The next free is `limit-freed-mutexes` (Task 8) |
-| `SIM_TRACE_ENTRIES` | 65,536 | 32 bytes each, 2 MiB; older entries roll off, the count is kept |
+| `SIM_TRACE_ENTRIES` | 65,536 | 40 bytes each (a `static_assert` in `sim_sched.c` holds the size), 2,621,440 bytes (2.5 MiB); older entries roll off, the count is kept |
 | `GOO_SIM_STEP_LIMIT` (env) | default 1,000,000 | the run bound |
 | `GOO_SIM_TIME_LIMIT_NS` (env) | default 10 s virtual | the clock bound |
 
@@ -477,8 +477,16 @@ run hit a limit. The full table, with the wall time and the ppm-0 rows, is in
   (`tests/sim/sim_invariant_test.c`, self-test part (b)).
 
 **The gate.** `sim-false-deadlock-probe` runs `false_deadlock_test` over 256
-seeds, and `sim-false-deadlock-selftest` runs the self-test. The wall time of
-both inside `make verify-core` is in the Task 8 report; the section 9
-target was about 20 s together. A defect that needs many batches in one
+seeds, and `sim-false-deadlock-selftest` runs the self-test. Measured on
+2026-11-08 at commit 6f8400c7, three runs each, one `time make <target>` per
+run: `sim-false-deadlock-probe` 1.38 to 1.40 s, `sim-false-deadlock-selftest`
+2.54 to 2.56 s, `sim-sched-test` 0.24 to 0.25 s and `sim-entry-test` 0.29 s,
+so about 4.5 s for the four gates. The Task 8 implementer and the final
+reviewer measured 1.4 to 1.5 s and 2.5 to 2.7 s for the first two. The
+section 9 target was about 20 s together. The two test targets
+`sim-sched-test` and `sim-entry-test` are in `VERIFY_ALL_DEPS` too. Their
+test cases are the negative controls: the entry test has 17 violation cases,
+each of which must fire its own check, and the scheduler test has nine
+tests with fixed expected values. A defect that needs many batches in one
 process (the production `fanin_stress` runs 4000) is out of the sim build's
 reach; only the wall-clock `fanin-stress` gate covers it.
