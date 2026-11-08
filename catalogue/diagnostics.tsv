@@ -1,0 +1,280 @@
+id	file	format
+f5dd6825	expression_checker.c	%s declares %zu type parameters; explicit instantiation with a single bracketed type argument is only supported for single-type-parameter generic functions
+c8c84881	expression_checker.c	%s does not implement %s (%s method %s)
+d868cfce	expression_checker.c	%s expects at least one argument
+3db45fe5	expression_checker.c	%s has no method '%s'
+f8906dfa	expression_checker.c	%s is marked generic but has no function signature
+54d93129	expression_checker.c	%s is not generic; it cannot be explicitly instantiated with a type argument
+080cec26	expression_checker.c	%s: argument of type %s is not ordered (integer, float, or string required)
+682af24d	expression_checker.c	%s: cannot mix string and numeric arguments
+5297d318	expression_checker.c	%s: mismatched types %s and %s
+252ad75a	expression_checker.c	'%s' is not a struct type, cannot use composite literal
+04326273	expression_checker.c	'%s' is not a variant of enum '%s'
+cd910274	expression_checker.c	Array index must be integer, got %s
+dd33eb60	expression_checker.c	Bitwise not requires integer type, got %s
+d07b2217	expression_checker.c	Cannot borrow moved variable '%s'
+1c4e9f3c	expression_checker.c	Cannot call non-function type %s
+81b839ff	expression_checker.c	Cannot compare incompatible types %s and %s
+82a91fdc	expression_checker.c	Cannot dereference non-pointer/reference type %s
+3b3a965c	expression_checker.c	Cannot index type %s
+fa24bf4b	expression_checker.c	Cannot mix keyed and positional initializers in '%s' literal
+235b4ff2	expression_checker.c	Cannot receive from non-channel type %s
+dca472df	expression_checker.c	Cannot send %s to channel of %s
+bc07bc98	expression_checker.c	Cannot send to non-channel type %s
+e3615c7e	expression_checker.c	Cannot slice type %s (v1 supports string and slice)
+f0bad884	expression_checker.c	Cannot use %s as field '%s' of type %s
+559302fb	expression_checker.c	Channel capacity must be an integer
+24dcbe45	expression_checker.c	Duplicate field '%s' in '%s' literal
+fcfad9a3	expression_checker.c	Duplicate match arm for variant '%s'
+59816348	expression_checker.c	Invalid operation: mismatched types %s and %s (no implicit int/float conversion; use an explicit conversion)
+fb5fc078	expression_checker.c	Invalid type in make_chan
+b647fb5e	expression_checker.c	Logical not requires boolean type, got %s
+a9dfe44d	expression_checker.c	Map key type mismatch: expected %s, got %s
+079cb4fd	expression_checker.c	Map literal key %zu type '%s' is not compatible with declared key type '%s'
+151c2c68	expression_checker.c	Map literal value %zu type '%s' is not compatible with declared value type '%s'
+42a8c135	expression_checker.c	Named slice type '%s' missing element type
+48d2ac3d	expression_checker.c	Non-exhaustive match: variant '%s' not handled (add a case or `default:`)
+a64a3ba1	expression_checker.c	Package '%s' has no member '%s'
+f05a1bff	expression_checker.c	Selector on non-struct, non-package type
+887a37e4	expression_checker.c	Slice high bound must be integer, got %s
+21ad1617	expression_checker.c	Slice literal element %zu type '%s' is not compatible with declared element type '%s'
+fd8f18ca	expression_checker.c	Slice literal element %zu type '%s' is not compatible with element type '%s'
+b0d1e46e	expression_checker.c	Slice literal element %zu: cannot use float value in a '%s' slice (would truncate)
+fe8db06d	expression_checker.c	Slice low bound must be integer, got %s
+872e4633	expression_checker.c	Struct '%s' has no field '%s'
+84a6ec77	expression_checker.c	Struct has no field or method '%s'
+888d2f55	expression_checker.c	Too many bindings for variant '%s' (has %zu field(s))
+ef7b6968	expression_checker.c	Unary %s requires numeric type, got %s
+d7a87198	expression_checker.c	Undefined variable '%s'
+4ca68513	expression_checker.c	Unknown binary operator
+38b82e08	expression_checker.c	Unknown expression type
+a7ab266b	expression_checker.c	Unknown literal type
+1cc38938	expression_checker.c	Unknown type '%s' in struct literal
+89bb93c5	expression_checker.c	Unknown unary operator
+edfaf2ed	expression_checker.c	Use of moved variable '%s' (moved at %s:%d:%d)
+117800e2	expression_checker.c	Use of uninitialized variable '%s'
+fb499f09	expression_checker.c	Wrong number of initializers for '%s': got %zu, want %zu
+d33a5314	expression_checker.c	[]T(x) conversion is only supported for []byte(string) in v1
+0b254fa0	expression_checker.c	[]byte(x) requires a string operand, got %s
+8fa93cc7	expression_checker.c	ambiguous selector '%s' (found via %s and %s)
+38f0d9c1	expression_checker.c	append expects exactly two arguments (slice, element)
+b2e0e5b0	expression_checker.c	append: cannot spread %s into %s
+7720e90a	expression_checker.c	append: cannot use %s as element of %s
+4f1f254a	expression_checker.c	append: first argument must be a slice, got %s
+586ada72	expression_checker.c	argument %zu: %s does not implement %s (%s method %s)
+723ce8e1	expression_checker.c	argument %zu: cannot use %s as %s
+89fd18b3	expression_checker.c	argument to comptime parameter '%s' must be a compile-time constant
+d788b871	expression_checker.c	array index %lld must not be negative
+5b8557cd	expression_checker.c	array index %llu out of bounds [0:%zu]
+0f37ba88	expression_checker.c	array length must be non-negative
+4865fc45	expression_checker.c	array literal element at index %lld: cannot use %s as %s
+54bd2756	expression_checker.c	array literal: element index must be a constant integer expression
+e5a0286b	expression_checker.c	array literal: index %lld out of bounds for length %llu
+64c7219d	expression_checker.c	array literal: length must be a constant expression
+e1aee7ce	expression_checker.c	array literal: unknown element type
+51237c76	expression_checker.c	call to %s: not enough arguments (have %zu, want at least %zu)
+2a7fc57c	expression_checker.c	call to %s: wrong number of arguments (have %zu, want %zu)
+5e432fae	expression_checker.c	cannot capture '%s' in a closure: declared via a form not yet supported for capture (multi-value ':=', an if-let binding, or a for-range loop variable) — bind it with a plain 'name := value' first
+221cd220	expression_checker.c	cannot capture loop variable '%s' in a closure (per-iteration capture semantics not yet supported; copy it to a local first: %s := %s)
+e37dbf08	expression_checker.c	cannot convert %s to %s
+21cfd55e	expression_checker.c	cannot convert %s to %s (only numeric conversions are supported in v1)
+e58e2c2c	expression_checker.c	cannot convert %s to string (only integer-kind conversions — rune/byte/int-family — or a []byte operand are supported)
+240769b7	expression_checker.c	cannot convert to %s (only numeric conversions are supported in v1)
+042e2c29	expression_checker.c	cannot infer %s: conflicting types %s and %s
+69a61292	expression_checker.c	cannot infer type arguments for %s: argument %zu (%s) does not match
+e807eba8	expression_checker.c	cannot infer type parameter %zu of %s
+83e32644	expression_checker.c	cannot spread %s into variadic parameter ...%s
+585f5e14	expression_checker.c	cannot take the address of a %s composite literal (only struct literals are supported)
+626916c2	expression_checker.c	cannot take the address of a %s literal (only struct literals are supported)
+723e91ba	expression_checker.c	cannot take the address of a map value (map values are not addressable)
+cbcdbb2c	expression_checker.c	cannot use keyed (field-name) elements with slice type '%s'
+3e3013b8	expression_checker.c	cap expects exactly one argument
+98aa4c97	expression_checker.c	cap() is not defined for maps
+b4d0d6fa	expression_checker.c	cap: argument must be a slice or array, got %s
+5e962e05	expression_checker.c	catch can only be used with error union types, got %s
+25dd013a	expression_checker.c	catch handler value of type %s is not assignable to %s
+a2f2a453	expression_checker.c	clear expects exactly one argument (map or slice)
+24359342	expression_checker.c	clear: argument must be a map or slice, got %s
+268af695	expression_checker.c	close expects exactly one argument (channel)
+80443307	expression_checker.c	close: argument must be a channel, got %s
+44a7e298	expression_checker.c	comptime call to '%s' from within a package is not yet supported
+05608833	expression_checker.c	comptime parameters are only supported on named functions
+0eb92812	expression_checker.c	comptime-length array cannot bind a generic type parameter (not yet supported)
+5ea25604	expression_checker.c	constant %lld overflows %s
+6d7ca72a	expression_checker.c	constant %s (%lld) overflows %s
+8bcce530	expression_checker.c	constant %s%s overflows %s
+8a404ade	expression_checker.c	constant %s%s truncated to integer
+0827c7e0	expression_checker.c	conversion %s() expects exactly one argument
+8400cb26	expression_checker.c	conversion string() expects exactly one argument
+b7692838	expression_checker.c	copy expects exactly two arguments (dst, src)
+8df6b58e	expression_checker.c	copy: cannot copy %s into %s
+73dff216	expression_checker.c	copy: destination must be a slice, got %s
+76b90345	expression_checker.c	delete expects exactly two arguments (map, key)
+597f3e92	expression_checker.c	delete() requires a map as its first argument
+7ad25a07	expression_checker.c	delete: cannot use %s as key of %s
+44872581	expression_checker.c	duplicate default arm in match
+d4a0821f	expression_checker.c	elided composite literal '{...}' has no inferable type in this context
+f55b4fcc	expression_checker.c	elided composite literal '{...}' requires a struct or slice element type, got '%s'
+9fb025ce	expression_checker.c	error expects exactly one string argument
+88cbf8aa	expression_checker.c	error() can only be used inside a function returning !T
+4813e230	expression_checker.c	error.Error() takes no arguments
+ec6fc387	expression_checker.c	error: argument must be a string, got %s
+aebba07d	expression_checker.c	fmt.%s: %s is not a writer (needs a Write([]byte) (int, error) method)
+82166315	expression_checker.c	fmt.%s: missing writer argument
+ad39190f	expression_checker.c	fmt.Fprintf: the format must be a string
+46f91576	expression_checker.c	impossible type assertion: %s does not implement %s (%s method %s)
+caee9522	expression_checker.c	invalid negative shift count: %lld
+8492db87	expression_checker.c	invalid type assertion: cannot resolve target type
+a34c7b60	expression_checker.c	invalid type assertion: operand is not an interface type
+f969862f	expression_checker.c	keyed elements in slice literals are not yet supported (use an array literal `[N]T{...}`)
+67b5ae2d	expression_checker.c	len expects exactly one argument
+8c7e9ddb	expression_checker.c	len() requires an array, slice, string, or map argument
+78877d78	expression_checker.c	main is the program entry point and cannot be called
+4cc5f914	expression_checker.c	make() requires a map or slice type
+f13efe57	expression_checker.c	make() requires a map, slice, or channel type
+35bfa553	expression_checker.c	make([]T) requires a length argument
+4f92547f	expression_checker.c	make([]T, len, cap) takes at most three arguments
+aef06a31	expression_checker.c	make(chan T, capacity) takes at most two arguments
+c957768a	expression_checker.c	make(map[K]V, ...) takes at most one size hint argument
+e3c0185c	expression_checker.c	make: capacity must be an integer, got %s
+9c45e5b2	expression_checker.c	make: length must be an integer, got %s
+5751df87	expression_checker.c	make: size hint must be an integer, got %s
+4a03380c	expression_checker.c	make_chan requires type and capacity arguments
+026001c3	expression_checker.c	method values on interface types are not supported in v1 (call the method directly, or bind from the concrete type)
+73bc2cb0	expression_checker.c	method values on sync.%s are not supported in v1 (call %s directly)
+168cf725	expression_checker.c	missing return
+fc324767	expression_checker.c	new expects exactly one type argument
+0e03299e	expression_checker.c	out of memory checking %s call
+d15813a4	expression_checker.c	out of memory recording comptime argument '%s'
+7c5ffc3c	expression_checker.c	out of memory recording comptime instantiation of '%s'
+d780ddfe	expression_checker.c	recover() is not supported in v1; panics terminate the program (use !T error unions for recoverable errors)
+8f95dcde	expression_checker.c	spread argument requires a variadic function
+cb246e2a	expression_checker.c	spread call must supply exactly the fixed arguments then one slice (want %zu args, got %zu)
+9b8ce6d2	expression_checker.c	try can only be used with error union types, got %s
+b6e496c8	expression_checker.c	try operand error type %s does not match the enclosing function's error type %s
+9dc70cb8	expression_checker.c	try requires the enclosing function to return an error union (!T)
+6fb613a0	expression_checker.c	type parameter %s (constraint %s) does not satisfy %s
+becfcd8f	expression_checker.c	type parameter %s (constraint %s) has no method '%s'
+ae5d1e4f	expression_checker.c	type used as value
+e7bb72b0	expression_checker.c	wrong number of arguments to %s: expected %zu, got %zu
+0847afa0	expression_helpers.c	Arithmetic operation requires numeric operands
+1dba8558	expression_helpers.c	Arithmetic operation requires numeric operands — error unions must be unwrapped before arithmetic — did you mean (try f()) + 1?
+1c6dfb9f	expression_helpers.c	Bitwise operation requires integer operands
+38cc90a8	expression_helpers.c	Cannot assign %s to %s
+f786c944	expression_helpers.c	Cannot compare incompatible types %s and %s
+b9402d7d	expression_helpers.c	Logical operation requires boolean operands
+4808b903	expression_helpers.c	cannot assign to a non-addressable expression
+09ce6d09	expression_helpers.c	invalid operation: %s %s %s (%s can only be compared to nil)
+186fdb71	expression_helpers.c	invalid operation: %s %s %s (nullable payload type %s does not support equality)
+53388339	expression_helpers.c	invalid operation: %s %s %s (struct is not comparable: has a slice/map/func/interface field)
+0f4884e7	expression_helpers.c	operator %% not defined on %s
+c96ff42e	expression_helpers.c	operator %s not defined on nullable type %s
+0a13c878	lane_ownership.c	lane body may not capture '%s' — a lane body may reach no partition state except its own *Lane context
+d86e1dc7	lane_ownership.c	lane view '%s' (derived from the *Lane context) may not be passed to another goroutine
+0caed26e	lane_ownership.c	use of '%s' after it was consumed by lanes.Run (consumed at %s:%d:%d)
+f1f54267	lane_ownership.c	use of '%s' after it was moved into lanes.Partition (moved at %s:%d:%d)
+34af450a	ownership_checker.c	Cannot assign %s to %s
+c6b8ad8e	ownership_checker.c	Cannot assign nil to non-nullable type %s
+b8860c84	ownership_checker.c	Cannot assign nullable type %s to non-nullable type %s without explicit unwrapping
+bd7b7685	ownership_checker.c	Cannot dereference nullable type %s without null check
+27f98818	ownership_checker.c	Cannot pass moved or uninitialized value as function argument
+e4f74d18	ownership_checker.c	Undefined variable '%s'
+f0db1e2a	ownership_checker.c	Use of moved variable '%s'
+71c0b7ed	ownership_checker.c	Use of moved variable '%s' (moved at %s:%d:%d)
+d3908c93	ownership_checker.c	Use of uninitialized variable '%s'
+8899d8eb	type_checker.c	!void (error-only) functions are not yet supported in v1; use !T with a value type for now
+7fac0317	type_checker.c	%s does not implement %s (%s method %s)
+85d707f6	type_checker.c	Cannot assign %s to %s
+5db1c7b1	type_checker.c	Cannot assign %s to %s in multiple assignment
+eacc6c60	type_checker.c	Cannot assign %s to %s — error union must be handled: use try, catch, or v, err := destructuring
+3ee9097b	type_checker.c	Cannot resolve type for '%s'
+ea593565	type_checker.c	Concept '%s' already declared
+9aaedc96	type_checker.c	Constant '%s' already declared in this scope
+f6d4619c	type_checker.c	Constant declaration must have initializer
+0bcd38e9	type_checker.c	Enum variant '%s' already declared
+cb6b5581	type_checker.c	Expected program node
+2799c6c5	type_checker.c	For condition must be boolean
+48372f27	type_checker.c	Function '%s' already declared
+895101f2	type_checker.c	If condition must be boolean, got %s
+abb9fdc8	type_checker.c	Invalid initializer expression
+9680c9e7	type_checker.c	Invalid type in variable declaration
+df158e03	type_checker.c	Invalid type node
+5b5af411	type_checker.c	Left side of := must be an identifier
+87817bdd	type_checker.c	Memory allocation failed
+7f693010	type_checker.c	Multiple assignment: more targets than values
+b86bb3bf	type_checker.c	Out of memory cloning type for '%s'
+76b9b01d	type_checker.c	Package '%s' has no exported type '%s'
+65f9a23a	type_checker.c	Type '%s' already declared
+e7f7e95d	type_checker.c	Unknown declaration type
+cc3b87e6	type_checker.c	Unknown package '%s'
+c760c5cf	type_checker.c	Unknown statement type
+971b3543	type_checker.c	Unknown type '%s'
+109b2109	type_checker.c	Variable '%s' already declared in this scope
+ee362ec4	type_checker.c	Variable declaration must have either type or initializer
+0b5b545f	type_checker.c	array length must be a constant expression
+f8f90762	type_checker.c	array length must be non-negative
+4f0c6da7	type_checker.c	cannot assign to a non-addressable expression
+0cf3a44b	type_checker.c	cannot fallthrough final case in switch
+82764154	type_checker.c	comptime parameter type cannot be a type parameter (not yet supported)
+b1f1631f	type_checker.c	comptime parameters are not supported on interface methods
+64bc4f9c	type_checker.c	comptime parameters are not yet supported on methods
+e15b09c0	type_checker.c	constant %lld overflows %s
+67e477de	type_checker.c	custom error types are not supported in v1; construct errors with error(\"...\")
+0218e825	type_checker.c	defer requires a function call
+db1151f7	type_checker.c	duplicate case nil in type switch
+312fe61e	type_checker.c	duplicate case type %s in type switch
+66cd28d6	type_checker.c	duplicate case value %lld (previous case at %s:%d:%d)
+6e6a607b	type_checker.c	duplicate field name '%s' in struct
+04bb3810	type_checker.c	duplicate label '%s'
+6afeba89	type_checker.c	duplicate method '%s' in interface
+423a60b3	type_checker.c	embedded field '%s' must be a named type or pointer to a named type
+a6adfc4c	type_checker.c	embedded field type cannot be a pointer to an interface
+8f7da644	type_checker.c	embedded fields are not supported in enum variants
+b69d1dea	type_checker.c	embedded type '%s' is not an interface
+7bf1551f	type_checker.c	error union must be handled: use try, catch, or v, err := destructuring
+aae34df1	type_checker.c	error union of nullable type is not supported in v1
+3a67586f	type_checker.c	fallthrough statement is not permitted in a select statement
+97ece4dd	type_checker.c	fallthrough statement is not permitted in a type switch
+67d552a8	type_checker.c	fallthrough statement must be the final statement in a case clause
+fca4140a	type_checker.c	fallthrough statement outside switch
+ae01c968	type_checker.c	for-range supported only on slice/array/string/map/channel types
+cd7cba4b	type_checker.c	function '%s' has comptime parameters and cannot be %s
+784cd985	type_checker.c	goto into arena block is not supported
+23d274ef	type_checker.c	if-let requires a nullable expression
+f7427084	type_checker.c	impossible type assertion: %s does not implement %s (%s method %s)
+da86b8e8	type_checker.c	init functions are not supported in v1 (the body would silently never run); initialize package-level vars in their declarations or call a setup function from main
+10a0cdd6	type_checker.c	internal: struct field with no name survived parsing
+8a77721a	type_checker.c	invalid case value: %s does not match switch expression type %s
+ef869b45	type_checker.c	invalid map key type %s (not comparable)
+2ce9b8ac	type_checker.c	invalid map key type: struct has a non-comparable field (slice/map/func/interface fields are never comparable)
+ad324004	type_checker.c	invalid type assertion: operand is not an interface type
+6acf745f	type_checker.c	invalid type switch case: cannot resolve type
+1377e307	type_checker.c	map key type %s is not yet supported in v1 (comparable key types so far: string, integers, bool, rune, byte, pointers)
+d4a8f109	type_checker.c	method '%s' has comptime parameters and cannot satisfy an interface method
+6e8a44f5	type_checker.c	missing return
+6226c241	type_checker.c	multiple defaults in type switch
+30f6d318	type_checker.c	not enough return values: bare return is only allowed when the function has named results
+40dca5b4	type_checker.c	range over channel permits at most one iteration variable
+31452932	type_checker.c	range over channel: missing element type
+db88d63c	type_checker.c	range over map: missing key/value type
+523fc6af	type_checker.c	return type mismatch: bare return from a function returning %s (expected a value of %s or an error(...) construction)
+07739a4c	type_checker.c	return type mismatch: cannot return %s from a function returning %s
+d808c689	type_checker.c	return type mismatch: cannot return %s from a function returning %s (expected %s or an error(...) construction)
+dc962924	type_checker.c	return type mismatch: cannot return a value from a function with no return type
+eeb26088	type_checker.c	select case 'v, ok :=' binding is not supported in v1; use a comma-ok receive outside select to detect closure
+d2c6141e	type_checker.c	select case must be a receive operation
+414b59fe	type_checker.c	select case requires a channel send or receive operation
+c6403aa5	type_checker.c	select case: cannot assign %s to %s variable '%s'
+6ea50be7	type_checker.c	select case: undefined variable '%s'
+0035989a	type_checker.c	select send requires a channel, got %s
+1c08af2b	type_checker.c	select send: cannot use %s as %s channel element
+1871cb96	type_checker.c	switch on %s %s-typed value is not supported (%s is not comparable, so Go would reject this too)
+c904ac47	type_checker.c	switch on %s %s-typed value is not supported (v1 limitation: %s-tag switch lowering is not implemented; Go allows this)
+94374615	type_checker.c	switch on a struct-typed value is not supported (%s is additionally non-comparable, so Go would reject this too)
+8322f608	type_checker.c	switch on a struct-typed value is not supported (v1 limitation: struct-tag switch lowering is not implemented; Go allows this for a comparable struct)
+fae6bbfe	type_checker.c	too many labels in one function (max 64)
+0fab7095	type_checker.c	type constraint must be an interface
+37c6aa28	type_checker.c	type parameter %s is never used in a parameter; cannot be inferred
+1e3a8e86	type_checker.c	undeclared embedded interface '%s'
+0de1c716	type_checker.c	undefined label '%s'
+4879eda1	type_checker.c	variadic parameter must be the final parameter

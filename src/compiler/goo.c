@@ -17,6 +17,11 @@
 #include "parser.h"
 #include "ast.h"
 #include "types.h"
+#include "program_dump.h"
+
+// Name the synthesized `goo test` entry file carries through every phase
+// (parse diagnostics, --emit-ast, the program dump).
+static const char kTestMainName[] = "_testmain.goo";
 #include "codegen.h"
 // #include "errors/error.h"  // TODO: Update to use new error API
 #include "runtime.h"
@@ -63,6 +68,8 @@ typedef struct CompilerOptions {
     bool emit_llvm_ir;
     bool emit_ast;
     bool emit_tokens;
+    bool emit_ast_json;   // program dump, parse stage
+    bool emit_program;    // program dump, typed stage (+ release plan)
     bool optimize;
     int opt_level;
     bool debug_info;
@@ -181,6 +188,8 @@ static void print_usage(FILE* out, const char* program_name) {
     fprintf(out, "  --emit-llvm              Emit LLVM IR instead of executable\n");
     fprintf(out, "  --emit-ast               Emit AST (for debugging)\n");
     fprintf(out, "  --emit-tokens            Emit tokens (for debugging)\n");
+    fprintf(out, "  --emit-ast-json          Emit the parsed program as JSON (program dump, parse stage)\n");
+    fprintf(out, "  --emit-program           Emit the typed program + release plan as JSON (program dump)\n");
     fprintf(out, "  -h, --help               Show this help message\n");
     fprintf(out, "  --version                Show version information\n");
 }
@@ -256,6 +265,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         {"emit-llvm", no_argument, 0, 0},
         {"emit-ast", no_argument, 0, 0},
         {"emit-tokens", no_argument, 0, 0},
+        {"emit-ast-json", no_argument, 0, 0},
+        {"emit-program", no_argument, 0, 0},
         {"dump-packages", no_argument, 0, 0},
         {"emit-testmain", no_argument, 0, 0},
         {"help", no_argument, 0, 'h'},
@@ -276,6 +287,10 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                     options->emit_ast = true;
                 } else if (strcmp(long_options[option_index].name, "emit-tokens") == 0) {
                     options->emit_tokens = true;
+                } else if (strcmp(long_options[option_index].name, "emit-ast-json") == 0) {
+                    options->emit_ast_json = true;
+                } else if (strcmp(long_options[option_index].name, "emit-program") == 0) {
+                    options->emit_program = true;
                 } else if (strcmp(long_options[option_index].name, "dump-packages") == 0) {
                     options->dump_packages = true;
                 } else if (strcmp(long_options[option_index].name, "emit-testmain") == 0) {
@@ -1348,7 +1363,6 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         // A string literal has static storage duration, so it outlives every
         // Position that parse_input stamps this pointer into. The real files
         // must strdup their names because those are built at runtime.
-        static const char kTestMainName[] = "_testmain.goo";
 
         extern ASTNode* ast_root;
         ast_root = NULL;
@@ -1372,6 +1386,20 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         }
     }
 
+    // Program dump, parse stage: every file as parsed, no types, no plan.
+    // Short-circuits like --dump-packages below; the differential gates
+    // compare this output between front ends (scripts/frontend_diff.sh).
+    if (options->emit_ast_json) {
+        const char** dump_names = calloc(nfiles, sizeof(char*));
+        if (!dump_names) { ENTRY_CLEANUP(); return false; }
+        for (size_t fi = 0; fi < nfiles; fi++) {
+            dump_names[fi] = fi < options->input_file_count ? options->input_files[fi] : kTestMainName;
+        }
+        program_dump_write(stdout, asts, dump_names, nfiles, NULL, PROGRAM_DUMP_PARSE);
+        free(dump_names);
+        ENTRY_CLEANUP();
+        return true;
+    }
     // Hidden debug flag: walk the import graph from main and print the
     // resolved packages in topological order (leaves first), then "main".
     // Short-circuits before type-checking/codegen — packages are not yet
@@ -1472,6 +1500,54 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         type_checker_free(type_checker);
         ENTRY_CLEANUP();
         return false;
+    }
+
+    // Program dump, typed stage: every file as checked, type ids + one
+    // release plan per file. Short-circuits before codegen -- the dump needs
+    // no LLVM and no output file -- so it frees exactly what the failure
+    // path above frees (codegen under LLVM_AVAILABLE, the type checker,
+    // ENTRY_CLEANUP) before returning.
+    if (options->emit_program) {
+        const char** dump_names = calloc(nfiles, sizeof(char*));
+        if (!dump_names) {
+#if LLVM_AVAILABLE
+            codegen_free(codegen);
+#endif
+            type_checker_free(type_checker);
+            ENTRY_CLEANUP();
+            return false;
+        }
+        for (size_t fi = 0; fi < nfiles; fi++) {
+            dump_names[fi] = fi < options->input_file_count ? options->input_files[fi] : kTestMainName;
+        }
+        // Same plan codegen would build (codegen.c:378-384), built here so
+        // the dump needs no LLVM and no output file. GOO_ARC_RELEASE=0
+        // yields NULL plans, emitted as null -- the kill switch is visible
+        // in the dump.
+        ReleasePlan** plans = calloc(nfiles, sizeof(ReleasePlan*));
+        if (!plans) {
+            free(dump_names);
+#if LLVM_AVAILABLE
+            codegen_free(codegen);
+#endif
+            type_checker_free(type_checker);
+            ENTRY_CLEANUP();
+            return false;
+        }
+        const char* arc_off = getenv("GOO_ARC_RELEASE");
+        if (!(arc_off && strcmp(arc_off, "0") == 0)) {
+            for (size_t fi = 0; fi < nfiles; fi++) plans[fi] = release_plan_analyze(asts[fi]);
+        }
+        program_dump_write(stdout, asts, dump_names, nfiles, plans, PROGRAM_DUMP_TYPED);
+        for (size_t fi = 0; fi < nfiles; fi++) if (plans[fi]) release_plan_free(plans[fi]);
+        free(plans);
+        free(dump_names);
+#if LLVM_AVAILABLE
+        codegen_free(codegen);
+#endif
+        type_checker_free(type_checker);
+        ENTRY_CLEANUP();
+        return true;
     }
 
     // Phase 4: Code Generation
