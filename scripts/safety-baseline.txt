@@ -10,11 +10,9 @@ c-format-string:src/comptime/comptime_intrinsics.c:424
 c-format-string:src/comptime/comptime_intrinsics.c:426
 c-format-string:src/comptime/comptime_intrinsics.c:465
 c-format-string:src/comptime/comptime_intrinsics.c:468
-c-unchecked-alloc:src/codegen/error_union_codegen.c:568
 c-unchecked-alloc:src/codegen/function_codegen.c:1015
 c-unchecked-alloc:src/codegen/function_codegen.c:1122
 c-unchecked-alloc:src/codegen/monomorphize.c:64
-c-unchecked-alloc:src/codegen/runtime_integration.c:31
 c-unchecked-alloc:src/codegen/runtime_integration.c:38
 c-unchecked-alloc:src/parser/parser_actions.c:320
 c-unchecked-alloc:src/parser/parser_actions.c:510

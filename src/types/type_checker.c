@@ -1804,7 +1804,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     // onto func_type once built, below.
     int has_comptime_params = 0;
     if (param_count > 0) {
-        param_types = calloc(param_count, sizeof(Type*));
+        param_types = xcalloc(param_count, sizeof(Type*));
         size_t idx = 0;
         for (ASTNode* p = func->params; p; p = p->next) {
             if (p->type != AST_VAR_DECL) continue;
