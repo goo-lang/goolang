@@ -15,7 +15,7 @@
 #define SIM_THREADS_MAX    17u      /* GOO_MAX_OS_THREADS (16) workers + main */
 #define SIM_STACK_BYTES    262144u
 #define SIM_WAITERS_MAX    17u
-#define SIM_MUTEXES_MAX    64u
+#define SIM_MUTEXES_MAX    16384u   /* live mutexes; fanin_stress needs 8,001 (Task 7 fix round 1) */
 #define SIM_TRACE_ENTRIES  65536u
 
 /* Seeded preemption (spec section 6, "Seeded preemption"): at each

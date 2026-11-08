@@ -28,6 +28,7 @@
 
 #include "runtime.h"
 
+#include <stddef.h>
 #include <string.h>
 
 /* concurrency.c's scheduler. Read, never written, to name the scheduler
@@ -38,8 +39,32 @@ extern goo_scheduler_t* g_scheduler;
 typedef struct sim_mutex_slot {
     const goo_mutex_t* mutex;        /* nullptr = a free slot */
     uint32_t           owner;        /* a thread id; meaningful only while held */
+    uint32_t           generation;   /* changes at each free of this slot */
+    uint32_t           next_free;    /* the free list; meaningful only while free */
     uint8_t            held;
 } sim_mutex_slot_t;
+
+/* THE HANDLE (Task 7 fix round 1). A goo_mutex_t carries its slot index and
+ * the slot's generation, so a lookup is O(1): the table has 16,384 slots,
+ * and a search of it at every lock would cost 256 times what the 64-slot
+ * search cost. struct goo_mutex is the runtime's type and does not change;
+ * the tag lives in the bytes of its pthread_mutex_t, which only
+ * goo_os_posix.c uses, and the sim archive never links that file. A handle
+ * the seam did not make (a stranger, a copy, freed bytes, stale bytes at a
+ * reused address) fails one of the checks in slot_of and reads
+ * unknown-mutex. The magic is cleared before the free, so a freed handle
+ * whose memory is not reused fails on the magic; malloc's own free-list
+ * words also land at those offsets. */
+typedef struct sim_mutex_tag {
+    uint64_t magic;                  /* SIM_MUTEX_MAGIC while the seam owns the mutex */
+    uint32_t slot;
+    uint32_t generation;
+} sim_mutex_tag_t;
+
+static_assert(offsetof(goo_mutex_t, locked) >= sizeof(sim_mutex_tag_t),
+              "the tag must fit in the bytes before goo_mutex_t.locked");
+#define SIM_MUTEX_MAGIC 0x53494d4d55544558ull   /* "SIMMUTEX" */
+#define SIM_SLOT_NONE   UINT32_MAX
 
 /* One handle per thread id. Slots are never reused, like sim_sched.c's. */
 struct goo_thread {
@@ -51,6 +76,11 @@ struct goo_thread {
 };
 
 static sim_mutex_slot_t  g_mutexes[SIM_MUTEXES_MAX];
+/* Slots below g_slots_touched were used at least once; a freed one is on
+ * the free list. Taking a slot is O(1): the free list, else the next
+ * untouched slot. Zero is "empty", so no loop at start-up walks the table. */
+static uint32_t          g_slots_touched;
+static uint32_t          g_free_head_plus_one;            /* 0 = the free list is empty */
 static struct goo_thread g_handles[SIM_THREADS_MAX];
 static uint32_t          g_held_count[SIM_THREADS_MAX];   /* mutexes each thread holds now */
 static bool              g_fault_spurious_wake;
@@ -77,31 +107,75 @@ static uint32_t self_id(void) {
 
 /* ---- the mutex table ---- */
 
-static sim_mutex_slot_t* slot_find(const goo_mutex_t* mutex) {
+static sim_mutex_tag_t tag_read(const goo_mutex_t* mutex) {
     GOO_ASSERT(mutex != nullptr);
-    for (uint32_t i = 0; i < SIM_MUTEXES_MAX; i++) {
-        if (g_mutexes[i].mutex == mutex) return &g_mutexes[i];
-    }
-    return nullptr;
+    sim_mutex_tag_t tag;
+    memcpy(&tag, mutex, sizeof tag);
+    return tag;
 }
 
+static void tag_write(goo_mutex_t* mutex, sim_mutex_tag_t tag) {
+    GOO_ASSERT(mutex != nullptr);
+    GOO_ASSERT(tag.slot < SIM_MUTEXES_MAX || tag.magic == 0);
+    memcpy(mutex, &tag, sizeof tag);
+}
+
+/* The slot a handle names, or the verdict unknown-mutex. Each check is its
+ * own line, so the one that fails is the one a debugger shows. */
 static sim_mutex_slot_t* slot_of(const goo_mutex_t* mutex) {
-    sim_mutex_slot_t* slot = slot_find(mutex);
-    if (slot == nullptr) sim_exit_with(SIM_INVARIANT, "unknown-mutex");
-    GOO_ASSERT(slot->mutex == mutex);
+    GOO_ASSERT(mutex != nullptr);
+    sim_mutex_tag_t tag = tag_read(mutex);
+    if (tag.magic != SIM_MUTEX_MAGIC) sim_exit_with(SIM_INVARIANT, "unknown-mutex");
+    if (tag.slot >= SIM_MUTEXES_MAX) sim_exit_with(SIM_INVARIANT, "unknown-mutex");
+    sim_mutex_slot_t* slot = &g_mutexes[tag.slot];
+    if (slot->mutex != mutex) sim_exit_with(SIM_INVARIANT, "unknown-mutex");   /* free, or another mutex */
+    if (slot->generation != tag.generation) sim_exit_with(SIM_INVARIANT, "unknown-mutex");
+    GOO_ASSERT(tag.slot < g_slots_touched);
     return slot;
 }
 
-static void slot_register(const goo_mutex_t* mutex) {
-    GOO_ASSERT(mutex != nullptr);
-    GOO_ASSERT(slot_find(mutex) == nullptr);   /* goo_alloc never returns a live mutex twice */
-    for (uint32_t i = 0; i < SIM_MUTEXES_MAX; i++) {
-        if (g_mutexes[i].mutex == nullptr) {
-            g_mutexes[i] = (sim_mutex_slot_t){ .mutex = mutex, .owner = 0, .held = 0 };
-            return;
-        }
+/* O(1): the head of the free list, else the next untouched slot. */
+static uint32_t slot_take_free(void) {
+    if (g_free_head_plus_one != 0) {
+        uint32_t index = g_free_head_plus_one - 1;
+        GOO_ASSERT(index < g_slots_touched);
+        GOO_ASSERT(g_mutexes[index].mutex == nullptr);
+        uint32_t next = g_mutexes[index].next_free;
+        g_free_head_plus_one = next == SIM_SLOT_NONE ? 0 : next + 1;
+        return index;
     }
-    sim_exit_with(SIM_LIMIT, "mutexes");
+    if (g_slots_touched == SIM_MUTEXES_MAX) sim_exit_with(SIM_LIMIT, "mutexes");
+    GOO_ASSERT(g_slots_touched < SIM_MUTEXES_MAX);
+    GOO_ASSERT(g_mutexes[g_slots_touched].mutex == nullptr);
+    return g_slots_touched++;
+}
+
+static void slot_register(goo_mutex_t* mutex) {
+    GOO_ASSERT(mutex != nullptr);
+    GOO_ASSERT(tag_read(mutex).magic != SIM_MUTEX_MAGIC);   /* goo_mutex_new zeroed it */
+    uint32_t index = slot_take_free();
+    sim_mutex_slot_t* slot = &g_mutexes[index];
+    slot->mutex = mutex;
+    slot->owner = 0;
+    slot->held = 0;
+    slot->next_free = SIM_SLOT_NONE;
+    tag_write(mutex, (sim_mutex_tag_t){ .magic = SIM_MUTEX_MAGIC, .slot = index,
+                                        .generation = slot->generation });
+}
+
+/* The slot goes back on the free list with a new generation, so a handle
+ * that still names it (stale bytes at a reused address) no longer matches. */
+static void slot_unregister(goo_mutex_t* mutex, sim_mutex_slot_t* slot) {
+    GOO_ASSERT(slot->mutex == mutex);
+    GOO_ASSERT(slot->held == 0);
+    GOO_ASSERT(slot->generation < UINT32_MAX);   /* a wrap would revive old handles */
+    uint32_t index = (uint32_t)(slot - g_mutexes);
+    GOO_ASSERT(index < g_slots_touched);
+    slot->mutex = nullptr;
+    slot->generation++;
+    slot->next_free = g_free_head_plus_one == 0 ? SIM_SLOT_NONE : g_free_head_plus_one - 1;
+    g_free_head_plus_one = index + 1;
+    tag_write(mutex, (sim_mutex_tag_t){ .magic = 0, .slot = 0, .generation = 0 });
 }
 
 static const goo_mutex_t* scheduler_mutex(void) {
@@ -157,7 +231,7 @@ goo_mutex_t* goo_mutex_new(void) {
     GOO_ASSERT(mutex != nullptr);
     memset(mutex, 0, sizeof *mutex);
     slot_register(mutex);
-    GOO_ASSERT(slot_find(mutex) != nullptr);  /* found by the search that lock and unlock use */
+    GOO_ASSERT(slot_of(mutex)->mutex == mutex);   /* found by the lookup that lock and unlock use */
     return mutex;
 }
 
@@ -167,8 +241,9 @@ void goo_mutex_free(goo_mutex_t* mutex) {
     sim_mutex_slot_t* slot = slot_of(mutex);
     if (slot->held != 0) sim_exit_with(SIM_INVARIANT, "free-held-mutex");
     GOO_ASSERT(mutex->locked == 0);            /* the mirror agrees with the table */
-    slot->mutex = nullptr;
-    GOO_ASSERT(slot_find(mutex) == nullptr);
+    slot_unregister(mutex, slot);
+    GOO_ASSERT(slot->mutex == nullptr);
+    GOO_ASSERT(tag_read(mutex).magic == 0);
     goo_free(mutex);
 }
 

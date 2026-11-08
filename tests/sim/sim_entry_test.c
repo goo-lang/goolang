@@ -24,7 +24,11 @@
  *   lock-order, recursive-lock, unlock-not-held, wait-without-mutex,
  *   wait-other-owner, exit-holding-mutex, free-held-mutex,
  *   free-cond-with-waiters, join-self, join-detached, unknown-mutex,
- *   limit-mutexes.
+ *   freed-mutex, copied-mutex, stale-generation, limit-mutexes.
+ * The last four check the mutex HANDLE (Task 7 fix round 1): a handle
+ * that the seam freed, a copy of a live mutex at another address, and the
+ * bytes of a freed mutex written back at the address that a new mutex
+ * reuses must each read unknown-mutex, as the stranger does.
  * unlock-not-owner is Task 6's case (tests/sim/sim_invariant_test.c).
  *
  * Usage: SIM_ENTRY_CASE=<case> GOO_SIM_TRACE_DIR=<dir> build/sim/sim_entry_test */
@@ -36,7 +40,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { NONZERO_STATUS = 3, WORKERS = 2, MISSED_STATUS = 1, WAIT_POLLS_MAX = 100 };
+enum { NONZERO_STATUS = 3, WORKERS = 2, MISSED_STATUS = 1, WAIT_POLLS_MAX = 100,
+       NO_REUSE_STATUS = 4 };
 static const uint64_t HANDLER_SLEEP_NS = 1000;
 static const uint64_t NAP_NS = 1000;
 /* free-cond-with-waiters polls for the waiter with this nap, WAIT_POLLS_MAX
@@ -244,6 +249,49 @@ static int case_unknown_mutex(void) {
     return missed("unknown-mutex");
 }
 
+/* A handle that the seam freed: its slot is free, and no new mutex holds it. */
+static int case_freed_mutex(void) {
+    goo_mutex_t* mutex = goo_mutex_new();
+    GOO_ASSERT(mutex != nullptr);
+    goo_mutex_free(mutex);
+    goo_mutex_lock(mutex);
+    return missed("unknown-mutex (freed)");
+}
+
+/* The bytes of a live mutex, copied to another address: the copy carries
+ * the original's slot index and generation, but the slot names the original. */
+static int case_copied_mutex(void) {
+    static goo_mutex_t copy;
+    goo_mutex_t* mutex = goo_mutex_new();
+    GOO_ASSERT(mutex != nullptr);
+    memcpy(&copy, mutex, sizeof copy);
+    GOO_ASSERT(&copy != mutex);
+    goo_mutex_lock(&copy);
+    return missed("unknown-mutex (copied)");
+}
+
+/* A stale handle at a reused address: the bytes of a freed mutex, written
+ * back over the new mutex that malloc placed at the same address. The slot
+ * and the address agree, so only the generation can tell them apart. If the
+ * allocator did not reuse the address, the case cannot be made: it says so
+ * and returns NO_REUSE_STATUS, which the driver reads as a failure. */
+static int case_stale_generation(void) {
+    goo_mutex_t saved;
+    goo_mutex_t* first = goo_mutex_new();
+    GOO_ASSERT(first != nullptr);
+    memcpy(&saved, first, sizeof saved);
+    goo_mutex_free(first);
+    goo_mutex_t* second = goo_mutex_new();
+    GOO_ASSERT(second != nullptr);
+    if (second != first) {
+        fprintf(stderr, "sim_entry_test: stale-generation: malloc did not reuse the address\n");
+        return NO_REUSE_STATUS;
+    }
+    memcpy(second, &saved, sizeof saved);
+    goo_mutex_lock(second);
+    return missed("unknown-mutex (stale generation)");
+}
+
 /* One more live mutex than the table holds. */
 static int case_limit_mutexes(void) {
     for (uint32_t i = 0; i <= SIM_MUTEXES_MAX; i++) {
@@ -272,6 +320,9 @@ static const entry_case_t CASES[] = {
     { "join-self", case_join_self },
     { "join-detached", case_join_detached },
     { "unknown-mutex", case_unknown_mutex },
+    { "freed-mutex", case_freed_mutex },
+    { "copied-mutex", case_copied_mutex },
+    { "stale-generation", case_stale_generation },
     { "limit-mutexes", case_limit_mutexes },
 };
 

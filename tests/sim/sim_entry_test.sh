@@ -107,10 +107,13 @@ expect_verdict free-cond-with-waiters 11 "verdict=invariant detail=free-cond-wit
 expect_verdict join-self              11 "verdict=invariant detail=join-self"
 expect_verdict join-detached          11 "verdict=invariant detail=join-detached"
 expect_verdict unknown-mutex          11 "verdict=invariant detail=unknown-mutex"
+expect_verdict freed-mutex            11 "verdict=invariant detail=unknown-mutex"
+expect_verdict copied-mutex           11 "verdict=invariant detail=unknown-mutex"
+expect_verdict stale-generation       11 "verdict=invariant detail=unknown-mutex"
 expect_verdict limit-mutexes          15 "verdict=limit-mutexes detail=mutexes"
 
 if [ "$FAILS" -ne 0 ]; then
     echo "sim-entry-test: FAIL ($FAILS checks, $BIN, work dir $WORK)"
     exit 1
 fi
-echo "sim-entry-test: PASS ($BIN: main is coroutine 0 on seeds 1-8, 33 and 58, the exit path stays on coroutine 0, status 3 passes through, stdout survives sim-deadlock, 12 violation cases fire their own check on seeds 1-4)"
+echo "sim-entry-test: PASS ($BIN: main is coroutine 0 on seeds 1-8, 33 and 58, the exit path stays on coroutine 0, status 3 passes through, stdout survives sim-deadlock, 15 violation cases fire their own check on seeds 1-4)"
