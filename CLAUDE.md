@@ -85,8 +85,15 @@ This project uses a Makefile for building:
 - `make clean` - Clean build artifacts
 - `WERROR` - CFLAGS carries `-Werror` through `WERROR ?= -Werror`, so a C
   warning stops the build. CFLAGS also carries `-Wpedantic`. CI and
-  `verify-core` use the default. A newer
-  compiler may add warnings: build with `make WERROR=` to drop the flag.
+  `verify-core` use the default. A different compiler version may warn where
+  CI's does not (a newer gcc adds warnings; clang 18, the CI clang, is older
+  and warns more, for example `-Wnewline-eof`): build with `make WERROR=` to
+  drop the flag. Three gates build with `WERROR=` inside them because they
+  count or tolerate warnings: `warning-count-probe`, the mutation-teeth
+  scripts (`release_decision_teeth.sh`, `escape_teeth.sh`,
+  `escape_arm_coverage.sh`) and the gcc analyser lane
+  (`analyzer_lanes_probe.sh`). `FUZZ_CFLAGS` is its own flag set and does not
+  use CFLAGS, so it has no `-Werror`.
 - `make test-golden` / `make test-golden-o2` - Golden fixture suites (-O0/-O2).
   Parallel since P5.8: `GOLDEN_JOBS=<n>` overrides the default of nproc.
 - `make verify-core` - Full probe net, no CompCert required. Authoritative
