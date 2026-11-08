@@ -220,7 +220,7 @@ if [ ! -f "$MISRA_JSON" ]; then
 fi
 
 GCC_VERSION="$(gcc --version | head -1)"
-CLANG_TIDY_VERSION="$(clang-tidy --version | sed -n 's/^[[:space:]]*LLVM version[[:space:]]*//p')"
+CLANG_TIDY_VERSION="$(clang-tidy --version | sed -n 's/.*LLVM version[[:space:]]*//p')"
 CPPCHECK_VERSION="$(cppcheck --version)"
 
 # --- the gcc lane, callable on ANY compile-command JSON (the real capture,

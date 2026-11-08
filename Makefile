@@ -6664,8 +6664,12 @@ analyzer-lanes-selftest:
 # scripts/findings_probe.sh's own header on why: it must also work
 # standalone, with no Makefile dependency graph to rely on), so this adds
 # roughly another minute on top of analyzer-lanes-probe's own budget.
+# M2: findings-probe and analyzer-lanes-probe both write build/sarif/*. The
+# prerequisite below orders them, so they cannot race under `make -j`. Under
+# verify-core, analyzer-lanes-probe is already a dependency, so make runs it
+# once; the script then runs the lanes once more for its own pipeline.
 .PHONY: findings-probe findings-probe-selftest
-findings-probe:
+findings-probe: analyzer-lanes-probe
 	@bash scripts/findings_probe.sh
 
 findings-probe-selftest:

@@ -23,7 +23,7 @@ pick up like any other:
                      prints one such line; scripts/findings_probe.sh feeds
                      it the lanes' own captured stdout, since running the
                      full verify-core target is out of scope for this gate)
-                     -> one result per FAIL line, ruleId "goo/gate-failed",
+                     -> one result per FAIL line, ruleId "goo/gate-failed/<gate>",
                      level error, the gate name and its own message text
                      copied through. A PASS line produces nothing.
 
@@ -97,7 +97,7 @@ def convert_gate_log(paths):
                 if verdict != "FAIL":
                     continue
                 results.append({
-                    "ruleId": "goo/gate-failed",
+                    "ruleId": "goo/gate-failed/%s" % gate,
                     "level": "error",
                     "message": {"text": "%s: FAIL%s" % (gate, rest)},
                 })
@@ -157,9 +157,9 @@ def self_test():
             )
         doc3 = convert_gate_log([log_mixed])
         results3 = doc3["runs"][0]["results"]
-        if len(results3) == 1 and results3[0]["ruleId"] == "goo/gate-failed" \
+        if len(results3) == 1 and results3[0]["ruleId"] == "goo/gate-failed/findings-probe" \
                 and "findings-probe" in results3[0]["message"]["text"]:
-            print("    ok: a FAIL line converts to one goo/gate-failed result naming the gate")
+            print("    ok: a FAIL line converts to one goo/gate-failed/<gate> result naming the gate")
         else:
             print("FAIL: expected one goo/gate-failed result naming findings-probe, got %r" % results3)
             ok = False
