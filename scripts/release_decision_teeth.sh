@@ -156,7 +156,7 @@ EXPECTED_MUTATIONS=12
 # reason about for a gate that frees memory.
 build_from() {
     rm -f "$TEETH_OBJ" "$BIN"
-    "$MAKE" release_decision_teeth_test RELEASE_DECISION_SRC="$1" > "$2" 2>&1
+    "$MAKE" release_decision_teeth_test RELEASE_DECISION_SRC="$1" WERROR= > "$2" 2>&1
 }
 
 # Baseline uses the SAME binary and the SAME link path as every mutation, with

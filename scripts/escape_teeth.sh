@@ -86,9 +86,9 @@ die() {
 # almost like an unguarded condition.
 #
 # `&& false` rather than deletion is also used where deletion would leave a
-# variable unreferenced. CFLAGS carries -Wall -Wextra but NOT -Werror, so such a
-# warning would not break the build today; the form is kept anyway so a future
-# -Werror cannot silently turn these entries into INCONCLUSIVE-build.
+# variable unreferenced. CFLAGS carries -Werror (Task 22), so every mutant build
+# below passes WERROR= : a mutant is allowed to warn, it must not fail to build
+# for that reason and read as INCONCLUSIVE-build.
 # ---------------------------------------------------------------------------
 
 # SOUNDNESS x4, PRECISION x1.
@@ -288,7 +288,7 @@ build_from() {  # module, source-to-compile, logfile
     # object left by the previous mutation, which is a race nobody should have to
     # reason about for a gate whose consumer frees memory.
     rm -f "build/teeth/${m}_escape.o" "./${m}_escape_teeth_test"
-    "$MAKE" "${m}_escape_teeth_test" "${upper}_ESCAPE_SRC=$src" > "$log" 2>&1
+    "$MAKE" "${m}_escape_teeth_test" "${upper}_ESCAPE_SRC=$src" WERROR= > "$log" 2>&1
 }
 
 run_one() {  # module, label, line, replacement (may be empty)
@@ -348,7 +348,7 @@ PY
     [ $? -eq 0 ] || die "could not apply mutation 'core/$label'"
 
     rm -f "build/teeth/escape_core.o" "$bin"
-    if ! "$MAKE" local_core_teeth_test "CORE_ESCAPE_SRC=$mutant" \
+    if ! "$MAKE" local_core_teeth_test "CORE_ESCAPE_SRC=$mutant" WERROR= \
             > "$WORK/build_core_${label}.log" 2>&1; then
         VERDICT="INCONCLUSIVE-build"
         DETAIL="see $WORK/build_core_${label}.log"
@@ -482,7 +482,7 @@ run_reasons() {
     # same link line every mutation uses. A fault in this script's own build
     # path would otherwise read as eleven caught conditions.
     rm -f "build/teeth/escape_core.o" "./local_core_teeth_test"
-    "$MAKE" local_core_teeth_test "CORE_ESCAPE_SRC=$CORE_SRC" \
+    "$MAKE" local_core_teeth_test "CORE_ESCAPE_SRC=$CORE_SRC" WERROR= \
         > "$WORK/build_core_base.log" 2>&1 \
         || die "core baseline build failed; see $WORK/build_core_base.log"
     ./local_core_teeth_test > "$WORK/run_core_base.log" 2>&1
