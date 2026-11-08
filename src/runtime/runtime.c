@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 // malloc_usable_size, for the poison-on-free debug mode below. glibc/musl put
 // it here; it is used ONLY on that path, so a platform without it needs no
@@ -215,7 +216,10 @@ void goo_free(void* ptr) {
 // A count that is not lock-free calls into libatomic and takes a LOCK, which
 // would put a lock inside every retain — a performance defect nobody would see
 // by reading this file.
-static_assert(__atomic_always_lock_free(sizeof(uint64_t), 0),
+// ATOMIC_*_LOCK_FREE == 2 means "always lock-free". They are integer constant
+// expressions, which __atomic_always_lock_free is not under -Wpedantic.
+static_assert((sizeof(uint64_t) == sizeof(long) ? ATOMIC_LONG_LOCK_FREE
+                                                : ATOMIC_LLONG_LOCK_FREE) == 2,
               "the ARC reference count must be lock-free on this target");
 
 // ADVISORY ONLY. In a program with two goroutines the answer is stale the
