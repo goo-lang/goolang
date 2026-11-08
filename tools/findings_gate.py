@@ -12,6 +12,13 @@ docstring, and sarif_merge.py's. Each result also carries its stable
 
     findings_gate.py check <sarif> <baseline-prefix> <suppressions.tsv>
     findings_gate.py write <sarif> <baseline-prefix> <suppressions.tsv>
+    findings_gate.py annotate <sarif> <suppressions.tsv>
+
+annotate (task 18) rewrites <sarif> in place. A result that a suppression row
+matches keeps its place in the file and gains
+"suppressions": [{"kind": "external", "justification": "D-NN"}], which GitHub
+code scanning shows as suppressed. The gate drops such a result from its own
+comparison, but the review surface must still list it.
 
 check exits 1 on a regression (a (tool, rule, file) group with more distinct
 results now than the baseline holds rows for it).
@@ -272,6 +279,34 @@ def filter_suppressed(keys, suppressions):
         {k: n for k, n in keys.items() if not is_suppressed(k[0], k[1], k[2], suppressions)})
 
 
+def matching_justification(tool, rule, file_, suppressions):
+    """The justification of the FIRST row that matches, or None."""
+    for s_tool, s_rule, s_glob, just in suppressions:
+        if is_suppressed(tool, rule, file_, [(s_tool, s_rule, s_glob, just)]):
+            return just
+    return None
+
+
+def annotate_doc(doc, suppressions):
+    """Adds the SARIF suppressions entry to each matching result and returns
+    how many it marked. A result is never removed. An entry that is already
+    there is replaced, so a second run gives the same file."""
+    marked = 0
+    for run in doc.get("runs", []):
+        tool = run.get("tool", {}).get("driver", {}).get("name", "unknown")
+        for result in run.get("results", []):
+            locations = result.get("locations") or []
+            physical = locations[0].get("physicalLocation", {}) if locations else {}
+            file_ = physical.get("artifactLocation", {}).get("uri", "")
+            just = matching_justification(tool, result.get("ruleId", ""), file_, suppressions)
+            if just is None:
+                result.pop("suppressions", None)
+                continue
+            result["suppressions"] = [{"kind": "external", "justification": just}]
+            marked += 1
+    return marked
+
+
 BASELINE_COLUMNS = ("tool", "rule", "file", "startLine", "startColumn", "message", "fingerprint")
 
 
@@ -421,6 +456,23 @@ def check(sarif_path, baseline_prefix, suppressions_path, deviations_dir=None):
 def main(argv):
     if argv == ["--self-test"]:
         return self_test()
+    if len(argv) == 3 and argv[0] == "annotate":
+        rows, bad = load_suppressions(argv[2])
+        if bad:
+            print("findings-gate: FAIL -- %d suppression row(s) in %s have no valid justification:"
+                  % (len(bad), argv[2]))
+            for lineno, line, reason in bad:
+                print("    line %d: %s (%s)" % (lineno, line, reason))
+            return 1
+        with open(argv[1], encoding="utf-8") as f:
+            doc = json.load(f)
+        marked = annotate_doc(doc, rows)
+        with open(argv[1], "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=1, sort_keys=True)
+            f.write("\n")
+        print("findings-gate: annotate marked %d result(s) of %s as suppressed (%d suppression row(s))"
+              % (marked, argv[1], len(rows)))
+        return 0
     if len(argv) != 4 or argv[0] not in ("check", "write"):
         sys.exit(__doc__)
     mode, sarif_path, baseline_prefix, suppressions_path = argv
@@ -661,6 +713,23 @@ def self_test():
         else:
             print("FAIL: a validly-suppressed new finding still went RED: %r" % lines)
             ok = False
+
+    # Task 18: a suppressed result keeps its place and gains the SARIF
+    # suppressions entry. The first case is the negative control: a result
+    # that no row matches carries no entry (and a stale entry is cleared).
+    doc = {"runs": [{"tool": {"driver": {"name": "GNU C23"}}, "results": [
+        {"ruleId": "r2", "locations": [{"physicalLocation": {"artifactLocation": {"uri": "b.c"}}}]},
+        {"ruleId": "r1", "suppressions": [{"kind": "external", "justification": "D-77"}],
+         "locations": [{"physicalLocation": {"artifactLocation": {"uri": "a.c"}}}]}]}]}
+    marked = annotate_doc(doc, [("GNU C23", "r2", "b.c", "D-01")])
+    res = doc["runs"][0]["results"]
+    if (marked == 1 and len(res) == 2
+            and res[0]["suppressions"] == [{"kind": "external", "justification": "D-01"}]
+            and "suppressions" not in res[1]):
+        print("    ok: a suppressed result keeps its place and gains kind external with its D-NN; an unmatched one has none")
+    else:
+        print("FAIL: annotate_doc gave %r (marked %d)" % (res, marked))
+        ok = False
 
     if ok:
         print("findings_gate.py --self-test: PASS")

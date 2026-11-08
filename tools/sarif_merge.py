@@ -10,6 +10,7 @@ shrink-only gate that reads the merged file this script writes.
 
     sarif_merge.py --out build/findings.sarif [--validate] INPUT [INPUT ...]
     sarif_merge.py --validate-only EXISTING.sarif
+    sarif_merge.py --check-limits EXISTING.sarif
     sarif_merge.py --self-test
 
 Each INPUT is a .sarif file, or a directory searched (non-recursively is not
@@ -54,6 +55,7 @@ installed; scripts/findings_probe.sh's own header records the version this
 was built against.
 """
 import glob
+import gzip
 import hashlib
 import json
 import os
@@ -66,6 +68,14 @@ SCHEMA_PATH = os.path.join(REPO_ROOT, "docs", "misra", "tools", "sarif-schema-2.
 SCHEMA_SHA256_PATH = SCHEMA_PATH + ".sha256"
 
 WHITESPACE_RE = re.compile(r"\s+")
+
+# GitHub code scanning rejects an upload above these limits. Task 18 checks
+# them here, before the upload step, so a rejection never appears first on
+# GitHub. Source: docs.github.com, "SARIF support for code scanning",
+# "Validating your SARIF file" (read 2026-11-08).
+MAX_RUNS = 20
+MAX_RESULTS_PER_RUN = 25000
+MAX_GZIP_BYTES = 10 * 1024 * 1024
 
 
 def normalise_line(text):
@@ -260,6 +270,29 @@ def validate(doc):
     validator = validator_cls(schema)
     errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
     return errors
+
+
+def check_upload_limits(raw, max_runs=MAX_RUNS, max_results=MAX_RESULTS_PER_RUN,
+                        max_gzip=MAX_GZIP_BYTES):
+    """Returns (problems, stats). raw is the file's bytes: the gzip limit
+    applies to the bytes GitHub receives, so the size is measured on the
+    real file and not on a re-serialised document. problems is empty when
+    every limit holds."""
+    doc = json.loads(raw)
+    runs = doc.get("runs", [])
+    per_run = [len(r.get("results", [])) for r in runs]
+    gz = len(gzip.compress(raw))
+    problems = []
+    if len(runs) > max_runs:
+        problems.append("%d runs, above the limit of %d runs per file" % (len(runs), max_runs))
+    for i, n in enumerate(per_run):
+        if n > max_results:
+            name = runs[i].get("tool", {}).get("driver", {}).get("name", "?")
+            problems.append("run %d (%s) has %d results, above the limit of %d per run"
+                            % (i, name, n, max_results))
+    if gz > max_gzip:
+        problems.append("%d bytes gzipped, above the limit of %d" % (gz, max_gzip))
+    return problems, {"runs": len(runs), "max_results": max(per_run, default=0), "gzip": gz}
 
 
 def _write_sarif(path, tool_name, tool_version, rule_id, uri, line):
@@ -465,6 +498,30 @@ def self_test():
         print("FAIL: a document missing \"version\" passed schema validation")
         ok = False
 
+    # 7. Upload limits (task 18). Each limit has a case that goes RED, and a
+    # file inside every limit is the positive control.
+    def limits(runs, **kw):
+        raw = json.dumps({"version": "2.1.0", "runs": runs}).encode()
+        return check_upload_limits(raw, **kw)[0]
+
+    def run_of(n):
+        return {"tool": {"driver": {"name": "t"}}, "results": [{"ruleId": "r"}] * n}
+
+    if not limits([run_of(2)] * 3):
+        print("    ok: a file inside every upload limit is GREEN")
+    else:
+        print("FAIL: a file inside every upload limit went RED")
+        ok = False
+    for label, problems, needle in (
+            ("21 runs", limits([run_of(1)] * 21), "21 runs"),
+            ("25,001 results in one run", limits([run_of(25001)]), "25001 results"),
+            ("a gzip size above the limit", limits([run_of(5)], max_gzip=10), "bytes gzipped")):
+        if any(needle in p for p in problems):
+            print("    ok: %s is RED" % label)
+        else:
+            print("FAIL: %s did not go RED: %r" % (label, problems))
+            ok = False
+
     if ok:
         print("sarif_merge.py --self-test: PASS")
         return 0
@@ -492,6 +549,20 @@ def main(argv):
                 print("    %s: %s" % ("/".join(str(p) for p in e.absolute_path), e.message))
             return 1
         print("sarif_merge: schema OK (%s, sha256 verified)" % SCHEMA_PATH)
+        return 0
+
+    # --check-limits <file>: the GitHub upload limits, on the real file.
+    if len(argv) == 2 and argv[0] == "--check-limits":
+        with open(argv[1], "rb") as f:
+            problems, stats = check_upload_limits(f.read())
+        if problems:
+            print("sarif_merge: UPLOAD LIMIT EXCEEDED in %s" % argv[1])
+            for p in problems:
+                print("    %s" % p)
+            return 1
+        print("sarif_merge: upload limits OK (%s: %d runs of %d, at most %d results in a run of %d, "
+              "%d bytes gzipped of %d)" % (argv[1], stats["runs"], MAX_RUNS, stats["max_results"],
+                                          MAX_RESULTS_PER_RUN, stats["gzip"], MAX_GZIP_BYTES))
         return 0
 
     out_path = None

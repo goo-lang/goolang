@@ -61,6 +61,12 @@ concurrency:
 jobs:
   verify-core:
     runs-on: ubuntu-24.04
+    # Job level on purpose: only this job uploads SARIF, so any other job added
+    # later keeps the default read-only token. security-events: write is what
+    # code scanning requires for an upload.
+    permissions:
+      contents: read
+      security-events: write
     # verify-core runs 493 golden fixtures twice (-O0 and -O2) plus valgrind and
     # tsan gates. Generous, because a timeout that fires mid-suite is a red that
     # says nothing. A public repo's job limit is 6h.
@@ -175,3 +181,31 @@ jobs:
             build/findings.sarif
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Upload the findings to code scanning
+        # Runs after the gate and with always(), so a red gate still uploads
+        # what it found. hashFiles skips the step when verify-core died before
+        # findings-probe wrote the file.
+        #
+        # A pull request from a fork gets a read-only token that cannot write
+        # security events, so the upload would fail for a reason that is not a
+        # defect of the change. The guard skips it for those pull requests.
+        #
+        # One category: a re-upload replaces the earlier analysis and does not
+        # add to it. findings-probe has already checked the GitHub limits (20
+        # runs, 25,000 results per run, 10 MB gzipped) on this exact file and
+        # marked the suppressed results, which the Security tab shows as
+        # suppressed.
+        #
+        # Pinned to a commit SHA because this job holds security-events: write.
+        # A moving tag could run other code with that token.
+        if: >-
+          always()
+          && hashFiles('build/findings.sarif') != ''
+          && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: build/findings.sarif
+          category: goolang-findings
+          wait-for-processing: true

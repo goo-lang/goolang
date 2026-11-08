@@ -25,6 +25,13 @@
 #      the merged file should still reflect everything else that ran).
 #   5. tools/sarif_merge.py --validate  -- one build/findings.sarif, schema-
 #      checked against the vendored docs/misra/tools/sarif-schema-2.1.0.json.
+#   5b. tools/findings_gate.py annotate -- task 18: a result that a row of
+#      docs/misra/findings-suppressions.tsv matches gains the SARIF
+#      "suppressions" entry (kind external, justification D-NN), so the
+#      GitHub Security tab shows it as suppressed, not removed. The file is
+#      then validated again, and tools/sarif_merge.py --check-limits checks
+#      the GitHub upload limits (20 runs, 25,000 results per run, 10 MB
+#      gzipped).
 #   6. tools/findings_gate.py check     -- the shrink-only comparison
 #      against scripts/findings-baseline.<signature>.tsv, filtered through
 #      docs/misra/findings-suppressions.tsv. The signature
@@ -52,7 +59,7 @@
 #                                                  # (no pipeline re-run) -- what
 #                                                  # --self-test drives against
 #                                                  # synthetic fixtures
-#   scripts/findings_probe.sh --self-test         # four synthetic cases, see below;
+#   scripts/findings_probe.sh --self-test         # six synthetic cases, see below;
 #                                                  # never runs the real pipeline
 #
 # Environment overrides:
@@ -96,6 +103,11 @@ run_check_only() { # $1 = sarif path
 	if ! python3 "$REPO_ROOT/tools/sarif_merge.py" --validate-only "$sarif"; then
 		return 1
 	fi
+	# Task 18: the GitHub upload limits, checked here so a rejection never
+	# appears first on GitHub.
+	if ! python3 "$REPO_ROOT/tools/sarif_merge.py" --check-limits "$sarif"; then
+		return 1
+	fi
 	python3 "$REPO_ROOT/tools/findings_gate.py" check "$sarif" "$FINDINGS_BASELINE" "$FINDINGS_SUPPRESSIONS"
 }
 
@@ -105,7 +117,7 @@ if [ "${1:-}" = "--check-only" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# --self-test: four SYNTHETIC cases; the real pipeline is NOT run (fix round
+# --self-test: six SYNTHETIC cases; the real pipeline is NOT run (fix round
 # 1 / M1: it used to fall through into the pipeline as case (d), so
 # verify-core ran every lane three times).
 #   (a) a synthetic SARIF with one result not in the baseline -> RED
@@ -113,6 +125,9 @@ fi
 #   (c) a merged file that fails schema validation (dropped "version") -> RED
 #   (d) positive control: the same SARIF against a matching baseline -> GREEN
 #       (without it, (a)-(c) prove only that the gate can say no).
+#   (e) a SARIF with 21 runs (the GitHub limit is 20) -> RED, task 18.
+#   (f) a suppressed result is annotated, still schema-valid, and still
+#       present in the file, task 18.
 # The real merged file is gated by `make findings-probe`, not here.
 # Each drives run_check_only end to end (validate, THEN gate), through THIS
 # script's own entry point -- not tools/findings_gate.py directly, which
@@ -199,10 +214,45 @@ json.dump(doc, open('$W/c.sarif', 'w'))
 		fail=1
 	fi
 
+	# (e) 21 runs, one above the GitHub limit, against a matching baseline
+	# that would otherwise be GREEN -> RED at the limit check.
+	python3 -c "
+import json
+doc = json.load(open('$W/a.sarif'))
+doc['runs'] = doc['runs'] + [{'tool': {'driver': {'name': 'extra%d' % i}}, 'results': []} for i in range(18)]
+json.dump(doc, open('$W/e.sarif', 'w'))
+"
+	out_e="$(FINDINGS_BASELINE="$W/matching" FINDINGS_SUPPRESSIONS="$W/empty-suppressions.tsv" \
+		run_check_only "$W/e.sarif" 2>&1)" && rc_e=0 || rc_e=$?
+	if [ "${rc_e:-0}" -ne 0 ] && printf '%s\n' "$out_e" | grep -q "21 runs, above the limit of 20"; then
+		echo "    ok: a file with 21 runs is RED at the upload limit check"
+	else
+		echo "$SELF: FAIL (21 runs did not go RED at the limit check): $out_e"
+		fail=1
+	fi
+
+	# (f) annotate: the suppressed result stays in the file, gains the
+	# suppressions entry, and the file still validates against the schema.
+	cp "$W/a.sarif" "$W/f.sarif"
+	printf 'GNU C23\tr1\ta.c\tD-01\n' >"$W/real-suppressions.tsv"
+	out_f="$(python3 "$REPO_ROOT/tools/findings_gate.py" annotate "$W/f.sarif" "$W/real-suppressions.tsv" 2>&1)" && rc_f=0 || rc_f=$?
+	if [ "${rc_f:-0}" -eq 0 ] \
+		&& python3 "$REPO_ROOT/tools/sarif_merge.py" --validate-only "$W/f.sarif" >/dev/null \
+		&& python3 -c "
+import json, sys
+r = json.load(open('$W/f.sarif'))['runs'][0]['results']
+sys.exit(0 if len(r) == 1 and r[0]['suppressions'] == [{'kind': 'external', 'justification': 'D-01'}] else 1)
+"; then
+		echo "    ok: a suppressed result stays in the SARIF with kind external and its D-NN, and the file validates"
+	else
+		echo "$SELF: FAIL (annotate dropped or mis-wrote the suppression): rc=$rc_f $out_f"
+		fail=1
+	fi
+
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "$SELF: PASS (a/b/c red and d green, on synthetic fixtures; the real pipeline runs in findings-probe)"
+	echo "$SELF: PASS (a/b/c/e red and d/f green, on synthetic fixtures; the real pipeline runs in findings-probe)"
 	exit 0
 fi
 
@@ -242,6 +292,12 @@ python3 "$REPO_ROOT/tools/probe_verdicts_to_sarif.py" gate-log "$GATE_LOG" \
 
 python3 "$REPO_ROOT/tools/sarif_merge.py" --out "$FINDINGS_SARIF" --validate \
 	"$SARIF_GCC_DIR" "$SARIF_TIDY_DIR" "$SARIF_CPPCHECK_DIR" "$SARIF_PROBES_DIR"
+
+# Task 18: mark the suppressed results for GitHub, then validate and check the
+# upload limits on the file that the upload step reads.
+python3 "$REPO_ROOT/tools/findings_gate.py" annotate "$FINDINGS_SARIF" "$FINDINGS_SUPPRESSIONS"
+python3 "$REPO_ROOT/tools/sarif_merge.py" --validate-only "$FINDINGS_SARIF"
+python3 "$REPO_ROOT/tools/sarif_merge.py" --check-limits "$FINDINGS_SARIF"
 
 if [ "$MODE" = update ]; then
 	python3 "$REPO_ROOT/tools/findings_gate.py" write "$FINDINGS_SARIF" "$FINDINGS_BASELINE" "$FINDINGS_SUPPRESSIONS"
