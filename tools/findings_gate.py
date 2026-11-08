@@ -23,6 +23,16 @@ tally is now a Counter of 4-tuples, the baseline keeps one row for each
 result (duplicate rows are legal), and the verdict line adds up:
 findings = accepted + suppressed + new.
 
+FIX ROUND 3 (OPEN 2) -- DISTINCT RESULTS, NOT RAW RESULTS. A header finding
+repeats once for each translation unit that includes it: the same tool, rule,
+file, line and fingerprint, 57 times for include/xalloc.h (CFLAGS force-
+includes it into 58 units). A new .c file would raise the count and turn the
+gate red with no new defect. The unit counted is now the DISTINCT
+(tool, rule, file, startLine, fingerprint) result: 3,442 raw results are
+3,012 distinct ones. Results on different lines with one fingerprint (the N1
+case) stay separate. The baseline keeps the startLine column, so the count
+can be computed again from the baseline alone.
+
 FIX ROUND 1 (I2b) -- THE BASELINE IS KEYED BY TOOLCHAIN SIGNATURE.
 <baseline-prefix> is a path prefix, not a file. The gate derives a
 toolchain signature from the merged SARIF's own tool.driver versions
@@ -121,8 +131,10 @@ def baseline_file(prefix, signature):
 
 def tally(sarif_path):
     """Returns (keys, per_tool) where keys is a Counter of
-    (tool, rule, file, fingerprint) 4-tuples, one count for each RESULT
-    (FIX ROUND 2 / N1: not one for each distinct fingerprint). It gives the
+    (tool, rule, file, startLine, fingerprint) 5-tuples, one count for each
+    DISTINCT result (FIX ROUND 2 / N1: not one for each distinct fingerprint;
+    FIX ROUND 3: the same tuple on the same line, from another translation
+    unit, is one result). It gives the
     per-(tool,rule,file) COUNTS and the fingerprints that name new results
     in check()'s output. per_tool is a {tool_name: result_count} Counter, for the
     verdict line.
@@ -146,8 +158,11 @@ def tally(sarif_path):
             if locations:
                 art = locations[0].get("physicalLocation", {}).get("artifactLocation", {})
                 file_ = art.get("uri", "")
+            line = ""
+            if locations:
+                line = str(locations[0].get("physicalLocation", {}).get("region", {}).get("startLine", ""))
             fp = result.get("fingerprints", {}).get("goo/v1", "")
-            keys[(tool, rule, file_, fp)] += 1
+            keys[(tool, rule, file_, line, fp)] = 1
             per_tool[tool] += 1
     return keys, per_tool
 
@@ -156,7 +171,7 @@ def group_by_triple(keys):
     """Counter of 4-tuples -> {(tool, rule, file): Counter of fingerprints}.
     The sum of a triple's Counter is its COUNT -- the comparison unit."""
     grouped = collections.defaultdict(collections.Counter)
-    for (tool, rule, file_, fp), n in keys.items():
+    for (tool, rule, file_, _line, fp), n in keys.items():
         grouped[(tool, rule, file_)][fp] += n
     return grouped
 
@@ -222,8 +237,11 @@ def read_baseline(path):
             if not line.strip() or line.startswith("#"):
                 continue
             parts = line.split("\t")
-            if len(parts) == 4:
-                keys[tuple(parts)] += 1
+            if len(parts) != 5:
+                sys.exit("findings-gate: FAIL -- %s has a row with %d columns, expected 5 "
+                         "(tool, rule, file, startLine, fingerprint); regenerate it with `%s`"
+                         % (path, len(parts), UPDATE_COMMAND))
+            keys[tuple(parts)] = 1
     return keys
 
 
@@ -240,7 +258,8 @@ def write_baseline(path, keys, sarif_path):
         f.write(
             "# findings-probe SHRINK-ONLY baseline. Regenerate with:\n"
             "#   scripts/findings_probe.sh --update-baseline\n"
-            "# One line per RESULT: tool<TAB>rule<TAB>file<TAB>fingerprint (tools/sarif_merge.py's\n"
+            "# One line per DISTINCT result: tool<TAB>rule<TAB>file<TAB>startLine<TAB>fingerprint\n"
+            "# (the same tuple from another translation unit is one result; tools/sarif_merge.py's\n"
             "# own stable \"goo/v1\" hash -- rule id + repo-relative file + the finding's\n"
             "# own normalised line text, NOT its line number).\n"
             "# The GATE compares COUNTS per (tool, rule, file) -- see this module's own\n"
@@ -315,12 +334,15 @@ def check(sarif_path, baseline_prefix, suppressions_path, deviations_dir=None):
             out.append("    %-16s %-40s %-40s %d -> %d" % (tool, rule, file_, base_c, now_c))
 
     per_tool_str = ", ".join("%s: %d" % (n, c) for n, c in sorted(per_tool.items()))
-    # findings = accepted + suppressed + new (N1: each term counts results).
-    findings = sum(per_tool.values())
-    suppressed = sum(now_keys.values()) - sum(now_f.values())
-    accepted = findings - suppressed - new_total
-    verdict = ("%s: %d findings (%s) = %d accepted + %d suppressed + %d new, toolchain %s, baseline %s (%d rows)"
-               % (sarif_path, findings, per_tool_str, accepted, suppressed, new_total,
+    # distinct = accepted + suppressed + new. Every term counts DISTINCT
+    # results (round 3); the raw total is printed beside it so the dedupe shows.
+    raw = sum(per_tool.values())
+    distinct = sum(now_keys.values())
+    suppressed = distinct - sum(now_f.values())
+    accepted = distinct - suppressed - new_total
+    verdict = ("%s: %d findings (%s), %d distinct = %d accepted + %d suppressed + %d new, "
+               "toolchain %s, baseline %s (%d rows)"
+               % (sarif_path, raw, per_tool_str, distinct, accepted, suppressed, new_total,
                   signature, baseline_path, sum(base_keys.values())))
 
     if regressions:
@@ -384,13 +406,14 @@ def self_test():
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"version": "2.1.0", "runs": drivers(results)}, f)
 
-        def result(rule, file_, fp):
+        def result(rule, file_, fp, line=1):
             return {"ruleId": rule, "message": {"text": "x"},
-                    "locations": [{"physicalLocation": {"artifactLocation": {"uri": file_}}}],
+                    "locations": [{"physicalLocation": {"artifactLocation": {"uri": file_},
+                                                        "region": {"startLine": line}}}],
                     "fingerprints": {"goo/v1": fp}}
 
         prefix = os.path.join(tmp, "baseline")
-        write_baseline(baseline_file(prefix, sig), collections.Counter({("GNU C23", "r1", "a.c", "fp1"): 1}), "seed")
+        write_baseline(baseline_file(prefix, sig), collections.Counter({("GNU C23", "r1", "a.c", "1", "fp1"): 1}), "seed")
         devs = os.path.join(tmp, "deviations")
         os.mkdir(devs)
         open(os.path.join(devs, "D-01.md"), "w", encoding="utf-8").close()
@@ -425,12 +448,26 @@ def self_test():
         # lines) against a baseline of ONE row must be RED. A set of keys
         # counted them as one finding and passed.
         sarif_dup = os.path.join(tmp, "dup.sarif")
-        write_sarif(sarif_dup, [result("r1", "a.c", "fp1")] * 3)
+        write_sarif(sarif_dup, [result("r1", "a.c", "fp1", 1), result("r1", "a.c", "fp1", 2),
+                                result("r1", "a.c", "fp1", 3)])
         rc, lines = run_check(sarif_dup, suppressions_empty)
         if rc == 1 and "1 -> 3" in "\n".join(lines) and "1 accepted + 0 suppressed + 2 new" in lines[-1]:
             print("    ok: three results with one fingerprint against a baseline of one are RED")
         else:
             print("FAIL: duplicate-fingerprint results were not counted (rc=%d): %r" % (rc, lines))
+            ok = False
+
+        # OPEN 2 (round 3): a header finding repeats once for each translation
+        # unit that includes it -- the same tuple on the SAME line. One more
+        # copy must stay GREEN, or a new .c file turns the gate red with no
+        # new defect.
+        sarif_unit = os.path.join(tmp, "unit.sarif")
+        write_sarif(sarif_unit, [result("r1", "a.c", "fp1", 1)] * 2)
+        rc, lines = run_check(sarif_unit, suppressions_empty)
+        if rc == 0:
+            print("    ok: one more copy of a result on the same line (another translation unit) stays GREEN")
+        else:
+            print("FAIL: a same-line duplicate went RED (rc=%d): %r" % (rc, lines))
             ok = False
 
         # M6: the verdict line must name EVERY tool that ran, including one
