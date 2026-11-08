@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sim_probe.sh — run one program under the simulator over N seeds, one process
 # per seed, replay every non-pass, and report by verdict.
-# Usage: scripts/sim_probe.sh <program> --seeds N [--first-seed K] [--fault-spurious-wake] [--fault-thread-create]
+# Usage: scripts/sim_probe.sh <program> --seeds N [--first-seed K] [--expect VERDICT] [--fault-spurious-wake] [--fault-thread-create]
 #        scripts/sim_probe.sh --self-test
 #
 # Task 6 of the 2026-09-03 deterministic-simulation plan
@@ -40,6 +40,14 @@
 # header states it, never as this script assumes it: "preempt ppm=<n>" or
 # "preempt off". Seeds whose headers name different models are a tool
 # failure, because their verdicts do not add up.
+#
+# EXPECT. A seed SUCCEEDS when its verdict is the expected one: `pass` unless
+# --expect names another verdict. deadlock_poll_test is a real deadlock by
+# construction, so it runs with --expect runtime-deadlock-abort, and a seed
+# that reads pass there FAILS. The replay rule does not change: every seed
+# that does not exit 0 replays, an expected abort included, and a mismatch
+# outranks the expectation (replay-mismatch can never be expected). A seed
+# that succeeds and replays identically keeps no trace, as a pass does.
 #
 # FAULTS are off unless a flag turns one on. --fault-thread-create makes the
 # seam fail one thread create in sixteen with EAGAIN. Its one target is
@@ -89,6 +97,10 @@ EAGAIN_WHERE_RE="^  at src/runtime/concurrency\.c:[0-9]+ in goo_scheduler_init\(
 
 FAULT_SPURIOUS=0
 FAULT_THREAD_CREATE=0
+EXPECT=pass
+# The verdict names --expect accepts: every name verdict_name gives except
+# replay-mismatch, which is the driver's own and never a program's result.
+EXPECTABLE="pass runtime-deadlock-abort sim-deadlock invariant step-limit time-limit limit"
 
 # The exit code -> the verdict name, into VERDICT (a global, not an echo: a
 # command substitution forks once per seed).
@@ -197,8 +209,13 @@ run_seeds() {
             tool_failure "seed $seed ran under '$HDR_MODEL', an earlier seed under '$MODEL'"
         fi
         replay=""
-        if [ "$rc" -eq 0 ]; then
+        if [ "$rc" -eq 0 ] && [ "$EXPECT" = pass ]; then
             rm -f "$dir/$seed.trace" "$dir/$seed.out" "$dir/$seed.err"
+        elif [ "$rc" -eq 0 ]; then
+            # A pass where another verdict is expected: a failure, so its
+            # trace is kept as the evidence. The replay rule covers the
+            # verdicts other than pass, so it does not replay.
+            :
         elif [ ! -f "$dir/$seed.trace" ]; then
             # No trace: the simulator stopped before sim_init (a usage error,
             # exit 64) or died where no handler runs. Nothing to replay
@@ -213,17 +230,18 @@ run_seeds() {
             VERDICT="replay-mismatch"
             MISMATCHES=$((MISMATCHES + 1))
         fi
-        if [ "$rc" -ne 0 ]; then
-            seed_bytes "$dir" "$seed"
-            KEPT_BYTES=$((KEPT_BYTES + SEED_BYTES))
+        if [ "$VERDICT" = "$EXPECT" ] && [ "$rc" -ne 0 ]; then
+            rm -f "$dir/$seed.trace" "$dir/$seed.out" "$dir/$seed.err"
         fi
+        seed_bytes "$dir" "$seed"
+        KEPT_BYTES=$((KEPT_BYTES + SEED_BYTES))
         if [ "$steps" != "?" ]; then
             STEPS_TOTAL=$((STEPS_TOTAL + steps))
             [ "$steps" -gt "$MAX_STEPS" ] && MAX_STEPS=$steps
         fi
         COUNTS[$VERDICT]=$(( ${COUNTS[$VERDICT]:-0} + 1 ))
         [ -z "${FIRST_SEED_OF[$VERDICT]:-}" ] && FIRST_SEED_OF[$VERDICT]=$seed
-        if [ "$VERDICT" != pass ] && [ "$VERDICT" != expected-eagain-stop ]; then
+        if [ "$VERDICT" != "$EXPECT" ] && [ "$VERDICT" != expected-eagain-stop ]; then
             FAILS=$((FAILS + 1))
             [ -z "$FIRST_FAIL" ] && FIRST_FAIL="$seed $VERDICT steps=$steps"
         fi
@@ -286,7 +304,7 @@ self_test() {
     for v in $(compgen -e); do
         case "$v" in GOO_SIM_*|GOO_TEST_WAKE_DELAY_NS) unset "$v" ;; esac
     done
-    FAULT_SPURIOUS=0; FAULT_THREAD_CREATE=0
+    FAULT_SPURIOUS=0; FAULT_THREAD_CREATE=0; EXPECT=pass
     W="$(mktemp -d "${TMPDIR:-/tmp}/sim-probe-self.XXXXXX")" || tool_failure "mktemp failed"
     before_sched="$(sha256sum "$SCHED_SRC" | cut -d' ' -f1)"
     build_program false_deadlock_test "$W/make.log"
@@ -358,19 +376,44 @@ self_test() {
         rc=1
     fi
 
+    # (d) --expect, both ways: a program that aborts by construction meets an
+    # expected abort, and a passing program does NOT meet it. Without the
+    # second half, an --expect that matched every verdict would read green.
+    build_program deadlock_poll_test "$W/make.log"
+    echo "--- (d) --expect runtime-deadlock-abort: build/sim/deadlock_poll_test, seeds 1..4 -> MUST meet it ---"
+    EXPECT=runtime-deadlock-abort
+    mkdir -p "$W/exp_trace"
+    run_seeds build/sim/deadlock_poll_test 1 4 "$W/exp_trace" >"$W/exp.log"
+    print_counts
+    if [ "$FAILS" -ne 0 ] || [ "${COUNTS[runtime-deadlock-abort]:-0}" -ne 4 ]; then
+        echo "  EXPECTED ABORT NOT MET on every seed:"
+        sed 's/^/    /' "$W/exp.log"
+        rc=1
+    fi
+    echo "--- (d) --expect runtime-deadlock-abort: build/sim/false_deadlock_test, seeds 1..4 -> MUST fail every seed ---"
+    mkdir -p "$W/exp_neg_trace"
+    run_seeds build/sim/false_deadlock_test 1 4 "$W/exp_neg_trace" >"$W/exp_neg.log"
+    print_counts
+    if [ "$FAILS" -ne 4 ] || [ "${COUNTS[pass]:-0}" -ne 4 ]; then
+        echo "  A PASS MET AN EXPECTED ABORT -- --expect does not discriminate:"
+        sed 's/^/    /' "$W/exp_neg.log"
+        rc=1
+    fi
+    EXPECT=pass
+
     if [ "$rc" -ne 0 ]; then
         echo "$SELF: FAIL (work dir kept: $W)"
         exit 1
     fi
     rm -rf "$W"
-    echo "$SELF: PASS (mutant red at seed $k, invariant red, control green; $MUT_MODEL, $(hook_label))"
+    echo "$SELF: PASS (mutant red at seed $k, invariant red, control green, --expect both ways; $MUT_MODEL, $(hook_label))"
     exit 0
 }
 
 # ---------------------------------------------------------------------------
 # The run.
 # ---------------------------------------------------------------------------
-[ "${1:-}" = "" ] && tool_failure "usage: $0 <program> --seeds N [--first-seed K] [--fault-spurious-wake] [--fault-thread-create] | --self-test"
+[ "${1:-}" = "" ] && tool_failure "usage: $0 <program> --seeds N [--first-seed K] [--expect VERDICT] [--fault-spurious-wake] [--fault-thread-create] | --self-test"
 case "$1" in
     --self-test) self_test ;;
 esac
@@ -381,6 +424,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --seeds) SEEDS="${2:-}"; shift 2 || tool_failure "--seeds needs a count" ;;
         --first-seed) FIRST="${2:-}"; shift 2 || tool_failure "--first-seed needs a seed" ;;
+        --expect) EXPECT="${2:-}"; shift 2 || tool_failure "--expect needs a verdict" ;;
         --fault-spurious-wake) FAULT_SPURIOUS=1; shift ;;
         --fault-thread-create) FAULT_THREAD_CREATE=1; shift ;;
         *) tool_failure "unknown argument '$1'" ;;
@@ -389,6 +433,7 @@ done
 is_count "$SEEDS" || tool_failure "--seeds must be a count greater than 0, not '$SEEDS'"
 is_count "$FIRST" || tool_failure "--first-seed must be a seed greater than 0, not '$FIRST'"
 case "$PROGRAM" in */*|.*) tool_failure "<program> is a name, not a path: '$PROGRAM'" ;; esac
+case " $EXPECTABLE " in *" $EXPECT "*) ;; *) tool_failure "--expect must be one of: $EXPECTABLE; not '$EXPECT'" ;; esac
 
 BIN="build/sim/$PROGRAM"
 TRACE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sim-probe.XXXXXX")" || tool_failure "mktemp failed"
@@ -396,13 +441,13 @@ build_program "$PROGRAM" "$TRACE_DIR/make.log" "$TRACE_DIR"
 rm -f "$TRACE_DIR/make.log"
 
 LAST=$((FIRST + SEEDS - 1))
-echo "=== $PROBE: $BIN, seeds $FIRST..$LAST, faults spurious-wake=$FAULT_SPURIOUS thread-create=$FAULT_THREAD_CREATE, $(hook_label) ==="
+echo "=== $PROBE: $BIN, seeds $FIRST..$LAST, expect $EXPECT, faults spurious-wake=$FAULT_SPURIOUS thread-create=$FAULT_THREAD_CREATE, $(hook_label) ==="
 run_seeds "$BIN" "$FIRST" "$SEEDS" "$TRACE_DIR"
 print_counts
 echo "wall $(per_seed_ms "$SEEDS") ms/seed, steps max $MAX_STEPS, peak trace dir $PEAK_BYTES bytes"
 
 case "$MODEL" in ''|'?') MODEL="preempt model unknown (no trace)" ;; esac
-ARTEFACT="$BIN, seeds $FIRST..$LAST, steps total $STEPS_TOTAL, $MODEL, $(hook_label)"
+ARTEFACT="$BIN, seeds $FIRST..$LAST, expect $EXPECT, steps total $STEPS_TOTAL, $MODEL, $(hook_label)"
 if [ "$MISMATCHES" -ne 0 ]; then
     echo "$PROBE: FAIL replay-mismatch on $MISMATCHES seed(s), first ${FIRST_SEED_OF[replay-mismatch]} ($ARTEFACT, trace dir $TRACE_DIR)"
     exit 14
