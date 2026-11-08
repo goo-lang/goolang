@@ -280,6 +280,10 @@ def run_one(e):
     oi = max(i for i, tok in enumerate(args) if tok == "-o")
     obj_path = os.path.join(objs_dir, obj_stem + ".o")
     args[oi + 1] = obj_path
+    # This lane COUNTS findings (the findings-probe ratchet compares them), so a
+    # finding must not stop the compile. CFLAGS carries -Werror since Task 22,
+    # and -fanalyzer/-Wpedantic findings would turn it into a compile failure.
+    args = [a for a in args if a != "-Werror"]
     args = args + EXTRA
     cwd = os.path.join(repo_root, e.get("directory", "."))
     # CCACHE_DISABLE=1: task 14's own entries start with "/usr/bin/ccache
