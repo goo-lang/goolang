@@ -191,8 +191,7 @@ TEST_RUNNER = $(BINDIR)/test_runner
 # each fabricated its results (hardcoded eval, demo menus, simulated PID,
 # canned metrics) or did not compile (gmod). Recover from git history if a
 # real implementation is ever built (see docs/2026-07-08-v1-roadmap.md
-# post-v1 list). lsp-enhanced stays pending the P5.11 open decision.
-LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
+# post-v1 list). lsp_enhanced.c moved to attic/src/ide/ (see attic/README.md).
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
@@ -4887,15 +4886,6 @@ test-ergonomic-errors: $(ERGONOMIC_ERROR_TEST)
 $(ERGONOMIC_ERROR_TEST): $(TEST_UNIT_DIR)/error/ergonomic_errors_test.c $(ERROR_SRCS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-# Enhanced LSP Server with AST integration. Known broken link (undefined
-# parser_cleanup) — repairing it is the P5.11 open decision; kept because it
-# is real AST-integrated code, unlike the quarantined toy LSPs (P5.5).
-lsp-enhanced: $(LSP_ENHANCED_SERVER)
-
-$(LSP_ENHANCED_SERVER): $(SRCDIR)/ide/lsp_enhanced.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Async Streams Test
 # async_streams.c calls into the structured-concurrency runtime (concurrent_block_*,

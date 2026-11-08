@@ -148,7 +148,7 @@ static int bridge_token_starts_type(int bt) {
 
 // Reset the M10 state. Called from parse_input on entry so a parse error
 // in a prior invocation doesn't leak frames into the next. Also exposed
-// for LSP use (see parser_init/parser_cleanup callers in src/ide/).
+// for LSP use (the only such caller, lsp_enhanced.c, is in attic/src/ide/).
 void bridge_reset_cond_state(void) {
     m10_frame_top = -1;
     m10_paren_depth = 0;

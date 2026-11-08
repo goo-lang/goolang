@@ -566,7 +566,7 @@ static char* get_output_filename(const char* input_file, const char* output_file
         *dot = '\0';
     }
 
-    char* result = malloc(strlen(base) + strlen(ext) + 1);
+    char* result = xmalloc(strlen(base) + strlen(ext) + 1);
     sprintf(result, "%s%s", base, ext);
 
     free(base);

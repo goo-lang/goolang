@@ -2,7 +2,7 @@
 #   scripts/misra-scan.sh --update-baseline
 # One line per file and rule: file<TAB>rule<TAB>count.
 # Counts may only go DOWN. gate.py check fails on any rise.
-# Total accepted violations: 7167 across 819 file/rule pairs.
+# Total accepted violations: 7115 across 810 file/rule pairs.
 include/actor_system.h	2.3	2
 include/actor_system.h	2.5	8
 include/actor_system.h	20.7	2
@@ -379,15 +379,6 @@ src/ide/hot_reload.c	10.4	6
 src/ide/hot_reload.c	11.6	1
 src/ide/hot_reload.c	15.6	37
 src/ide/hot_reload.c	2.7	3
-src/ide/lsp_enhanced.c	10.4	21
-src/ide/lsp_enhanced.c	15.6	13
-src/ide/lsp_enhanced.c	15.7	2
-src/ide/lsp_enhanced.c	2.7	1
-src/ide/lsp_enhanced.c	21.7	1
-src/ide/lsp_enhanced.c	7.4	8
-src/ide/lsp_enhanced.c	8.2	2
-src/ide/lsp_enhanced.c	8.4	3
-src/ide/lsp_enhanced.c	8.6	1
 src/ide/performance_monitor.c	10.4	11
 src/ide/performance_monitor.c	10.8	2
 src/ide/performance_monitor.c	11.8	4
