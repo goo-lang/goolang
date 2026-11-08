@@ -177,7 +177,9 @@ doc = json.load(open('$W/a.sarif'))
 del doc['version']
 json.dump(doc, open('$W/c.sarif', 'w'))
 "
-	printf 'GNU C23\tr1\ta.c\t\tfp1\n' >"$W/matching.$SIG.tsv"
+	# tool, rule, file, startLine, startColumn, message, fingerprint: the
+	# synthetic result has no region, so both location fields are empty.
+	printf 'GNU C23\tr1\ta.c\t\t\tx\tfp1\n' >"$W/matching.$SIG.tsv"
 	out_c="$(FINDINGS_BASELINE="$W/matching" FINDINGS_SUPPRESSIONS="$W/empty-suppressions.tsv" \
 		run_check_only "$W/c.sarif" 2>&1)" && rc_c=0 || rc_c=$?
 	if [ "${rc_c:-0}" -ne 0 ] && printf '%s\n' "$out_c" | grep -q "SCHEMA INVALID"; then

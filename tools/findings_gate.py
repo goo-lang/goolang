@@ -4,22 +4,23 @@
 The generalisation of docs/misra/tools/gate.py the task text asks for:
 that file tallies cppcheck's own (file, rule) pairs from ONE tool's plain
 text; this counts the results per (tool, rule, file) from tools/sarif_merge.py's
-merged SARIF across every tool at once. Each result also carries its stable
-"goo/v1" fingerprint, which stands in for a line number for the same reason
-gate.py's own tally() drops line numbers -- see that file's docstring, and
-sarif_merge.py's.
+merged SARIF across every tool at once. The count is compared per
+(tool, rule, file) and drops the line, the column and the message, for the
+same reason gate.py's own tally() drops line numbers -- see that file's
+docstring, and sarif_merge.py's. Each result also carries its stable
+"goo/v1" fingerprint, which names a new result in the printed output.
 
     findings_gate.py check <sarif> <baseline-prefix> <suppressions.tsv>
     findings_gate.py write <sarif> <baseline-prefix> <suppressions.tsv>
 
-check exits 1 on a regression (a (tool, rule, file) group with more results
-now than the baseline holds rows for it).
-write records one baseline row for each current, non-suppressed result.
+check exits 1 on a regression (a (tool, rule, file) group with more distinct
+results now than the baseline holds rows for it).
+write records one baseline row for each distinct, non-suppressed result.
 
 FIX ROUND 2 (N1) -- EACH RESULT IS COUNTED. Two results on different lines
 can share one fingerprint (the same text twice). A SET of 4-tuples counted
 them once, and 545 results were invisible to the gate on the real file. The
-tally is now a Counter of 4-tuples, the baseline keeps one row for each
+tally became a Counter of 4-tuples (rounds 3 and 4 widened the tuple), the baseline keeps one row for each
 result (duplicate rows are legal), and the verdict line adds up:
 findings = accepted + suppressed + new.
 
@@ -32,6 +33,22 @@ gate red with no new defect. The unit counted is now the DISTINCT
 3,012 distinct ones. Results on different lines with one fingerprint (the N1
 case) stay separate. The baseline keeps the startLine column, so the count
 can be computed again from the baseline alone.
+
+FIX ROUND 4 -- THE DISTINCT KEY HAS THE COLUMN AND THE MESSAGE. The
+fingerprint is the text of the source LINE, so two different findings of
+one rule on one line (two unused parameters in one signature, for example
+-Wunused-parameter at src/codegen/nullable_codegen.c:159 for `var_name` and
+`pos`) had one round-3 key and counted once. MEASURED (2026-11-08,
+build/findings.sarif from gcc 16, clang-tidy 23, Cppcheck 2.22): 14 such
+groups in src/, each a real second defect, and one more such result stayed
+GREEN. The distinct unit is now
+(tool, rule, file, startLine, startColumn, message, fingerprint): 3,442 raw
+results are 3,026 distinct ones. A header finding repeated for each
+translation unit has the same column and message in every unit, so it still
+counts once (zero header groups split). The baseline has 7 columns. Every
+field is written with tsv_escape(), so a message with a tab, a newline or a
+backslash cannot break a row; an absent startLine or startColumn is an
+empty field.
 
 FIX ROUND 1 (I2b) -- THE BASELINE IS KEYED BY TOOLCHAIN SIGNATURE.
 <baseline-prefix> is a path prefix, not a file. The gate derives a
@@ -72,11 +89,11 @@ UNDERLYING FINDING, and exited 1. That is nonsense: nothing regressed.
 The fix: the gate compares the COUNT of accepted findings per
 (tool, rule, file), shrink-only -- a count ABOVE the baseline's is red, EQUAL
 or LOWER is green, and a drop is reported as an improvement. Fingerprints
-still travel in the SARIF and in every baseline row (one row per finding,
-same 4 columns as before), but they are used ONLY to NAME which specific
-lines are new in a regression's printed output -- never as part of the
-comparison itself. Editing one finding's text now correctly stays GREEN,
-because the (tool, rule, file) count does not move.
+still travel in the SARIF and in every baseline row (one row per distinct
+result), but they are used ONLY to NAME which specific results are new in a
+regression's printed output -- never as part of the comparison itself.
+Editing one finding's text now correctly stays GREEN, because the
+(tool, rule, file) count does not move.
 """
 import collections
 import fnmatch
@@ -129,15 +146,42 @@ def baseline_file(prefix, signature):
     return "%s.%s.tsv" % (prefix, signature)
 
 
+# A baseline field must hold no TAB (the column separator) and no LF or CR
+# (Python's universal-newline reader ends a row at either). Backslash is the
+# escape character, so it is escaped too. Four escapes, nothing else: the
+# text stays readable in a diff, and every other character is written as it
+# is.
+_TSV_ESCAPES = {"\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r"}
+_TSV_UNESCAPES = {v[1]: k for k, v in _TSV_ESCAPES.items()}
+_TSV_ESCAPE_RE = re.compile(r"\\(.?)", re.DOTALL)
+
+
+def tsv_escape(field):
+    return "".join(_TSV_ESCAPES.get(c, c) for c in field)
+
+
+def tsv_unescape(field):
+    """The inverse of tsv_escape, in ONE pass, so the text \\n (backslash,
+    n) and an escaped newline cannot be confused. Raises ValueError on an
+    escape that tsv_escape never writes, or on a lone trailing backslash."""
+    def one(m):
+        if m.group(1) not in _TSV_UNESCAPES:
+            raise ValueError("unknown escape %r" % m.group(0))
+        return _TSV_UNESCAPES[m.group(1)]
+    return _TSV_ESCAPE_RE.sub(one, field)
+
+
 def tally(sarif_path):
     """Returns (keys, per_tool) where keys is a Counter of
-    (tool, rule, file, startLine, fingerprint) 5-tuples, one count for each
-    DISTINCT result (FIX ROUND 2 / N1: not one for each distinct fingerprint;
-    FIX ROUND 3: the same tuple on the same line, from another translation
-    unit, is one result). It gives the
-    per-(tool,rule,file) COUNTS and the fingerprints that name new results
-    in check()'s output. per_tool is a {tool_name: result_count} Counter, for the
-    verdict line.
+    (tool, rule, file, startLine, startColumn, message, fingerprint)
+    7-tuples, one count for each DISTINCT result (FIX ROUND 2 / N1: not one
+    for each distinct fingerprint; FIX ROUND 3: the same tuple from another
+    translation unit is one result; FIX ROUND 4: another column or message
+    on the same line is another result). Every element is a str, and an
+    absent startLine or startColumn is "". It gives the per-(tool,rule,file)
+    COUNTS and the fingerprints that name new results in check()'s output.
+    per_tool is a {tool_name: raw_result_count} Counter, for the verdict
+    line.
 
     FIX ROUND 1 (M6): a tool's entry is registered on EVERY run, even one
     with zero results (`per_tool[tool] += 0` still creates the Counter key)
@@ -153,25 +197,26 @@ def tally(sarif_path):
         per_tool[tool] += 0
         for result in run.get("results", []):
             rule = result.get("ruleId", "")
-            file_ = ""
             locations = result.get("locations") or []
-            if locations:
-                art = locations[0].get("physicalLocation", {}).get("artifactLocation", {})
-                file_ = art.get("uri", "")
-            line = ""
-            if locations:
-                line = str(locations[0].get("physicalLocation", {}).get("region", {}).get("startLine", ""))
+            physical = locations[0].get("physicalLocation", {}) if locations else {}
+            file_ = physical.get("artifactLocation", {}).get("uri", "")
+            region = physical.get("region", {})
+            line = str(region.get("startLine", ""))
+            column = str(region.get("startColumn", ""))
+            message = result.get("message", {}).get("text", "")
             fp = result.get("fingerprints", {}).get("goo/v1", "")
-            keys[(tool, rule, file_, line, fp)] = 1
+            keys[(tool, rule, file_, line, column, message, fp)] = 1
             per_tool[tool] += 1
     return keys, per_tool
 
 
 def group_by_triple(keys):
-    """Counter of 4-tuples -> {(tool, rule, file): Counter of fingerprints}.
-    The sum of a triple's Counter is its COUNT -- the comparison unit."""
+    """Counter of tally()'s 7-tuples -> {(tool, rule, file): Counter of
+    fingerprints}. It drops the line, the column and the message, so a line
+    shift or a reworded message moves no count. The sum of a triple's Counter
+    is its COUNT -- the comparison unit."""
     grouped = collections.defaultdict(collections.Counter)
-    for (tool, rule, file_, _line, fp), n in keys.items():
+    for (tool, rule, file_, _line, _column, _message, fp), n in keys.items():
         grouped[(tool, rule, file_)][fp] += n
     return grouped
 
@@ -227,21 +272,32 @@ def filter_suppressed(keys, suppressions):
         {k: n for k, n in keys.items() if not is_suppressed(k[0], k[1], k[2], suppressions)})
 
 
+BASELINE_COLUMNS = ("tool", "rule", "file", "startLine", "startColumn", "message", "fingerprint")
+
+
 def read_baseline(path):
+    """Counter of tally()'s 7-tuples, decoded with tsv_unescape. A row with
+    another column count, or with an escape tsv_escape never writes, exits
+    loudly: a baseline the gate cannot read is not a baseline."""
     keys = collections.Counter()
     if not os.path.isfile(path):
         return keys
     with open(path, encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, start=1):
             line = line.rstrip("\n")
             if not line.strip() or line.startswith("#"):
                 continue
             parts = line.split("\t")
-            if len(parts) != 5:
-                sys.exit("findings-gate: FAIL -- %s has a row with %d columns, expected 5 "
-                         "(tool, rule, file, startLine, fingerprint); regenerate it with `%s`"
-                         % (path, len(parts), UPDATE_COMMAND))
-            keys[tuple(parts)] = 1
+            if len(parts) != len(BASELINE_COLUMNS):
+                sys.exit("findings-gate: FAIL -- %s:%d has a row with %d columns, expected %d "
+                         "(%s); regenerate it with `%s`"
+                         % (path, lineno, len(parts), len(BASELINE_COLUMNS),
+                            ", ".join(BASELINE_COLUMNS), UPDATE_COMMAND))
+            try:
+                keys[tuple(tsv_unescape(p) for p in parts)] = 1
+            except ValueError as e:
+                sys.exit("findings-gate: FAIL -- %s:%d: %s; regenerate it with `%s`"
+                         % (path, lineno, e, UPDATE_COMMAND))
     return keys
 
 
@@ -258,10 +314,13 @@ def write_baseline(path, keys, sarif_path):
         f.write(
             "# findings-probe SHRINK-ONLY baseline. Regenerate with:\n"
             "#   scripts/findings_probe.sh --update-baseline\n"
-            "# One line per DISTINCT result: tool<TAB>rule<TAB>file<TAB>startLine<TAB>fingerprint\n"
-            "# (the same tuple from another translation unit is one result; tools/sarif_merge.py's\n"
-            "# own stable \"goo/v1\" hash -- rule id + repo-relative file + the finding's\n"
-            "# own normalised line text, NOT its line number).\n"
+            "# One line per DISTINCT result:\n"
+            "#   tool<TAB>rule<TAB>file<TAB>startLine<TAB>startColumn<TAB>message<TAB>fingerprint\n"
+            "# (the same tuple from another translation unit is one result). An absent\n"
+            "# startLine or startColumn is an empty field. In every field a backslash,\n"
+            "# TAB, LF and CR are written as \\\\, \\t, \\n and \\r. The fingerprint is\n"
+            "# tools/sarif_merge.py's own stable \"goo/v1\" hash -- rule id + repo-relative\n"
+            "# file + the finding's own normalised line text, NOT its line number.\n"
             "# The GATE compares COUNTS per (tool, rule, file) -- see this module's own\n"
             "# docstring, FIX ROUND 1 / I1. The fingerprint column exists to NAME which\n"
             "# specific lines are new when a count rises; it is not itself the key.\n"
@@ -273,14 +332,14 @@ def write_baseline(path, keys, sarif_path):
         )
         for k in sorted(keys):
             for _ in range(keys[k]):
-                f.write("\t".join(k) + "\n")
+                f.write("\t".join(tsv_escape(field) for field in k) + "\n")
 
 
 def check(sarif_path, baseline_prefix, suppressions_path, deviations_dir=None):
     """Returns (rc, lines) -- lines is the full report, ready to print.
 
-    FIX ROUND 1 (I1) and ROUND 2 (N1): compares the COUNT of results per
-    (tool, rule, file), not raw 4-tuple set membership -- see this module's
+    FIX ROUND 1 (I1) and ROUND 2 (N1): compares the COUNT of distinct
+    results per (tool, rule, file), not raw set membership -- see this module's
     own docstring for the measured reason. A regression's printed line still
     names the SPECIFIC new fingerprints (now-minus-baseline, within that
     triple), for a human to find the actual new line; that naming is
@@ -386,9 +445,9 @@ def main(argv):
     return rc
 
 
-# --self-test: four cases, matching scripts/findings_probe.sh's own --self-test
-# (that script drives this module through the shell entry point; this direct
-# call proves the module's own logic in isolation).
+# --self-test: the module's own logic in isolation, one case for each
+# finding of the review rounds. scripts/findings_probe.sh's own --self-test
+# drives the same module through the shell entry point.
 def self_test():
     ok = True
     sig = "gcc16-tidy23-cppcheck2.22"
@@ -406,14 +465,15 @@ def self_test():
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"version": "2.1.0", "runs": drivers(results)}, f)
 
-        def result(rule, file_, fp, line=1):
-            return {"ruleId": rule, "message": {"text": "x"},
+        def result(rule, file_, fp, line=1, col=1, msg="x"):
+            return {"ruleId": rule, "message": {"text": msg},
                     "locations": [{"physicalLocation": {"artifactLocation": {"uri": file_},
-                                                        "region": {"startLine": line}}}],
+                                                        "region": {"startLine": line, "startColumn": col}}}],
                     "fingerprints": {"goo/v1": fp}}
 
         prefix = os.path.join(tmp, "baseline")
-        write_baseline(baseline_file(prefix, sig), collections.Counter({("GNU C23", "r1", "a.c", "1", "fp1"): 1}), "seed")
+        write_baseline(baseline_file(prefix, sig),
+                       collections.Counter({("GNU C23", "r1", "a.c", "1", "1", "x", "fp1"): 1}), "seed")
         devs = os.path.join(tmp, "deviations")
         os.mkdir(devs)
         open(os.path.join(devs, "D-01.md"), "w", encoding="utf-8").close()
@@ -469,6 +529,59 @@ def self_test():
         else:
             print("FAIL: a same-line duplicate went RED (rc=%d): %r" % (rc, lines))
             ok = False
+
+        # ROUND 4: two DIFFERENT findings of one rule on one line (two unused
+        # parameters in one signature) share tool, rule, file, line and
+        # fingerprint -- the fingerprint is the line's text. Their column and
+        # message differ. Against a baseline that holds one of them, the
+        # second one is new and must be RED.
+        sarif_sameline = os.path.join(tmp, "sameline.sarif")
+        write_sarif(sarif_sameline, [result("r1", "a.c", "fp1", 1, 1, "x"),
+                                     result("r1", "a.c", "fp1", 1, 9, "unused parameter 'pos'")])
+        rc, lines = run_check(sarif_sameline, suppressions_empty)
+        if rc == 1 and "1 -> 2" in "\n".join(lines) and "1 accepted + 0 suppressed + 1 new" in lines[-1]:
+            print("    ok: a second finding on the same line, with another column and message, is RED")
+        else:
+            print("FAIL: a second finding on the same line was merged into the first (rc=%d): %r" % (rc, lines))
+            ok = False
+
+        # ROUND 4: the message column survives a round trip through the TSV.
+        # A tab, LF, CR or backslash in a message must not split a row, and the
+        # TEXT backslash-n must stay distinct from a newline. A row with no
+        # startLine and no startColumn (the pthread-return-probe shape) parses.
+        awkward = ("GNU C23", "r1", "a.c", "", "", "tab\there\nLF\rCR \\ and \\n text", "fp1")
+        plain = ("GNU C23", "r1", "a.c", "7", "3", "tab\\there", "fp1")
+        trip = os.path.join(tmp, "trip.tsv")
+        write_baseline(trip, collections.Counter({awkward: 1, plain: 1}), "seed")
+        try:
+            back = read_baseline(trip)
+        except SystemExit as e:
+            back = "read_baseline exited: %s" % e.code
+        with open(trip, encoding="utf-8") as f:
+            data_rows = [l for l in f if not l.startswith("#")]
+        if back == collections.Counter({awkward: 1, plain: 1}) and len(data_rows) == 2:
+            print("    ok: a message with a tab, a newline and a backslash, and empty line/column fields, round-trip")
+        else:
+            print("FAIL: the TSV round trip changed the rows: %r -> %r" % ([awkward, plain], back))
+            ok = False
+
+        # Round 3, now a case: a baseline row with the wrong column count, or
+        # with an escape that tsv_escape never writes, fails loudly.
+        for name, row, needle in (("short", "GNU C23\tr1\ta.c\t1\tfp1\n", "with 5 columns, expected 7"),
+                                  ("escape", "GNU C23\tr1\ta.c\t1\t1\tbad \\q\tfp1\n", "unknown escape")):
+            bad = os.path.join(tmp, "bad-%s.tsv" % name)
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write(row)
+            try:
+                read_baseline(bad)
+                message = None
+            except SystemExit as e:
+                message = str(e.code)
+            if message and needle in message:
+                print("    ok: a baseline row (%s) the gate cannot read fails loudly" % name)
+            else:
+                print("FAIL: a bad baseline row (%s) did not fail loudly: %r" % (name, message))
+                ok = False
 
         # M6: the verdict line must name EVERY tool that ran, including one
         # whose run produced zero results.
