@@ -105,11 +105,14 @@ misra-c2012-17.3
 misra-c2012-*:*/llvm-c/*
 
 # ---------------------------------------------------------------------------
-# Not MISRA. cppcheck cannot resolve the LLVM C++ header guard when it
-# preprocesses llvm-c/DataTypes.h as C.
+# Not MISRA. Do NOT suppress preprocessorErrorDirective here. cppcheck stops
+# a unit at an #error and analyses nothing in it, so a suppression of that ID
+# hides a unit that was never checked. One did, until task 17b: 16 units
+# (src/codegen/*.c, src/compiler/goo.c) stopped in llvm-c/DataTypes.h. The
+# fix is the UINT32_C define in scan.sh. scripts/analyzer_lanes_probe.sh
+# fails on any #error result, and on any entry here that names this ID.
 #
 # Do NOT add missingIncludeSystem here: scan.sh already passes it on the
 # command line, and cppcheck treats a duplicate suppression as a fatal error.
 # It exits 1 having checked nothing, which reads as a clean scan.
 # ---------------------------------------------------------------------------
-preprocessorErrorDirective:*/llvm-c/DataTypes.h
