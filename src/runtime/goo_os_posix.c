@@ -82,12 +82,11 @@ int goo_mutex_try_lock(goo_mutex_t* mutex) {
 }
 
 // A condvar call must succeed in every build. GOO_ASSERT compiles away under
-// GOO_ASSERT_OFF and GOO_COVERAGE, which left the return value unused (and
-// unchecked), so this check does not depend on the assert modes.
-#define GOO_OS_CHECK(call) \
-    do { \
-        if ((call) != 0) goo_assert_fail("OS CALL", #call, __FILE__, __LINE__, __func__); \
-    } while (0)
+// GOO_ASSERT_OFF and GOO_COVERAGE, which left rc unused (gcc 16 warns, and
+// the verify-tooling branch builds with -Werror) and the pthread_cond_*
+// result unchecked. GOO_ASSERT stays, for its file and line message and for
+// the assertion-density baseline; this check does not depend on the modes.
+#define GOO_OS_REQUIRE_ZERO(rc) ((rc) != 0 ? goo_assert_fail("OS CALL", #rc " == 0", __FILE__, __LINE__, __func__) : (void)0)
 
 // ---------------------------------------------------------------------------
 // Condvar implementation (new: replaces pthread_cond_* in channels.c/sync.c)
@@ -96,14 +95,16 @@ goo_cond_t* goo_cond_new(void) {
     goo_cond_t* cond = goo_alloc(sizeof(goo_cond_t));
     GOO_ASSERT(cond != NULL);
 #ifdef GOO_PLATFORM_UNIX
-    GOO_OS_CHECK(pthread_cond_init(&cond->cond, NULL));
+    int rc = pthread_cond_init(&cond->cond, NULL);
+    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
 #endif
     return cond;
 }
 void goo_cond_free(goo_cond_t* cond) {
     GOO_ASSERT(cond != NULL);
 #ifdef GOO_PLATFORM_UNIX
-    GOO_OS_CHECK(pthread_cond_destroy(&cond->cond));
+    int rc = pthread_cond_destroy(&cond->cond);
+    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
 #endif
     goo_free(cond);
 }
@@ -111,19 +112,22 @@ void goo_cond_wait(goo_cond_t* cond, goo_mutex_t* mutex) {
     GOO_ASSERT(cond != NULL);
     GOO_ASSERT(mutex != NULL);
 #ifdef GOO_PLATFORM_UNIX
-    GOO_OS_CHECK(pthread_cond_wait(&cond->cond, &mutex->mutex));
+    int rc = pthread_cond_wait(&cond->cond, &mutex->mutex);
+    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
 #endif
 }
 void goo_cond_signal(goo_cond_t* cond) {
     GOO_ASSERT(cond != NULL);
 #ifdef GOO_PLATFORM_UNIX
-    GOO_OS_CHECK(pthread_cond_signal(&cond->cond));
+    int rc = pthread_cond_signal(&cond->cond);
+    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
 #endif
 }
 void goo_cond_broadcast(goo_cond_t* cond) {
     GOO_ASSERT(cond != NULL);
 #ifdef GOO_PLATFORM_UNIX
-    GOO_OS_CHECK(pthread_cond_broadcast(&cond->cond));
+    int rc = pthread_cond_broadcast(&cond->cond);
+    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
 #endif
 }
 
