@@ -166,3 +166,29 @@ cannot parse is a finding to record, not a reason to stop. The `-N` hang.
 The 18.6 caption bug. The doubtful 1.3 block, which is why it is out. A
 hand check is one person's reading: the ten classifications are written
 down so a second reader can disagree.
+
+## 10. Result
+
+Measured 2026-11-08 with Cobra 5.4 built from commit
+`eebff89637542b0bfdc76739fbad4f6a365c51ae`, over the 68 git-tracked `src/*.c`
+files at repo commit `a42a39d6`. The full tables, the hand checks, the second
+instrument and the defects found are in
+[docs/misra/cobra-calibration.md](../../misra/cobra-calibration.md). The control
+files are in `tests/misra/cobra/`. No gate exists; task 13 decides.
+
+| Rule | Violating control | Compliant twin | Count on `src/` | Incorrect-report rate |
+|---|---|---|---|---|
+| 2.1 | fail | pass | 29 | 10/10 |
+| 2.6 | fail | pass | 1 | 1/1 |
+| 3.2 | pass | pass | 0 | n/a (no reports) |
+| 5.3 | fail | pass | 0 | n/a (no reports) |
+| 17.4 | fail | pass | 0 | n/a (no reports) |
+| 18.1 | fail | pass | 87 | 10/10 |
+| 18.2 | fail | pass | 1 | 1/1 |
+| 18.3 | fail | pass | 0 | n/a (no reports) |
+| 18.6 | fail | pass | 2 | 2/2 |
+
+Rule 1.3 is out by section 2. One rule of nine (3.2) passes both controls,
+and it has no reports on `src/`. The four known incorrect reports all
+reproduce (13.5, 13.6, 2.1, 18.6). Each number: instrument Cobra 5.4,
+commit `eebff896`, date 2026-11-08.
