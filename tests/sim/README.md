@@ -16,10 +16,12 @@ The design, and the authority for everything below, is
 `false_deadlock_test`) and `sim-false-deadlock-selftest` (the probe can go
 red: the wake-site mutant aborts, with replay) are in `VERIFY_ALL_DEPS`, so
 `make verify-core` runs them. `runtime-seam-probe` is the third gate: the
-grep gate that keeps `pthread_` and `_Thread_local` out of the scheduler
-files so that no call escapes the seam. The other programs below, and
-`sim-entry-test`, are run by hand; the result and the numbers are in the
-spec's "Result" section.
+grep gate that keeps `pthread_`, `_Thread_local`, `thread_local` and
+`__thread` out of the scheduler files so that no call escapes the seam.
+`sim-sched-test` and `sim-entry-test` are in `VERIFY_ALL_DEPS` too, so
+`make verify-core` runs them (about 0.5 s together). The other programs
+below are run by hand; the result and the numbers are in the spec's "Result"
+section.
 
 **What the simulator cannot reach.** The sim build runs 64 batches per shape
 of `fanin_stress`, not the production 4000. A defect that needs many batches

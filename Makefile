@@ -3300,6 +3300,8 @@ VERIFY_ALL_DEPS := \
     false-deadlock-selftest \
     sim-false-deadlock-probe \
     sim-false-deadlock-selftest \
+    sim-sched-test \
+    sim-entry-test \
     deadlock-poll-probe \
     deadlock-poll-selftest \
     deadlock-probe \
