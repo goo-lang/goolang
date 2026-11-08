@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <ucontext.h>
 
+#include "goo_os.h"         /* goo_worker_tls_t: each coroutine holds its own copy */
+
 #define SIM_THREADS_MAX    17u      /* GOO_MAX_OS_THREADS (16) workers + main */
 #define SIM_STACK_BYTES    262144u
 #define SIM_WAITERS_MAX    17u
@@ -32,7 +34,7 @@ typedef struct sim_thread {
     void*            arg;
     void*            result;
     unsigned char    stack[SIM_STACK_BYTES];
-    /* Task 5 adds the goo_worker_tls_t copy here. */
+    goo_worker_tls_t tls;            /* goo_os_tls() of this coroutine; zeroed at spawn */
 } sim_thread_t;
 
 /* trace_dir must be non-NULL and shorter than 256 bytes; the trace goes to
@@ -50,6 +52,18 @@ uint32_t  sim_wake_all(const void* on, enum sim_state why);
 void      sim_sleep_until(uint64_t wake_at_ns);
 uint64_t  sim_now_ns(void);
 uint32_t  sim_random_below(uint32_t n);          /* seeded; n > 0 */
-[[noreturn]] void sim_exit_with(enum sim_verdict verdict, const char* detail);   /* writes the trace, never returns */
+/* Flushes stdio, writes the trace, then _exit: a verdict never runs the
+ * atexit handlers, but the program's output survives it. */
+[[noreturn]] void sim_exit_with(enum sim_verdict verdict, const char* detail);
 void      sim_run_until_done(void);              /* Task 5's main loop: returns when every thread exited */
+/* The program's main returned status. Ends the process the way C does,
+ * exit(status) on the calling coroutine, so the program's atexit handlers
+ * and the stdio flush run where a seam call is legal, never on the real
+ * thread. The trace header names verdict=pass for 0, program-exit for any
+ * other status. Call only from a coroutine. */
+[[noreturn]] void sim_exit_program(int status);
+
+/* tests/sim/sim_os.c, the seam over this scheduler. Faults are off until
+ * this call turns one on; sim_main.c reads them from the environment. */
+void      sim_os_set_faults(bool spurious_wake, bool thread_create_eagain);
 #endif

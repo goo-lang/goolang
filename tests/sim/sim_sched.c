@@ -11,6 +11,7 @@
 
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -52,6 +53,7 @@ static char               g_trace_path[SIM_TRACE_PATH_BYTES];
 static bool               g_initialized;
 static bool               g_handlers_installed;
 static volatile sig_atomic_t g_trace_written;
+static const char*        g_exit_label;                 /* set by sim_exit_program for the atexit write */
 static char               g_out[SIM_OUT_BUFFER_BYTES];
 static uint32_t           g_out_len;
 static int                g_out_fd;
@@ -214,9 +216,16 @@ static void trace_write(const char* label, const char* detail) {
     GOO_ASSERT(g_trace_written == 1);
 }
 
+/* The label is the program's own verdict when its main returned
+ * (sim_exit_program), else "exit": the runtime or the program called exit
+ * itself, as goo_deadlock_abort does with status 2. */
 static void on_process_exit(void) {
     GOO_ASSERT(g_handlers_installed);
     if (!g_initialized) return;
+    if (g_exit_label != nullptr) {
+        trace_write(g_exit_label, "main returned");
+        return;
+    }
     trace_write("exit", "the process called exit");
 }
 
@@ -397,6 +406,7 @@ void sim_init(uint64_t seed, uint64_t step_limit, uint64_t time_limit_ns, const 
     g_time_limit_ns = time_limit_ns;
     g_trace_count = 0;
     g_trace_written = 0;
+    g_exit_label = nullptr;
     memcpy(g_trace_dir, trace_dir, dir_bytes);
     g_trace_dir[dir_bytes] = '\0';
     char seed_digits[21];
@@ -423,6 +433,7 @@ uint32_t sim_thread_spawn(void* (*func)(void*), void* arg) {
     t->func = func;
     t->arg = arg;
     t->result = nullptr;
+    memset(&t->tls, 0, sizeof t->tls);
     int rc = getcontext(&t->ctx);
     GOO_ASSERT(rc == 0);
     t->ctx.uc_stack.ss_sp = t->stack;
@@ -521,13 +532,28 @@ uint64_t sim_now_ns(void) {
     return g_now_ns;
 }
 
+/* _exit runs no atexit handler and flushes no stdio buffer, so the flush
+ * comes first: without it the program's output is lost on every verdict.
+ * This is never called from a signal handler, so fflush is safe here. */
 void sim_exit_with(enum sim_verdict verdict, const char* detail) {
     const char* label = verdict_label(verdict);
     GOO_ASSERT(label != nullptr);
     GOO_ASSERT(detail != nullptr);
     GOO_ASSERT(g_initialized);
+    if (fflush(nullptr) != 0) {
+        static const char msg[] = "goo-sim: flushing the program's stdio failed; its output is incomplete\n";
+        (void)!write(STDERR_FILENO, msg, sizeof msg - 1);
+    }
     trace_write(label, detail);
     _exit((int)verdict);
+}
+
+void sim_exit_program(int status) {
+    GOO_ASSERT(g_initialized);
+    GOO_ASSERT(g_current != SIM_NONE);   /* the exit path must run where a seam call is legal */
+    GOO_ASSERT(g_exit_label == nullptr); /* main returns once */
+    g_exit_label = (status == 0) ? "pass" : "program-exit";
+    exit(status);
 }
 
 void sim_run_until_done(void) {

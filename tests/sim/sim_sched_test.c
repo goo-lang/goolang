@@ -7,6 +7,12 @@
  * compares trace FILES -- the same artifact a replay compares -- so the
  * tests judge what a person replaying a seed would see.
  *
+ * T4 is the instrument behind Task 5's entry test: after sim_run_until_done
+ * returns, the real thread has no coroutine, and sim_current() -- the first
+ * thing every seam call in sim_os.c does -- must abort there. Without this,
+ * tests/sim/sim_entry_test.sh could not tell "the exit path stayed on a
+ * coroutine" from "the check never fires".
+ *
  * T3 is the spike's step 2, the nesting measurement (spec section 9): a
  * seam call made from INSIDE a goroutine-shaped ucontext coroutine, which
  * itself runs on a simulated thread's coroutine. Its result selects
@@ -135,6 +141,18 @@ static void* progress_yielder(void* arg) {
     fflush(stdout);
     GOO_ASSERT(g_nested_switched_away >= 1);         /* the seam call really crossed threads */
     sim_exit_with(SIM_PASS, "nesting");
+}
+
+/* T4's child: a seam-shaped call on the real thread once every coroutine
+ * exited. It must die by SIGABRT at sim_current()'s assertion. */
+[[noreturn]] static void run_real_thread_call(uint64_t seed, const char* dir) {
+    static uint32_t count = 3;
+    sim_init(seed, STEP_LIMIT, TIME_LIMIT_NS, dir);
+    (void)sim_thread_spawn(yield_n, &count);
+    sim_run_until_done();
+    sim_thread_t* self = sim_current();       /* the assertion under test */
+    fprintf(stderr, "sim_sched_test: T4 sim_current() returned thread %u on the real thread\n", self->id);
+    sim_exit_with(SIM_PASS, "real-thread-call");
 }
 
 /* ---- the parent's side ---- */
@@ -315,6 +333,47 @@ static int test_nesting(void) {
     return 0;
 }
 
+/* T4: the child's stderr goes to <dir>/stderr, so the parent can read
+ * WHICH assertion ended it, not only that something did. */
+static int test_real_thread_call(void) {
+    char dir[256], err_path[300];
+    dir_join(dir, sizeof dir, "t4");
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) return -1;
+    snprintf(err_path, sizeof err_path, "%s/stderr", dir);
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int fd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0 || dup2(fd, STDERR_FILENO) < 0) _exit(3);
+        run_real_thread_call(5, dir);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) return -1;
+    if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT) {
+        fprintf(stderr, "sim_sched_test: T4 child did not die by SIGABRT (status 0x%x)\n", status);
+        return -1;
+    }
+    long n = read_trace(dir, 5, g_file_a);   /* the SIGABRT handler wrote the trace */
+    if (n < 0) return -1;
+    if (strstr(g_file_a, " verdict=abort ") == nullptr) {
+        fprintf(stderr, "sim_sched_test: T4 the trace header is not verdict=abort\n");
+        return -1;
+    }
+    int fd = open(err_path, O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t got = read(fd, g_file_b, TRACE_FILE_BYTES_MAX - 1);
+    close(fd);
+    if (got <= 0) return -1;
+    g_file_b[got] = '\0';
+    if (strstr(g_file_b, "in sim_current()") == nullptr) {
+        fprintf(stderr, "sim_sched_test: T4 the abort was not sim_current()'s assertion: %s\n", g_file_b);
+        return -1;
+    }
+    printf("sim_sched_test: T4 real-thread call: PASS (SIGABRT in sim_current(), trace verdict=abort)\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc != 2 || strlen(argv[1]) >= sizeof g_base_dir - 8) {
         fprintf(stderr, "usage: sim_sched_test <trace-base-dir>\n");
@@ -329,10 +388,11 @@ int main(int argc, char** argv) {
     if (test_replay() != 0) { printf("sim_sched_test: T1 replay: FAIL\n"); failed++; }
     if (test_seeds_differ() != 0) { printf("sim_sched_test: T2 seeds differ: FAIL\n"); failed++; }
     if (test_nesting() != 0) { printf("sim_sched_test: T3 nesting: FAIL\n"); failed++; }
+    if (test_real_thread_call() != 0) { printf("sim_sched_test: T4 real-thread call: FAIL\n"); failed++; }
     if (failed != 0) {
-        printf("sim_sched_test: %d of 3 FAILED\n", failed);
+        printf("sim_sched_test: %d of 4 FAILED\n", failed);
         return 1;
     }
-    printf("sim_sched_test: 3 of 3 PASS\n");
+    printf("sim_sched_test: 4 of 4 PASS\n");
     return 0;
 }

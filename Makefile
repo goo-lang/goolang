@@ -5581,6 +5581,42 @@ sim-sched-test:
 	@rm -rf $(SIM_BUILD_DIR)/sched_test_traces
 	@$(SIM_BUILD_DIR)/sim_sched_test $(SIM_BUILD_DIR)/sched_test_traces
 
+# The sim archive (task 5 of the 2026-09-03 deterministic-simulation plan):
+# the production runtime objects with tests/sim/sim_os.o in place of
+# goo_os_posix.o, plus the scheduler. A separate build product: the
+# production archive ($(RUNTIME_LIB)) and its object list do not change.
+# far_transport.o is left out because it needs NNG and no program under
+# test calls it; the link of every program below proves nothing needs it.
+SIM_OBJS = $(BUILDDIR)/sim/sim_sched.o $(BUILDDIR)/sim/sim_os.o $(BUILDDIR)/sim/sim_main.o
+SIM_RUNTIME_OBJS = $(filter-out $(BUILDDIR)/runtime/goo_os_posix.o $(BUILDDIR)/runtime/far_transport.o,$(RUNTIME_OBJS)) $(BUILDDIR)/sim/sim_sched.o $(BUILDDIR)/sim/sim_os.o
+SIM_RUNTIME_LIB = $(BUILDDIR)/libgoo_runtime_sim.a
+$(BUILDDIR)/sim/%.o: tests/sim/%.c | $(BUILDDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Itests/sim -c $< -o $@
+-include $(SIM_OBJS:.o=.d)
+$(SIM_RUNTIME_LIB): $(SIM_RUNTIME_OBJS) | $(BUILDDIR)
+	rm -f $@ && ar -Drcs $@ $^
+.PHONY: sim-runtime-lib
+sim-runtime-lib: $(SIM_RUNTIME_LIB)
+
+# A program under test: its own main renamed, so sim_main.o's main runs it
+# as coroutine 0. The concurrency programs build with the flags
+# scripts/false_deadlock_probe.sh builds them with; a program in tests/sim
+# includes sim.h and asserts, so it takes the runtime's CFLAGS.
+build/sim/%: tests/concurrency/%.c $(SIM_RUNTIME_LIB) $(BUILDDIR)/sim/sim_main.o
+	@mkdir -p build/sim
+	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. -Dmain=goo_sim_program_main $< $(BUILDDIR)/sim/sim_main.o $(SIM_RUNTIME_LIB) -lm -o $@
+build/sim/%: tests/sim/%.c $(SIM_RUNTIME_LIB) $(BUILDDIR)/sim/sim_main.o
+	@mkdir -p build/sim
+	$(CC) $(CFLAGS) -Itests/sim -Dmain=goo_sim_program_main $< $(BUILDDIR)/sim/sim_main.o $(SIM_RUNTIME_LIB) -lm -o $@
+
+# The process entry: main is coroutine 0, the exit path stays on a
+# coroutine, a non-zero status passes through, and stdout survives a
+# verdict. See tests/sim/sim_entry_test.sh for how each fact is read.
+.PHONY: sim-entry-test
+sim-entry-test: build/sim/sim_entry_test
+	@bash tests/sim/sim_entry_test.sh build/sim/sim_entry_test $(SIM_BUILD_DIR)/entry_test
+
 # Vendored SPIN (task 4 of the 2026-09-02 verification tooling plan; Track
 # B's Promela gate over the runtime deadlock detector, tasks 5-7, is not yet
 # on this branch). Builds or finds a spin >= 6.5 with no network read --
