@@ -235,7 +235,7 @@ ValueInfo* codegen_generate_ptr_arithmetic(CodeGenerator* codegen, TypeChecker* 
     
     // Perform pointer arithmetic using GEP
     LLVMValueRef result = LLVMBuildGEP2(codegen->builder,
-                                        LLVMInt8Type(),  // i8 for byte arithmetic
+                                        LLVMInt8TypeInContext(codegen->context),  // i8 for byte arithmetic
                                         ptr_val->llvm_value,
                                         &offset_val->llvm_value, 1,
                                         "ptr_arith");
@@ -273,7 +273,7 @@ ValueInfo* codegen_generate_ptr_deref(CodeGenerator* codegen, TypeChecker* check
     
     // Load from the pointer
     LLVMValueRef result = LLVMBuildLoad2(codegen->builder,
-                                         LLVMInt8Type(), // Load as i8 for now
+                                         LLVMInt8TypeInContext(codegen->context), // Load as i8 for now
                                          ptr_val->llvm_value,
                                          "ptr_deref");
     
@@ -348,8 +348,8 @@ ValueInfo* codegen_generate_port_io(CodeGenerator* codegen, TypeChecker* checker
     
     if (port_io->is_input) {
         // Port input - generate inline assembly for IN instruction
-        LLVMTypeRef port_type = LLVMInt16Type();
-        LLVMTypeRef func_type = LLVMFunctionType(LLVMInt8Type(), &port_type, 1, 0);
+        LLVMTypeRef port_type = LLVMInt16TypeInContext(codegen->context);
+        LLVMTypeRef func_type = LLVMFunctionType(LLVMInt8TypeInContext(codegen->context), &port_type, 1, 0);
         const char* asm_str = "inb $1, $0";
         const char* constraints = "=a,Nd,~{dirflag},~{fpsr},~{flags}";
         
@@ -367,7 +367,7 @@ ValueInfo* codegen_generate_port_io(CodeGenerator* codegen, TypeChecker* checker
             return NULL;
         }
         
-        LLVMTypeRef func_type = LLVMFunctionType(LLVMVoidType(), NULL, 0, 0);
+        LLVMTypeRef func_type = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), NULL, 0, 0);
         const char* asm_str = "outb $1, $0";
         const char* constraints = "Nd,a,~{dirflag},~{fpsr},~{flags}";
         
@@ -415,9 +415,9 @@ ValueInfo* codegen_generate_mmio_access(CodeGenerator* codegen, TypeChecker* che
     
     if (mmio->value == NULL) {
         // MMIO read
-        LLVMTypeRef load_type = (mmio->size == 1) ? LLVMInt8Type() :
-                               (mmio->size == 2) ? LLVMInt16Type() :
-                               (mmio->size == 4) ? LLVMInt32Type() : LLVMInt64Type();
+        LLVMTypeRef load_type = (mmio->size == 1) ? LLVMInt8TypeInContext(codegen->context) :
+                               (mmio->size == 2) ? LLVMInt16TypeInContext(codegen->context) :
+                               (mmio->size == 4) ? LLVMInt32TypeInContext(codegen->context) : LLVMInt64TypeInContext(codegen->context);
         
         result = LLVMBuildLoad2(codegen->builder, load_type, addr_val->llvm_value, "mmio_read");
         

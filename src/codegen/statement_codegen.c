@@ -2242,7 +2242,7 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         CallExprNode* call = (CallExprNode*)go_stmt->call;
         
         // Create promise wrapper function
-        LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+        LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
         LLVMValueRef create_promise_func = codegen_get_runtime_function(codegen, "js_create_promise");
         
         if (create_promise_func) {
@@ -4661,7 +4661,7 @@ int codegen_generate_asm_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
     AsmStmtNode* asm_stmt = (AsmStmtNode*)stmt;
     
     // Create inline assembly function type (void -> void for now)
-    LLVMTypeRef func_type = LLVMFunctionType(LLVMVoidType(), NULL, 0, 0);
+    LLVMTypeRef func_type = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), NULL, 0, 0);
     
     // Create inline assembly with the provided assembly code
     const char* constraints = "~{dirflag},~{fpsr},~{flags}"; // Basic x86 clobbers
