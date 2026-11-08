@@ -55,8 +55,3 @@ c-unsafe-string-api:src/types/types.c:320
 c-unsafe-string-api:src/types/types.c:322
 c-unsafe-string-api:src/types/types.c:324
 c-unsafe-string-api:src/types/types.c:325
-c-unsafe-string-api:src/types/types.c:568
-c-unsafe-string-api:src/types/types.c:569
-c-unsafe-string-api:src/types/types.c:571
-c-unsafe-string-api:src/types/types.c:572
-c-unsafe-string-api:src/types/types.c:574

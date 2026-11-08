@@ -124,6 +124,14 @@ tested, or shipped**, and none of it is part of the v1 surface.
   The `lsp-enhanced` Makefile target and the MISRA and safety baseline rows
   for this file were removed with it.
 
+- `type_application` (removed from `src/types/types.c` and `include/types.h`
+  2026-11-08, found by snare, CWE-131) — only `attic/src/types/hkt_auto_impl.c`
+  called it. Its name-size count skipped the `", "` separator and the `"?"`
+  fallback for an argument with no name, so `Vec<?>` wrote 7 bytes into 6.
+  Restoring the HKT code means restoring this function from git history and
+  fixing that count first. `TYPE_APPLICATION` stays: free, equals, and
+  `program_dump.c` still handle it.
+
 If you resurrect anything from here, it must come with a parse/type/run
 probe wired into `make verify-core` — that is the bar everything shipped
 has to meet.
