@@ -87,6 +87,8 @@ This project uses a Makefile for building:
   Parallel since P5.8: `GOLDEN_JOBS=<n>` overrides the default of nproc.
 - `make verify-core` - Full probe net, no CompCert required. Authoritative
   ccomp-free gate; safe for pre-push on any machine.
+- `make verify-nightly` - `verify` minus the CompCert pilot: `verify-core` plus
+  the podman reproducible-build gates. Run daily by `.github/workflows/nightly.yml`.
 - `make verify` - `verify-core` plus the CompCert bootstrap pilot
   (`v2-bootstrap-pilot`) plus the podman reproducible-build gates
   (`repro-build-probe`, `podman-image-probe`); requires an opam CompCert

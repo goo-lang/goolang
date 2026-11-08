@@ -3475,7 +3475,22 @@ VERIFY_ALL_DEPS := \
 HEAVY_DEPS       := v2-bootstrap-pilot repro-build-probe podman-image-probe
 VERIFY_CORE_DEPS := $(filter-out $(HEAVY_DEPS),$(VERIFY_ALL_DEPS))
 
-.PHONY: verify verify-core
+# verify-nightly = VERIFY_ALL_DEPS minus the CompCert bootstrap pilot. It is
+# what `verify` runs, less the one gate whose toolchain this project does not
+# install in CI: CompCert's licence permits non-commercial and research use
+# only, so installing it on a runner is a licence decision for the owner. The
+# set includes the podman reproducible-build gates, the sanitizer gates
+# (obj-header-tsan, far-transport-asan) and both analyser lanes
+# (analyzer-lanes-probe, findings-probe). Derived from VERIFY_ALL_DEPS, so it
+# cannot drift.
+NIGHTLY_EXCLUDED := v2-bootstrap-pilot
+VERIFY_NIGHTLY_DEPS := $(filter-out $(NIGHTLY_EXCLUDED),$(VERIFY_ALL_DEPS))
+
+.PHONY: verify verify-core verify-nightly
+
+verify-nightly: $(VERIFY_NIGHTLY_DEPS)
+	@echo ""
+	@echo "verify-nightly: ALL GREEN GATES PASSED (no CompCert pilot)"
 
 # Exits non-zero on any failure. Use this on cross-cutting changes;
 # use individual targets when iterating on a specific area.
