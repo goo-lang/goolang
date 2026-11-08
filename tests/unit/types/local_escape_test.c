@@ -27,8 +27,9 @@ typedef struct {
     const char*   name;
     bool          expected_escapes;
     // ADR 0005. Checked ONLY when check_reasons is set, so every row written
-    // before the reason set existed keeps its exact two-field initialiser and
-    // its exact assertion count.
+    // before the reason set existed keeps its assertion count. Those rows
+    // name both trailing fields (0, false) because -Wextra rejects an implicit
+    // omission (-Wmissing-field-initializers).
     EscapeReasons expected_reasons;
     bool          check_reasons;
 } LocalExpectation;
