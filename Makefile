@@ -87,7 +87,7 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 # Source files (lexer + parser + AST + types + error handling + test framework)
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
-AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
+AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/ast/json_writer.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
@@ -103,7 +103,10 @@ TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
 COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c
 CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(PACKAGE_SRCS) $(COMPTIME_SRCS)
-COMPILER_SRCS = $(COMPILERDIR)/goo.c $(COMPILERDIR)/test_discovery.c
+# program_dump.c is driver-layer on purpose: it reads the AST, the type table
+# and the release plan, so it lives beside goo.c rather than under src/ast/,
+# where it would be an upward edge into src/types and src/lexer.
+COMPILER_SRCS = $(COMPILERDIR)/goo.c $(COMPILERDIR)/test_discovery.c $(COMPILERDIR)/program_dump.c
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
 OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
@@ -195,8 +198,7 @@ TEST_RUNNER = $(BINDIR)/test_runner
 # each fabricated its results (hardcoded eval, demo menus, simulated PID,
 # canned metrics) or did not compile (gmod). Recover from git history if a
 # real implementation is ever built (see docs/2026-07-08-v1-roadmap.md
-# post-v1 list). lsp-enhanced stays pending the P5.11 open decision.
-LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
+# post-v1 list). lsp_enhanced.c moved to attic/src/ide/ (see attic/README.md).
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
@@ -3237,6 +3239,9 @@ VERIFY_ALL_DEPS := \
     safety-baseline-check \
     doc-claims-probe \
     probe-teeth-probe \
+    frontend-diff-selftest \
+    diagnostics-drift-selftest \
+    diagnostics-drift-probe \
     assert-corpus-selftest \
     golden-selftest \
     goo-check-probe \
@@ -3458,6 +3463,9 @@ VERIFY_ALL_DEPS := \
     nil-deref-probe \
     goo-test-probe \
     proof-cache-shell-probe \
+    json-writer-test \
+    program-dump-selftest \
+    program-dump-probe \
     archive-determinism-probe \
     repro-build-probe \
     compile-commands-current-probe \
@@ -4949,15 +4957,6 @@ $(ERGONOMIC_ERROR_TEST): $(TEST_UNIT_DIR)/error/ergonomic_errors_test.c $(ERROR_
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# Enhanced LSP Server with AST integration. Known broken link (undefined
-# parser_cleanup) — repairing it is the P5.11 open decision; kept because it
-# is real AST-integrated code, unlike the quarantined toy LSPs (P5.5).
-lsp-enhanced: $(LSP_ENHANCED_SERVER)
-
-$(LSP_ENHANCED_SERVER): $(SRCDIR)/ide/lsp_enhanced.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
-
 # Async Streams Test
 # async_streams.c calls into the structured-concurrency runtime (concurrent_block_*,
 # cancellation_token_*), which pulls in its transitive deps (transparent async,
@@ -5134,6 +5133,31 @@ obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(TEST_UNIT_DIR)/goo
 obj-header-test: obj_header_test
 	@echo "Running ARC object-header tests..."
 	./obj_header_test
+
+# Phase 0 (program dump): the writer is byte-exact by contract. Rows compare
+# whole strings, so a key reorder or an indent change is a red row, not a
+# style nit.
+json_writer_test: $(TEST_UNIT_DIR)/ast/json_writer_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRCDIR)/ast/json_writer.c
+	$(CC) $(CFLAGS) -o $@ $< $(SRCDIR)/ast/json_writer.c
+
+json-writer-test: json_writer_test
+	@echo "Running JSON writer tests..."
+	./json_writer_test
+
+# The frontend_diff harness itself has teeth: identical producers report 0,
+# one rewritten fixture reports 1 and is named. Without this a broken harness
+# could report "0 differ" between a real front end and an empty one.
+frontend-diff-selftest:
+	@bash scripts/frontend_diff.sh --self-test
+
+# The type checker's diagnostic strings, as a table the Haskell front end
+# reads. Reject fixtures match stderr substrings, so verbatim text is the
+# parity contract; this gate keeps the table equal to the source.
+diagnostics-drift-probe:
+	@bash scripts/diagnostics_drift_probe.sh
+
+diagnostics-drift-selftest:
+	@bash scripts/diagnostics_drift_probe.sh --self-test
 
 # ARC step 1, race gate. The ordinary build CANNOT see a data race on the
 # reference count: rows 12-14 of obj_header_test caught the non-atomic version
@@ -5395,6 +5419,15 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 # needed, so it is stable everywhere.
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
+
+# Phase 0 (front-end migration): the program dump is the interchange every
+# later differential gate compares. Determinism + structure over every
+# fixture, and an abort-by-name on any kind the walker does not cover.
+program-dump-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/program_dump_probe.sh
+
+program-dump-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/program_dump_probe.sh --self-test
 
 # proof_cache_create() must not hand its argument to a shell. It used to build
 # `mkdir -p %s` into a 512-byte buffer and call system(), so a ';' in the path

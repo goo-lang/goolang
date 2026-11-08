@@ -1049,7 +1049,7 @@ static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
     LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
     LLVMTypeRef argv_ty = LLVMPointerType(
         LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0), 0);
-    param_types = realloc(param_types, sizeof(LLVMTypeRef) * (size_t)(*param_count + 2));
+    param_types = xrealloc(param_types, sizeof(LLVMTypeRef) * (size_t)(*param_count + 2));
     param_types[*param_count]     = i32;
     param_types[*param_count + 1] = argv_ty;
     *param_count += 2;
@@ -1184,7 +1184,7 @@ static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* chec
         if (func_var && func_var->type->kind == TYPE_FUNCTION &&
             func_var->type->data.function.param_count > 0) {
             param_count = func_var->type->data.function.param_count;
-            param_types = malloc(sizeof(LLVMTypeRef) * param_count);
+            param_types = xmalloc(sizeof(LLVMTypeRef) * param_count);
             for (int i = 0; i < param_count; i++) {
                 param_types[i] = codegen_type_to_llvm(
                     codegen, func_var->type->data.function.param_types[i]);
