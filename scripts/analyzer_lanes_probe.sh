@@ -216,7 +216,8 @@ cppcheck_lane_verdict() {
 #                                                # the cppcheck lane alone
 #
 # Environment overrides:
-#   JOBS                  parallel workers for all three lanes (default: nproc)
+#   JOBS                  parallel workers for the gcc and clang-tidy lanes (default: nproc)
+#   CPPCHECK_JOBS         cppcheck workers for the real run (default: 1, see below)
 #   COMPILE_COMMANDS_GEN  compile-command generator (default: tools/gen_compile_commands.sh)
 #   COMPILE_COMMANDS_OUT  the capture itself (default: build/compile_commands.json)
 #   SARIF_GCC_DIR         gcc lane output dir (default: build/sarif/gcc)
@@ -234,6 +235,15 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 JOBS="${JOBS:-$(nproc)}"
+# Task 17b fix round 1 (M2 ruling): the real cppcheck run is -j1 by default.
+# misra.py's CTU pass reports some findings at the location of the first or
+# the last unit summary for a name, and with -jN the summary order follows
+# the completion order of cppcheck's workers. -j1 makes the order the
+# database order, so that class of run-to-run change cannot reach the
+# shrink-only gate. It does not remove every nondeterminism: a reviewer saw
+# one 5.8 pair change between two -j1 runs of the same input (cause unknown;
+# 6fb103ee removed its trigger). Cost: see task-17b-report.md, fix round 1.
+CPPCHECK_JOBS="${CPPCHECK_JOBS:-1}"
 COMPILE_COMMANDS_GEN="${COMPILE_COMMANDS_GEN:-$REPO_ROOT/tools/gen_compile_commands.sh}"
 COMPILE_COMMANDS_OUT="${COMPILE_COMMANDS_OUT:-$REPO_ROOT/build/compile_commands.json}"
 SARIF_GCC_DIR="${SARIF_GCC_DIR:-$REPO_ROOT/build/sarif/gcc}"
@@ -881,7 +891,7 @@ tidy_wall="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*wall=\([0-9.]*\).*/\1/p
 tidy_export_fixes="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*export_fixes=\([0-9]\).*/\1/p')"
 tidy_config_found="$(printf '%s\n' "$tidy_summary" | sed -n 's/.*config_found=\([0-9]\).*/\1/p')"
 
-cppcheck_out="$(run_cppcheck_lane "$COMPILE_COMMANDS_OUT" "$SARIF_CPPCHECK_DIR" "$JOBS" "$MISRA_JSON" "$MISRA_SUPPRESSIONS")"
+cppcheck_out="$(run_cppcheck_lane "$COMPILE_COMMANDS_OUT" "$SARIF_CPPCHECK_DIR" "$CPPCHECK_JOBS" "$MISRA_JSON" "$MISRA_SUPPRESSIONS")"
 cppcheck_summary="$(printf '%s\n' "$cppcheck_out" | grep '^CPPCHECK_SUMMARY ')"
 cppcheck_checked="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*checked=\([0-9]*\).*/\1/p')"
 cppcheck_exit="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*exit=\([a-z0-9]*\).*/\1/p')"
@@ -929,7 +939,7 @@ echo "$PROBE: cppcheck lane -- $CPPCHECK_VERSION, addon config $MISRA_JSON"
 # distinct files.
 cppcheck_pp="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*parse_failures=\([0-9?]*\).*/\1/p')"
 cppcheck_blind="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*blind_suppressions=\([0-9?]*\).*/\1/p')"
-echo "$PROBE: cppcheck lane -- $entry_count entries, $cppcheck_checked 'Checking' lines, exit=$cppcheck_exit, $cppcheck_results findings, ${cppcheck_pp:-?} parse failure(s), ${cppcheck_blind:-?} suppression(s) hiding one, ${cppcheck_wall}s wall, SARIF in $SARIF_CPPCHECK_DIR"
+echo "$PROBE: cppcheck lane -- $entry_count entries, $cppcheck_checked 'Checking' lines, exit=$cppcheck_exit, $cppcheck_results findings, ${cppcheck_pp:-?} parse failure(s), ${cppcheck_blind:-?} suppression(s) hiding one, ${cppcheck_wall}s wall at -j$CPPCHECK_JOBS, SARIF in $SARIF_CPPCHECK_DIR"
 
 # M2: the terminal verdict line carries the artefact -- the capture path
 # and all three SARIF directories -- the way
