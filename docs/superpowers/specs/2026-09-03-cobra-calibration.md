@@ -60,9 +60,12 @@ commit resolves both, with the reason:
   `review`. No sanitizer reports a write to a read-only stream, so the main
   table becomes `review`.
 
-Cobra's `misra2012.def` labels rule 18.6 findings with the caption
-`M12_R18_5`, a naming bug in Cobra's file. The harness counts 18.6 by that
-caption and the spec records the bug for an upstream report.
+Cobra's `misra2012.def` has a caption mix-up for rules 18.5 and 18.6.
+Rule 18.6 findings are in set `M12_R18_6`. The set `M12_R18_5` carries rule
+18.6's caption text (`misra2012.def` lines 630-643). The harness counts by set
+name, not by caption text. Measured 2026-11-08 (see
+`docs/misra/cobra-calibration.md`, "Defects found"). The spec records the bug
+for an upstream report.
 
 ## 4. The instrument
 

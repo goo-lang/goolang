@@ -1,7 +1,7 @@
 # Cobra calibration results
 
 Spec: [docs/superpowers/specs/2026-09-03-cobra-calibration.md](../superpowers/specs/2026-09-03-cobra-calibration.md).
-Status: measured. No Cobra gate exists; task 13 decides.
+Status: measured. The track is closed by the user's decision of 2026-11-08 (task 13). No Cobra gate exists. Rule 3.2 has a grep gate instead, `misra-r3-2-probe`.
 
 Every number below has one instrument: Cobra 5.4 (13 April 2026), built from
 commit `eebff89637542b0bfdc76739fbad4f6a365c51ae`, measured on 2026-11-08, over the 68
@@ -16,6 +16,21 @@ git-tracked `src/*.c` files at repo commit `a42a39d6`. The controls are in
   with `C_BASE` set to the Cobra `rules/` directory.
 - `src/`: `cobra -terse -f misra2012 -F <68 tracked files> -I<repo>/include
   -I<repo> -D_GNU_SOURCE`, again from a scratch directory.
+- Proof that Cobra read each control file: rule `M12_R4_6` (it fires on every
+  `int`) fired on each control. A run with no `M12_R4_6` finding is a harness
+  failure, not a clean file.
+- Calibration commands (the scratch Cobra prefix is `$S`; `C_BASE` is `$S/src/rules`):
+
+  ```sh
+  export PATH=$S/prefix/bin:$PATH C_BASE=$S/src/rules
+  mkdir -p "$S/build/run" && cd "$S/build/run"     # Cobra writes result files into the cwd
+  cobra -terse -f misra2012 /abs/path/tests/misra/cobra/r<N>_<M>_bad.c   # then _ok.c
+  # findings are in _Misra2012_.txt; count the line "M12_R<N>_<M>, <k> patterns"
+  ```
+
+  This runs for each pair `2_1 2_6 3_2 5_3 17_4 18_1 18_2 18_3 18_6` and for the
+  four `*_known_bad_report.c` files. Check that the file exists first: a wrong
+  path aborts Cobra, and an empty result then reads as "no finding".
 - A rule is counted by its pattern-set name (`M12_R<N>_<M>` in `ps list`), not
   by caption text. Reason: see "Defects found" below.
 
@@ -154,6 +169,11 @@ cannot replace the ratchet. It runs in 0.3 s.
   read_stdin`), and a harness that only greps for findings then reads "no
   finding". A harness must test that the file exists and that a known rule
   (4.6 here, which fires on every `int`) fires.
+
+## Decision (task 13)
+
+Closed on 2026-11-08 by the user: no Cobra gate, Cobra not vendored, and a grep
+gate for Rule 3.2 (`misra-r3-2-probe`, `scripts/misra_r3_2_probe.sh`).
 
 ## Decision input for task 13
 

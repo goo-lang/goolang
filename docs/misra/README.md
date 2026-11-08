@@ -240,7 +240,7 @@ The essential type model. Real value, but the largest and least mechanical group
 | Rule 2.6 - A function should not contain unused label declarations | Advisory | Adopted, enforced by other means | - | no |
 | Rule 2.7 - There should be no unused parameters in functions | Advisory | Adopted, fix backlog (P2) | 96 | yes |
 | Rule 3.1 - The character sequences /* and // shall not be used within a comment | Required | Adopted, fix backlog (P1) | 6 | yes |
-| Rule 3.2 - Line-splicing shall not be used in // comments | Required | Adopted, enforced by other means | - | no |
+| Rule 3.2 - Line-splicing shall not be used in // comments | Required | Adopted, enforced by `misra-r3-2-probe` (`scripts/misra_r3_2_probe.sh`, grep, bar 0) | 0 (grep, `git ls-files` src/ and include/, 166 files, 2026-11-08) | no |
 | Rule 4.1 - Octal and hexadecimal escape sequences shall be terminated | Required | Adopted, fix backlog (P1) | 41 | yes |
 | Rule 4.2 - Trigraphs should not be used | Advisory | Adopted, clean | - | yes |
 | Rule 5.1 - External identifiers shall be distinct | Required | Adopted, clean | - | yes |
@@ -467,6 +467,23 @@ Read these before trusting any number this tool produces.
   current `src/` tree only, hence its 40 — see
   `scripts/pthread-return-baseline.txt` for the full explanation and the
   per-file baseline.
+- **The Cobra track is closed (user decision, 2026-11-08).** Cobra 5.4
+  (13 April 2026), built from commit `eebff89637542b0bfdc76739fbad4f6a365c51ae`
+  and run on 2026-11-08 over the 68 tracked `src/*.c` files at repo commit
+  `a42a39d6`, passed both controls (the violating file reported, the compliant
+  twin silent) for 1 of 9 rules: Rule 3.2. The other eight missed their own
+  violating example. The cause, from the calibration: Cobra's rule patterns
+  match narrow token shapes, for example a cast followed by a plus for Rule
+  18.1, and none tracks a value or an object. Rule 3.2 had 0 reports on
+  `src/`, so a grep expresses the same check. `misra-r3-2-probe` is that grep.
+  No Cobra is vendored and no Cobra gate exists. Full results:
+  [cobra-calibration.md](cobra-calibration.md). Spec:
+  [2026-09-03-cobra-calibration.md](../superpowers/specs/2026-09-03-cobra-calibration.md).
+- **Cobra `-N` hangs on a rule file.** With Cobra 5.4 (`eebff896`), `-N`
+  parallelism hung on a rule file (observed in task 12, 2026-11-08). The Cobra
+  book, second edition, says `-N` serves only the
+  token read and interactive queries, and that agrees with the hang. The
+  calibration ran single-threaded and never used `-N`.
 - **Three `src/types/escape_core.c` pairs entered the baseline on
   2026-09-03 with no code change**: Rule 10.4 (9 -> 13), Rule 10.8 (new, 2)
   and Rule 12.2 (new, 2), all at the same two lines (`GOO_ASSERT((why &

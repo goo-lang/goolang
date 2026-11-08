@@ -41,7 +41,7 @@ Enforcement mechanisms in this project:
 | Rule 2.6 - A function should not contain unused label declarations | Advisory | Adopted, enforced by other means | review |
 | Rule 2.7 - There should be no unused parameters in functions | Advisory | Adopted, fix backlog | cppcheck |
 | Rule 3.1 - The character sequences /* and // shall not be used within a comment | Required | Adopted, fix backlog | cppcheck |
-| Rule 3.2 - Line-splicing shall not be used in // comments | Required | Adopted, enforced by other means | compiler |
+| Rule 3.2 - Line-splicing shall not be used in // comments | Required | Adopted, enforced by other means | `misra-r3-2-probe` (grep) |
 | Rule 4.1 - Octal and hexadecimal escape sequences shall be terminated | Required | Adopted, fix backlog | cppcheck |
 | Rule 4.2 - Trigraphs should not be used | Advisory | Adopted, clean | cppcheck |
 | Rule 5.1 - External identifiers shall be distinct | Required | Adopted, clean | cppcheck |
