@@ -147,13 +147,31 @@ run_cppcheck_lane() { # $1 = compile_commands.json, $2 = sarif out dir, $3 = job
 	entry_count="$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$cc_path")"
 	local t0 t1 wall
 	t0="$(date +%s.%N)"
+	# --output-format=sarif is newer than cppcheck 2.13 (Ubuntu 24.04), which
+	# rejects it. Without it, write --xml and convert; a failed scan or a
+	# failed conversion leaves no SARIF and the verdict fails on the exit.
+	local fmt_args=(--output-format=sarif "--output-file=$sarif_out") xml_out=""
+	if ! cppcheck --help 2>&1 | grep -q -- '--output-format'; then
+		xml_out="$out_dir/cppcheck.xml"
+		rm -f "$sarif_out" "$xml_out"
+		fmt_args=(--xml "--output-file=$xml_out")
+	fi
+	# cppcheck 2.13 rejects a blank line in a suppression list ("Failed to add
+	# suppression. No id."); newer versions skip it. Feed cppcheck a copy
+	# without blank lines. The checker below still reads the original list.
+	local cpp_supp="$out_dir/suppressions.cppcheck.txt"
+	grep -Ev '^[[:space:]]*(#.*)?$' "$suppressions" >"$cpp_supp" || true
 	MISRA_JSON="$misra_json" "$REPO_ROOT/docs/misra/tools/scan.sh" "$run_log" \
 		-j "$jobs" \
-		"--suppressions-list=$suppressions" \
+		"--suppressions-list=$cpp_supp" \
 		"--project=$cc_path" \
-		--output-format=sarif \
-		"--output-file=$sarif_out" \
+		"${fmt_args[@]}" \
 		-- >/dev/null
+	if [ -n "$xml_out" ]; then
+		if ! python3 "$REPO_ROOT/tools/cppcheck_xml_to_sarif.py" "$xml_out" "$sarif_out" >>"$run_log" 2>&1; then
+			echo "SCAN_EXIT=conversion-failed" >>"$run_log"
+		fi
+	fi
 	t1="$(date +%s.%N)"
 	wall="$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')"
 	# scan.sh's own last command is always an `echo`, so ITS exit status
@@ -351,6 +369,14 @@ def run_one(e):
     # compiler invocation every time.
     env = dict(os.environ)
     env["CCACHE_DISABLE"] = "1"
+    # Where gcc writes the SARIF depends on its version: gcc 15+ puts it
+    # beside the object (objs_dir), gcc 14 puts it in the compiler's cwd.
+    # Both names are "<key>.sarif". Clear stale copies first so a leftover
+    # cannot pass for fresh output.
+    gen_candidates = [os.path.join(objs_dir, key + ".sarif"), os.path.join(cwd, key + ".sarif")]
+    for c in gen_candidates:
+        if os.path.isfile(c):
+            os.remove(c)
     t0 = time.time()
     r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env)
     dt = time.time() - t0
@@ -358,11 +384,12 @@ def run_one(e):
     # (obj_stem here), and the SARIF it writes is "<dumpbase><source
     # extension>.sarif" -- which is exactly "<obj_stem><ext>.sarif" ==
     # "<key>.sarif", since obj_stem + ext == key by construction above.
-    gen_sarif = os.path.join(objs_dir, key + ".sarif")
     if r.returncode != 0:
         return (src, dt, r.returncode, 0, "", r.stderr[-2000:])
-    if not os.path.isfile(gen_sarif):
-        return (src, dt, 2, 0, "", f"no sarif produced at {gen_sarif}")
+    found = [c for c in gen_candidates if os.path.isfile(c)]
+    if not found:
+        return (src, dt, 2, 0, "", "no sarif produced at " + " or ".join(gen_candidates))
+    gen_sarif = found[0]
     final_sarif = os.path.join(sarif_dir, key + ".sarif")
     os.replace(gen_sarif, final_sarif)
     with open(final_sarif, encoding="utf-8") as f:
@@ -714,10 +741,10 @@ EOF
 
 	# Task 17b fix round 1: a syntaxError is a parse failure too. The first
 	# fixture set holds broken.c, which does not parse, so its run above must
-	# be RED and must name broken.c.
+	# be RED and must name broken.c. cppcheck 2.13 reports it as internalAstError, 2.22 as syntaxError.
 	if ! cppcheck_lane_verdict "$cppcheck_summary" \
 		&& printf '%s\n' "$cppcheck_summary" | grep -q ' exit=0 ' \
-		&& printf '%s\n' "$cppcheck_out" | grep -qE '^CPPCHECK_PARSE_FAILURE [^ ]*broken\.c:[0-9]+ syntaxError '; then
+		&& printf '%s\n' "$cppcheck_out" | grep -qE '^CPPCHECK_PARSE_FAILURE [^ ]*broken\.c:[0-9]+ (syntaxError|internalAstError) '; then
 		echo "    ok: a unit with a syntaxError is RED, although cppcheck exits 0"
 		printf '%s\n' "$cppcheck_out" | grep '^CPPCHECK_PARSE_FAILURE ' | sed 's/^/        /'
 	else
