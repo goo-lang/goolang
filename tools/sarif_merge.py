@@ -71,8 +71,9 @@ WHITESPACE_RE = re.compile(r"\s+")
 
 # GitHub code scanning rejects an upload above these limits. Task 18 checks
 # them here, before the upload step, so a rejection never appears first on
-# GitHub. Source: docs.github.com, "SARIF support for code scanning",
-# "Validating your SARIF file" (read 2026-11-08).
+# GitHub. The values come from the task 18 brief, which cites GitHub's
+# "SARIF support for code scanning" documentation. Nobody re-read that page
+# when this was written.
 MAX_RUNS = 20
 MAX_RESULTS_PER_RUN = 25000
 MAX_GZIP_BYTES = 10 * 1024 * 1024
