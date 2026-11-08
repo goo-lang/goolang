@@ -86,7 +86,6 @@ static void print_version(void);
 static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode);
 static bool compile_file(const char* filename, CompilerOptions* options);
 static char* read_file(const char* filename);
-static bool write_file(const char* filename, const char* content);
 static char* get_output_filename(const char* input_file, const char* output_file,
                                  const char* ext);
 static int run_program(const char* path, char** args, int arg_count, bool verbose);
@@ -521,18 +520,6 @@ static char* read_file(const char* filename) {
     
     fclose(file);
     return buffer;
-}
-
-static bool write_file(const char* filename, const char* content) {
-    FILE* file = fopen(filename, "w");
-    if (!file) {
-        fprintf(stderr, "Error: Cannot create file: %s\n", filename);
-        return false;
-    }
-    
-    fprintf(file, "%s", content);
-    fclose(file);
-    return true;
 }
 
 static char* get_output_filename(const char* input_file, const char* output_file,
