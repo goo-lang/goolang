@@ -164,10 +164,25 @@ distinct verdict when exceeded:**
 | `SIM_THREADS_MAX` | 17 | `GOO_MAX_OS_THREADS` (16) workers plus main |
 | `SIM_STACK_BYTES` | 262,144 | one worker's scheduler frames; goroutine stacks are the runtime's own |
 | `SIM_WAITERS_MAX` | 17 | one entry per thread per condvar |
-| `SIM_MUTEXES_MAX` | 64 | scheduler mutex plus channel mutexes in the programs under test |
+| `SIM_MUTEXES_MAX` | 16,384 | LIVE mutexes: the scheduler mutex plus one per channel, and no program under test frees a channel; `fanin_stress` needs 8,001 (one per batch), and ordinary Go programs make many channels. A power of two with headroom. Was 64 until Task 7 fix round 1 |
 | `SIM_TRACE_ENTRIES` | 65,536 | 32 bytes each, 2 MiB; older entries roll off, the count is kept |
 | `GOO_SIM_STEP_LIMIT` (env) | default 1,000,000 | the run bound |
 | `GOO_SIM_TIME_LIMIT_NS` (env) | default 10 s virtual | the clock bound |
+
+**The mutex handle (Task 7 fix round 1, 2026-11-08).** The first cut found
+a mutex by a search of the whole table at every seam call; at 16,384 slots
+that costs 256 times the 64-slot search. Now each `goo_mutex_t` carries a
+tag -- a magic number, its slot index and the slot's generation -- in the
+bytes of its `pthread_mutex_t`, which only `goo_os_posix.c` uses (the sim
+archive never links it), so `struct goo_mutex` does not change. A lookup is
+O(1) and checks, each on its own line, the magic, the index range, that the
+slot names this address, and the generation. A free clears the magic and
+changes the slot's generation; a new mutex takes the head of a free list or
+the next untouched slot, so no seam call walks the table. A handle the seam
+did not make, a freed handle, a copy at another address, and stale bytes
+written back at a reused address each read `unknown-mutex`
+(`sim_entry_test` cases `unknown-mutex`, `freed-mutex`, `copied-mutex`,
+`stale-generation`). No trace record names a slot or a handle.
 
 ### Seeded preemption (Task 6a, 2026-11-08)
 

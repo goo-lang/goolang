@@ -24,7 +24,7 @@ files so that no call escapes the seam. Whether a simulator gate joins
 | `sim_os.c` | the seam (`goo_os.h`) over the simulator, plus the invariant checks |
 | `sim_main.c` | process entry: reads the environment, runs the program's `main` as coroutine 0 |
 | `sim_sched_test.c` | scheduler tests T1-T9 (`make sim-sched-test`) |
-| `sim_entry_test.c`, `sim_entry_test.sh` | process-entry facts and the 12 invariant cases (`make sim-entry-test`) |
+| `sim_entry_test.c`, `sim_entry_test.sh` | process-entry facts and the 15 violation cases (`make sim-entry-test`) |
 | `sim_invariant_test.c` | a `sync.Mutex` unlocked on a thread that does not own it; the driver's self-test part (b) |
 | `evidence/` | the scripts and logs behind the numbers below (see `evidence/README.md`) |
 
@@ -128,7 +128,10 @@ The invariants (`sim_os.c`), by their `detail=` name: `unlock-not-owner`
 both), `lock-order` (a thread that holds the scheduler mutex takes no other
 mutex), `exit-holding-mutex`, `free-held-mutex`, `free-cond-with-waiters`,
 `join-detached`, `join-self`, `unknown-mutex`. `make sim-entry-test` drives
-each to its own verdict.
+each to its own verdict. `unknown-mutex` has four cases: a mutex the seam
+never made, a freed handle, a copy of a live mutex at another address, and
+the bytes of a freed mutex written back at the address a new mutex reuses
+(see "The mutex handle" below).
 
 **`unlock-not-owner` from a Go program is a TRUE finding.** `sync.Mutex` is
 a `PTHREAD_MUTEX_DEFAULT` mutex owned by the worker OS thread that locked it.
@@ -144,12 +147,25 @@ the user outside this plan.
 | `SIM_THREADS_MAX` | 17 (16 workers + main) | `limit-threads` |
 | `SIM_STACK_BYTES` | 262,144 per coroutine | no verdict of its own |
 | `SIM_WAITERS_MAX` | 17 per wait object | none: a `static_assert` keeps it at least `SIM_THREADS_MAX`, so it cannot fill |
-| `SIM_MUTEXES_MAX` | 64 LIVE mutexes | `limit-mutexes` |
+| `SIM_MUTEXES_MAX` | 16,384 LIVE mutexes (64 until Task 7 fix round 1) | `limit-mutexes` |
 | `SIM_TRACE_ENTRIES` | 65,536 records; older records roll off, the count is kept | none |
 
 A mutex slot is freed only by `goo_mutex_free`. No program under test
 frees a channel, and codegen emits no `goo_chan_free`, so every channel a
-program makes holds a slot until the process ends. See the `fanin_stress` row below.
+program makes holds a slot until the process ends. `fanin_stress` makes one
+channel per batch, 8,000 in all, so it needs 8,001 slots; the first cut's 64
+stopped it in batch 64 on every seed. 16,384 is a power of two with
+headroom, because ordinary Go programs make many channels.
+
+**The mutex handle.** Each `goo_mutex_t` carries a tag -- a magic number,
+its slot index and the slot's generation -- in the bytes of its
+`pthread_mutex_t`, which only production uses; `struct goo_mutex` does not
+change. A lookup is O(1): it checks the magic, the index range, that the
+slot names this address, and the generation, each on its own line, and any
+failure reads `unknown-mutex`. A free clears the magic and changes the
+generation; a new mutex takes the head of a free list or the next untouched
+slot. No seam call walks the table, so 16,384 slots cost a lock what 64 did.
+The `limit-mutexes` case makes 16,385 mutexes in about 3 ms.
 
 ## Read a trace
 
@@ -220,32 +236,48 @@ not abort on any seed.
 | `deadlock_poll_test` (`--expect runtime-deadlock-abort`) | 1..1000 | default | runtime-deadlock-abort 1000 | 10.50 | 388 | 31.9 ms | none |
 | `mt_scheduler_stress` | 1..1000 | default | pass 1000 | 36.99 | 32,136 | 0.90 s | none |
 | `chan_mt_stress` | 1..1000 | default | pass 1000 | 24.96 | 28,189 | 0.78 s | none |
-| `fanin_stress` | 1..1000 | default | **limit-mutexes 1000** (every replay identical) | 17.24 | 8,774 | 0.37 s | **`SIM_MUTEXES_MAX`** |
+| `fanin_stress` | 1..1000 | default | **time-limit 1000** (every replay identical) | 232.04 | 374,266 (min 332,390) | 10.0 s (the limit) | **`GOO_SIM_TIME_LIMIT_NS`** |
 | `deadlock_poll_test` (`--expect runtime-deadlock-abort`) | 1..256 | ppm 0 | runtime-deadlock-abort 256 | 11.36 | 101 | | none |
 | `mt_scheduler_stress` | 1..256 | ppm 0 | pass 256 | 38.77 | 28,449 | | none |
 | `chan_mt_stress` | 1..256 | ppm 0 | pass 256 | 25.72 | 23,480 | | none |
-| `fanin_stress` | 1..256 | ppm 0 | **limit-mutexes 256** (every replay identical) | 18.63 | 6,949 | | **`SIM_MUTEXES_MAX`** |
+| `fanin_stress` | 1..256 | ppm 0 | **step-limit 256** (every replay identical) | 685.30 | 1,000,001 (the limit) | | **`GOO_SIM_STEP_LIMIT`** |
 
-Commit `8233d02f`. Instrument: `bash scripts/sim_probe.sh <program> --seeds
-<n> [--expect runtime-deadlock-abort]`, with `GOO_SIM_PREEMPT_PPM=0` for the
-ppm-0 rows. Max virtual time: the largest `now_ns` in the trace headers of
+Commit `8233d02f`, except the two `fanin_stress` rows: commit `1c7cd52d`
+(16,384 mutex slots). Instrument: `bash scripts/sim_probe.sh <program>
+--seeds <n> [--expect runtime-deadlock-abort]`, with `GOO_SIM_PREEMPT_PPM=0`
+for the ppm-0 rows. At `1c7cd52d`, `mt_scheduler_stress` and
+`chan_mt_stress` pass 256 of 256 (max 31,910 and 28,189 steps), and the
+pass bar gives the same numbers: the mutant aborts on 33 of 256 seeds, first
+seed 18, and the corrected runtime passes 256 of 256 (max 659 steps). Max virtual time: the largest `now_ns` in the trace headers of
 seeds 1..1000, one direct run per seed. The deadlock_poll ms/seed is high
 for its step count because every seed exits non-zero, so every seed runs
 twice (the replay) with the replay's extra forks; one direct run of a seed
 takes about 1 ms.
 
-**`fanin_stress` never reaches its check.** It makes a new unbuffered
-channel for each of its 8,000 batches and frees none, and each channel holds
-one mutex for the life of the process. Seeds 1, 2, 500 and 1000 under
-`gdb -nx` with a `dprintf` on each function give the same counts: 65 calls
-of `goo_mutex_new` (the scheduler mutex, 63 channel mutexes, and a 64th that
-the full table refuses) and 64 of `goo_make_chan`. `chan_mt_stress`, the
-positive control, shows 50 of `goo_make_chan` for its 50 batches. The count
-does not depend on the interleaving, so every seed stops in batch 64 of
-8,000, after 63 batches whose sums held: the program was making progress,
-and the stop is the table, not the runtime. The simulator therefore says
-nothing yet about the rendezvous lost-wakeup shape that `fanin_stress` is
-for. `chan_mt_stress` uses 51 of the 64 slots.
+**`fanin_stress` does not finish inside the default limits.** It makes a
+new unbuffered channel for each of its 8,000 batches and frees none.
+
+- At `8233d02f` (64 mutex slots) every seed stopped at `limit-mutexes` in
+  batch 64: `gdb -nx` with a `dprintf` on seeds 1, 2, 500 and 1000 counted
+  65 calls of `goo_mutex_new` (the scheduler mutex, 63 channels, and a 64th
+  that the full table refused) and 64 of `goo_make_chan`. The positive
+  control, `chan_mt_stress`, showed 50 of `goo_make_chan` for its 50
+  batches. The table now holds 16,384 live mutexes.
+- At `1c7cd52d` every seed reaches a run limit, and the program is still
+  making progress when it does. Each batch costs virtual time, because
+  `goo_scheduler_wait` polls with a 0.5 ms sleep
+  (`src/runtime/concurrency.c:185`). At ppm 0 a batch costs exactly 1 ms
+  (two polls), so seed 1 completes 7,673 of 8,000 batches before the step
+  limit (`gdb` count). At the default model the preemptions add more, about
+  3.16 ms per batch, so seed 1 completes 3,167 batches before the time limit.
+  The first 63 batches took 2.96 ms each, so the rate does not fall.
+- DIAGNOSTIC ONLY, with the limits raised through the environment
+  (`GOO_SIM_TIME_LIMIT_NS=100000000000 GOO_SIM_STEP_LIMIT=10000000`, not a
+  change to any default): seeds 1..8 pass at both models and print the
+  program's OK line. The default model needs 29.7 to 30.6 s virtual and
+  1,098,155 to 1,108,417 steps. ppm 0 needs 8.0 s and 1,050,041 to 1,051,687
+  steps. So both default limits are too small for this program; it is not a
+  livelock. The defaults stay as they are until the controller decides.
 
 ### The nesting measurement (Task 4, approach A)
 
