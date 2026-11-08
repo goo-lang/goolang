@@ -23,7 +23,11 @@ CC = $(CCACHE) gcc
 # GOO_ASSERT_OFF. GOO_COVERAGE keeps its own no-op / constant carve-out, so
 # the coverage denominator is unaffected. See include/goo_assert.h for the
 # four build modes and the reason for the default.
-CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h
+# WERROR stops the build on a warning (Power of Ten rule 10). It is a variable so
+# a person with a newer compiler that adds warnings can build with `make WERROR=`.
+# CI and verify-core use the default.
+WERROR ?= -Werror
+CFLAGS = -Wall -Wextra $(WERROR) -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
 # Incremental, header-aware builds ("only rebuild what changed"). -MMD writes a
@@ -5567,8 +5571,8 @@ misra-r3-2-probe:
 # green.
 .PHONY: warning-count-probe
 warning-count-probe: $(NNG_LIB)
-	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh
-	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(CFLAGS)" bash scripts/warning_count_probe.sh --self-test
+	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(filter-out -Werror,$(CFLAGS))" bash scripts/warning_count_probe.sh
+	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(filter-out -Werror,$(CFLAGS))" bash scripts/warning_count_probe.sh --self-test
 
 # Vendored SPIN (task 4 of the 2026-09-02 verification tooling plan; Track
 # B's Promela gate over the runtime deadlock detector, tasks 5-7, is not yet

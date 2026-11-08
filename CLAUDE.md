@@ -83,6 +83,9 @@ This project uses a Makefile for building:
   real unit suites (param/block/local escape, release decision, obj header,
   arena routing, AST free-leak) are standalone targets, all in `verify-core`.
 - `make clean` - Clean build artifacts
+- `WERROR` - CFLAGS carries `-Werror` through `WERROR ?= -Werror`, so a C
+  warning stops the build. CI and `verify-core` use the default. A newer
+  compiler may add warnings: build with `make WERROR=` to drop the flag.
 - `make test-golden` / `make test-golden-o2` - Golden fixture suites (-O0/-O2).
   Parallel since P5.8: `GOLDEN_JOBS=<n>` overrides the default of nproc.
 - `make verify-core` - Full probe net, no CompCert required. Authoritative

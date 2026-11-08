@@ -159,6 +159,10 @@ KEY="gcc-${GCC_MAJOR:-unknown}"
 # compile anything (no -I, no -include), so the self-test must use the full
 # value below, never FLAGS.
 FULL_CFLAGS_LINE="$(grep -E '^CFLAGS[[:space:]]*=' "$REPO_ROOT/Makefile" | head -n1 | sed 's/^CFLAGS[[:space:]]*=[[:space:]]*//')"
+# CFLAGS names $(WERROR) since Task 22. This probe COUNTS warnings, so it must
+# see them as warnings: drop the make variable from the standalone line here, and
+# pass WERROR= to the sandboxed make below.
+FULL_CFLAGS_LINE="${FULL_CFLAGS_LINE//\$(WERROR)/}"
 FLAGS="$(printf '%s\n' "$FULL_CFLAGS_LINE" | grep -oE -- '-Wall|-Wextra|-std=[A-Za-z0-9]+' | tr '\n' ' ' | sed 's/ $//')"
 [ -n "$FLAGS" ] || FLAGS="-Wall -Wextra -std=c23"
 [ -n "$FULL_CFLAGS_LINE" ] || FULL_CFLAGS_LINE="-Wall -Wextra -std=c23 -g -I. -Iinclude -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h"
@@ -253,7 +257,7 @@ run_rebuild() { # sets C_COUNT, BUILD_RC; writes $LOGFILE
 	mkdir -p "$sandbox_abs"
 	( cd "$REPO_ROOT" && make -j"$jobs" \
 		BUILDDIR="$SANDBOX_BUILDDIR" BINDIR="$SANDBOX_BINDIR" LIBDIR="$SANDBOX_LIBDIR" \
-		CC="$CC_" lexer ) >"$LOGFILE" 2>&1
+		WERROR= CC="$CC_" lexer ) >"$LOGFILE" 2>&1
 	BUILD_RC=$?
 
 	after_bin="$(hash_of "$real_bin")"
