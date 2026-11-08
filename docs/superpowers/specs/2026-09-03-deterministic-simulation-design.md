@@ -59,8 +59,15 @@ refuses to run with `GOO_TEST_WAKE_DELAY_NS` unset in the PRODUCTION build,
 because mutant 2 of `scripts/false_deadlock_probe.sh --self-test` needs the
 refusal. The sim build compiles the refusal out: the Makefile's
 `build/sim/%` rule for `tests/concurrency` sets `GOO_SIM_BUILD`.
-`scripts/sim_probe.sh` still sets the hook to 1 ns when it is unset, and its
-own self-test builds without the define.
+`scripts/sim_probe.sh` (Task 6, commit `a7135bfe`) runs the program with the
+hook UNSET by default. A `GOO_TEST_WAKE_DELAY_NS` in the caller's
+environment passes through, and the verdict line then names it as
+`HAND-SET`, so a run with a hand-set window cannot pass for an unset one.
+The driver's self-test builds its mutant with `-DGOO_SIM_BUILD`, the flags
+of the `build/sim/%` rule, and it clears every `GOO_SIM_*` variable and the
+hook from its environment first. (Corrected in Task 7: an earlier text of
+this paragraph said that the driver set the hook to 1 ns and that its
+self-test built without the define. Both were true only of a draft.)
 
 **Measured (Task 6a fix round 1, the committed program, hook unset, default
 model, seeds 1..256).** The mutant aborts on 33 seeds, the first at seed 18
