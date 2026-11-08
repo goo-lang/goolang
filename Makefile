@@ -5566,6 +5566,21 @@ runtime-seam-probe:
 runtime-seam-selftest:
 	@bash scripts/runtime_seam_probe.sh --self-test
 
+# The simulator's scheduler, virtual clock and trace ring (task 4 of the
+# 2026-09-03 deterministic-simulation plan), built with the runtime's CFLAGS
+# and NO runtime archive: tests/sim/sim_sched.c depends on libc and ucontext
+# only. T3 in the test is the spec's section 9 step 2, the nesting
+# measurement that selects approach A over the fallback B. The trace
+# directory is cleared first, so a trace from an earlier run can never stand
+# in for one this run failed to write.
+SIM_BUILD_DIR = build/sim
+.PHONY: sim-sched-test
+sim-sched-test:
+	@mkdir -p $(SIM_BUILD_DIR)
+	$(CC) $(CFLAGS) tests/sim/sim_sched.c tests/sim/sim_sched_test.c -o $(SIM_BUILD_DIR)/sim_sched_test
+	@rm -rf $(SIM_BUILD_DIR)/sched_test_traces
+	@$(SIM_BUILD_DIR)/sim_sched_test $(SIM_BUILD_DIR)/sched_test_traces
+
 # Vendored SPIN (task 4 of the 2026-09-02 verification tooling plan; Track
 # B's Promela gate over the runtime deadlock detector, tasks 5-7, is not yet
 # on this branch). Builds or finds a spin >= 6.5 with no network read --
