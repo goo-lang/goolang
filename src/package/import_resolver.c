@@ -46,9 +46,12 @@ const char* goo_gooroot_dir(void) {
     // extra "goostd" segment — so the env branch must append it too.
     if (env && env[0] != '\0') { snprintf(buf, sizeof(buf), "%s/goostd", env); return buf; }
 #ifdef __linux__
-    char exe[4096];
+    // exe is half the size of buf so "<exe>/../lib/..." always fits in buf.
+    // A path that fills exe may be cut short by readlink, so it is refused
+    // instead of being used truncated.
+    char exe[2048];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0) {
+    if (n > 0 && n < (ssize_t)sizeof(exe) - 1) {
         exe[n] = '\0';
         char* slash = strrchr(exe, '/');        // dir-of-exe
         if (slash) {

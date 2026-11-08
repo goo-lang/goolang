@@ -4142,7 +4142,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                            LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(ctx), 0)), d_chan);
         } else {
             // Regular case
-            char case_name[32];
+            char case_name[40];  // "select_case_" plus a 20-digit size_t plus NUL
             snprintf(case_name, sizeof(case_name), "select_case_%zu", case_index);
             case_blocks[case_index] = LLVMAppendBasicBlockInContext(ctx, codegen->current_function, case_name);
 
