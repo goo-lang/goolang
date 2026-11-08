@@ -2,7 +2,11 @@
 # sim_probe.sh — run one program under the simulator over N seeds, one process
 # per seed, replay every non-pass, and report by verdict.
 # Usage: scripts/sim_probe.sh <program> --seeds N [--first-seed K] [--expect VERDICT] [--fault-spurious-wake] [--fault-thread-create]
-#        scripts/sim_probe.sh --self-test
+#        scripts/sim_probe.sh --self-test [--cc "<compiler command>"]
+#
+# Exit 2 is the probe's OWN tool failure (usage, build, broken pipeline). A
+# seed that exits 2 is the verdict runtime-deadlock-abort; it makes the probe
+# exit 1 or 0 by the rules below, never 2.
 #
 # Task 6 of the 2026-09-03 deterministic-simulation plan
 # (docs/superpowers/specs/2026-09-03-deterministic-simulation-design.md,
@@ -23,10 +27,20 @@
 #
 # THE TRACE DIR is a fresh mktemp directory, never the repo. A trace is
 # written on every ending, a pass included, and a full ring is about 2.5 MB of
-# text, so the trace of each passing seed is deleted after its run; the trace
-# of each non-pass seed is kept, because replay and the operator both read it.
-# The summary reports the peak size of the trace dir. An all-pass run removes
-# the dir.
+# text, so the trace of each passing seed is deleted after its run. A seed
+# that does not succeed keeps its files, because replay and the operator both
+# read them, but only for the first KEEP_MAX (8) such seeds: a run in which
+# every seed fails would otherwise keep about 200 MB (measured 2026-11-08,
+# 256 seeds of a failing program), and eight seeds show the verdicts, a
+# replay pair and the first failure. The verdict line says how many were
+# kept. Every seed is still run, classified and replayed; only the files of
+# later failing seeds go. The summary reports the peak size of the trace dir.
+# A run in which every seed reaches the expected verdict removes the dir. A
+# run with --fault-thread-create keeps the traces of its planned stops (they
+# are not the expected verdict, `pass`), so the dir stays there.
+#
+# EVERY ENDING WRITES A TRACE (spec section 6). A seed that exits 0 with no
+# trace is a tool failure, never a pass: the instrument did not report.
 #
 # THE WAKE HOOK is UNSET by default (spec section 3): the seed, through the
 # simulator's seeded preemption, must open the wake-to-unregister window, as a
@@ -39,7 +53,13 @@
 # is in the environment. The verdict line names the model as each trace
 # header states it, never as this script assumes it: "preempt ppm=<n>" or
 # "preempt off". Seeds whose headers name different models are a tool
-# failure, because their verdicts do not add up.
+# failure, because their verdicts do not add up. Any other GOO_SIM_* variable
+# in the environment (a step or time limit) is named in the verdict line as
+# HAND-SET, as a hand-set hook is. The seed, trace dir and fault variables are
+# set by this script for each run, so they are not ambient.
+#
+# A LIMIT verdict (exit 15) reads limit-<name>, the name taken from the trace
+# header's verdict field, for example limit-mutexes.
 #
 # EXPECT. A seed SUCCEEDS when its verdict is the expected one: `pass` unless
 # --expect names another verdict. deadlock_poll_test is a real deadlock by
@@ -75,6 +95,10 @@
 # All three parts run with the hook unset and the default preemption model:
 # the self-test clears every GOO_SIM_* and GOO_TEST_WAKE_DELAY_NS variable of
 # the caller's environment first, so ambient state cannot change its answer.
+# The same goes for the build: it clears CC_PROBE, CC and CFLAGS, and takes
+# its compiler from --cc (default gcc). The Makefile gate passes --cc "$(CC)",
+# because CI builds with `make CC=gcc-14` and a bare gcc rejects -std=c23
+# there; the verdict line names the compiler it used.
 set -u
 PROBE="sim-probe"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -82,9 +106,14 @@ cd "$ROOT" || exit 2
 # A planned SIGABRT (the EAGAIN stop, a failed GOO_ASSERT) must not store a
 # core per seed. A piped core_pattern (systemd-coredump) still runs: measured
 # 2026-11-08, about 60 ms per abort, against about 11 ms for a passing seed.
+# `ulimit -Sc 1` would skip the helper on a kernel that treats a limit of 1
+# as "no core" for a pipe, but it needs a hard limit of at least 1, and this
+# machine's harness fixes the hard limit at 0 (`ulimit -Sc 1` fails with
+# "Invalid argument"), so the gain could not be measured. Not measured, not
+# adopted (Task 8 item 6).
 ulimit -c 0
 
-CC_="${CC_PROBE:-gcc}"
+CC_=gcc
 SCHED_SRC="src/runtime/concurrency.c"
 SIM_LIB="build/libgoo_runtime_sim.a"
 SIM_MAIN_OBJ="build/sim/sim_main.o"
@@ -100,11 +129,11 @@ FAULT_THREAD_CREATE=0
 EXPECT=pass
 # The verdict names --expect accepts: every name verdict_name gives except
 # replay-mismatch, which is the driver's own and never a program's result.
-EXPECTABLE="pass runtime-deadlock-abort sim-deadlock invariant step-limit time-limit limit"
+EXPECTABLE="pass runtime-deadlock-abort sim-deadlock invariant step-limit time-limit (or limit-<name>)"
 
 # The exit code -> the verdict name, into VERDICT (a global, not an echo: a
 # command substitution forks once per seed).
-verdict_name() { case "$1" in 0) VERDICT="pass";; 2) VERDICT="runtime-deadlock-abort";; 10) VERDICT="sim-deadlock";; 11) VERDICT="invariant";; 12) VERDICT="step-limit";; 13) VERDICT="time-limit";; 14) VERDICT="replay-mismatch";; 15) VERDICT="limit";; *) VERDICT="crash-$1";; esac; }
+verdict_name() { case "$1" in 0) VERDICT="pass";; 2) VERDICT="runtime-deadlock-abort";; 10) VERDICT="sim-deadlock";; 11) VERDICT="invariant";; 12) VERDICT="step-limit";; 13) VERDICT="time-limit";; 14) VERDICT="replay-mismatch";; 15) VERDICT="limit-unnamed";; *) VERDICT="crash-$1";; esac; }
 
 tool_failure() { echo "$PROBE: TOOL FAILURE $*" >&2; exit 2; }
 
@@ -130,12 +159,13 @@ run_seed() {
 # trace. A preempt field this script cannot read is a tool failure: the model
 # is in the verdict line, and a guessed one is worse than none.
 read_header() {
-    local h="" re_steps=' steps=([0-9]+)'
+    local h="" re_steps=' steps=([0-9]+)' re_limit=' verdict=limit-([a-z0-9-]+) '
     local re_model=' preempt_ppm=([0-9]+) preempt_e_min=([0-9]+) preempt_e_max=([0-9]+) step_cost_ns=([0-9]+)'
-    HDR_STEPS="?"; HDR_MODEL="?"
+    HDR_STEPS="?"; HDR_MODEL="?"; HDR_LIMIT=""
     [ -f "$1" ] && IFS= read -r h < "$1"
     [ -n "$h" ] || return 0
     [[ $h =~ $re_steps ]] && HDR_STEPS="${BASH_REMATCH[1]}"
+    [[ $h =~ $re_limit ]] && HDR_LIMIT="${BASH_REMATCH[1]}"
     if [[ $h =~ $re_model ]]; then
         HDR_MODEL="preempt ppm=${BASH_REMATCH[1]} e=${BASH_REMATCH[2]}..${BASH_REMATCH[3]} step_cost_ns=${BASH_REMATCH[4]}"
     elif [[ $h == *preempt_* ]]; then
@@ -149,6 +179,20 @@ read_header() {
 hook_label() {
     local d
     if d="$(printenv GOO_TEST_WAKE_DELAY_NS)"; then echo "wake delay ${d} ns HAND-SET"; else echo "hook unset"; fi
+}
+
+# Ambient GOO_SIM_* variables the run passes through to the simulator, other
+# than the ones this script sets per run and the model (the header names it).
+# Prints nothing, or ", GOO_SIM_X=v HAND-SET" for each.
+ambient_label() {
+    local v out=""
+    for v in $(compgen -e); do
+        case "$v" in
+            GOO_SIM_SEED|GOO_SIM_TRACE_DIR|GOO_SIM_FAULT_*|GOO_SIM_PREEMPT_PPM) ;;
+            GOO_SIM_*) out="$out, $v=${!v} HAND-SET" ;;
+        esac
+    done
+    printf '%s' "$out"
 }
 
 # $1 exit code, $2 err file. Sets VERDICT, with the planned EAGAIN stop named
@@ -192,11 +236,16 @@ replay_matches() {
 # $1 bin, $2 first seed, $3 count, $4 tracedir. One line per seed. Sets
 # COUNTS, FAILS, MISMATCHES, STEPS_TOTAL, MAX_STEPS, FIRST_FAIL (seed verdict
 # steps), FIRST_SEED_OF (verdict -> first seed), WALL_NS, and MODEL (from the
-# trace headers). A seed whose header names another model is a tool failure.
+# trace headers), KEPT_SEEDS and DROPPED_SEEDS (failing seeds whose files were
+# kept, and dropped past KEEP_MAX). A seed whose header names another model,
+# a seed that exits 0 without a trace, and a limit exit with no name in its
+# header are tool failures.
+KEEP_MAX=8
 declare -A COUNTS FIRST_SEED_OF
 run_seeds() {
     local bin="$1" first="$2" n="$3" dir="$4" seed rc steps replay t0
     COUNTS=(); FIRST_SEED_OF=(); FAILS=0; MISMATCHES=0; STEPS_TOTAL=0; FIRST_FAIL=""; MAX_STEPS=0; MODEL=""
+    KEPT_SEEDS=0; DROPPED_SEEDS=0
     t0="$(date +%s%N)"
     for ((seed = first; seed < first + n; seed++)); do
         run_seed "$bin" "$seed" "$dir"; rc=$?
@@ -204,6 +253,13 @@ run_seeds() {
         classify "$rc" "$dir/$seed.err"
         read_header "$dir/$seed.trace"
         steps="$HDR_STEPS"
+        if [ "$rc" -eq 0 ] && [ ! -f "$dir/$seed.trace" ]; then
+            tool_failure "seed $seed of $bin exited 0 and wrote no trace; every ending writes one"
+        fi
+        if [ "$rc" -eq 15 ]; then
+            [ -n "$HDR_LIMIT" ] || tool_failure "seed $seed of $bin exited 15 with no 'verdict=limit-<name>' in its trace header"
+            VERDICT="limit-$HDR_LIMIT"
+        fi
         if [ -z "$MODEL" ] || [ "$MODEL" = "?" ]; then MODEL="$HDR_MODEL"
         elif [ "$HDR_MODEL" != "?" ] && [ "$HDR_MODEL" != "$MODEL" ]; then
             tool_failure "seed $seed ran under '$HDR_MODEL', an earlier seed under '$MODEL'"
@@ -232,6 +288,14 @@ run_seeds() {
         fi
         if [ "$VERDICT" = "$EXPECT" ] && [ "$rc" -ne 0 ]; then
             rm -f "$dir/$seed.trace" "$dir/$seed.out" "$dir/$seed.err"
+        fi
+        if [ -e "$dir/$seed.trace" ] || [ -e "$dir/$seed.out" ]; then
+            if [ "$KEPT_SEEDS" -lt "$KEEP_MAX" ]; then
+                KEPT_SEEDS=$((KEPT_SEEDS + 1))
+            else
+                DROPPED_SEEDS=$((DROPPED_SEEDS + 1))
+                rm -f "$dir/$seed.trace" "$dir/$seed.trace.first" "$dir/$seed.out" "$dir/$seed.err"
+            fi
         fi
         seed_bytes "$dir" "$seed"
         KEPT_BYTES=$((KEPT_BYTES + SEED_BYTES))
@@ -280,7 +344,7 @@ build_with_sched() {
     local src="$1" w="$2" out="$3" before after
     mkdir -p "$w" || return 1
     # The member name is the basename: concurrency.o replaces concurrency.o.
-    # shellcheck disable=SC2086  # RT_CFLAGS and CC_PROBE are word-split on purpose
+    # shellcheck disable=SC2086  # RT_CFLAGS and CC_ are word-split on purpose
     $CC_ $RT_CFLAGS -c "$src" -o "$w/concurrency.o" 2>"$w/cc.err" || return 1
     cp "$SIM_LIB" "$w/lib.a" || return 1
     before="$(ar t "$w/lib.a" | wc -l)"
@@ -297,12 +361,25 @@ build_with_sched() {
         tests/concurrency/false_deadlock_test.c "$SIM_MAIN_OBJ" "$w/lib.a" -lm -o "$out" 2>>"$w/cc.err"
 }
 
+# $1 path, $2 exit status, $3 the header's verdict word ("" = write no trace).
+make_stub() {
+    cat >"$1" <<STUB
+#!/usr/bin/env bash
+[ -n "$3" ] || exit $2
+printf '# goo-sim trace v1 seed=%s preempt_ppm=15625 preempt_e_min=10 preempt_e_max=23 step_cost_ns=1000 steps=7 now_ns=1 records=0 retained=0 verdict=$3 detail=x\\n# step now_ns thread what choice\\n' "\$GOO_SIM_SEED" >"\$GOO_SIM_TRACE_DIR/\$GOO_SIM_SEED.trace"
+exit $2
+STUB
+    chmod +x "$1"
+}
+
 self_test() {
     local SELF="$PROBE --self-test" W rc=0 before_sched k abort_seed v
+    CC_="$1"
     # The pass bar's conditions, not the caller's: hook unset, default model,
-    # default limits, faults off.
+    # default limits, faults off, and a build the caller's compiler variables
+    # cannot change.
     for v in $(compgen -e); do
-        case "$v" in GOO_SIM_*|GOO_TEST_WAKE_DELAY_NS) unset "$v" ;; esac
+        case "$v" in GOO_SIM_*|GOO_TEST_WAKE_DELAY_NS|CC_PROBE|CC|CFLAGS) unset "$v" ;; esac
     done
     FAULT_SPURIOUS=0; FAULT_THREAD_CREATE=0; EXPECT=pass
     W="$(mktemp -d "${TMPDIR:-/tmp}/sim-probe-self.XXXXXX")" || tool_failure "mktemp failed"
@@ -401,12 +478,35 @@ self_test() {
     fi
     EXPECT=pass
 
+    # (e) the driver's own rules, against stub programs: a shell script that
+    # writes a trace header (or none) and exits with a chosen status. Each
+    # rule is judged by what the driver does, so a driver that dropped the rule
+    # reads red here.
+    echo "--- (e) driver rules against stubs: no trace, named limit, cap, ambient label ---"
+    stub_check() { [ "$1" = "$2" ] || { echo "  DRIVER RULE BROKEN -- $3: got '$1', want '$2'"; rc=1; }; }
+    mkdir -p "$W/e_trace"
+    make_stub "$W/stub_notrace" 0 ""
+    ( run_seeds "$W/stub_notrace" 1 1 "$W/e_trace" >/dev/null 2>&1 ); stub_check "$?" 2 "exit 0 with no trace must be a tool failure"
+    make_stub "$W/stub_limit" 15 "limit-foo"
+    mkdir -p "$W/e_limit"
+    run_seeds "$W/stub_limit" 1 3 "$W/e_limit" >/dev/null; stub_check "${COUNTS[limit-foo]:-0}" 3 "exit 15 must read limit-<name> from the header"
+    make_stub "$W/stub_limit_unnamed" 15 "exit"
+    ( run_seeds "$W/stub_limit_unnamed" 1 1 "$W/e_trace" >/dev/null 2>&1 ); stub_check "$?" 2 "exit 15 with no limit name must be a tool failure"
+    make_stub "$W/stub_fail" 1 "exit"
+    mkdir -p "$W/e_cap"
+    run_seeds "$W/stub_fail" 1 12 "$W/e_cap" >/dev/null
+    stub_check "$KEPT_SEEDS/$DROPPED_SEEDS" "8/4" "12 failing seeds must keep 8 and drop 4"
+    stub_check "$(find "$W/e_cap" -name '*.trace' | wc -l)" "8" "the trace files on disk must match the cap"
+    stub_check "$(ambient_label)" "" "no ambient variable, so no label"
+    stub_check "$(GOO_SIM_STEP_LIMIT=5 ambient_label)" ", GOO_SIM_STEP_LIMIT=5 HAND-SET" "an ambient step limit must be named"
+    stub_check "$(GOO_SIM_SEED=3 GOO_SIM_PREEMPT_PPM=0 ambient_label)" "" "the seed and the model are not ambient"
+
     if [ "$rc" -ne 0 ]; then
         echo "$SELF: FAIL (work dir kept: $W)"
         exit 1
     fi
     rm -rf "$W"
-    echo "$SELF: PASS (mutant red at seed $k, invariant red, control green, --expect both ways; $MUT_MODEL, $(hook_label))"
+    echo "$SELF: PASS (mutant red at seed $k, invariant red, control green, --expect both ways; cc '$CC_'; $MUT_MODEL, $(hook_label))"
     exit 0
 }
 
@@ -415,7 +515,16 @@ self_test() {
 # ---------------------------------------------------------------------------
 [ "${1:-}" = "" ] && tool_failure "usage: $0 <program> --seeds N [--first-seed K] [--expect VERDICT] [--fault-spurious-wake] [--fault-thread-create] | --self-test"
 case "$1" in
-    --self-test) self_test ;;
+    --self-test)
+        shift
+        SELF_CC=gcc
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --cc) [ -n "${2:-}" ] || tool_failure "--cc needs a compiler command"; SELF_CC="$2"; shift 2 ;;
+                *) tool_failure "unknown --self-test argument '$1'" ;;
+            esac
+        done
+        self_test "$SELF_CC" ;;
 esac
 
 PROGRAM="$1"; shift
@@ -433,7 +542,10 @@ done
 is_count "$SEEDS" || tool_failure "--seeds must be a count greater than 0, not '$SEEDS'"
 is_count "$FIRST" || tool_failure "--first-seed must be a seed greater than 0, not '$FIRST'"
 case "$PROGRAM" in */*|.*) tool_failure "<program> is a name, not a path: '$PROGRAM'" ;; esac
-case " $EXPECTABLE " in *" $EXPECT "*) ;; *) tool_failure "--expect must be one of: $EXPECTABLE; not '$EXPECT'" ;; esac
+case "$EXPECT" in
+    limit-?*) ;;
+    *) case " $EXPECTABLE " in *" $EXPECT "*) ;; *) tool_failure "--expect must be one of: $EXPECTABLE; not '$EXPECT'" ;; esac ;;
+esac
 
 BIN="build/sim/$PROGRAM"
 TRACE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sim-probe.XXXXXX")" || tool_failure "mktemp failed"
@@ -441,23 +553,25 @@ build_program "$PROGRAM" "$TRACE_DIR/make.log" "$TRACE_DIR"
 rm -f "$TRACE_DIR/make.log"
 
 LAST=$((FIRST + SEEDS - 1))
-echo "=== $PROBE: $BIN, seeds $FIRST..$LAST, expect $EXPECT, faults spurious-wake=$FAULT_SPURIOUS thread-create=$FAULT_THREAD_CREATE, $(hook_label) ==="
+AMBIENT="$(ambient_label)"
+echo "=== $PROBE: $BIN, seeds $FIRST..$LAST, expect $EXPECT, faults spurious-wake=$FAULT_SPURIOUS thread-create=$FAULT_THREAD_CREATE, $(hook_label)$AMBIENT ==="
 run_seeds "$BIN" "$FIRST" "$SEEDS" "$TRACE_DIR"
 print_counts
 echo "wall $(per_seed_ms "$SEEDS") ms/seed, steps max $MAX_STEPS, peak trace dir $PEAK_BYTES bytes"
 
 case "$MODEL" in ''|'?') MODEL="preempt model unknown (no trace)" ;; esac
-ARTEFACT="$BIN, seeds $FIRST..$LAST, expect $EXPECT, steps total $STEPS_TOTAL, $MODEL, $(hook_label)"
+ARTEFACT="$BIN, seeds $FIRST..$LAST, expect $EXPECT, steps total $STEPS_TOTAL, $MODEL, $(hook_label)$AMBIENT"
+KEPT_NOTE="traces kept for $KEPT_SEEDS of $((KEPT_SEEDS + DROPPED_SEEDS)) seeds that left a trace, cap $KEEP_MAX"
 if [ "$MISMATCHES" -ne 0 ]; then
-    echo "$PROBE: FAIL replay-mismatch on $MISMATCHES seed(s), first ${FIRST_SEED_OF[replay-mismatch]} ($ARTEFACT, trace dir $TRACE_DIR)"
+    echo "$PROBE: FAIL replay-mismatch on $MISMATCHES seed(s), first ${FIRST_SEED_OF[replay-mismatch]} ($ARTEFACT, $KEPT_NOTE, trace dir $TRACE_DIR)"
     exit 14
 fi
 if [ "$FAILS" -ne 0 ]; then
-    echo "$PROBE: FAIL $FAILS seed(s), first: $FIRST_FAIL ($ARTEFACT, trace dir $TRACE_DIR)"
+    echo "$PROBE: FAIL $FAILS seed(s), first: $FIRST_FAIL ($ARTEFACT, $KEPT_NOTE, trace dir $TRACE_DIR)"
     exit 1
 fi
 if [ -n "$(ls -A "$TRACE_DIR")" ]; then
-    echo "$PROBE: PASS ($ARTEFACT, trace dir $TRACE_DIR)"
+    echo "$PROBE: PASS ($ARTEFACT, $KEPT_NOTE, trace dir $TRACE_DIR)"
 else
     rmdir "$TRACE_DIR"
     echo "$PROBE: PASS ($ARTEFACT, trace dir $TRACE_DIR, removed: every seed reached $EXPECT)"
