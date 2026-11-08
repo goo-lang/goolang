@@ -283,10 +283,23 @@ if len(units) < 2:
 json.dump(units, open(fwd, "w"))
 json.dump(units[::-1], open(rev, "w"))
 PYEOF
-	rc_g=0
-	bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" --cppcheck-lane "$W/cc-fwd.json" "$W/cppcheck-fwd" 1 >"$W/g-fwd.log" 2>&1 || rc_g=$?
-	bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" --cppcheck-lane "$W/cc-rev.json" "$W/cppcheck-rev" 1 >"$W/g-rev.log" 2>&1 || rc_g=$?
-	out_g="$(python3 - "$W/cppcheck-fwd/cppcheck.sarif" "$W/cppcheck-rev/cppcheck.sarif" <<'PYEOF' 2>&1
+	# Fix round 1 (M4): a LANE failure (cppcheck exit, 0 checked units, a
+	# parse failure, a blind suppression) is not a repeatability verdict.
+	# Report it as what it is, with the lane's own lines.
+	rc_fwd=0
+	rc_rev=0
+	bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" --cppcheck-lane "$W/cc-fwd.json" "$W/cppcheck-fwd" 1 >"$W/g-fwd.log" 2>&1 || rc_fwd=$?
+	bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" --cppcheck-lane "$W/cc-rev.json" "$W/cppcheck-rev" 1 >"$W/g-rev.log" 2>&1 || rc_rev=$?
+	if [ "$rc_fwd" -ne 0 ] || [ "$rc_rev" -ne 0 ]; then
+		echo "$SELF: FAIL (the cppcheck lane itself failed in the repeatability control on $reorder_scope: forward rc=$rc_fwd, reversed rc=$rc_rev; no repeatability verdict)"
+		for g_log in "$W/g-fwd.log" "$W/g-rev.log"; do
+			echo "    $(basename "$g_log"):"
+			grep -E '^CPPCHECK_(SUMMARY|PARSE_FAILURE|BLIND_SUPPRESSION) |FAIL' "$g_log" | sed 's/^/        /' || true
+		done
+		fail=1
+	else
+		rc_g=0
+		out_g="$(python3 - "$W/cppcheck-fwd/cppcheck.sarif" "$W/cppcheck-rev/cppcheck.sarif" <<'PYEOF' 2>&1
 import collections, json, sys
 
 def counts(path):
@@ -308,14 +321,15 @@ print("%d results forward, %d reversed, %d (rule, file) group(s) differ" % (sum(
 sys.exit(1 if moved else 0)
 PYEOF
 )" || rc_g=$?
-	if [ "$rc_g" -eq 0 ]; then
-		echo "    ok: the cppcheck lane gives the same (rule, file) counts with the $reorder_scope database reversed at -j1"
-		echo "        ${out_g##*$'\n'}"
-	else
-		echo "$SELF: FAIL (the cppcheck lane is not repeatable on $reorder_scope: a reversed database order changes the counts)"
-		printf '%s\n' "$out_g"
-		cat "$W/g-fwd.log" "$W/g-rev.log" | grep -v '^CPPCHECK_SUMMARY ' || true
-		fail=1
+		if [ "$rc_g" -eq 0 ]; then
+			echo "    ok: the cppcheck lane gives the same (rule, file) counts with the $reorder_scope database reversed at -j1"
+			echo "        ${out_g##*$'\n'}"
+		else
+			echo "$SELF: FAIL (the cppcheck lane is not repeatable on $reorder_scope: a reversed database order changes the counts)"
+			printf '%s\n' "$out_g"
+			grep -h '^CPPCHECK_SUMMARY ' "$W/g-fwd.log" "$W/g-rev.log" | sed 's/^/    /' || true
+			fail=1
+		fi
 	fi
 
 	if [ "$fail" -ne 0 ]; then
