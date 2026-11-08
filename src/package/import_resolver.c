@@ -46,21 +46,25 @@ const char* goo_gooroot_dir(void) {
     // extra "goostd" segment — so the env branch must append it too.
     if (env && env[0] != '\0') { snprintf(buf, sizeof(buf), "%s/goostd", env); return buf; }
 #ifdef __linux__
-    // exe is half the size of buf so "<exe>/../lib/..." always fits in buf.
-    // A path that fills exe may be cut short by readlink, so it is refused
-    // instead of being used truncated.
-    char exe[2048];
+    // A path that does not fit is reported and falls back to ./goostd; it is
+    // never used cut short (a wrong path could name another directory).
+    char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0 && n < (ssize_t)sizeof(exe) - 1) {
+    if (n >= (ssize_t)sizeof(exe) - 1) {
+        fputs("goo: warning: the executable path is too long to locate goostd; trying ./goostd (set GOOROOT to override)\n", stderr);
+    } else if (n > 0) {
         exe[n] = '\0';
         char* slash = strrchr(exe, '/');        // dir-of-exe
         if (slash) {
             *slash = '\0';
             struct stat st;
-            snprintf(buf, sizeof(buf), "%s/../lib/goostd", exe);
-            if (stat(buf, &st) == 0) return buf; // installed layout: <exe-dir>/../lib/goostd
-            snprintf(buf, sizeof(buf), "%s/../goostd", exe);
-            if (stat(buf, &st) == 0) return buf; // dev-tree layout: <exe-dir>/../goostd (repo root)
+            int w = snprintf(buf, sizeof(buf), "%s/../lib/goostd", exe);
+            if (w >= 0 && (size_t)w < sizeof(buf) && stat(buf, &st) == 0) return buf; // installed layout: <exe-dir>/../lib/goostd
+            int w2 = snprintf(buf, sizeof(buf), "%s/../goostd", exe);
+            if (w2 >= 0 && (size_t)w2 < sizeof(buf) && stat(buf, &st) == 0) return buf; // dev-tree layout: <exe-dir>/../goostd (repo root)
+            if (w < 0 || (size_t)w >= sizeof(buf) || w2 < 0 || (size_t)w2 >= sizeof(buf)) {
+                fputs("goo: warning: the goostd path is too long; trying ./goostd (set GOOROOT to override)\n", stderr);
+            }
         }
     }
 #endif

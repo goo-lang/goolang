@@ -1639,19 +1639,24 @@ static const char* goo_runtime_archive_path(void) {
     const char* env = getenv("GOO_RUNTIME");
     if (env && env[0] != '\0') { snprintf(buf, sizeof(buf), "%s", env); return buf; }
 #ifdef __linux__
-    // exe is half the size of buf so "<exe>/../lib/..." always fits in buf.
-    // A path that fills exe may be cut short by readlink, so it is refused
-    // instead of being used truncated.
-    char exe[2048];
+    // A path that does not fit is reported and falls back to the cwd-relative
+    // archive; it is never used cut short (a wrong path could name another file).
+    char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0 && n < (ssize_t)sizeof(exe) - 1) {
+    if (n >= (ssize_t)sizeof(exe) - 1) {
+        fputs("goo: warning: the executable path is too long to locate lib/libgoo_runtime.a; trying the working directory (set GOO_RUNTIME to override)\n", stderr);
+    } else if (n > 0) {
         exe[n] = '\0';
         char* slash = strrchr(exe, '/');        // dir-of-exe
         if (slash) {
             *slash = '\0';
-            snprintf(buf, sizeof(buf), "%s/../lib/libgoo_runtime.a", exe);
-            struct stat st;
-            if (stat(buf, &st) == 0) return buf; // exists relative to the binary
+            int w = snprintf(buf, sizeof(buf), "%s/../lib/libgoo_runtime.a", exe);
+            if (w < 0 || (size_t)w >= sizeof(buf)) {
+                fputs("goo: warning: the runtime archive path is too long; trying the working directory (set GOO_RUNTIME to override)\n", stderr);
+            } else {
+                struct stat st;
+                if (stat(buf, &st) == 0) return buf; // exists relative to the binary
+            }
         }
     }
 #endif
