@@ -1,4 +1,8 @@
+// Guarded: a build with -D_GNU_SOURCE already makes <features.h> define
+// this, and a newer glibc defines a different value (gcc warns on a redefinition).
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#endif
 #include "platform.h"
 #include "runtime.h"
 #include <stdlib.h>

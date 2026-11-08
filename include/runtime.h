@@ -1,7 +1,11 @@
 #ifndef RUNTIME_H
 #define RUNTIME_H
 
+// Guarded: a build with -D_GNU_SOURCE already makes <features.h> define
+// this, and a newer glibc defines a different value (gcc warns on a redefinition).
+#ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700  // For ucontext functions
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
