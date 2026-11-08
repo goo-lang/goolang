@@ -107,11 +107,22 @@ tested, or shipped**, and none of it is part of the v1 surface.
     2026-08-14 shell-injection fix in `proof_cache_create`.
   - `errors/ergonomic_errors.c` — compiled by name in
     `scripts/ast_free_leak_probe.sh`, also in `verify-core`.
-  - `src/ide/lsp_enhanced.c` — the Makefile records repairing its link as the
-    open P5.11 decision. That decision is not this pass's to make.
+  - `src/ide/lsp_enhanced.c` — kept then; moved to `attic/src/ide/` later, see
+    the entry below.
   - `src/main_minimal.c` — builds `bin/goo-analyzer` via `make analyzer`.
   - `src/main_simple.c` — builds `make test-main`.
   - `src/types/runtime_optimization_simple.c` — two live test targets.
+
+- `src/ide/lsp_enhanced.c` (moved 2026-11-08, found by snare) — the enhanced
+  LSP server. Its link was already broken (undefined `parser_cleanup`), and it
+  has two stack-overflow defects. Fix both before you restore it:
+  - CWE-121: `char result[4096]` in `handle_completion` receives up to 6,389
+    bytes from `generate_intelligent_completions` through unbounded `strcat`.
+  - CWE-121: `strncpy(partial_word, current_line + start, end - start)` copies
+    into `char partial_word[64]` with no bound on `end - start`. An
+    identifier of 64 or more characters overflows it.
+  The `lsp-enhanced` Makefile target and the MISRA and safety baseline rows
+  for this file were removed with it.
 
 If you resurrect anything from here, it must come with a parse/type/run
 probe wired into `make verify-core` — that is the bar everything shipped

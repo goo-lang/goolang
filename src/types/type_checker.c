@@ -782,7 +782,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func);
 static int declare_type_shells(TypeChecker* checker, ASTNode* decls);
 
 // Single-AST wrapper, kept so the three non-driver callers (src/main.c,
-// src/main_simple.c, src/ide/lsp_enhanced.c) are untouched. The entry package
+// src/main_simple.c, attic/src/ide/lsp_enhanced.c) are untouched. The entry package
 // can now be several files, so the compiler driver calls the N-file form below.
 int type_check_program(TypeChecker* checker, ASTNode* program) {
     if (!program) return 0;
