@@ -113,7 +113,7 @@ Enforcement mechanisms in this project:
 | Rule 16.6 - Every switch statement shall have at least two switch-clauses | Required | Adopted, clean | cppcheck |
 | Rule 16.7 - A switch-expression shall not have essentially Boolean type | Required | Adopted, clean | cppcheck |
 | Rule 17.3 - A function shall not be declared implicitly | Mandatory | Adopted, clean | cppcheck |
-| Rule 17.4 - All exit paths from a function with non-void return type shall have an explicit return statement with an expression | Mandatory | Adopted, enforced by other means | review |
+| Rule 17.4 - All exit paths from a function with non-void return type shall have an explicit return statement with an expression | Mandatory | Adopted, enforced by other means | compiler |
 | Rule 17.5 - The function argument corresponding to a parameter declared to have an array type shall have an appropriate number of elements | Advisory | Adopted, enforced by other means | review |
 | Rule 17.6 - The declaration of an array parameter shall not contain the static keyword between the [ ] | Mandatory | Adopted, clean | cppcheck |
 | Rule 18.1 - A pointer resulting from arithmetic on a pointer operand shall address an element of the same array as that pointer operand | Required | Adopted, enforced by other means | valgrind, sanitizer, fuzzer |
@@ -152,7 +152,7 @@ Enforcement mechanisms in this project:
 | Rule 22.1 - All resources obtained dynamically by means of Standard Library functions shall be explicitly released | Required | Adopted, enforced by other means | review |
 | Rule 22.2 - A block of memory shall only be freed if it was allocated by means of a Standard Library function | Mandatory | Adopted, enforced by other means | valgrind, sanitizer, fuzzer |
 | Rule 22.3 - The same file shall not be open for read and write access at the same time on different streams | Required | Adopted, enforced by other means | review |
-| Rule 22.4 - There shall be no attempt to write to a stream which has been opened as read-only | Mandatory | Adopted, enforced by other means | valgrind, sanitizer, fuzzer |
+| Rule 22.4 - There shall be no attempt to write to a stream which has been opened as read-only | Mandatory | Adopted, enforced by other means | review |
 | Rule 22.5 - A pointer to a FILE object shall not be dereferenced | Mandatory | Adopted, clean | cppcheck |
 | Rule 22.6 - The value of a pointer to a FILE shall not be used after the associated stream has been closed | Mandatory | Adopted, enforced by other means | valgrind, sanitizer, fuzzer |
 | Rule 22.7 - The macro EOF shall only be compared with the unmodified return value from any Standard Library function capable of returning EOF | Required | Adopted, clean | cppcheck |
