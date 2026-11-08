@@ -1,7 +1,8 @@
 # cppcheck suppression list for the MISRA gate.
 #
-# Every entry must name either a deviation record in docs/misra/deviations/
-# or a documented checker defect. An entry with no justification does not
+# Every entry must name a deviation record in docs/misra/deviations/, a
+# documented checker defect, or a scope record in docs/misra/README.md
+# (generated code, adopted code). An entry with no justification does not
 # belong here: put the decision in docs/misra/tools/policy.py first, so the
 # policy tables stay true.
 #
@@ -95,11 +96,11 @@ misra-c2012-7.3
 misra-c2012-17.3
 
 # ---------------------------------------------------------------------------
-# Third-party headers. The LLVM C API headers are not project code: MISRA
-# Compliance treats them as adopted code, and a finding located in one has no
-# fix in this repository. Task 17b measured 98 MISRA findings there once the
-# 16 LLVM units were really analysed (Core.h 94, Types.h 3, Error.h 1).
-# MISRA IDs only: any other cppcheck ID in these headers, and above all
+# Adopted code: the LLVM C API headers. Record: docs/misra/README.md, "Adopted
+# code is excluded: the LLVM C API headers" (written by docs/misra/tools/
+# mkdocs.py). cppcheck 2.22.0, 2026-11-08: 98 MISRA findings once the 16 LLVM
+# units were really analysed (Core.h 94, Types.h 3, Error.h 1). MISRA IDs
+# only: any other cppcheck ID in these headers, and above all
 # preprocessorErrorDirective, stays visible.
 # ---------------------------------------------------------------------------
 misra-c2012-*:*/llvm-c/*

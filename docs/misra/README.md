@@ -451,6 +451,16 @@ Read these before trusting any number this tool produces.
 - **Generated code is excluded.** `src/parser/parser.tab.c` and the `parser.y`
   lines its `#line` directives point at produce 1,542 findings, 912 of them
   Rule 20.13. MISRA section 6.8 treats generated code separately.
+- **Adopted code is excluded: the LLVM C API headers.** The 16 units that
+  include LLVM (`src/codegen/*.c`, `src/compiler/goo.c`) reach
+  `llvm-c/Core.h`, `llvm-c/Types.h` and `llvm-c/Error.h`. These headers are
+  third-party code that this project adopts and does not change, so a finding
+  located in one has no fix here. Measured with cppcheck 2.22.0 on
+  2026-11-08: 98 MISRA findings (Core.h 94, Types.h 3, Error.h 1). The
+  suppression entry `misra-c2012-*:*/llvm-c/*` in `misra-suppressions.txt`
+  names this record. It covers MISRA IDs only, so any other cppcheck ID in
+  those headers stays visible, and `scripts/analyzer_lanes_probe.sh` fails if
+  a parse-failure ID is suppressed.
 - **cppcheck stops at C11.** Any C23-only construct is parsed as C11.
 - **Platform-conditional code is invisible.** The scan runs on Linux, so an
   `#ifdef _WIN32` branch is never preprocessed and never checked. The `system()`
