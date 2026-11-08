@@ -13,4 +13,4 @@
 # it never passes on an unknown compiler. The gate never writes this file
 # itself; only this flag does.
 gcc-16	1
-gcc-14	2
+gcc-14	1
