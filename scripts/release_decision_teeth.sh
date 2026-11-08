@@ -156,7 +156,7 @@ EXPECTED_MUTATIONS=12
 # reason about for a gate that frees memory.
 build_from() {
     rm -f "$TEETH_OBJ" "$BIN"
-    "$MAKE" release_decision_teeth_test RELEASE_DECISION_SRC="$1" > "$2" 2>&1
+    "$MAKE" release_decision_teeth_test RELEASE_DECISION_SRC="$1" WERROR= > "$2" 2>&1
 }
 
 # Baseline uses the SAME binary and the SAME link path as every mutation, with
@@ -202,10 +202,28 @@ PY
         continue
     fi
     "$BIN" > "$WORK/run_$label.log" 2>&1
+    run_rc=$?
     verdict_line="$(grep -E "^release-decision-test: (PASS|FAIL|BROKEN)" "$WORK/run_$label.log" | tail -1)"
     if [ -z "$verdict_line" ]; then
-        printf '%-18s INCONCLUSIVE-crash\n' "$label"
-        rc=1
+        # A crash before any verdict line is normally INCONCLUSIVE: it could be
+        # the dangling free the mutation was meant to cause, which tells us
+        # nothing about whether a row would have noticed the wrong decision.
+        # One specific crash IS conclusive: GOO_ASSERT is on by default since
+        # the 2026-09-02 flip (Task 24b), and an assert dying with SIGABRT
+        # (134) and its own "goo: ASSERT FAILED" message is a check that
+        # noticed the mutation BEFORE any row got the chance to -- earlier,
+        # not weaker. Every other crash (segfault, a different signal, an
+        # assert message that never made it to the log) stays
+        # INCONCLUSIVE-crash, because nothing there tells us which one it was.
+        if [ "$run_rc" -eq 134 ] && grep -q "goo: ASSERT FAILED" "$WORK/run_$label.log"; then
+            assert_loc="$(grep -oP '(?<=  at ).*(?= in )' "$WORK/run_$label.log" | tail -1)"
+            printf '%-18s CAUGHT   (assert fired at %s, before any row could run)\n' \
+                "$label" "${assert_loc:-<location not found in the log>}"
+            caught=$((caught + 1))
+        else
+            printf '%-18s INCONCLUSIVE-crash\n' "$label"
+            rc=1
+        fi
         continue
     fi
     # BROKEN is NOT caught. It means the suite did not run its declared rows,

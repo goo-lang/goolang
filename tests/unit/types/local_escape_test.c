@@ -27,8 +27,9 @@ typedef struct {
     const char*   name;
     bool          expected_escapes;
     // ADR 0005. Checked ONLY when check_reasons is set, so every row written
-    // before the reason set existed keeps its exact two-field initialiser and
-    // its exact assertion count.
+    // before the reason set existed keeps its assertion count. Those rows
+    // name both trailing fields (0, false) because -Wextra rejects an implicit
+    // omission (-Wmissing-field-initializers).
     EscapeReasons expected_reasons;
     bool          check_reasons;
 } LocalExpectation;
@@ -51,7 +52,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    _ = x\n"
         "}\n",
-        "f", { { "x", false } }, 1
+        "f", { { "x", false, 0, false } }, 1
     },
     {
         2, "local passed to a NON-retaining callee -> false",
@@ -62,7 +63,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    sink(x)\n"
         "}\n",
-        "f", { { "x", false } }, 1
+        "f", { { "x", false, 0, false } }, 1
     },
     {
         3, "two locals, neither leaves the function -> false, false",
@@ -72,7 +73,7 @@ static TestRow rows[] = {
         "    b := a\n"
         "    _ = b\n"
         "}\n",
-        "f", { { "a", false }, { "b", false } }, 2
+        "f", { { "a", false, 0, false }, { "b", false, 0, false } }, 2
     },
     {
         4, "local declared inside a loop, dies each iteration -> false",
@@ -83,7 +84,7 @@ static TestRow rows[] = {
         "        _ = t\n"
         "    }\n"
         "}\n",
-        "f", { { "t", false } }, 1
+        "f", { { "t", false, 0, false } }, 1
     },
 
     // ---------------- SOUNDNESS: must be true ----------------
@@ -94,7 +95,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    return x\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         6, "local stored into a package global -> true",
@@ -104,7 +105,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    g = x\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         7, "local passed to a RETAINING callee -> true",
@@ -117,7 +118,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    stash(x)\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         8, "local captured by a closure -> true",
@@ -127,7 +128,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    h = func() { _ = x }\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         9, "local passed as a goroutine argument -> true",
@@ -138,7 +139,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    go work(x)\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         10, "local used as a METHOD-CALL RECEIVER -> true (unresolved callee)",
@@ -156,7 +157,7 @@ static TestRow rows[] = {
         "    p := &T{x: 1}\n"
         "    p.stash()\n"
         "}\n",
-        "f", { { "p", true } }, 1
+        "f", { { "p", true, 0, false } }, 1
     },
     {
         11, "transitive: local copied into another that is returned -> true, true",
@@ -166,7 +167,7 @@ static TestRow rows[] = {
         "    b := a\n"
         "    return b\n"
         "}\n",
-        "f", { { "a", true }, { "b", true } }, 2
+        "f", { { "a", true, 0, false }, { "b", true, 0, false } }, 2
     },
     {
         12, "local passed to an EXTERNAL/unregistered callee -> true",
@@ -175,7 +176,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    unknownExternal(x)\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         13, "local stored through a pointer deref -> true",
@@ -184,7 +185,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    *out = x\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         14, "local sent on a channel -> true",
@@ -193,7 +194,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    ch <- x\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // SOUNDNESS. A map KEY is a stored reference, and nothing used to say
@@ -218,7 +219,7 @@ static TestRow rows[] = {
         "    m[k] = 1\n"
         "    return m\n"
         "}\n",
-        "f", { { "m", true }, { "k", true } }, 2
+        "f", { { "m", true, 0, false }, { "k", true, 0, false } }, 2
     },
     {
         // The slice counterpart of row 15, kept as the CONTRAST: this one was
@@ -231,7 +232,7 @@ static TestRow rows[] = {
         "    parts = append(parts, k)\n"
         "    return parts\n"
         "}\n",
-        "f", { { "parts", true }, { "k", true } }, 2
+        "f", { { "parts", true, 0, false }, { "k", true, 0, false } }, 2
     },
 
     // ---------------- SOUNDNESS: one row per unguarded engine arm ----------
@@ -263,7 +264,7 @@ static TestRow rows[] = {
         "    s := \"abc\"\n"
         "    g = s + \"def\"\n"
         "}\n",
-        "f", { { "s", true } }, 1
+        "f", { { "s", true, 0, false } }, 1
     },
     {
         // AST_STRUCT_LITERAL. The arm unions over field_values, which is also
@@ -277,7 +278,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    g = T{p: x}\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // AST_SLICE_EXPR (a SliceLitNode, not a slice-index). This is the
@@ -291,7 +292,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    g = []*int{x}\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // AST_PAREN_EXPR is the MAP LITERAL (MapLitNode). The arm walks the
@@ -306,7 +307,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    g = map[string]*int{k: x}\n"
         "}\n",
-        "f", { { "k", true }, { "x", true } }, 2
+        "f", { { "k", true, 0, false }, { "x", true, 0, false } }, 2
     },
     {
         // AST_INDEX_EXPR, and this is its FIRST fixture in any of the three
@@ -330,7 +331,7 @@ static TestRow rows[] = {
         "    xs := []*int{}\n"
         "    g = xs[0]\n"
         "}\n",
-        "f", { { "xs", true } }, 1
+        "f", { { "xs", true, 0, false } }, 1
     },
     {
         // FLIPPED FROM `true` TO `false` on 2026-08-01, and the previous
@@ -365,7 +366,7 @@ static TestRow rows[] = {
         "    k := \"a\"\n"
         "    g = m[k]\n"
         "}\n",
-        "f", { { "k", false } }, 1
+        "f", { { "k", false, 0, false } }, 1
     },
 
     // ---------------- SOUNDNESS: the STATEMENT arms, which are the sinks ----
@@ -396,7 +397,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    g, h = x, x\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // AST_SWITCH_STMT. The escape is inside a case body, so the arm's
@@ -411,7 +412,7 @@ static TestRow rows[] = {
         "    }\n"
         "    return nil\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // AST_TYPE_SWITCH. Same shape, different arm -- a type switch carries
@@ -426,7 +427,7 @@ static TestRow rows[] = {
         "        g = x\n"
         "    }\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // AST_SELECT_STMT. The channel send is the sink, and the select arm is
@@ -447,7 +448,7 @@ static TestRow rows[] = {
         "    case ch <- x:\n"
         "    }\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // AST_IF_STMT had 0 hits in param and local. `if` is everywhere in real
@@ -462,7 +463,7 @@ static TestRow rows[] = {
         "    }\n"
         "    return nil\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // THE PRECISION ROW, and it is the one this change exists for. `y` is
@@ -484,7 +485,7 @@ static TestRow rows[] = {
         "    }\n"
         "    _ = y\n"
         "}\n",
-        "f", { { "x", true }, { "y", false } }, 2
+        "f", { { "x", true, 0, false }, { "y", false, 0, false } }, 2
     },
 
     // ---------------- THE SELF-STORE RULE (PR B) ----------------
@@ -511,7 +512,7 @@ static TestRow rows[] = {
         "    m[s] = m[s] + 1\n"
         "    return len(m)\n"
         "}\n",
-        "f", { { "m", false } }, 1
+        "f", { { "m", false, 0, false } }, 1
     },
     {
         // SOUNDNESS: the rule must not reach past the base's own taint. Here
@@ -529,7 +530,7 @@ static TestRow rows[] = {
         "    outer[s] = inner\n"
         "    return outer\n"
         "}\n",
-        "f", { { "outer", true }, { "inner", true } }, 2
+        "f", { { "outer", true, 0, false }, { "inner", true, 0, false } }, 2
     },
     {
         // SOUNDNESS: the KEY path must survive the subtraction. Row 15 records
@@ -549,7 +550,7 @@ static TestRow rows[] = {
         "    m[k] = m[k] + 1\n"
         "    return m\n"
         "}\n",
-        "f", { { "m", true }, { "k", true } }, 2
+        "f", { { "m", true, 0, false }, { "k", true, 0, false } }, 2
     },
     {
         // SOUNDNESS: the subtraction is local to ONE assignment and must not
@@ -563,7 +564,7 @@ static TestRow rows[] = {
         "    m[s] = m[s] + 1\n"
         "    g = m\n"
         "}\n",
-        "f", { { "m", true } }, 1
+        "f", { { "m", true, 0, false } }, 1
     },
 
     // ---------------- SOUNDNESS: the pass's OWN hooks, not the engine -------
@@ -596,7 +597,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    g = id(x)\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // LOCAL_HOOKS.defer_is_like_go. The source comment on that field asks
@@ -616,7 +617,7 @@ static TestRow rows[] = {
         "    x := new(int)\n"
         "    defer sink(x)\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
     {
         // unit_add_local's `_` skip, which no fixture above reaches: `_` only
@@ -638,7 +639,7 @@ static TestRow rows[] = {
         "    _, x := 1, new(int)\n"
         "    g = x\n"
         "}\n",
-        "f", { { "x", true } }, 1
+        "f", { { "x", true, 0, false } }, 1
     },
 
     // ================== ADR 0005: WHICH reason, not just whether ==========

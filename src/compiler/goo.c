@@ -93,7 +93,6 @@ static void print_version(void);
 static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode);
 static bool compile_file(const char* filename, CompilerOptions* options);
 static char* read_file(const char* filename);
-static bool write_file(const char* filename, const char* content);
 static char* get_output_filename(const char* input_file, const char* output_file,
                                  const char* ext);
 static int run_program(const char* path, char** args, int arg_count, bool verbose);
@@ -536,18 +535,6 @@ static char* read_file(const char* filename) {
     
     fclose(file);
     return buffer;
-}
-
-static bool write_file(const char* filename, const char* content) {
-    FILE* file = fopen(filename, "w");
-    if (!file) {
-        fprintf(stderr, "Error: Cannot create file: %s\n", filename);
-        return false;
-    }
-    
-    fprintf(file, "%s", content);
-    fclose(file);
-    return true;
 }
 
 static char* get_output_filename(const char* input_file, const char* output_file,
@@ -1179,7 +1166,6 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 
         // ast_root is a bison global: snapshot into this file's slot and null
         // it, so the next file's parse cannot clobber a pointer we own.
-        extern ASTNode* ast_root;
         ast_root = NULL;
         if (parse_input(sources[fi], fname) != 0) {
             fprintf(stderr, "Error: Parse failed\n");
@@ -1364,7 +1350,6 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         // Position that parse_input stamps this pointer into. The real files
         // must strdup their names because those are built at runtime.
 
-        extern ASTNode* ast_root;
         ast_root = NULL;
         if (parse_input(testmain_src, kTestMainName) != 0 || !ast_root) {
             // Generated source that will not parse is a compiler bug, not a

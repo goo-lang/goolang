@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 // malloc_usable_size, for the poison-on-free debug mode below. glibc/musl put
 // it here; it is used ONLY on that path, so a platform without it needs no
@@ -215,7 +216,10 @@ void goo_free(void* ptr) {
 // A count that is not lock-free calls into libatomic and takes a LOCK, which
 // would put a lock inside every retain — a performance defect nobody would see
 // by reading this file.
-static_assert(__atomic_always_lock_free(sizeof(uint64_t), 0),
+// ATOMIC_*_LOCK_FREE == 2 means "always lock-free". They are integer constant
+// expressions, which __atomic_always_lock_free is not under -Wpedantic.
+static_assert((sizeof(uint64_t) == sizeof(long) ? ATOMIC_LONG_LOCK_FREE
+                                                : ATOMIC_LLONG_LOCK_FREE) == 2,
               "the ARC reference count must be lock-free on this target");
 
 // ADVISORY ONLY. In a program with two goroutines the answer is stale the
@@ -1017,7 +1021,10 @@ int goo_iface_key_eq(int64_t a, int64_t b) {
     if (vta == NULL && vtb == NULL) return 1;   // both nil interfaces
     if (vta != vtb) return 0;                    // different dynamic type (or one nil)
     void* desc = ((void**)vta)[0];          // vtable slot 0 -> descriptor
-    GooKeyEqFn eq = (GooKeyEqFn)((void**)desc)[0];  // descriptor field 0 -> eq_fn
+    // ISO C forbids an object-pointer to function-pointer cast; POSIX requires
+    // it (dlsym), so __extension__ marks this one as deliberate for -Wpedantic.
+    // The descriptor slot holds the function address.
+    GooKeyEqFn eq = __extension__ (GooKeyEqFn)((void**)desc)[0];  // descriptor field 0 -> eq_fn
     return eq((int64_t)(intptr_t)ia[1], (int64_t)(intptr_t)ib[1]); // compare the data words
 }
 
@@ -1028,7 +1035,7 @@ goo_string_t goo_iface_format(void* vtable, void* data) {
     if (!vtable) return goo_string_new("<nil>");
     void* desc = ((void**)vtable)[0];              // vtable slot 0 -> descriptor
     typedef goo_string_t (*GooFmtFn)(void*);
-    GooFmtFn fmt = (GooFmtFn)((void**)desc)[2];    // descriptor field 2 -> fmt_fn
+    GooFmtFn fmt = __extension__ (GooFmtFn)((void**)desc)[2];  // descriptor field 2 -> fmt_fn (__extension__: see goo_iface_key_eq)
     return fmt(data);
 }
 

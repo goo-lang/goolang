@@ -69,9 +69,6 @@ static const ShimParamKind PARAMS_ERROR[]                = { SHIM_PARAM_ERROR };
 // errors.Is(err, target): both operands are errors.
 static const ShimParamKind PARAMS_ERROR_ERROR[]          = { SHIM_PARAM_ERROR, SHIM_PARAM_ERROR };
 static const ShimParamKind PARAMS_INT64_FLOAT64[]        = { SHIM_PARAM_INT64, SHIM_PARAM_FLOAT64 };
-// fmt.Fprintf(w, format, ...): the writer, then the format string. The reverse
-// order of PARAMS_STRING_INT64, which os.ReadByte uses.
-static const ShimParamKind PARAMS_INT64_STRING[]         = { SHIM_PARAM_INT64, SHIM_PARAM_STRING };
 
 #define NPARAMS(arr) (sizeof(arr) / sizeof((arr)[0]))
 

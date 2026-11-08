@@ -1,7 +1,8 @@
 # cppcheck suppression list for the MISRA gate.
 #
-# Every entry must name either a deviation record in docs/misra/deviations/
-# or a documented checker defect. An entry with no justification does not
+# Every entry must name a deviation record in docs/misra/deviations/, a
+# documented checker defect, or a scope record in docs/misra/README.md
+# (generated code, adopted code). An entry with no justification does not
 # belong here: put the decision in docs/misra/tools/policy.py first, so the
 # policy tables stay true.
 #
@@ -95,11 +96,24 @@ misra-c2012-7.3
 misra-c2012-17.3
 
 # ---------------------------------------------------------------------------
-# Not MISRA. cppcheck cannot resolve the LLVM C++ header guard when it
-# preprocesses llvm-c/DataTypes.h as C.
+# Adopted code: the LLVM C API headers. Record: docs/misra/README.md, "Adopted
+# code is excluded: the LLVM C API headers" (written by docs/misra/tools/
+# mkdocs.py). cppcheck 2.22.0, 2026-11-08: 98 MISRA findings once the 16 LLVM
+# units were really analysed (Core.h 94, Types.h 3, Error.h 1). MISRA IDs
+# only: any other cppcheck ID in these headers, and above all
+# preprocessorErrorDirective, stays visible.
+# ---------------------------------------------------------------------------
+misra-c2012-*:*/llvm-c/*
+
+# ---------------------------------------------------------------------------
+# Not MISRA. Do NOT suppress preprocessorErrorDirective here. cppcheck stops
+# a unit at an #error and analyses nothing in it, so a suppression of that ID
+# hides a unit that was never checked. One did, until task 17b: 16 units
+# (src/codegen/*.c, src/compiler/goo.c) stopped in llvm-c/DataTypes.h. The
+# fix is the UINT32_C define in scan.sh. scripts/analyzer_lanes_probe.sh
+# fails on any #error result, and on any entry here that names this ID.
 #
 # Do NOT add missingIncludeSystem here: scan.sh already passes it on the
 # command line, and cppcheck treats a duplicate suppression as a fatal error.
 # It exits 1 having checked nothing, which reads as a clean scan.
 # ---------------------------------------------------------------------------
-preprocessorErrorDirective:*/llvm-c/DataTypes.h

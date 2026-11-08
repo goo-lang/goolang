@@ -14,7 +14,6 @@ int goo_deadlock_init(void) {
     g_scheduler->deadlock_detector.check_interval_ns = 1000000000;  // 1 second
     g_scheduler->deadlock_detector.detected_deadlock = 0;
     g_scheduler->deadlock_detector.blocked_goroutines = 0;
-    g_scheduler->deadlock_detector.main_in_wait = 0;
 
     return 1;
 }

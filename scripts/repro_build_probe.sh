@@ -15,6 +15,110 @@ set -u
 PROBE="repro-build-probe"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# explain_mismatch <artefact-name> <A-path> <B-path>
+#
+# The cmp verdict and the two sha256 hashes printed by the caller stay
+# exactly as they are — this only ADDS a report of WHERE the bytes differ,
+# printed after them. It never changes the FAIL verdict or its exit code.
+#
+# Tool priority: diffoscope when it is on PATH (it already does both member-
+# and instruction-level diffing, for both artefact kinds, better than the
+# fallback below). Otherwise: an `ar`+sha256sum member walk for an archive,
+# `llvm-objdump`/`objdump` section and disassembly diffs for a binary. With
+# none of those tools present, say so plainly instead of guessing.
+#
+# Every branch caps its own output, and the whole function stays well under
+# 150 lines, so one huge mismatch cannot flood the log that a person reads.
+explain_mismatch() {
+    local artefact="$1" a="$2" b="$3"
+    echo "  mismatch report for $artefact:"
+
+    if command -v diffoscope >/dev/null 2>&1; then
+        echo "    (report tool: diffoscope)"
+        diffoscope --max-diff-block-lines 40 "$a" "$b" 2>&1 | head -60 | sed 's/^/    /'
+        return 0
+    fi
+
+    case "$artefact" in
+    *.a)
+        if ! command -v ar >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then
+            echo "    (report tool: NONE — diffoscope and ar/sha256sum are all absent from PATH)"
+            return 0
+        fi
+        echo "    (report tool: ar + sha256sum member walk — diffoscope not on PATH)"
+        local ta tb only_a only_b common m ha hb differing=0 total=0 first=""
+        ta="$(mktemp)"; tb="$(mktemp)"
+        ar t "$a" | sort >"$ta"
+        ar t "$b" | sort >"$tb"
+        only_a="$(comm -23 "$ta" "$tb")"
+        only_b="$(comm -13 "$ta" "$tb")"
+        if [ -n "$only_a" ]; then
+            echo "    member(s) only in A:"; printf '%s\n' "$only_a" | head -10 | sed 's/^/      /'
+        fi
+        if [ -n "$only_b" ]; then
+            echo "    member(s) only in B:"; printf '%s\n' "$only_b" | head -10 | sed 's/^/      /'
+        fi
+        common="$(comm -12 "$ta" "$tb")"
+        while IFS= read -r m; do
+            [ -z "$m" ] && continue
+            total=$((total + 1))
+            ha="$(ar p "$a" "$m" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+            hb="$(ar p "$b" "$m" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+            if [ "$ha" != "$hb" ]; then
+                differing=$((differing + 1))
+                [ -z "$first" ] && first="$m"
+            fi
+        done <<<"$common"
+        rm -f "$ta" "$tb"
+        if [ -n "$first" ]; then
+            echo "    first differing member: $first"
+            echo "    $differing of $total common member(s) differ"
+        else
+            echo "    every common member is byte-identical — the mismatch is in archive metadata (member order, timestamps, index) rather than any member's content"
+        fi
+        ;;
+    *)
+        local objdump="" ha hb da db first_hunk line func
+        if command -v llvm-objdump >/dev/null 2>&1; then
+            objdump="llvm-objdump"
+        elif command -v objdump >/dev/null 2>&1; then
+            objdump="objdump"
+        else
+            echo "    (report tool: NONE — diffoscope and llvm-objdump/objdump are all absent from PATH)"
+            return 0
+        fi
+        echo "    (report tool: $objdump — diffoscope not on PATH)"
+
+        # The "file format" line embeds each build's own tmp-dir path, so it
+        # always differs even when the bytes that matter do not; filtered out
+        # so it cannot masquerade as the first real difference below.
+        ha="$(mktemp)"; hb="$(mktemp)"
+        "$objdump" -h "$a" 2>&1 | grep -v 'file format' >"$ha"
+        "$objdump" -h "$b" 2>&1 | grep -v 'file format' >"$hb"
+        echo "    section table diff:"
+        diff -u "$ha" "$hb" | head -40 | sed 's/^/      /'
+        rm -f "$ha" "$hb"
+
+        da="$(mktemp)"; db="$(mktemp)"
+        "$objdump" -d --no-show-raw-insn "$a" 2>&1 | grep -v 'file format' >"$da"
+        "$objdump" -d --no-show-raw-insn "$b" 2>&1 | grep -v 'file format' >"$db"
+        first_hunk="$(diff "$da" "$db" | head -1)"
+        if [ -n "$first_hunk" ]; then
+            line="$(printf '%s' "$first_hunk" | sed -E 's/^([0-9]+).*/\1/')"
+            func="$(sed -n "1,${line}p" "$da" | tac | grep -m1 -E '^[0-9a-f]+ <.*>:' | sed -E 's/^[0-9a-f]+ <(.*)>:.*/\1/')"
+            if [ -n "$func" ]; then
+                echo "    first differing function: $func"
+            else
+                echo "    first difference falls before any function label (data or header)"
+            fi
+        fi
+        echo "    disassembly diff (first 40 lines):"
+        diff "$da" "$db" | head -40 | sed 's/^/      /'
+        rm -f "$da" "$db"
+        ;;
+    esac
+}
+
 # THE VERDICT MUST NAME WHAT IT TESTED.
 #
 # This probe builds `git archive HEAD`, never the working tree. That is Limit 6
@@ -42,6 +146,27 @@ tested_what() {
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+    # FAST CASE FIRST. explain_mismatch's archive path needs no container: two
+    # tiny local archives, two members each, one member's content differing,
+    # prove the ar/sha256sum member walk names the right member before paying
+    # for the container case below.
+    FT="$(mktemp -d)"
+    mkdir -p "$FT/a" "$FT/b"
+    printf 'same content\n' >"$FT/a/one.o"
+    printf 'same content\n' >"$FT/b/one.o"
+    printf 'A content\n' >"$FT/a/two.o"
+    printf 'B content\n' >"$FT/b/two.o"
+    ( cd "$FT/a" && ar rcs libtest.a one.o two.o ) >/dev/null 2>&1
+    ( cd "$FT/b" && ar rcs libtest.a one.o two.o ) >/dev/null 2>&1
+    FT_OUT="$(explain_mismatch "libtest.a" "$FT/a/libtest.a" "$FT/b/libtest.a")"
+    rm -rf "$FT"
+    if ! printf '%s\n' "$FT_OUT" | grep -q 'first differing member: two.o'; then
+        echo "$PROBE --self-test: FAIL (fast unit case did not name two.o as the differing member)"
+        printf '%s\n' "$FT_OUT" | sed 's/^/    /'
+        exit 1
+    fi
+    echo "    ok: fast unit case (two local archives) names two.o as the differing member"
+
     # TEETH. Inject real nondeterminism and require this probe to notice.
     # A mutation that fails to apply reads exactly like a passing probe, so the
     # injection is verified before the red result is trusted.
@@ -137,7 +262,16 @@ CFRAG
         sed 's/^/    /' "$ST/out.log"
         exit 1
     fi
-    echo "$PROBE --self-test: PASS (nonce-driven rebuild was reported DIFFER; probe can go red) [$(tested_what)]"
+    # The injection lands ONLY in runtime.o's compile, so a correct report
+    # must name that member specifically -- not merely say SOMETHING differs.
+    if ! grep -q 'first differing member: runtime.o' "$ST/out.log"; then
+        echo "$PROBE --self-test: FAIL (probe went DIFFER but its report did not name runtime.o as the differing member)"
+        sed 's/^/    /' "$ST/out.log"
+        exit 1
+    fi
+    echo "$PROBE --self-test: PASS (nonce-driven rebuild was reported DIFFER, and the report named runtime.o; probe can go red) [$(tested_what)]"
+    echo "    report excerpt:"
+    grep -A2 'mismatch report for libgoo_runtime.a' "$ST/out.log" | sed 's/^/    /'
     exit 0
 fi
 
@@ -191,6 +325,7 @@ for art in goo libgoo_runtime.a; do
         echo "  DIFFER: $art"
         echo "    A $(sha256sum "$a" | cut -d' ' -f1)"
         echo "    B $(sha256sum "$b" | cut -d' ' -f1)"
+        explain_mismatch "$art" "$a" "$b"
         rc=1
     fi
 done

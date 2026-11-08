@@ -8,6 +8,10 @@ Source: MISRA C:2012, Third edition, first revision (February 2019), 17
 directives and 156 rules. Guideline headline text is quoted from a licensed
 copy solely to identify the guideline under discussion.
 
+A companion record, [`power-of-ten.md`](power-of-ten.md), covers Gerard
+Holzmann's ten rules for safety-critical C, with a checker named for each
+rule or the word "unchecked".
+
 ## This is not a compliance claim
 
 MISRA C:2012 section 5.5 sets the bar for claiming compliance. This project
@@ -85,7 +89,7 @@ MISRA 5.4 requires a formal record for each. One file each, in `deviations/`, us
 | ID | Guideline | Waived | Reason |
 |---|---|---|---|
 | [D-01](deviations/D-01.md) | Rule 21.3 - The memory allocation and deallocation functions of <stdlib.h> shall not be used | 2,597 | malloc/free is the memory model: ARC, arenas, xalloc |
-| [D-02](deviations/D-02.md) | Rule 17.7 - The value returned by a function having non-void return type shall be used | 1,709 | 1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return |
+| [D-02](deviations/D-02.md) | Rule 17.7 - The value returned by a function having non-void return type shall be used | 1,709 | 1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return (2026-08-14, cppcheck). The pthread slice is now enforced by `pthread-return-probe` in `verify-core` — shrink-only, 40 unchecked calls across 68 `src/*.c` files on 2026-09-02, see `scripts/pthread-return-baseline.txt` |
 | [D-03](deviations/D-03.md) | Rule 14.4 - The controlling expression of an if statement and the controlling expression of an iteration-statement shall have essentially Boolean type | 2,111 | if (ptr) and if (!x) are the house idiom |
 | [D-04](deviations/D-04.md) | Rule 21.6 - The Standard Library input/output functions shall not be used | 1,372 | a compiler must print diagnostics |
 | [D-05](deviations/D-05.md) | Rule 11.3 - A cast shall not be performed between a pointer to object type and a pointer to a different object type | 912 | the AST downcast (CallExprNode *)node is the architecture |
@@ -133,7 +137,7 @@ Every rule here marks code that is either undefined, or a defect class this proj
 
 | Guideline | Category | To fix | Note |
 |---|---|---|---|
-| Rule 17.7 - The value returned by a function having non-void return type shall be used | Required | 1,516 | 1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return |
+| Rule 17.7 - The value returned by a function having non-void return type shall be used | Required | 1,516 | 1,709 waived by D-02 (printf and mem/str family); 1,516 kept, 840 of them an unchecked pthread_* return (2026-08-14, cppcheck). The pthread slice is now enforced by `pthread-return-probe` in `verify-core` — shrink-only, 40 unchecked calls across 68 `src/*.c` files on 2026-09-02, see `scripts/pthread-return-baseline.txt` |
 | Rule 11.8 - A cast shall not remove any const or volatile qualification from the type pointed to by a pointer | Required | 67 | free((void*)x) on a const char* field; a real defect class |
 | Rule 12.2 - The right hand operand of a shift operator shall lie in the range zero to one less than the width in bits of the essential type of the left hand operand | Required | 45 | shift out of range is undefined behaviour |
 | Rule 4.1 - Octal and hexadecimal escape sequences shall be terminated | Required | 41 | unterminated escape sequence |
@@ -236,7 +240,7 @@ The essential type model. Real value, but the largest and least mechanical group
 | Rule 2.6 - A function should not contain unused label declarations | Advisory | Adopted, enforced by other means | - | no |
 | Rule 2.7 - There should be no unused parameters in functions | Advisory | Adopted, fix backlog (P2) | 96 | yes |
 | Rule 3.1 - The character sequences /* and // shall not be used within a comment | Required | Adopted, fix backlog (P1) | 6 | yes |
-| Rule 3.2 - Line-splicing shall not be used in // comments | Required | Adopted, enforced by other means | - | no |
+| Rule 3.2 - Line-splicing shall not be used in // comments | Required | Adopted, enforced by `misra-r3-2-probe` (`scripts/misra_r3_2_probe.sh`, grep, bar 0) | 0 (grep, `git ls-files` src/ and include/, 166 files, 2026-11-08) | no |
 | Rule 4.1 - Octal and hexadecimal escape sequences shall be terminated | Required | Adopted, fix backlog (P1) | 41 | yes |
 | Rule 4.2 - Trigraphs should not be used | Advisory | Adopted, clean | - | yes |
 | Rule 5.1 - External identifiers shall be distinct | Required | Adopted, clean | - | yes |
@@ -321,11 +325,11 @@ The essential type model. Real value, but the largest and least mechanical group
 | Rule 16.7 - A switch-expression shall not have essentially Boolean type | Required | Adopted, clean | - | yes |
 | Rule 17.1 - The features of <stdarg.h> shall not be used | Required | Deviation record (D-07) | 50 | yes |
 | Rule 17.2 - Functions shall not call themselves, either directly or indirectly | Required | Deviation record (D-06) | 805 | yes |
-| Rule 17.3 - A function shall not be declared implicitly | Mandatory | Adopted, clean | 660 | yes |
+| Rule 17.3 - A function shall not be declared implicitly | Mandatory | Adopted, clean | 40 (cppcheck 2.21.1, 2026-09-03; see Known limits) | yes |
 | Rule 17.4 - All exit paths from a function with non-void return type shall have an explicit return statement with an expression | Mandatory | Adopted, enforced by other means | - | no |
 | Rule 17.5 - The function argument corresponding to a parameter declared to have an array type shall have an appropriate number of elements | Advisory | Adopted, enforced by other means | - | no |
 | Rule 17.6 - The declaration of an array parameter shall not contain the static keyword between the [ ] | Mandatory | Adopted, clean | - | yes |
-| Rule 17.7 - The value returned by a function having non-void return type shall be used | Required | Deviation record (D-02) | 3225 | yes |
+| Rule 17.7 - The value returned by a function having non-void return type shall be used | Required | Deviation record (D-02); pthread slice enforced by `pthread-return-probe` in `verify-core`, shrink-only, 40 unchecked calls on 2026-09-02 (`scripts/pthread-return-baseline.txt`) | 3225 | yes |
 | Rule 17.8 - A function parameter should not be modified | Advisory | Declined (advisory) | 53 | yes |
 | Rule 18.1 - A pointer resulting from arithmetic on a pointer operand shall address an element of the same array as that pointer operand | Required | Adopted, enforced by other means | - | no |
 | Rule 18.2 - Subtraction between pointers shall only be applied to pointers that address elements of the same array | Required | Adopted, enforced by other means | - | no |
@@ -389,9 +393,15 @@ The essential type model. Real value, but the largest and least mechanical group
     make misra-baseline            # accept the current findings as the baseline
     scripts/misra-scan.sh --report # full breakdown, never fails
 
-`make misra` does not fail on the 7,168 accepted violations. It records the
-count per file and rule in `scripts/misra-baseline.txt` and fails only when a
-count rises or a new pair appears. This is the same shape as `make safety`.
+The scan reads its file list from `--project=build/compile_commands.json`
+(task 14's derivation of `GOO_OBJS` plus `COMPILER_SRCS`, regenerated on
+every run), not a hand-rolled `find src` — so it scans exactly the files
+linked into `bin/goo`, each with its own real compiler flags.
+
+`make misra` does not fail on the 2,141 accepted violations (cppcheck 2.21.1,
+measured 2026-09-03). It records the count per file and rule in
+`scripts/misra-baseline.txt` and fails only when a count rises or a new pair
+appears. This is the same shape as `make safety`.
 
 Setup is one step and it is not automatic: the cppcheck addon needs a rule-text
 file built from **your own licensed copy** of the standard. That file is not in
@@ -428,13 +438,102 @@ Read these before trusting any number this tool produces.
   so it reports every call as an implicit declaration. C23 makes a true
   implicit declaration a constraint violation, so a build that passes
   `-std=c23 -Wall -Wextra` cannot contain one. Adding `--library=posix
-  --library=gnu` cut this from 1,666 to 660.
+  --library=gnu` cut this from 1,666 to 660 (2026-08-14 measurement, no
+  cppcheck version recorded at the time). Re-measured 2026-09-03 with
+  cppcheck 2.21.1 on the current `--project=build/compile_commands.json`
+  file list (58 files): 75 without the two `--library` flags, 40 with them.
+  Both 2026-08-14 figures are higher for two compounding reasons: the
+  2026-08-17 quarantine moved most `atomic_*`/`pthread_cond_*` callers out
+  of `src/` into `attic/src/` (the same cause already measured for Rule
+  17.7's pthread-return count, 840 -> 40, above), and the file list itself
+  has since narrowed from a hand-rolled `find src` (69 files today) to
+  `GOO_OBJS` + `COMPILER_SRCS` (58 files, task 15).
 - **Generated code is excluded.** `src/parser/parser.tab.c` and the `parser.y`
   lines its `#line` directives point at produce 1,542 findings, 912 of them
   Rule 20.13. MISRA section 6.8 treats generated code separately.
+- **Adopted code is excluded: the LLVM C API headers.** The 16 units that
+  include LLVM (`src/codegen/*.c`, `src/compiler/goo.c`) reach
+  `llvm-c/Core.h`, `llvm-c/Types.h` and `llvm-c/Error.h`. These headers are
+  third-party code that this project adopts and does not change, so a finding
+  located in one has no fix here. Measured with cppcheck 2.22.0 on
+  2026-11-08: 98 MISRA findings (Core.h 94, Types.h 3, Error.h 1). The
+  suppression entry `misra-c2012-*:*/llvm-c/*` in `misra-suppressions.txt`
+  names this record. It covers MISRA IDs only, so any other cppcheck ID in
+  those headers stays visible, and `scripts/analyzer_lanes_probe.sh` fails if
+  a parse-failure ID is suppressed.
 - **cppcheck stops at C11.** Any C23-only construct is parsed as C11.
 - **Platform-conditional code is invisible.** The scan runs on Linux, so an
   `#ifdef _WIN32` branch is never preprocessed and never checked. The `system()`
   call at `src/codegen/codegen.c:1797` is a real Rule 21.8 violation that the
   baseline reports as absent. A guideline reading clean means clean *on this
   platform's preprocessed source*, not clean in the tree.
+- **The 840 and the 40 count different trees, not different bugs.** The 840
+  unchecked `pthread_*` returns above came from the cppcheck scan of
+  2026-08-14. The 2026-08-17 quarantine then moved the unlinked frameworks
+  that carried most of those calls out of `src/` into `attic/src/`. A raw
+  `pthread_` grep on 2026-09-02 finds 44 call sites left in `src/`, 0 in
+  `include/`, and 981 in `attic/src/`. `pthread-return-probe`
+  (`scripts/pthread_return_probe.sh`, header dated 2026-09-02) counts the
+  current `src/` tree only, hence its 40 — see
+  `scripts/pthread-return-baseline.txt` for the full explanation and the
+  per-file baseline.
+- **The Cobra track is closed (user decision, 2026-11-08).** Cobra 5.4
+  (13 April 2026), built from commit `eebff89637542b0bfdc76739fbad4f6a365c51ae`
+  and run on 2026-11-08 over the 68 tracked `src/*.c` files at repo commit
+  `a42a39d6`, passed both controls (the violating file reported, the compliant
+  twin silent) for 1 of 9 rules: Rule 3.2. The other eight missed their own
+  violating example. The cause, from the calibration: Cobra's rule patterns
+  match narrow token shapes, for example a cast followed by a plus for Rule
+  18.1, and none tracks a value or an object. Rule 3.2 had 0 reports on
+  `src/`, so a grep expresses the same check. `misra-r3-2-probe` is that grep.
+  No Cobra is vendored and no Cobra gate exists. Full results:
+  [cobra-calibration.md](cobra-calibration.md). Spec:
+  [2026-09-03-cobra-calibration.md](../superpowers/specs/2026-09-03-cobra-calibration.md).
+- **Cobra `-N` hangs on a rule file.** With Cobra 5.4 (`eebff896`), `-N`
+  parallelism hung on a rule file (observed in task 12, 2026-11-08). The Cobra
+  book, second edition, says `-N` serves only the
+  token read and interactive queries, and that agrees with the hang. The
+  calibration ran single-threaded and never used `-N`.
+- **Three `src/types/escape_core.c` pairs entered the baseline on
+  2026-09-03 with no code change**: Rule 10.4 (9 -> 13), Rule 10.8 (new, 2)
+  and Rule 12.2 (new, 2), all at the same two lines (`GOO_ASSERT((why &
+  ~ESCAPE_REASON_ALL) == 0)`, present since 2026-08-08). The lines predate
+  the prior 2026-08-14 baseline, so this is a scan/tooling difference since
+  that baseline was taken, not a code regression — see task 15's report
+  (`.superpowers/sdd/2026-09-02-verification-tooling-next-steps/`) for the
+  evidence that rules out the `--project` file-list switch itself as the
+  cause (the same rise already reproduced under the old `find src` list).
+- **Task 24 / 24b decision: `GOO_ASSERT` is ON by default, `GOO_ASSERT_OFF`
+  is the kill switch.** First measured 2026-09-02 with 32-way parallel golden
+  runs, which read 4.3% over the 2% line (full parallel numbers in the task
+  report only, because a 3.3-second run at `GOLDEN_JOBS=32` cannot resolve a
+  2% difference against its own noise). Re-measured the same day, serially,
+  to remove that noise: `scripts/run_golden.sh` (495 fixtures),
+  `GOLDEN_JOBS=1`, five runs per compiler, alternating off/on/off/on/... in
+  one sitting. Wall times, seconds, in run order —
+  off: 28.67, 27.93, 27.74, 28.07, 27.96 (range 27.74-28.67, median 27.96);
+  on: 27.90, 27.70, 27.99, 27.86, 28.30 (range 27.70-28.30, median 27.90).
+  Median-to-median that is `(27.90 - 27.96) / 27.96 = -0.2%` — no measurable
+  wall-time cost. Median user time agrees: 15.57 s off against 15.48 s on,
+  `-0.6%`. Both readings are far under the 2% line, so the rule says flip.
+  Flipping was implemented and built (`bin/goo` relinked with 12 real calls to
+  `goo_assert_fail`, confirmed by `objdump -d`, against 0 before) and
+  `make verify-core` was run once with it. It went red at
+  `release-decision-teeth`: the `cond1-escapes` mutation deletes
+  `src/types/release_decision.c:1445`'s early return, and with asserts on the
+  mutant now aborts at the `GOO_ASSERT(!local_escape_local_escapes(le, fn,
+  r->name))` on line 1540 (`goo: ASSERT FAILED`) instead of producing a wrong
+  decision the harness can diff — `scripts/release_decision_teeth.sh` had no
+  CAUGHT category for a crash, only INCONCLUSIVE-crash, so its tally read
+  "11 of 12 conditions were caught" and the target failed. A direct run of
+  `scripts/goo_assert_probe.sh` went red the same way: its own
+  "production (no flag)" case asserted `GOO_ASSERT(0)` must NOT abort, which
+  was the old contract. Both assertions were correct and firing exactly as
+  designed — the defect was entirely in the two probe scripts' vocabulary for
+  the old contract. Task 24b (this task) taught
+  `scripts/release_decision_teeth.sh` a `CAUGHT` category for a mutant that
+  dies on a reported `GOO_ASSERT` (status 134, `goo: ASSERT FAILED` on its
+  stderr) before any row runs, and taught `scripts/goo_assert_probe.sh` the
+  new four-mode contract (default aborts, `GOO_ASSERT_OFF` recovers the old
+  no-op / pass-through, debug and coverage unchanged). With both probes
+  updated, the flip was re-applied and `make verify-core` passed green.

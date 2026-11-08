@@ -1,14 +1,16 @@
 #!/bin/bash
 # assert-corpus: run the whole fixture corpus through an ASSERT-ENABLED compiler.
 #
-# WHY THIS EXISTS. `make verify-core` builds the production compiler, where
-# GOO_ASSERT compiles to (void)0. So every gate in verify-core can be green
-# while every assert in the tree is dead code. An assert that no build ever
-# evaluates is not a check, it is a comment with parentheses.
+# WHY THIS EXISTS. Since the 2026-09-02 flip (Task 24b), GOO_ASSERT is ON BY
+# DEFAULT: `make verify-core` builds the production compiler with every
+# assert a live check, unless a caller sets GOO_ASSERT_OFF. So this script is
+# no longer what makes an assert get evaluated AT ALL. It is the sweep that
+# forces GOO_DEBUG explicitly -- which GOO_ASSERT_OFF cannot turn off, see
+# include/goo_assert.h -- and pushes the full corpus through it.
 #
-# This is the target that makes them earn their keep: build with GOO_DEBUG and
-# push all ~751 fixtures through it, so each assert is evaluated on real input
-# rather than on a synthetic probe.
+# This is the target that keeps the DEBUG build honest: build with GOO_DEBUG
+# and push all ~751 fixtures through it, so each assert is evaluated on real
+# input rather than on a synthetic probe.
 #
 # NOT IN verify-core, and the reason is mechanical rather than a judgement:
 # `make debug` and `make lexer` both write bin/goo. Running this inside
@@ -17,7 +19,7 @@
 # belongs in a pre-release sweep, not in the per-change gate.
 #
 # scripts/goo_assert_probe.sh is the fast companion and IS in verify-core: it
-# checks that the three build modes behave, which is the property that would
+# checks that the four build modes behave, which is the property that would
 # otherwise rot silently.
 #
 # LEAVES A DEBUG BINARY IN PLACE. Run `make lexer` afterwards, or let the next
