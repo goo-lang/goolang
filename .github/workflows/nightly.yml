@@ -50,9 +50,10 @@ jobs:
           fetch-depth: 0   # repro-build-probe builds from `git archive HEAD`
 
       - name: Install toolchain
-        # Same packages as tests.yml (see the reasons there). podman is
-        # preinstalled on ubuntu-24.04; the Tool versions step prints it, and
-        # the skip guard below fails the run if the podman gates skipped.
+        # Same packages as tests.yml (see the reasons there). This step does
+        # not install podman. The Tool versions step runs `podman --version`
+        # and fails the job if podman is absent, and the skip guard below
+        # fails the run if a podman gate skipped.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -72,6 +73,13 @@ jobs:
           cppcheck --version
           podman --version
           python3 -c "import jsonschema; print('jsonschema', jsonschema.__version__)"
+
+      - name: Build the pinned image
+        # podman-image is NOT in VERIFY_ALL_DEPS, so nothing in verify-nightly
+        # builds the image. podman-image-probe FAILS when the image is absent
+        # ("is not built -- run 'make podman-image'"), and repro-build-probe
+        # only uses it. repro.yml runs this same command first.
+        run: make podman-image
 
       - name: make verify-nightly
         run: |
@@ -99,7 +107,7 @@ jobs:
             if grep -q "^${gate}: PASS" verify-nightly.log; then
               echo "ok: ${gate} ran and passed"
             else
-              echo "::error::${gate} did not report PASS — it skipped or never ran"
+              echo "::error::${gate} did not report PASS — it skipped or never ran (podman-image-probe and repro-build-probe need podman and the image built by 'make podman-image')"
               rc=1
             fi
           done
