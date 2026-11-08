@@ -129,10 +129,15 @@
 # that was all 16 LLVM units (src/codegen/*.c, src/compiler/goo.c): each
 # stopped in llvm-c/DataTypes.h, and a suppression in
 # docs/misra/misra-suppressions.txt hid the report. The lane now fails when
-# any result is a preprocessorErrorDirective, and also when the suppression
-# list names that ID, because such a list makes the first check blind.
-# Known gap: an all-ID file entry ("*:<file>", the Bison entries) also hides
-# an #error in that file; those files are excluded from MISRA on purpose.
+# any result has a parse-failure ID (preprocessorErrorDirective, syntaxError,
+# internalError, internalAstError, cppcheckError: the set in
+# docs/misra/tools/aggregate.py), and also when a suppression-list entry or
+# an inline `cppcheck-suppress` comment has an ID glob that covers one of
+# them (fnmatch, so "preprocessor*" and "*" count), because such an entry
+# makes the first check blind. tools/cppcheck_lane_check.py does both.
+# Known exceptions, listed by name there: the three all-ID Bison entries
+# ("*:src/parser/parser.tab.c", ".tab.h", "parser.y"). A parse failure in
+# those files stays hidden; they are excluded from MISRA on purpose.
 run_cppcheck_lane() { # $1 = compile_commands.json, $2 = sarif out dir, $3 = jobs, $4 = misra addon config, $5 = suppressions list
 	local cc_path="$1" out_dir="$2" jobs="$3" misra_json="$4" suppressions="$5"
 	mkdir -p "$out_dir"
@@ -166,46 +171,31 @@ d = json.load(open(sys.argv[1]))
 print(sum(len(r.get('results', [])) for r in d.get('runs', [])))
 " "$sarif_out")"
 	fi
-	# One CPPCHECK_PREPROCESSOR_ERROR line per #error result, and one
-	# CPPCHECK_BLIND_SUPPRESSION line per suppression entry that hides them;
-	# cppcheck_lane_verdict below fails on either.
-	local pp_lines="" pp_errors=0 blind_lines blind=0
-	if [ -f "$sarif_out" ]; then
-		pp_lines="$(python3 -c "
-import json, sys
-for run in json.load(open(sys.argv[1])).get('runs', []):
-    for r in run.get('results', []):
-        if r.get('ruleId') != 'preprocessorErrorDirective':
-            continue
-        loc = (r.get('locations') or [{}])[0].get('physicalLocation', {})
-        uri = loc.get('artifactLocation', {}).get('uri', '?')
-        line = loc.get('region', {}).get('startLine', '?')
-        print('CPPCHECK_PREPROCESSOR_ERROR %s:%s %s' % (uri, line, r.get('message', {}).get('text', '')))
-" "$sarif_out")"
+	# tools/cppcheck_lane_check.py prints one CPPCHECK_PARSE_FAILURE line per
+	# parse-failure result, one CPPCHECK_BLIND_SUPPRESSION line per list entry
+	# or inline comment that hides one, and CPPCHECK_KNOWN_EXCEPTION lines for
+	# the three Bison entries; cppcheck_lane_verdict below fails on the first
+	# two. A failure of the tool itself is a lane failure too (counts "?").
+	local check_out pp_errors="?" blind="?"
+	if check_out="$(python3 "$REPO_ROOT/tools/cppcheck_lane_check.py" "$sarif_out" "$suppressions" "$cc_path" "$REPO_ROOT" 2>&1)"; then
+		pp_errors="$(printf '%s\n' "$check_out" | sed -n 's/^CPPCHECK_CHECK parse_failures=\([0-9]*\) .*/\1/p')"
+		blind="$(printf '%s\n' "$check_out" | sed -n 's/^CPPCHECK_CHECK .* blind_suppressions=\([0-9]*\)$/\1/p')"
 	fi
-	if [ -n "$pp_lines" ]; then
-		printf '%s\n' "$pp_lines"
-		pp_errors="$(printf '%s\n' "$pp_lines" | grep -c '^CPPCHECK_PREPROCESSOR_ERROR ')"
-	fi
-	blind_lines="$(grep -n '^[[:space:]]*preprocessorErrorDirective' "$suppressions" || true)"
-	if [ -n "$blind_lines" ]; then
-		printf '%s\n' "$blind_lines" | sed "s|^|CPPCHECK_BLIND_SUPPRESSION $suppressions:|"
-		blind="$(printf '%s\n' "$blind_lines" | grep -c .)"
-	fi
-	echo "CPPCHECK_SUMMARY entries=$entry_count checked=$checked exit=${scan_exit:-none} results=$results wall=$wall preprocessor_errors=$pp_errors blind_suppressions=$blind"
+	printf '%s\n' "$check_out" | grep -v '^CPPCHECK_CHECK ' || true
+	echo "CPPCHECK_SUMMARY entries=$entry_count checked=$checked exit=${scan_exit:-none} results=$results wall=$wall parse_failures=${pp_errors:-?} blind_suppressions=${blind:-?}"
 }
 
 # The lane's one verdict, shared by the real run, --cppcheck-lane and
 # --self-test. $1 = a CPPCHECK_SUMMARY line. Returns 0 only when cppcheck
-# exited 0, checked at least one unit, no unit stopped at an #error, and no
-# suppression entry hides an #error.
+# exited 0, checked at least one unit, no unit hit a parse failure, and no
+# suppression (list entry or inline comment) hides one.
 cppcheck_lane_verdict() {
 	local summary="$1"
 	printf '%s\n' "$summary" | grep -q ' exit=0 ' || return 1
 	if printf '%s\n' "$summary" | grep -q ' checked=0 '; then
 		return 1
 	fi
-	printf '%s\n' "$summary" | grep -q ' preprocessor_errors=0 ' || return 1
+	printf '%s\n' "$summary" | grep -q ' parse_failures=0 ' || return 1
 	printf '%s\n' "$summary" | grep -qE ' blind_suppressions=0$' || return 1
 	return 0
 }
@@ -692,19 +682,43 @@ for run in d.get('runs', []):
 		fail=1
 	fi
 
-	# Task 17b: the verdict itself. GREEN on the fixtures above (none of
-	# them has an #error), so the three RED cases below prove the verdict
-	# can tell the difference, not only that it can say no.
-	if cppcheck_lane_verdict "$cppcheck_summary"; then
-		echo "    ok: the cppcheck verdict is GREEN on the fixtures, which have no #error"
+	# Task 17b: the verdict itself. GREEN on bug.c and ctrl.c, which have no
+	# parse failure, so the RED cases below prove the verdict can tell the
+	# difference, not only that it can say no.
+	cat >"$W/cc-clean.json" <<EOF
+[
+  {"directory": "$W", "file": "bug.c", "arguments": ["gcc", "-c", "bug.c", "-o", "bug.o"]},
+  {"directory": "$W", "file": "ctrl.c", "arguments": ["gcc", "-c", "ctrl.c", "-o", "ctrl.o"]}
+]
+EOF
+	clean_out="$(run_cppcheck_lane "$W/cc-clean.json" "$W/sarif-cppcheck-clean" 1 "$MISRA_JSON" "$MISRA_SUPPRESSIONS")"
+	clean_summary="$(printf '%s\n' "$clean_out" | grep '^CPPCHECK_SUMMARY ')"
+	if cppcheck_lane_verdict "$clean_summary"; then
+		echo "    ok: the cppcheck verdict is GREEN on bug.c and ctrl.c, which have no parse failure"
+		echo "        $clean_summary"
 	else
-		echo "$SELF: FAIL (the cppcheck verdict is RED on fixtures with no #error): $cppcheck_summary"
+		echo "$SELF: FAIL (the cppcheck verdict is RED on fixtures with no parse failure): $clean_summary"
+		printf '%s\n' "$clean_out" | grep -v '^CPPCHECK_SUMMARY ' || true
+		fail=1
+	fi
+
+	# Task 17b fix round 1: a syntaxError is a parse failure too. The first
+	# fixture set holds broken.c, which does not parse, so its run above must
+	# be RED and must name broken.c.
+	if ! cppcheck_lane_verdict "$cppcheck_summary" \
+		&& printf '%s\n' "$cppcheck_summary" | grep -q ' exit=0 ' \
+		&& printf '%s\n' "$cppcheck_out" | grep -qE '^CPPCHECK_PARSE_FAILURE [^ ]*broken\.c:[0-9]+ syntaxError '; then
+		echo "    ok: a unit with a syntaxError is RED, although cppcheck exits 0"
+		printf '%s\n' "$cppcheck_out" | grep '^CPPCHECK_PARSE_FAILURE ' | sed 's/^/        /'
+	else
+		echo "$SELF: FAIL (a syntaxError result did not make the cppcheck lane RED): $cppcheck_summary"
 		fail=1
 	fi
 
 	# Task 17b: a unit that stops at an #error in a header it includes, the
 	# shape of the llvm-c/DataTypes.h defect. cppcheck still prints
-	# "Checking pp.c" and exits 0, so only the #error check can make it RED.
+	# "Checking pp.c" and exits 0, so only the parse-failure check can make
+	# it RED.
 	mkdir -p "$W/pp"
 	cat >"$W/pp/stop.h" <<'EOF'
 #error "stop: cppcheck analyses nothing after this line"
@@ -726,7 +740,7 @@ EOF
 	if ! cppcheck_lane_verdict "$pp_summary" \
 		&& printf '%s\n' "$pp_summary" | grep -q ' exit=0 ' \
 		&& printf '%s\n' "$pp_summary" | grep -qE ' checked=[1-9]' \
-		&& printf '%s\n' "$pp_summary" | grep -q ' preprocessor_errors=1 '; then
+		&& printf '%s\n' "$pp_summary" | grep -q ' parse_failures=1 '; then
 		echo "    ok: a unit that stops at an #error is RED, although cppcheck exits 0 and prints 'Checking' for it"
 		echo "        $pp_summary"
 	else
@@ -734,27 +748,70 @@ EOF
 		fail=1
 	fi
 
-	# Task 17b: the same unit with a suppression list that hides the #error,
-	# the way docs/misra/misra-suppressions.txt did. cppcheck then reports
-	# nothing for pp.c, so the list itself must make the lane RED.
-	cp "$MISRA_SUPPRESSIONS" "$W/blind-suppressions.txt"
-	printf 'preprocessorErrorDirective:*/stop.h\n' >>"$W/blind-suppressions.txt"
-	blind_out="$(run_cppcheck_lane "$W/cc-pp.json" "$W/sarif-cppcheck-blind" 1 "$MISRA_JSON" "$W/blind-suppressions.txt")"
-	blind_summary="$(printf '%s\n' "$blind_out" | grep '^CPPCHECK_SUMMARY ')"
-	if ! cppcheck_lane_verdict "$blind_summary" \
-		&& printf '%s\n' "$blind_summary" | grep -q ' preprocessor_errors=0 ' \
-		&& printf '%s\n' "$blind_summary" | grep -qE ' blind_suppressions=[1-9][0-9]*$'; then
-		echo "    ok: a suppression list that hides an #error is RED, although the hidden unit reports nothing"
-		echo "        $blind_summary"
+	# Task 17b: the same unit with a list that hides the #error. cppcheck then
+	# reports nothing for pp.c, so the list itself must make the lane RED.
+	# Two entries, one run each: the exact ID (the old
+	# docs/misra/misra-suppressions.txt entry), and a GLOB that covers it
+	# (fix round 1: a prefix grep for the ID let "preprocessor*" through).
+	for blind_entry in 'preprocessorErrorDirective:*/stop.h' 'preprocessor*:*/stop.h'; do
+		cp "$MISRA_SUPPRESSIONS" "$W/blind-suppressions.txt"
+		printf '%s\n' "$blind_entry" >>"$W/blind-suppressions.txt"
+		blind_out="$(run_cppcheck_lane "$W/cc-pp.json" "$W/sarif-cppcheck-blind" 1 "$MISRA_JSON" "$W/blind-suppressions.txt")"
+		blind_summary="$(printf '%s\n' "$blind_out" | grep '^CPPCHECK_SUMMARY ')"
+		if ! cppcheck_lane_verdict "$blind_summary" \
+			&& printf '%s\n' "$blind_summary" | grep -q ' parse_failures=0 ' \
+			&& printf '%s\n' "$blind_summary" | grep -qE ' blind_suppressions=1$'; then
+			echo "    ok: a list entry '$blind_entry' that hides an #error is RED, although the hidden unit reports nothing"
+			echo "        $blind_summary"
+		else
+			echo "$SELF: FAIL (a list entry '$blind_entry' that hides an #error did not make the cppcheck lane RED): $blind_summary"
+			fail=1
+		fi
+	done
+
+	# Task 17b fix round 1: an INLINE suppression of the #error (scan.sh passes
+	# --inline-suppr). The list is the real one, which hides nothing.
+	mkdir -p "$W/inl"
+	cat >"$W/inl/stop.h" <<'EOF'
+// cppcheck-suppress preprocessorErrorDirective
+#error "stop: cppcheck analyses nothing after this line"
+EOF
+	cp "$W/pp/pp.c" "$W/inl/inl.c"
+	cat >"$W/cc-inl.json" <<EOF
+[
+  {"directory": "$W/inl", "file": "inl.c", "arguments": ["gcc", "-c", "inl.c", "-o", "inl.o"]}
+]
+EOF
+	inl_out="$(run_cppcheck_lane "$W/cc-inl.json" "$W/sarif-cppcheck-inl" 1 "$MISRA_JSON" "$MISRA_SUPPRESSIONS")"
+	inl_summary="$(printf '%s\n' "$inl_out" | grep '^CPPCHECK_SUMMARY ')"
+	if ! cppcheck_lane_verdict "$inl_summary" \
+		&& printf '%s\n' "$inl_summary" | grep -q ' parse_failures=0 ' \
+		&& printf '%s\n' "$inl_summary" | grep -qE ' blind_suppressions=1$' \
+		&& printf '%s\n' "$inl_out" | grep -q '^CPPCHECK_BLIND_SUPPRESSION .*stop\.h:1 '; then
+		echo "    ok: an inline cppcheck-suppress comment that hides an #error is RED"
+		echo "        $inl_summary"
 	else
-		echo "$SELF: FAIL (a suppression list that hides an #error did not make the cppcheck lane RED): $blind_summary"
+		echo "$SELF: FAIL (an inline suppression of an #error did not make the cppcheck lane RED): $inl_summary"
+		printf '%s\n' "$inl_out" | grep -v '^CPPCHECK_SUMMARY ' || true
+		fail=1
+	fi
+
+	# The real list holds the three Bison all-ID entries. They must be
+	# reported as known exceptions, never as blind entries, and nothing else
+	# in the real list may count as blind ($clean_summary above already
+	# requires blind_suppressions=0).
+	known_n="$(printf '%s\n' "$clean_out" | grep -c '^CPPCHECK_KNOWN_EXCEPTION ' || true)"
+	if [ "$known_n" = "3" ]; then
+		echo "    ok: the three Bison all-ID entries are reported as known exceptions"
+	else
+		echo "$SELF: FAIL (expected 3 known Bison exceptions in the real list, got $known_n)"
 		fail=1
 	fi
 
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "$SELF: PASS (gcc: 1/0/failure distinguished, path-keyed same-basename pair correct; clang-tidy: >=1 warning / 0 warnings; cppcheck: >=1 misra-c2012-* result, an #error unit and a list that hides one are RED)"
+	echo "$SELF: PASS (gcc: 1/0/failure distinguished, path-keyed same-basename pair correct; clang-tidy: >=1 warning / 0 warnings; cppcheck: >=1 misra-c2012-* result; a syntaxError unit, an #error unit, an exact and a glob list entry and an inline comment that hide one are RED)"
 	exit 0
 fi
 
@@ -846,7 +903,7 @@ cppcheck_wall="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*wall=\([0-9.]*\
 cppcheck_fails=0
 if ! cppcheck_lane_verdict "$cppcheck_summary"; then
 	cppcheck_fails=1
-	printf '%s\n' "$cppcheck_out" | grep -E '^CPPCHECK_(PREPROCESSOR_ERROR|BLIND_SUPPRESSION) ' >&2 || true
+	printf '%s\n' "$cppcheck_out" | grep -E '^CPPCHECK_(PARSE_FAILURE|BLIND_SUPPRESSION) ' >&2 || true
 fi
 
 echo "$PROBE: capture $COMPILE_COMMANDS_OUT, $entry_count entries"
@@ -870,16 +927,16 @@ echo "$PROBE: cppcheck lane -- $CPPCHECK_VERSION, addon config $MISRA_JSON"
 # comment: a file with more than one preprocessor configuration gets a
 # SECOND "Checking <file>: <defines>..." line, so this counts lines, not
 # distinct files.
-cppcheck_pp="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*preprocessor_errors=\([0-9]*\).*/\1/p')"
-cppcheck_blind="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*blind_suppressions=\([0-9]*\).*/\1/p')"
-echo "$PROBE: cppcheck lane -- $entry_count entries, $cppcheck_checked 'Checking' lines, exit=$cppcheck_exit, $cppcheck_results findings, ${cppcheck_pp:-?} #error stop(s), ${cppcheck_blind:-?} suppression(s) hiding one, ${cppcheck_wall}s wall, SARIF in $SARIF_CPPCHECK_DIR"
+cppcheck_pp="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*parse_failures=\([0-9?]*\).*/\1/p')"
+cppcheck_blind="$(printf '%s\n' "$cppcheck_summary" | sed -n 's/.*blind_suppressions=\([0-9?]*\).*/\1/p')"
+echo "$PROBE: cppcheck lane -- $entry_count entries, $cppcheck_checked 'Checking' lines, exit=$cppcheck_exit, $cppcheck_results findings, ${cppcheck_pp:-?} parse failure(s), ${cppcheck_blind:-?} suppression(s) hiding one, ${cppcheck_wall}s wall, SARIF in $SARIF_CPPCHECK_DIR"
 
 # M2: the terminal verdict line carries the artefact -- the capture path
 # and all three SARIF directories -- the way
 # scripts/compile_commands_current_probe.sh's own PASS line names the
 # capture path and entry count.
 if [ "${gcc_fails:-1}" != "0" ] || [ "${tidy_fails:-1}" != "0" ] || [ "$cppcheck_fails" != "0" ]; then
-	echo "$PROBE: FAIL ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_fails failure(s) in $SARIF_GCC_DIR; clang-tidy $tidy_fails failure(s) in $SARIF_TIDY_DIR; cppcheck exit=$cppcheck_exit checked=$cppcheck_checked/$entry_count preprocessor_errors=${cppcheck_pp:-?} blind_suppressions=${cppcheck_blind:-?} in $SARIF_CPPCHECK_DIR)"
+	echo "$PROBE: FAIL ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_fails failure(s) in $SARIF_GCC_DIR; clang-tidy $tidy_fails failure(s) in $SARIF_TIDY_DIR; cppcheck exit=$cppcheck_exit checked=$cppcheck_checked/$entry_count parse_failures=${cppcheck_pp:-?} blind_suppressions=${cppcheck_blind:-?} in $SARIF_CPPCHECK_DIR)"
 	exit 1
 fi
 
