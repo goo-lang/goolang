@@ -248,14 +248,20 @@ length while the block count holds.
   `./scripts/arc_reason_census.sh`, or read any one program with
   `GOO_ARC_DEBUG=1 ./bin/goo -o /dev/null prog.goo`, which prints a verdict
   AND its reason set for each local.
-- **An escaping address-taken local is heap-promoted and never released.**
-  Triggers: an explicit `&x` that `local_escape` marks escaping; a
-  pointer-receiver call whose `param_escape` summary says the receiver or
-  result escapes; a function with a `go` statement or no verdict (a parameter,
-  a function literal). One block for each execution of the declaration.
-  MEASURED 2026-11-24: 0 block delta on `bench/daemon/daemon.goo` (4,003
-  blocks, both builds); a 1,000-iteration escaping-`&x` probe leaves 1,000
-  blocks, where `main` left a dangling stack slot.
+- **An address-taken local whose address may escape is heap-promoted.** Both
+  must hold (function_codegen.c:13-30): the address is taken (an explicit
+  `&x`, or an implicit `&t` through a pointer-receiver call), AND it may
+  escape. "May escape" means `local_escape` marks the local, or the receiver's
+  `param_escape` summary says the receiver or result escapes, or the function
+  has a `go` statement, or no verdict applies (a parameter, a function
+  literal). A `go` statement alone, with no address taken, promotes nothing.
+  The slot is allocated at the declaration, so a loop gets one block for each
+  iteration, and no release path frees it (a fact about the code).
+  MEASURED 2026-11-24: the daemon (no `&`) has 0 block delta, 4,003 blocks on
+  both builds. One probe, an explicit `&x` stored in a global, 1,000 calls,
+  leaves 1,000 blocks (24,000 bytes), where `main` left a dangling slot. The
+  pointer-receiver and `go` triggers use the same allocation path and were NOT
+  measured separately.
   docs/adr/0005-measurements/2026-11-24-addr-promotion.md.
 - **A multi-assign target gets no store release.** `a, b = x, y` stores
   without freeing what the slots held. A LEAK, never a use-after-free, and

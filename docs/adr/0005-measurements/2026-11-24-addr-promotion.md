@@ -5,16 +5,19 @@ Taken 2026-11-24 on branch `fix/audit-addr-escape` @ `19421d5b`, against
 
 ## What the change does
 
-A local goes to the heap, allocated at its declaration, when its address
-escapes. Three triggers:
+Rule as `src/codegen/function_codegen.c:13-30` states it. A local goes to the
+heap, allocated at its declaration, when BOTH hold:
 
-1. an explicit `&x` that `local_escape` marks as escaping;
-2. a pointer-receiver call whose `param_escape` summary says the receiver or
-   the result escapes;
-3. the enclosing function has a `go` statement, or has no verdict (a
-   parameter, a function literal).
+1. its address is taken: an explicit `&x`, or an implicit `&t` through a
+   pointer-receiver call;
+2. the address may escape: `local_escape` marks the local, or the receiver's
+   `param_escape` summary says the receiver or result escapes, or the function
+   has a `go` statement, or no verdict applies (a parameter, a function
+   literal).
 
-A loop gets one slot for each iteration. No release path frees a promoted slot.
+A `go` statement alone, with no address taken, promotes nothing. A loop gets
+one slot for each iteration. No release path frees a promoted slot (a fact
+about the code, not a measurement).
 
 ## Commands
 
@@ -49,6 +52,7 @@ This is one program, so it says nothing about code that takes addresses.
 | `origin/main` | 0 | 0 | `0` (wrong: stack slot dangled) |
 | branch | 1,000 | 24,000 | `999` (correct) |
 
-Each escaping address-taken local costs one heap block (24 bytes here) for
-each execution of its declaration, and the block is never freed. The old
+This measures the explicit-`&x`-into-a-global path only. The pointer-receiver
+and `go` triggers share the allocation path and were NOT measured separately.
+Here one block (24 bytes) is left for each execution of the declaration. The old
 `0 blocks` was a dangling pointer, not a saving.
