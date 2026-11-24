@@ -1,0 +1,16 @@
+package main
+
+import "os"
+
+// Unbounded recursion must hit the depth limit. Before the fix each block
+// reset the depth counter, so the limit never fired and the compiler
+// overflowed its stack.
+func h(n int) int {
+    return h(n+1) + h(n+1)
+}
+
+comptime const F int = h(0)
+
+func main() {
+    os.Exit(F)
+}

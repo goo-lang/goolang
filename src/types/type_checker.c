@@ -3078,8 +3078,7 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
         // Other evaluation errors stay non-fatal here (see above), but a
         // spent budget is a hard error: without it the compile would only
         // fail later with the generic "must be compile-time constant".
-        if (res && res->error && res->error->message &&
-            strcmp(res->error->message, GOO_COMPTIME_BUDGET_ERROR) == 0) {
+        if (res && comptime_error_is_limit(res->error)) {
             type_error(checker, res->error->position, "%s", res->error->message);
             comptime_result_free(res);
             return 0;
