@@ -82,13 +82,25 @@ elif mode == "fake":
         or getattr(fake_provider, "FakeManilaV2")
     )
     hw_snapshot = fake_cls()
+    if os.environ.get("IBM_REFRESH_CALIBRATION", "0") == "1":
+        from qiskit_ibm_runtime import QiskitRuntimeService
+
+        service = QiskitRuntimeService()
+        hw_snapshot.refresh(service, persist=False)
+        print(
+            f"[Calibration refresh] Refreshed {hw_snapshot.name} in-memory from live IBM service",
+            file=sys.stderr,
+        )
     backend = AerSimulator.from_backend(hw_snapshot)
 else:
     from qiskit_aer import AerSimulator
 
     backend = AerSimulator()
 
-pm = generate_preset_pass_manager(optimization_level=1, backend=backend)
+opt_level = int(os.environ.get("IBM_OPT_LEVEL", "3" if mode != "aer" else "1"))
+pm = generate_preset_pass_manager(
+    optimization_level=opt_level, backend=backend, seed_transpiler=42
+)
 isa_circuits = []
 for path, qc in circuits:
     isa_qc = pm.run(qc)

@@ -43,10 +43,10 @@ func runStabilizerQEC(fault int) bool {
 	a0 := qir.Alloc()
 	a1 := qir.Alloc()
 
-	// Prepare logical |1>_L = |111>
+	// Prepare logical |1>_L = |111> using heavy-hex nearest-neighbor chain d0 -> d1 -> d2
 	qir.X(d0)
 	qir.CX(d0, d1)
-	qir.CX(d0, d2)
+	qir.CX(d1, d2)
 
 	if fault == 1 {
 		qir.X(d0)
@@ -88,8 +88,8 @@ func runStabilizerQEC(fault int) bool {
 	qir.Reset(a0)
 	qir.Reset(a1)
 
-	// Uncompute encoding
-	qir.CX(d0, d2)
+	// Uncompute encoding along nearest-neighbor chain d2 <- d1 <- d0
+	qir.CX(d1, d2)
 	qir.CX(d0, d1)
 
 	m0 := qir.MeasureReset(d0)
