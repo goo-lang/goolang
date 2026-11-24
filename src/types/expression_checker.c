@@ -5080,7 +5080,7 @@ static int type_has_write_method(TypeChecker* checker, Type* t) {
             if (im->name && strcmp(im->name, "Write") == 0) return 1;
         return 0;
     }
-    Type* base = (t->kind == TYPE_POINTER) ? t->data.pointer.pointee_type : t;
+    const Type* base = (t->kind == TYPE_POINTER) ? t->data.pointer.pointee_type : t;
     const char* tn = type_receiver_name(base);
     if (!tn) return 0;
     char* mangled = type_method_mangled_name(tn, "Write");
