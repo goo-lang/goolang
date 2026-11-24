@@ -1,0 +1,16 @@
+package main
+
+import "qir"
+
+func useDynamicIndex(idx int) {
+	var q [2]qir.Qubit
+	q[0] = qir.Alloc()
+	q[1] = qir.Alloc()
+	qir.H(q[idx])
+	qir.FreeZero(q[0])
+	qir.FreeZero(q[1])
+}
+
+func main() {
+	useDynamicIndex(0)
+}

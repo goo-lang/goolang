@@ -239,14 +239,14 @@ func correctBitFlip(d0 qir.Qubit, d1 qir.Qubit, d2 qir.Qubit, a0 qir.Qubit, a1 q
 | `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeMarrakesh` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **95.43%** per-round (83.50% all-4) | `9d6130fa-7313-4196-8901-c90496e4968e` |
 | `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeKingston` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **93.82%** per-round (77.44% all-4) | `b541e64c-19b8-4a05-8ed2-f78a82c7168f` |
 | `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeFez` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **91.70%** per-round (72.46% all-4) | `337cdad3-67a2-4872-a5b4-2801b5a25e67` |
-| `qir_bitflip_qec_probe.goo` | Quantinuum `h1-1sc` / `h1-1e` (pre-flight) | QIR 1.0 Adaptive | 50 | **Verified QIR** (`0.00` / `6.37 HQC`) | `pre-flight` |
+| `qir_bitflip_qec_probe.goo` | Quantinuum `h2-1sc` / `h2-1e` (pre-flight) | QIR 1.0 Adaptive | 50 | **Verified QIR** (`0.00` / `6.37 HQC`) | `pre-flight` |
 
 ### Quota-Safe QPU Submission Workflows
 
 Both cloud submission scripts default to **dry-run pre-flight mode (`0` QPU seconds / `0` HQC spent)** and enforce hard server-side execution/credit caps:
 
 ```bash
-# Azure Quantum (Quantinuum): offline HQC gate count + 0-HQC cloud syntax checker (h1-1sc)
+# Azure Quantum (Quantinuum H2): offline HQC gate count + 0-HQC cloud syntax checker (h2-1sc)
 ./bin/goo --emit-qir examples/qir_bitflip_qec_probe.goo -o build/qir_qec.ll
 python3 scripts/qir_submit_azure.py build/qir_qec.ll
 

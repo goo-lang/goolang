@@ -10,8 +10,9 @@ Safeguards for Azure Quantum credits & Quantinuum HQC quotas:
   2. Dry-run by default (0 HQC / $0 spent unless AZURE_LIVE_QPU=1): queries
      target.estimate_cost() when credentials are set and exits before submitting.
   3. Zero-cost cloud verifier support: defaults to checking whether you want
-     quantinuum.sim.h1-1sc (0 HQC syntax/QIR adaptive verifier) before spending
-     HQC on quantinuum.sim.h1-1e or quantinuum.qpu.h2-1.
+     quantinuum.sim.h2-1sc or quantinuum.sim.h2-2sc (0 HQC syntax/QIR adaptive
+     verifier, 56 qubits) before spending HQC on quantinuum.sim.h2-1e or
+     quantinuum.qpu.h2-1. (Note: Quantinuum retired H1-1 targets in Oct 2025.)
   4. Hard credit circuit-breaker (AZURE_MAX_HQC=10.0 default): refuses to submit
      if either the analytical or Azure-reported cost exceeds AZURE_MAX_HQC.
 """
@@ -25,7 +26,7 @@ if not ir_paths:
     sys.exit("Usage: [AZURE_LIVE_QPU=1] python3 scripts/qir_submit_azure.py <file.ll>")
 
 ir_path = ir_paths[0]
-target_id = os.environ.get("AZURE_QPU_TARGET", "quantinuum.sim.h1-1sc")
+target_id = os.environ.get("AZURE_QPU_TARGET", "quantinuum.sim.h2-1sc")
 shots = int(os.environ.get("QPU_SHOTS", "50"))
 max_hqc = float(os.environ.get("AZURE_MAX_HQC", "10.0"))
 live_qpu = os.environ.get("AZURE_LIVE_QPU", "0") == "1"
@@ -54,7 +55,7 @@ print(
 if est_hqc > max_hqc:
     sys.exit(
         f"ABORT: estimated {est_hqc:.2f} HQC exceeds AZURE_MAX_HQC={max_hqc:.2f}. "
-        f"Lower QPU_SHOTS or use AZURE_QPU_TARGET=quantinuum.sim.h1-1sc (0 HQC)."
+        f"Lower QPU_SHOTS or use AZURE_QPU_TARGET=quantinuum.sim.h2-1sc (0 HQC)."
     )
 
 resource_id = os.environ.get("AZURE_QUANTUM_RESOURCE_ID")
