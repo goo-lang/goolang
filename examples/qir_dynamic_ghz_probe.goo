@@ -1,0 +1,79 @@
+// Experiment 1 — Constant-Depth Long-Range Entanglement (Dynamic GHZ State)
+// Prepares two independent 3-qubit GHZ blocks in parallel on a 6-qubit linear
+// register (`var q [6]qir.Qubit`), entangles the boundary bridge (`CX(q[2], q[3])`),
+// performs a mid-circuit measurement on bridge qubit `q[3]`, and uses flat
+// classical feed-forward `X` corrections to stitch the remaining 5 qubits into
+// a single 5-qubit GHZ state in O(1) constant entangling depth.
+// Uncomputes the 5-qubit GHZ state so noiseless execution deterministically
+// yields 00000 (parity 0) across all stitched data qubits.
+package main
+
+import "fmt"
+import "qir"
+
+func main() {
+	var q [6]qir.Qubit
+	q[0] = qir.Alloc()
+	q[1] = qir.Alloc()
+	q[2] = qir.Alloc()
+	q[3] = qir.Alloc()
+	q[4] = qir.Alloc()
+	q[5] = qir.Alloc()
+
+	rBridge := qir.ResultAt(0)
+
+	// Step 1: Parallel shallow GHZ blocks (depth-2 CX instead of O(N) ladder)
+	// Left block: q[0], q[1], q[2]
+	qir.H(q[0])
+	qir.CX(q[0], q[1])
+	qir.CX(q[1], q[2])
+
+	// Right block: q[3], q[4], q[5]
+	qir.H(q[3])
+	qir.CX(q[3], q[4])
+	qir.CX(q[4], q[5])
+
+	// Step 2: Bell-fusion bridge across boundary (q[2] -> q[3])
+	qir.CX(q[2], q[3])
+	qir.Mz(q[3], rBridge)
+	qir.FreeZero(q[3])
+
+	// Step 3: Classical feed-forward Pauli-X frame stitch on right block
+	if qir.ReadResult(rBridge) {
+		qir.X(q[4])
+		qir.X(q[5])
+	}
+
+	// Step 4: Verify 5-qubit GHZ coherence by uncomputing the stitched state
+	// |00000> + |11111> on (q[0], q[1], q[2], q[4], q[5]) back to |00000>.
+	qir.CX(q[4], q[5])
+	qir.CX(q[2], q[4])
+	qir.CX(q[1], q[2])
+	qir.CX(q[0], q[1])
+	qir.H(q[0])
+
+	m0 := qir.MeasureReset(q[0])
+	m1 := qir.MeasureReset(q[1])
+	m2 := qir.MeasureReset(q[2])
+	m4 := qir.MeasureReset(q[4])
+	m5 := qir.MeasureReset(q[5])
+
+	errCount := 0
+	if m0 {
+		errCount = errCount + 1
+	}
+	if m1 {
+		errCount = errCount + 1
+	}
+	if m2 {
+		errCount = errCount + 1
+	}
+	if m4 {
+		errCount = errCount + 1
+	}
+	if m5 {
+		errCount = errCount + 1
+	}
+
+	fmt.Println("dynamic_ghz_5q_errors", errCount)
+}

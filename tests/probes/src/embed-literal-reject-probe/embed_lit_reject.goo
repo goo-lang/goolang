@@ -1,0 +1,6 @@
+package main
+type Base struct { N int }
+type S struct {
+	Base
+}
+func main(){ _ = S{N: 1} }

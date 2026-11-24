@@ -1,0 +1,3 @@
+package main
+import "bits"
+func main(){ bits.Div64(0, 10, 0) }

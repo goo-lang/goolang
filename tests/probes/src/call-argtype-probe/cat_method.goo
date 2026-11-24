@@ -1,0 +1,4 @@
+package main
+type Counter struct { n int }
+func (c Counter) addn(x int) int { return c.n + x }
+func main() { var c Counter = Counter{n: 7}; c.addn("x") }

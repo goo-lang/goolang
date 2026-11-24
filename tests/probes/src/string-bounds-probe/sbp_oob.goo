@@ -1,0 +1,2 @@
+package main
+func main(){ s := "abc"; i := 5; println(s[i]) }

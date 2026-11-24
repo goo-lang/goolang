@@ -1,0 +1,4 @@
+package main
+func mightFail() !int { return error("x") }
+func f() int { v := try mightFail(); return v }
+func main() {}

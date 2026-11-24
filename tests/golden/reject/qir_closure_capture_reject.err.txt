@@ -1,0 +1,1 @@
+closure may not capture linear qubit 'q'

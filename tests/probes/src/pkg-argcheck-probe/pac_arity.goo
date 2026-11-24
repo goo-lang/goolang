@@ -1,0 +1,4 @@
+package main
+import ("fmt"
+"pkgcheck")
+func main() { fmt.Println(pkgcheck.Double(1, 2)) }

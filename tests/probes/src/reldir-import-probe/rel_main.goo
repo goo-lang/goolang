@@ -1,0 +1,4 @@
+package main
+import ("fmt"
+"./mathx")
+func main() { fmt.Println(mathx.Double(21)) }

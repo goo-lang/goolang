@@ -93,14 +93,18 @@ static goo_string_t goo_os_io_error(const char* op, const char* path, int err) {
     size_t need = path
         ? strlen(op) + 1 + strlen(path) + 2 + strlen(msg) + 1
         : strlen(op) + 2 + strlen(msg) + 1;
-    char* buf = malloc(need);
-    if (!buf) {
-        // Allocation failed while building an error message for an already-
-        // failing call — fall back to a static string rather than losing the
-        // failure signal entirely (the ok=0 flag still reports the failure).
-        static const char* oom = "goo runtime: out of memory building an I/O error message";
-        return (goo_string_t){ .data = (char*)oom, .length = strlen(oom) };
-    }
+    // goo_alloc, NOT malloc. Every goo_string_t this file hands back reaches
+    // Goo code, and ARC releases a string by calling goo_free, which does
+    // `ptr - GOO_OBJ_HEADER_SIZE` and frees THAT. A plain malloc'd buffer has
+    // no header, so releasing one frees a pointer 16 bytes before the block.
+    // Measured 2026-08-30 with valgrind on a real os.ReadFile result:
+    //   "Invalid free() ... Address 0x... is 16 bytes before a block of size 12"
+    //
+    // The static out-of-memory fallback that used to sit here is gone for the
+    // same reason: a .rodata pointer has no header either, so goo_free would
+    // read constant data as a refcount. goo_alloc panics on exhaustion, which
+    // is already this runtime's policy at 27 other sites in runtime.c.
+    char* buf = goo_alloc(need);
     int n = path
         ? snprintf(buf, need, "%s %s: %s", op, path, msg)
         : snprintf(buf, need, "%s: %s", op, msg);
@@ -149,7 +153,7 @@ int goo_os_read_file(const char* path, goo_string_t* out) {
     // honest byte count; embedded NULs survive — the explicit length is what
     // makes that correct, not the terminator).
     size_t cap = (size > 0) ? size + 1 : 4096;
-    char* buf = malloc(cap);
+    char* buf = goo_alloc(cap);
     if (!buf) {
         close(fd);
         *out = goo_os_io_error("os.ReadFile", path, ENOMEM);
@@ -160,9 +164,9 @@ int goo_os_read_file(const char* path, goo_string_t* out) {
     for (;;) {
         if (off == cap - 1) {
             size_t grown_cap = cap * 2;
-            char* grown = realloc(buf, grown_cap);
+            char* grown = goo_realloc(buf, grown_cap);
             if (!grown) {
-                free(buf);
+                goo_free(buf);
                 close(fd);
                 *out = goo_os_io_error("os.ReadFile", path, ENOMEM);
                 return 0;
@@ -174,7 +178,7 @@ int goo_os_read_file(const char* path, goo_string_t* out) {
         if (n < 0) {
             if (errno == EINTR) continue;
             int e = errno;
-            free(buf);
+            goo_free(buf);
             close(fd);
             *out = goo_os_io_error("os.ReadFile", path, e);
             return 0;
@@ -202,7 +206,7 @@ int goo_os_read_line(goo_string_t* out) {
     if (!out) return 0;
 
     size_t cap = 128, len = 0;
-    char* buf = malloc(cap);
+    char* buf = goo_alloc(cap);
     if (!buf) {
         *out = goo_os_io_error("os.ReadLine", NULL, ENOMEM);
         return 0;
@@ -215,9 +219,9 @@ int goo_os_read_line(goo_string_t* out) {
         if (c == '\n') break;
         if (len + 1 >= cap) {
             cap *= 2;
-            char* grown = realloc(buf, cap);
+            char* grown = goo_realloc(buf, cap);
             if (!grown) {
-                free(buf);
+                goo_free(buf);
                 *out = goo_os_io_error("os.ReadLine", NULL, ENOMEM);
                 return 0;
             }
@@ -230,7 +234,7 @@ int goo_os_read_line(goo_string_t* out) {
         // Nothing read at all before hitting EOF/error: the loop-termination
         // signal. Distinguish a genuine stream error from plain EOF so the
         // message isn't a misleading "EOF" when stdin actually failed.
-        free(buf);
+        goo_free(buf);
         if (ferror(stdin)) {
             *out = goo_os_io_error("os.ReadLine", NULL, errno);
         } else {

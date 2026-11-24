@@ -25,7 +25,7 @@ static void add_runtime_function(CodeGenerator* codegen, const char* name,
     if (runtime_function_count >= runtime_function_capacity) {
         runtime_function_capacity = runtime_function_capacity ? runtime_function_capacity * 2 : 16;
         runtime_functions = xrealloc(runtime_functions, 
-                                   sizeof(RuntimeFunction) * runtime_function_capacity);
+                                     sizeof(RuntimeFunction) * runtime_function_capacity);
     }
     
     RuntimeFunction* func = &runtime_functions[runtime_function_count++];

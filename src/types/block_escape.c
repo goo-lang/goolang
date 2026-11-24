@@ -235,6 +235,7 @@ static bool discover_expr(ASTNode* expr, UnitList* units, size_t unit_idx) {
             return true;
         }
         case AST_SLICE_EXPR: { // slice literal (SliceLitNode)
+            if (!site_append(units, unit_idx, expr)) return false;
             SliceLitNode* sl = (SliceLitNode*)expr;
             for (ASTNode* e = sl->elements; e; e = e->next) {
                 if (!discover_expr(e, units, unit_idx)) return false;

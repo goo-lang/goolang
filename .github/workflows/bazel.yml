@@ -20,11 +20,14 @@ jobs:
 
       # gcc-14: the code is -std=c23 and gcc-13, the distro default, rejects it.
       # llvm-dev: codegen links against the LLVM C API.
+      # valgrind: the four arc_* probes (tests/probes/BUILD) need it, and
+      # GOO_PROBE_NO_SKIP turns a missing valgrind into a FAIL under Bazel
+      # rather than the SKIPPED line make tolerates.
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-14 bison llvm-dev clang
+            gcc-14 bison llvm-dev clang valgrind
           gcc-14 --version | head -1
 
       # The .bazelrc pins /usr/bin/gcc, which is correct on the development
@@ -68,6 +71,19 @@ jobs:
       # self-test that never runs is indistinguishable from one that passes.
       - name: Prove parity.sh can report a change
         run: ./tools/parity_selftest.sh
+
+      # The teeth targets in testing/teeth are tagged manual, so //... above
+      # skips them, and this script had NO Makefile target and NO workflow --
+      # it had never run once. One macro generates ~150 probe targets in this
+      # phase; if it cannot fail, all 150 pass while asserting nothing. It
+      # cannot live in the Makefile, because it drives bazel and verify-core
+      # is deliberately bazel-free.
+      - name: Prove the probe macros can report a failure
+        env:
+          BAZEL_EXTRA: >-
+            --repo_env=CC=/usr/bin/gcc-14
+            --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
+        run: ./tools/verify_probe_teeth.sh
 
   parity:
     runs-on: ubuntu-24.04
@@ -118,6 +134,127 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0
+
+  boundaries:
+    runs-on: ubuntu-24.04
+    name: header layering and visibility
+    steps:
+      - uses: actions/checkout@v4
+
+      # NO gcc-14 HERE, and that is the whole point of this job.
+      #
+      # layering_check is a CLANG-ONLY feature. The gcc toolchain does not
+      # declare it and Bazel drops --features=layering_check without a word, so
+      # every assertion below would pass while checking nothing. The other jobs
+      # in this workflow override CC to gcc-14 because this runner's
+      # /usr/bin/gcc is gcc-13 and rejects -std=c23. Copying that override into
+      # this job would silently disarm it. Do not.
+      #
+      # The guard is not this comment. verify_layering.sh builds a deliberate
+      # violation and asserts it is REFUSED, so if CC ever becomes gcc here the
+      # job goes red on that assertion rather than passing quietly.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison llvm-dev clang
+
+      # .bazelrc's sanitizer-and-layering configs pin /usr/bin/clang by absolute
+      # path, for the same Fedora ccache reason as the gcc pin. Fail loudly here
+      # rather than inside a compile action if the runner image moves it, and
+      # assert the version: -std=c23 is a global copt and needs clang >= 18.
+      - name: Check the pinned clang
+        id: tc
+        run: |
+          test -x /usr/bin/clang || { echo "::error::/usr/bin/clang missing"; exit 1; }
+          /usr/bin/clang --version
+          major="$(/usr/bin/clang -dumpversion | cut -d. -f1)"
+          if [ "${major:-0}" -lt 18 ]; then
+            echo "::error::clang $major is too old for -std=c23 (need >= 18)"
+            exit 1
+          fi
+          LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$LLVMCFG" ]; then LLVMCFG="$(command -v llvm-config || true)"; fi
+          if [ -z "$LLVMCFG" ]; then echo "::error::no llvm-config found"; exit 1; fi
+          echo "Using $LLVMCFG ($($LLVMCFG --version))"
+          echo "llvm_config=$LLVMCFG" >> "$GITHUB_OUTPUT"
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      # FIRST, because a gate nobody has watched fail is not a gate. Asserts
+      # the deliberate defect is refused under --config=layering AND builds
+      # with the feature off, plus that reaching for a private target fails
+      # analysis. Exit 1 = a gate lost its teeth. Exit 2 = bazel itself failed.
+      #
+      # BAZEL_EXTRA carries only the llvm-config path. Putting --repo_env=CC
+      # there would disarm the check; the script says so at the variable.
+      - name: Prove both boundary gates can refuse something
+        env:
+          BAZEL_EXTRA: --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
+        run: ./tools/verify_layering.sh
+
+      # Then the real code. Every goo_cc_library in src/ sets strict_hdrs, so
+      # this is not vacuous: a header reached through a transitive dep rather
+      # than a declared one fails the build.
+      - name: bazel build //... --config=layering
+        run: |
+          bazel build //... --config=layering \
+            --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    name: sanitizers (${{ matrix.config }})
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [asan, ubsan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+
+      # NO gcc-14 HERE, exactly as in the boundaries job. Every sanitizer
+      # config pins clang, because this runner's gcc cannot link -fsanitize=
+      # address. Overriding CC would silently disarm the whole matrix.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison llvm-dev clang
+
+      - name: Check the pinned clang and resolve llvm-config
+        id: tc
+        run: |
+          test -x /usr/bin/clang || { echo "::error::/usr/bin/clang missing"; exit 1; }
+          /usr/bin/clang --version
+          major="$(/usr/bin/clang -dumpversion | cut -d. -f1)"
+          if [ "${major:-0}" -lt 18 ]; then
+            echo "::error::clang $major is too old for -std=c23 (need >= 18)"; exit 1
+          fi
+          LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$LLVMCFG" ]; then LLVMCFG="$(command -v llvm-config || true)"; fi
+          if [ -z "$LLVMCFG" ]; then echo "::error::no llvm-config found"; exit 1; fi
+          echo "llvm_config=$LLVMCFG" >> "$GITHUB_OUTPUT"
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      # FIRST, because a sanitizer that cannot report a failure is worth
+      # nothing. Asserts each deliberate defect turns its OWN config red and
+      # leaves the build green without it. Exit 1 = a config lost its teeth,
+      # exit 2 = bazel itself failed.
+      - name: Verify every sanitizer can report a failure
+        env:
+          BAZEL_EXTRA: --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
+        run: ./tools/verify_sanitizers.sh
+
+      - name: bazel test //... --config=${{ matrix.config }}
+        run: |
+          bazel test //... --config=${{ matrix.config }} \
+            --repo_env=GOO_LLVM_CONFIG=${{ steps.tc.outputs.llvm_config }}
 
   differential:
     runs-on: ubuntu-24.04

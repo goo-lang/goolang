@@ -1,0 +1,12 @@
+package main
+
+import "qir"
+
+func main() {
+	q := qir.Alloc()
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	if qir.ReadResult(r) {
+		qir.FreeZero(q)
+	}
+}

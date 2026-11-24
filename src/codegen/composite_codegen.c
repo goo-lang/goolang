@@ -1575,11 +1575,12 @@ static LLVMValueRef slice_lit_const_backing(CodeGenerator* codegen,
 // and codegen_generate_struct_lit (with StructLiteralNode->field_values)
 // so the two surface forms share a single lowering path (DRY).
 #if LLVM_AVAILABLE
-ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
-                                           TypeChecker* checker,
-                                           ASTNode* first_elem,
-                                           Type* slice_type,
-                                           Position pos) {
+static ValueInfo* codegen_build_slice_from_elems_site(CodeGenerator* codegen,
+                                                      TypeChecker* checker,
+                                                      ASTNode* first_elem,
+                                                      Type* slice_type,
+                                                      Position pos,
+                                                      ASTNode* alloc_site) {
     Type* elem_type = slice_type->data.slice.element_type;
     LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_type);
     if (!llvm_elem) {
@@ -1804,7 +1805,7 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
     LLVMValueRef data_ptr;
     if (LLVMGetNamedFunction(codegen->module, "goo_alloc")) {
         LLVMValueRef size = LLVMSizeOf(arr_type);
-        data_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
+        data_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, alloc_site);
         LLVMTypeRef i32ty = LLVMInt32TypeInContext(codegen->context);
         LLVMValueRef zero = LLVMConstInt(i32ty, 0, 0);
         for (size_t i = 0; i < count; i++) {
@@ -1843,6 +1844,14 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
 
     return value_info_new(NULL, slice_val, slice_type);
 }
+
+ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
+                                           TypeChecker* checker,
+                                           ASTNode* first_elem,
+                                           Type* slice_type,
+                                           Position pos) {
+    return codegen_build_slice_from_elems_site(codegen, checker, first_elem, slice_type, pos, NULL);
+}
 #endif
 
 // codegen_generate_slice_lit lowers a slice literal to a slice struct
@@ -1878,8 +1887,8 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
     // Delegate to the shared helper that also serves named-slice composite
     // literals (StructLiteralNode->field_values routed here from
     // codegen_generate_struct_lit when the resolved type is TYPE_SLICE).
-    return codegen_build_slice_from_elems(codegen, checker,
-                                          lit->elements, slice_type, expr->pos);
+    return codegen_build_slice_from_elems_site(codegen, checker,
+                                               lit->elements, slice_type, expr->pos, expr);
 #endif
 }
 

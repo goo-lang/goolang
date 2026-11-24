@@ -26,13 +26,16 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPILER="$ROOT/bin/goo"
+# COMPILER is the contract a Bazel sh_test uses to point this probe at the
+# compiler it built: bin/goo does not exist inside the sandbox. Unset, this
+# behaves exactly as it did.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 fail() { echo "string-literal-header-probe: FAIL — $1"; exit 1; }
 
-[ -x "$COMPILER" ] || fail "no bin/goo — run make lexer first"
+[ -x "$COMPILER" ] || fail "compiler not found at $COMPILER (run 'make')"
 
 cat > "$WORK/lit.goo" <<'EOF'
 package main

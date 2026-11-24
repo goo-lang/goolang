@@ -1,0 +1,93 @@
+package main
+
+import "fmt"
+import "qir"
+
+func syndromeMask(b0 int, b1 int) int {
+	return b0 + b1*2
+}
+
+comptime const SYNDROME_Q0 int = syndromeMask(1, 0)
+comptime const SYNDROME_Q2 int = syndromeMask(0, 1)
+comptime const SYNDROME_Q1 int = syndromeMask(1, 1)
+
+func boolBit(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// Linearly borrows data qubits d0, d1, d2 and ancillas a0, a1 for one
+// stabilizer syndrome round + real-time feed-forward correction.
+func correctBitFlip(d0 qir.Qubit, d1 qir.Qubit, d2 qir.Qubit, a0 qir.Qubit, a1 qir.Qubit) {
+	r0 := qir.ResultAt(0)
+	r1 := qir.ResultAt(1)
+
+	// Measure Z0*Z1 into a0
+	qir.CX(d0, a0)
+	qir.CX(d1, a0)
+	qir.Mz(a0, r0)
+
+	// Measure Z1*Z2 into a1
+	qir.CX(d1, a1)
+	qir.CX(d2, a1)
+	qir.Mz(a1, r1)
+
+	syn := syndromeMask(boolBit(qir.ReadResult(r0)), boolBit(qir.ReadResult(r1)))
+	if syn == SYNDROME_Q0 {
+		qir.X(d0)
+	} else if syn == SYNDROME_Q1 {
+		qir.X(d1)
+	} else if syn == SYNDROME_Q2 {
+		qir.X(d2)
+	}
+
+	qir.Reset(a0)
+	qir.Reset(a1)
+}
+
+func runTrial(fault int) bool {
+	d0 := qir.Alloc()
+	d1 := qir.Alloc()
+	d2 := qir.Alloc()
+	a0 := qir.Alloc()
+	a1 := qir.Alloc()
+
+	// Prepare logical |1>_L = |111>
+	qir.X(d0)
+	qir.CX(d0, d1)
+	qir.CX(d0, d2)
+
+	// Inject single-qubit bit-flip error
+	if fault == 1 {
+		qir.X(d0)
+	} else if fault == 2 {
+		qir.X(d1)
+	} else if fault == 3 {
+		qir.X(d2)
+	}
+
+	// Real-time QEC syndrome extraction and recovery
+	correctBitFlip(d0, d1, d2, a0, a1)
+
+	// Uncompute repetition encoding
+	qir.CX(d0, d2)
+	qir.CX(d0, d1)
+
+	b0 := qir.MeasureReset(d0)
+	b1 := qir.MeasureReset(d1)
+	b2 := qir.MeasureReset(d2)
+	qir.FreeZero(a0)
+	qir.FreeZero(a1)
+
+	return b0 && !b1 && !b2
+}
+
+func main() {
+	f := 0
+	for f < 4 {
+		fmt.Println("fault", f, "recovered:", runTrial(f))
+		f = f + 1
+	}
+}

@@ -23,12 +23,21 @@
 
 set -u
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# A Bazel sh_test starts in the runfiles root, and $0 there is a symlink
+# under tests/probes/ -- one level too deep for the old dirname-based ROOT.
+# git rev-parse names the real toplevel under make and by hand; it fails in
+# the sandbox (no .git), where pwd is already the runfiles root.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT" || exit 1
 
 CC_="${CC_PROBE:-gcc}"
 CSTD="${CSTD_PROBE:--std=c23}"
 AST_SRC="${AST_SRC:-src/ast/ast.c}"
+
+# Under make the generated parser sits beside its sources; under Bazel it
+# is a genrule output in src/parser/gen/, and the target passes its path.
+PARSER_TAB_C="${PARSER_TAB_C:-src/parser/parser.tab.c}"
+PARSER_TAB_DIR="$(dirname "$PARSER_TAB_C")"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -40,12 +49,18 @@ SELF_TEST=0
 # no codegen, no LLVM -- the same minimal set the fuzz harness links.
 SRCS="tests/unit/ast/ast_free_leak_test.c
 src/lexer/lexer.c src/lexer/token.c
-src/parser/parser.tab.c src/parser/lexer_bridge.c
+$PARSER_TAB_C src/parser/lexer_bridge.c
 src/parser/parser_errors.c src/parser/parser_actions.c
+src/parser/parser_state.c
 src/ast/ast_constructors.c
 src/errors/error.c src/errors/ergonomic_errors.c"
 
-CFLAGS_="-g -O0 -I. -Iinclude -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h -DLLVM_AVAILABLE=0"
+# -I"$PARSER_TAB_DIR": lexer_bridge.c and parser_actions.c both spell
+# #include "parser.tab.h" and rely on the C preprocessor's own-directory
+# search for a quoted include -- which only finds it when the header sits
+# beside them. Under Bazel it does not (src/parser/gen/, not src/parser/),
+# so the search path has to say so explicitly.
+CFLAGS_="-g -O0 -I. -Iinclude -I$PARSER_TAB_DIR -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h -DLLVM_AVAILABLE=0"
 
 # Build with a given ast.c (the tracked one, or a mutant). Prints the binary path.
 build_with() {  # $1 = path to the ast.c to use
@@ -68,6 +83,14 @@ measure() {  # $1 = binary
 }
 
 if ! command -v valgrind >/dev/null 2>&1; then
+    # Under make, a skip is a SKIPPED line and exit 0, and the CI job reads
+    # the log. A Bazel test log is read by nobody: the harness sets
+    # GOO_PROBE_NO_SKIP, and the skip is the failure -- the same shape as
+    # arena_rss_probe.sh's skip.
+    if [ "${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then
+        echo "ast-free-leak-probe: FAIL (valgrind not installed, and GOO_PROBE_NO_SKIP forbids a skip)"
+        exit 1
+    fi
     echo "ast-free-leak-probe: SKIPPED (valgrind not installed)"
     exit 0
 fi

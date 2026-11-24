@@ -1,0 +1,1 @@
+arq_5q_unmonitored 0 armed_clean 0 pi4_drift_bounded true cz_attack 2

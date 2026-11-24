@@ -7,6 +7,7 @@ goo_cc_test(
     size = "small",
     srcs = ["json_writer_test.c"],
     deps = [
+        "//include:json_writer_h",
         "//src/ast:json_writer",
         "//tests/unit:goo_check",
     ],

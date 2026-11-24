@@ -1,0 +1,8 @@
+package main
+import "fmt"
+func id(n int) int { return n }
+func main() {
+	g := id
+	(5)
+	fmt.Println(g)
+}

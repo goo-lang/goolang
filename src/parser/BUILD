@@ -5,24 +5,115 @@
 # on developer machines only, never on a clean checkout.
 exports_files(["parser.y"])
 
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//tools:defs.bzl", "goo_cc_library")
 
-# Makefile:82 PARSER_SRCS. parser.tab.c is NOT listed as a local source: it
-# comes from //src/parser/gen, which runs bison. The on-disk
+# Makefile:82 PARSER_SRCS, as five targets rather than one.
+#
+# Measured with nm on the built objects, 2026-08-30. The package was four files
+# in ONE cycle, and two of the edges closing it carried a single symbol each --
+# both of them current_lexer. Moving that variable's definition into
+# parser_state.c leaves parser_actions.c and parser_errors.c acyclic, which is
+# 1,038 of the package's non-generated lines.
+#
+# THE REMAINDER IS IRREDUCIBLE. parser.tab.c calls yylex; lexer_bridge.c calls
+# yyparse and reads yylval and yylloc. A generated parser and its scanner
+# bridge are mutually dependent by construction, so :parser_core holds both and
+# always will.
+
+goo_cc_library(
+    name = "parser_state",
+    srcs = ["parser_state.c"],
+    deps = ["//include:lexer_h"],
+)
+
+goo_cc_library(
+    name = "parser_actions",
+    srcs = ["parser_actions.c"],
+    deps = [
+        ":parser_state",
+        "//include:ast_h",
+        "//include:lexer_h",
+        "//include:parser_h",
+        "//include:token_h",
+        "//src/ast",
+        "//src/parser/gen:parser_tab",
+    ],
+)
+
+# //src/errors was NOT declared before this split. parser_errors.c reaches it
+# for six symbols and the final link resolved them silently.
+goo_cc_library(
+    name = "parser_errors",
+    srcs = ["parser_errors.c"],
+    deps = [
+        ":parser_state",
+        "//include:lexer_h",
+        "//include:parser_h",
+        "//include:token_h",
+        "//src/errors",
+    ],
+)
+
+# The bison pair, which cannot be separated. parser.tab.c is NOT listed as a
+# local source: it comes from //src/parser/gen, which runs bison. The on-disk
 # src/parser/parser.tab.c that Make leaves behind is gitignored and is
 # deliberately not referenced by anything here.
 goo_cc_library(
-    name = "parser",
+    name = "parser_core",
     srcs = [
         "lexer_bridge.c",
-        "parser_actions.c",
-        "parser_errors.c",
         "//src/parser/gen:parser_tab_c",
     ],
-    visibility = ["//visibility:public"],
     deps = [
+        ":parser_actions",
+        ":parser_errors",
+        ":parser_state",
+        "//include:ast_h",
+        "//include:lexer_h",
+        "//include:parser_h",
+        "//include:token_h",
         "//src/ast",
         "//src/lexer",
         "//src/parser/gen:parser_tab",
     ],
+)
+
+# The name the rest of the tree already uses.
+cc_library(
+    name = "parser",
+    visibility = [
+        "//src/codegen:__pkg__",
+        "//tests/unit/types:__pkg__",
+    ],
+    deps = [
+        ":parser_actions",
+        ":parser_core",
+        ":parser_errors",
+        ":parser_state",
+    ],
+)
+
+# The src-scanning probe gates (task 14) read these as FILES: alloc_doors
+# greps every .c and .h for a raw strdup, doc_claims counts /proc/self/exe
+# sites, and two others compile a named handful with a shell C compiler.
+# A glob does not cross a package boundary, so each package names its own.
+# allow_empty: most of these ten packages hold only .c files at top level --
+# their headers live in include/ -- so the "*.h" half of the pattern matches
+# nothing, and the default empty-glob error would otherwise block the build.
+#
+# exclude parser.tab.c/.tab.h: they are MAKE's build outputs, gitignored, and
+# on a tree where `make lexer` has run they sit right here, beside their own
+# sources. They are not sources. Bazel generates its own copy in
+# src/parser/gen, and the C preprocessor's quoted-include search checks the
+# includer's own directory BEFORE -I$PARSER_TAB_DIR -- so a stale copy here
+# would answer #include "parser.tab.h" from the wrong build's output.
+filegroup(
+    name = "probe_sources",
+    srcs = glob(
+        ["*.c", "*.h"],
+        exclude = ["parser.tab.c", "parser.tab.h"],
+        allow_empty = True,
+    ),
+    visibility = ["//tests/probes:__pkg__"],
 )

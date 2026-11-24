@@ -1047,10 +1047,10 @@ static bool call_result_is_owned(Collected* c, const ParamEscapeResult* pe, ASTN
         SelectorExprNode* sel = (SelectorExprNode*)call->function;
         if (!sel->expr || sel->expr->type != AST_IDENTIFIER || !sel->selector) return false;
         const char* pkg = ((IdentifierNode*)sel->expr)->name;
-        // non_retaining is audited per runtime body in shim_signatures.c, and
-        // that audit states every whitelisted entry COPIES rather than aliasing
-        // an argument. errors.Unwrap is 0 because it returns a pointer INTO its
-        // argument, so this bit separates owned from borrowed correctly.
+        // `qir.Qubit` and `qir.Result` are non-ARC opaque QIR handles (no
+        // GOO_OBJ_HEADER_SIZE prefix); never classify a `qir.*` call result as
+        // an ARC-owned heap buffer.
+        if (strcmp(pkg, "qir") == 0) return false;
         return shim_signature_is_non_retaining(pkg, sel->selector) != 0;
     }
 

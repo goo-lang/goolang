@@ -1396,7 +1396,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // above; never Goo locals) — before ANY user or global-init code runs,
     // so os.Args is available even from a global initializer. This is now
     // the first instruction in main's body; global-init (next) runs after it.
-    if (is_entry_main) {
+    if (is_entry_main && !codegen->emit_qir) {
         LLVMValueRef args_init_fn = LLVMGetNamedFunction(codegen->module, "goo_os_args_init");
         if (args_init_fn) {
             LLVMValueRef argc_param = LLVMGetParam(function, (unsigned)(param_count - 2));

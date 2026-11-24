@@ -16,7 +16,22 @@ static bool is_nonretaining_builtin(const char* name) {
     return strcmp(name, "len") == 0
         || strcmp(name, "cap") == 0
         || strcmp(name, "print") == 0
-        || strcmp(name, "println") == 0;
+        || strcmp(name, "println") == 0
+        || strcmp(name, "int") == 0
+        || strcmp(name, "int8") == 0
+        || strcmp(name, "int16") == 0
+        || strcmp(name, "int32") == 0
+        || strcmp(name, "int64") == 0
+        || strcmp(name, "uint") == 0
+        || strcmp(name, "uint8") == 0
+        || strcmp(name, "uint16") == 0
+        || strcmp(name, "uint32") == 0
+        || strcmp(name, "uint64") == 0
+        || strcmp(name, "float32") == 0
+        || strcmp(name, "float64") == 0
+        || strcmp(name, "byte") == 0
+        || strcmp(name, "rune") == 0
+        || strcmp(name, "bool") == 0;
 }
 
 bool goo_callee_is_non_retaining(const ASTNode* call_function) {

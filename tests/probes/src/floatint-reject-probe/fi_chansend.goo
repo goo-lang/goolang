@@ -1,0 +1,2 @@
+package main
+func main(){ g := float32(2.5); ch := make_chan(int64, 1); ch <- g; _ = ch }

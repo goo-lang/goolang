@@ -16,11 +16,26 @@ set -uo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-# A real gate, chosen because it is in VERIFY_ALL_DEPS and is neither the first
-# nor the last entry, so an off-by-one in the reader cannot accidentally
-# satisfy this.
-GATE="m10-probe"
-TARGET="m10_probe"
+# A real gate that is CURRENTLY UNMAPPED, chosen at runtime rather than
+# hard-coded.
+#
+# This used to be a fixed "m10-probe". Phase 4 then generated a Bazel target
+# for it, so the fixture stopped being unmapped and this script correctly
+# refused to report a result -- the guard below fired instead of measuring a
+# delta of zero and calling it lost teeth. A hard-coded fixture in a script
+# that measures migration progress has a shelf life by construction: every
+# gate becomes mapped eventually, and the last one to be migrated would have
+# broken this permanently.
+#
+# Picking the first unmapped gate keeps it working until parity reaches zero,
+# at which point phase 7 deletes this script along with the Makefile.
+GATE="$(./tools/parity.sh 2>/dev/null | sed -n 's/^  \([a-z0-9-]*\)$/\1/p' | head -1)"
+if [ -z "$GATE" ]; then
+    echo "parity_selftest: TOOL FAILURE no unmapped gate to use as a fixture"
+    echo "  If parity has reached 0, this script has served its purpose."
+    exit 2
+fi
+TARGET="$(printf '%s' "$GATE" | tr '-' '_')"
 PKG="tools/parity_selftest_tmp"
 
 # parity.sh exits 1 by design while gates remain. Under `set -o pipefail` that
