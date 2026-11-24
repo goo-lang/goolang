@@ -285,7 +285,7 @@ _AST_FREE_LEAK_DATA = SRC_PROBE_SOURCES + [
     # target (measured: "not a declared prerequisite of this rule").
     "//src/parser/gen:parser_tab_files",
     "//src/parser/gen:parser.tab.c",
-    "//tests/unit:ast/ast_free_leak_test.c",
+    "//tests/unit/ast:ast_free_leak_test.c",
 ]
 _AST_FREE_LEAK_ENV = {"PARSER_TAB_C": "$(rootpath //src/parser/gen:parser.tab.c)"}
 
