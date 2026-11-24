@@ -95,6 +95,26 @@ static ValueInfo* codegen_generate_testing_method_call(CodeGenerator* codegen, T
                                                        SelectorExprNode* msel, Type* recv_type);
 #endif
 
+// Branch to a cold block that calls a no-argument noreturn runtime panic when
+// `bad` is true, and continue in a fresh block otherwise. Returns 0 on a
+// codegen error (already reported), 1 on success.
+static int make_emit_panic_branch(CodeGenerator* codegen, LLVMValueRef bad, const char* panic_name,
+                                  const char* bad_label, const char* ok_label, Position pos) {
+    LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, panic_name);
+    if (!panic_fn) {
+        codegen_error(codegen, pos, "make: runtime panic function unavailable");
+        return 0;
+    }
+    LLVMBasicBlockRef bad_bb = codegen_create_block(codegen, bad_label);
+    LLVMBasicBlockRef ok_bb = codegen_create_block(codegen, ok_label);
+    LLVMBuildCondBr(codegen->builder, bad, bad_bb, ok_bb);
+    codegen_set_insert_point(codegen, bad_bb);
+    LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn), panic_fn, NULL, 0, "");
+    LLVMBuildUnreachable(codegen->builder);
+    codegen_set_insert_point(codegen, ok_bb);
+    return 1;
+}
+
 #if LLVM_AVAILABLE
 // Materialize a call argument as a C string pointer (char*): evaluate it,
 // load through any lvalue, then extract the data pointer (field 0) of a
@@ -1178,9 +1198,26 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     codegen_error(codegen, expr->pos, "make: goo_slice_alloc unavailable");
                     return NULL;
                 }
+                // Go's makeslice range checks: a negative len, a negative cap,
+                // or len > cap must panic. Unchecked, a negative len became a
+                // slice whose len passed every later bounds check, and
+                // len > cap wrote past the cap-sized backing store (C5).
+                // Signed compares on the widened i64 values.
+                LLVMValueRef zero64 = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 0, 1);
+                LLVMValueRef len_neg = LLVMBuildICmp(codegen->builder, LLVMIntSLT,
+                                                     len64, zero64, "make_len_neg");
+                if (!make_emit_panic_branch(codegen, len_neg, "goo_panic_makeslice_len",
+                                            "make.len_bad", "make.len_ok", expr->pos)) return NULL;
+                LLVMValueRef cap_neg = LLVMBuildICmp(codegen->builder, LLVMIntSLT,
+                                                     cap64, zero64, "make_cap_neg");
+                LLVMValueRef len_gt_cap = LLVMBuildICmp(codegen->builder, LLVMIntSGT,
+                                                        len64, cap64, "make_len_gt_cap");
+                LLVMValueRef cap_bad = LLVMBuildOr(codegen->builder, cap_neg, len_gt_cap,
+                                                   "make_cap_bad");
+                if (!make_emit_panic_branch(codegen, cap_bad, "goo_panic_makeslice_cap",
+                                            "make.cap_bad", "make.cap_ok", expr->pos)) return NULL;
                 // Allocate CAP elements (not len) so writes within capacity
-                // after a future reslice stay in bounds. No len>cap runtime
-                // check yet — noted follow-up.
+                // after a future reslice stay in bounds.
                 LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);
                 LLVMValueRef alloc_args[2] = { cap64, elem_size };
                 LLVMValueRef data = LLVMBuildCall2(codegen->builder,

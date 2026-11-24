@@ -438,6 +438,11 @@ void goo_panic_iface_conversion(const char* iface_name, void* vtable,
 // descriptor field 1); a NULL vtable (nil interface) renders as "<nil>".
 void goo_panic_iface_notimpl(void* vtable, const char* target_name) __attribute__((noreturn));
 
+// make([]T, len, cap) range-check failures (Go's makeslice wording). Emitted
+// by codegen for a negative len, a negative cap, or len > cap.
+void goo_panic_makeslice_len(void) __attribute__((noreturn));
+void goo_panic_makeslice_cap(void) __attribute__((noreturn));
+
 struct GooMapEntrySV;
 typedef struct GooMapSV {
     struct GooMapEntrySV* head;
