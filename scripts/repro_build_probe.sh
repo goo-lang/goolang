@@ -226,8 +226,7 @@ CFRAG
     #
     # The identity is passed EXPLICITLY rather than inherited. A CI runner has
     # no user.email, and git then refuses with "empty ident name". This script
-    # runs under `set -u
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` and not `set -e`, so that refusal was silent: HEAD
+    # runs under `set -u` and not `set -e`, so that refusal was silent: HEAD
     # kept the clean tree, the inner probe honestly reported IDENTICAL, and the
     # self-test reported FAIL. That reads as "the probe cannot go red" when the
     # truth is "the self-test never ran". Measured on this workflow's first CI
