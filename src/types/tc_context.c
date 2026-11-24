@@ -14,6 +14,11 @@
 //   lane_ownership  -> type_checker   type_checker_lookup_variable
 //   ownership_checker -> type_checker type_checker_lookup_variable
 //
+// A fifth edge came back with the qir shim (c2243d1e): shim_signatures called
+// type_checker_find_package, which re-closed the cycle and broke the static
+// link of //tests/unit/types:shim_signatures_test. It is a lookup too, so it
+// lives here as well.
+//
 // Moving the four accessors here cuts all four edges. embedding.c and
 // shim_signatures.c leave the cycle entirely and become their own targets.
 //
@@ -29,6 +34,7 @@
 // and type_pointer are all defined there.
 #include "types.h"
 #include <stdlib.h>
+#include <string.h>
 
 Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
     if (!checker || !checker->builtin_types || kind >= TYPE_COUNT) {
@@ -97,4 +103,17 @@ Variable* type_checker_lookup_method(TypeChecker* checker, const Type* recv_type
         return scope_lookup_variable(owner->exports, mangled_name);
     }
     return type_checker_lookup_variable(checker, mangled_name);
+}
+
+// Linear search of the package registry by canonical import path.
+Package* type_checker_find_package(TypeChecker* checker, const char* import_path) {
+    if (!checker || !import_path) {
+        return NULL;
+    }
+    for (Package* pkg = checker->packages; pkg; pkg = pkg->next) {
+        if (pkg->import_path && strcmp(pkg->import_path, import_path) == 0) {
+            return pkg;
+        }
+    }
+    return NULL;
 }

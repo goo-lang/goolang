@@ -178,17 +178,6 @@ void type_checker_free(TypeChecker* checker) {
     free(checker);
 }
 
-// Linear search of the package registry by canonical import path.
-Package* type_checker_find_package(TypeChecker* checker, const char* import_path) {
-    if (!checker || !import_path) return NULL;
-    for (Package* pkg = checker->packages; pkg; pkg = pkg->next) {
-        if (pkg->import_path && strcmp(pkg->import_path, import_path) == 0) {
-            return pkg;
-        }
-    }
-    return NULL;
-}
-
 // See types.h doc comment. Single choke point: every shim-dispatch strcmp
 // site (checker AND codegen) resolves its package identity through here
 // instead of comparing the use-site identifier text directly, so `import f
