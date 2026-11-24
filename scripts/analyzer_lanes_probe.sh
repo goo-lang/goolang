@@ -292,7 +292,7 @@ if [ ! -f "$MISRA_JSON" ]; then
 	exit 2
 fi
 
-GCC_VERSION="$(gcc --version | head -1)"
+GCC_VERSION="$(${CC:-gcc} --version | head -1)"
 CLANG_TIDY_VERSION="$(clang-tidy --version | sed -n 's/.*LLVM version[[:space:]]*//p')"
 CPPCHECK_VERSION="$(cppcheck --version)"
 

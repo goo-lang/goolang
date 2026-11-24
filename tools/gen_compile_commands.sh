@@ -146,7 +146,7 @@ fi
 #        excludes (see header). -B forces every recipe to print regardless
 #        of whether the objects are already up to date; -n means none of
 #        them actually run. ---------------------------------------------
-DRYRUN="$(make -Bn "$MAKE_TARGET" 2>&1)"
+DRYRUN="$(make -Bn "$MAKE_TARGET" ${CC:+CC="$CC"} ${LLVM_CONFIG:+LLVM_CONFIG="$LLVM_CONFIG"} 2>&1)"
 
 # --- 3. One (file, compile-line) pair for each GOO_SRCS entry. ------------
 pairs_file="$(mktemp)"

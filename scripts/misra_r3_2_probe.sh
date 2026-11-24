@@ -36,6 +36,11 @@
 #   scripts/misra_r3_2_probe.sh --self-test  # prove it can go red
 set -u
 
+# Inside a git hook (such as pre-push), git exports GIT_DIR pointing at the
+# real repository's .git directory. Any `git -C <scratch> init` or `git -C`
+# below would otherwise operate on the real .git and flip `core.bare = true`.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 PROBE="misra-r3-2-probe"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # MISRA_R3_2_ROOT overrides the tree that is read. The self-test points it at
@@ -156,6 +161,29 @@ if [ "${1:-}" = "--self-test" ]; then
 		echo "$SELF: FAIL (d: an empty file list passed)"; bad=1
 	else
 		echo "    ok (d): an empty file list is RED: $(head -n1 "$W/out.log")"
+	fi
+
+	# (g) regression guard: running under an inherited GIT_DIR (as git's
+	# pre-push hook sets in a worktree: GIT_DIR=.../.git/worktrees/<name>)
+	# must NOT flip core.bare=true or clobber the caller's index.
+	rm -rf "$W/caller" "$W/t"
+	mkdir -p "$W/caller" "$W/t"
+	git -C "$W/caller" init -q
+	mkdir -p "$W/caller/.git/worktrees/wt"
+	cp "$W/caller/.git/HEAD" "$W/caller/.git/worktrees/wt/HEAD"
+	printf '../..\n' > "$W/caller/.git/worktrees/wt/commondir"
+	GIT_DIR="$W/caller/.git/worktrees/wt" git -C "$W/t" init -q >/dev/null 2>&1 || true
+	# Confirm the worktree-GIT_DIR bare-flip hazard itself reproduces:
+	if [ "$(git --git-dir="$W/caller/.git" config --bool core.bare)" != "true" ]; then
+		echo "$SELF: FAIL (g: control did not reproduce worktree GIT_DIR bare flip)"; bad=1
+	fi
+	git --git-dir="$W/caller/.git" config core.bare false
+	mk
+	GIT_DIR="$W/caller/.git/worktrees/wt" MISRA_R3_2_ROOT="$W/t" "$0" >"$W/out.log" 2>&1
+	if [ "$(git --git-dir="$W/caller/.git" config --bool core.bare)" != "false" ]; then
+		echo "$SELF: FAIL (g: inherited GIT_DIR corrupted caller core.bare)"; bad=1
+	else
+		echo "    ok (g): inherited GIT_DIR leaves caller core.bare=false"
 	fi
 
 	rm -rf "$W"; trap - EXIT

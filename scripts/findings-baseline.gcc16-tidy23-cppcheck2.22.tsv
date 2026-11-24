@@ -14,7 +14,7 @@
 # IMPROVEMENT. A count above what is recorded here is a REGRESSION and fails
 # the gate. Suppressed rows (docs/misra/findings-suppressions.tsv) never
 # appear here at all. Never edit by hand.
-# 4498 accepted findings, from build/findings.sarif.
+# 4497 accepted findings, from build/findings.sarif.
 Cppcheck	arrayIndexOutOfBoundsCond	src/lexer/token.c	253	27	Either the condition 'type<TOKEN_COUNT' is redundant or the array 'token_strings[137]' is accessed at index 137, which is out of bounds.	f0d9cd535ec173191eac1a2523305a1d4a4f6b15452c3309bfb296c8a5825be5
 Cppcheck	constParameterCallback	src/runtime/concurrency.c	117	23	Parameter 'arg' can be declared as pointer to const. However it seems that 'scheduler_main_loop' is a callback function, if 'arg' is declared with const you might also need to cast function pointer(s).	d44a58ad05ab10baa401cfaf92f0125b95942e8b0fe0eb658118b07129749eac
 Cppcheck	constParameterPointer	src/codegen/call_codegen.c	317	51	Parameter 'from' can be declared as pointer to const	4b375ce0b25a6abd89535f347a14619b6a3acb1766f82c68d05b520a171a002d
@@ -4080,7 +4080,6 @@ GNU C23	-Wanalyzer-null-dereference	src/codegen/codegen.c	1902	62	dereference of
 GNU C23	-Wanalyzer-null-dereference	src/codegen/codegen.c	1944	58	dereference of NULL ‘lib_flags’	f15a9ff165a0ab5a1f6b694be0722613e6bb3a9b19d8d397a54639641833b11c
 GNU C23	-Wanalyzer-null-dereference	src/codegen/composite_codegen.c	1620	13	dereference of NULL ‘elem_vals’	5a66dcf76c71791156f700b2c22a7947fc0e8599e2b230eba5e4bb5eabe04591
 GNU C23	-Wanalyzer-out-of-bounds	src/runtime/runtime.c	908	28	buffer overflow	a5dfd26338263f52591b9b91bb2dc2ac64e516d9dbc047cb56521efff4b5354f
-GNU C23	-Wanalyzer-possible-null-argument	src/codegen/runtime_integration.c	38	9	use of possibly-NULL ‘*func.param_types’ where non-null expected	9e1f9a1ba0bf5fe0df7cf18e2673c9092c2275dab7a9089ac5320fc4d75ce91c
 GNU C23	-Wanalyzer-possible-null-dereference	src/parser/parser.y	1209	9	dereference of possibly-NULL ‘expr_stmt’	7a7229768567e60ca4b37d1485f5eb51ce546278e88744164944e161fc84a786
 GNU C23	-Wanalyzer-possible-null-dereference	src/parser/parser.y	1226	9	dereference of possibly-NULL ‘es’	c00c49b1d3c3326f24028a4a49816be84b607ede25ec281260566106d3b8c096
 GNU C23	-Wanalyzer-possible-null-dereference	src/parser/parser.y	1277	9	dereference of possibly-NULL ‘if_node’	2cf91273814d12dad4be61caa306ffaeaf4f6223882c1c5509b0e952287f4d5d
