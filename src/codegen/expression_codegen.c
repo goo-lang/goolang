@@ -173,7 +173,7 @@ static ValueInfo* codegen_map_index_rmw(CodeGenerator* codegen, TypeChecker* che
     // old = slot_to_value(goo_map_get_sv(m, kslot)) — a missing key returns a
     // zero slot from the runtime, so old_val is V's zero value, matching the
     // plain `m[k]` read fast-path's missing-key behavior.
-    LLVMValueRef gargs[2] = { mv->llvm_value, kslot };
+    LLVMValueRef gargs[2] = { codegen_map_handle(codegen, mv), kslot };
     LLVMValueRef old_slot = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),
                                            get_fn, gargs, 2, "rmw_get");
     LLVMValueRef old_val = codegen_map_slot_to_value(codegen, old_slot, val_type);
@@ -210,7 +210,7 @@ static ValueInfo* codegen_map_index_rmw(CodeGenerator* codegen, TypeChecker* che
 
     // goo_map_set_sv(m, kslot, value_to_slot(new))
     LLVMValueRef nslot = codegen_map_value_to_slot(codegen, newv, val_type);
-    LLVMValueRef sargs[3] = { mv->llvm_value, kslot, nslot };
+    LLVMValueRef sargs[3] = { codegen_map_handle(codegen, mv), kslot, nslot };
     LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn), set_fn, sargs, 3, "");
 
     value_info_free(mv);
@@ -1807,7 +1807,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                         codegen, stored_val, src_signed, want_vt);
                 }
                 LLVMValueRef slot = codegen_map_value_to_slot(codegen, stored_val, val_type);
-                LLVMValueRef args[3] = { mv->llvm_value, kp, slot };
+                LLVMValueRef args[3] = { codegen_map_handle(codegen, mv), kp, slot };
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn), set_fn, args, 3, "");
                 value_info_free(mv);
                 value_info_free(kv);

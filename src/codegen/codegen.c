@@ -1316,6 +1316,15 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
     return fn;
 }
 
+LLVMValueRef codegen_map_handle(CodeGenerator* codegen, ValueInfo* map_val) {
+    if (!map_val || !map_val->is_lvalue || !map_val->goo_type) {
+        return map_val ? map_val->llvm_value : NULL;
+    }
+    LLVMTypeRef mt = codegen_type_to_llvm(codegen, map_val->goo_type);
+    if (!mt) return map_val->llvm_value;
+    return LLVMBuildLoad2(codegen->builder, mt, map_val->llvm_value, "map_load");
+}
+
 // Interface-typed map keys (Task 2): box a concrete key value into the map's
 // declared TYPE_INTERFACE key type before codegen_map_key_to_slot packs it —
 // mirrors the box-before-slot pattern every interface-typed map VALUE site

@@ -1,0 +1,8 @@
+package main
+
+type S struct{ m map[string]int }
+
+func main() {
+	var s S
+	s.m["a"] = 1
+}

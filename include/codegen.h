@@ -976,6 +976,9 @@ int codegen_map_key_kind(Type* key_type);
 // reported via codegen_error at `pos`).
 int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
                                   ValueInfo* key_val, Type* key_type, Position pos);
+// The map pointer a runtime call needs. A struct field or index result comes
+// back as an lvalue ADDRESS, so load the pointer from it first (C6).
+LLVMValueRef codegen_map_handle(CodeGenerator* codegen, ValueInfo* map_val);
 LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
                                      ValueInfo* key_val, Type* key_type);
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type);
