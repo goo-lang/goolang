@@ -89,6 +89,13 @@ typedef struct ComptimeContext {
     size_t current_recursion_depth;
     size_t max_iterations;
     size_t iteration_count;
+
+    // Total work budget (M1). Depth and per-loop limits bound neither the
+    // call count of a branching recursion nor nested loops, so every call
+    // and loop iteration also charges `steps` on the ROOT context, which
+    // child contexts reach through `root`.
+    size_t steps;
+    struct ComptimeContext* root;
     
     // Generated code buffer
     char* generated_code;
@@ -109,6 +116,15 @@ typedef struct {
 
 // Core compile-time execution functions
 ComptimeContext* comptime_context_new(ComptimeContext* parent);
+
+// Maximum calls plus loop iterations for one top-level comptime evaluation.
+#define GOO_COMPTIME_STEP_BUDGET 10000000
+#define GOO_COMPTIME_BUDGET_ERROR "comptime evaluation exceeded 10000000 steps"
+
+// Start a fresh step budget. A caller that reuses one root context for many
+// top-level evaluations must call this before each, so one evaluation does
+// not spend the next one's budget.
+void comptime_context_reset_steps(ComptimeContext* ctx);
 void comptime_context_free(ComptimeContext* ctx);
 
 ComptimeValue* comptime_value_new(ComptimeValueType type);

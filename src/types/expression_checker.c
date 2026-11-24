@@ -2809,6 +2809,7 @@ static int type_check_capture_comptime_arg(TypeChecker* checker,
     if (!resolved) {
         ComptimeContext* raw_ctx = checker->comptime_type_ctx
             ? checker->comptime_type_ctx->comptime_ctx : NULL;
+        if (raw_ctx) comptime_context_reset_steps(raw_ctx);
         ComptimeResult* res = raw_ctx
             ? comptime_eval_expression(raw_ctx, arg) : NULL;
         int ok = res && res->value && !res->error &&

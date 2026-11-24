@@ -3073,7 +3073,17 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
     if (const_decl->is_comptime && checker->comptime_type_ctx
                                 && checker->comptime_type_ctx->comptime_ctx) {
         ComptimeContext* raw_ctx = checker->comptime_type_ctx->comptime_ctx;
+        comptime_context_reset_steps(raw_ctx);
         ComptimeResult* res = comptime_eval_expression(raw_ctx, const_decl->values);
+        // Other evaluation errors stay non-fatal here (see above), but a
+        // spent budget is a hard error: without it the compile would only
+        // fail later with the generic "must be compile-time constant".
+        if (res && res->error && res->error->message &&
+            strcmp(res->error->message, GOO_COMPTIME_BUDGET_ERROR) == 0) {
+            type_error(checker, res->error->position, "%s", res->error->message);
+            comptime_result_free(res);
+            return 0;
+        }
         if (res && res->value && !res->error) {
             comptime_val = comptime_value_copy(res->value);
         }

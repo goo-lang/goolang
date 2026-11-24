@@ -69,6 +69,8 @@ ComptimeContext* comptime_context_new(ComptimeContext* parent) {
     ctx->current_recursion_depth = 0;
     ctx->max_iterations = 10000;
     ctx->iteration_count = 0;
+    ctx->steps = 0;
+    ctx->root = parent ? parent->root : ctx;
     
     // Initialize generated code buffer
     ctx->generated_code = NULL;
@@ -76,6 +78,10 @@ ComptimeContext* comptime_context_new(ComptimeContext* parent) {
     ctx->generated_code_capacity = 0;
     
     return ctx;
+}
+
+void comptime_context_reset_steps(ComptimeContext* ctx) {
+    if (ctx) ctx->root->steps = 0;
 }
 
 // Free a compile-time context

@@ -497,6 +497,8 @@ ComptimeResult* execute_comptime_block(ASTNode* comptime_block, ComptimeContext*
         created_context = true;
     }
     
+    comptime_context_reset_steps(ctx);
+
     // Execute the block body
     ComptimeResult* result = comptime_eval_block(ctx, block->body);
     
@@ -517,6 +519,14 @@ static ComptimeResult* comptime_eval_if_stmt(ComptimeContext* ctx, ASTNode* stmt
 static ComptimeResult* comptime_eval_for_stmt(ComptimeContext* ctx, ASTNode* stmt);
 static ComptimeResult* comptime_eval_return_stmt(ComptimeContext* ctx, ASTNode* stmt);
 
+// Charge one step against the evaluation's total budget. Returns an error
+// result once the budget is spent, otherwise NULL.
+static ComptimeResult* comptime_charge_step(ComptimeContext* ctx, Position pos) {
+    if (++ctx->root->steps <= GOO_COMPTIME_STEP_BUDGET) return NULL;
+    return comptime_result_new(NULL, comptime_error_new(
+        GOO_COMPTIME_BUDGET_ERROR, pos), NULL);
+}
+
 // Execute a user-defined function
 ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_node, 
                                            ComptimeValue** args, size_t arg_count) {
@@ -526,6 +536,9 @@ ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_
     
     FuncDeclNode* func = (FuncDeclNode*)func_node;
     
+    ComptimeResult* over_budget = comptime_charge_step(ctx, func_node->pos);
+    if (over_budget) return over_budget;
+
     // Check recursion depth
     if (ctx->current_recursion_depth >= ctx->max_recursion_depth) {
         return comptime_result_new(NULL, comptime_error_new("Maximum recursion depth exceeded in comptime function", func_node->pos), NULL);
@@ -696,6 +709,13 @@ static ComptimeResult* comptime_eval_for_stmt(ComptimeContext* ctx, ASTNode* stm
     size_t iteration_count = 0;
     
     while (iteration_count < max_iterations) {
+        ComptimeResult* over_budget = comptime_charge_step(loop_ctx, stmt->pos);
+        if (over_budget) {
+            comptime_result_free(last_result);
+            comptime_context_free(loop_ctx);
+            return over_budget;
+        }
+
         // Check condition if present
         if (for_stmt->condition) {
             ComptimeResult* cond_result = comptime_eval_expression(loop_ctx, for_stmt->condition);
