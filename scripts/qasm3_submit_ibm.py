@@ -58,10 +58,29 @@ elif mode == "fake":
     from qiskit_aer import AerSimulator
     from qiskit_ibm_runtime import fake_provider
 
-    fake_cls_name = os.environ.get("IBM_FAKE_BACKEND", "FakeTorino")
-    fake_cls = getattr(fake_provider, fake_cls_name, None) or getattr(
-        fake_provider, "FakeSherbrooke", None
-    ) or getattr(fake_provider, "FakeManilaV2")
+    raw_name = os.environ.get("IBM_FAKE_BACKEND", "FakeMarrakesh")
+    alias_map = {
+        "ibm_fez": "FakeFez",
+        "fake_fez": "FakeFez",
+        "ibm_marrakesh": "FakeMarrakesh",
+        "fake_marrakesh": "FakeMarrakesh",
+        "ibm_kingston": "FakeKingston",
+        "fake_kingston": "FakeKingston",
+        "ibm_torino": "FakeTorino",
+        "fake_torino": "FakeTorino",
+        "ibm_sherbrooke": "FakeSherbrooke",
+        "fake_sherbrooke": "FakeSherbrooke",
+        "ibm_kyiv": "FakeKyiv",
+        "fake_kyiv": "FakeKyiv",
+    }
+    fake_cls_name = alias_map.get(raw_name.lower(), raw_name)
+    fake_cls = (
+        getattr(fake_provider, fake_cls_name, None)
+        or getattr(fake_provider, "FakeMarrakesh", None)
+        or getattr(fake_provider, "FakeFez", None)
+        or getattr(fake_provider, "FakeTorino", None)
+        or getattr(fake_provider, "FakeManilaV2")
+    )
     hw_snapshot = fake_cls()
     backend = AerSimulator.from_backend(hw_snapshot)
 else:

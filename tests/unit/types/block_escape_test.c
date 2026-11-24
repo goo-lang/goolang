@@ -587,6 +587,40 @@ static TestRow rows[] = {
         "}\n",
         1, { true }
     },
+    {
+        34, "slice literal dies in block -> false (arena-eligible)",
+        "package main\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        s := []int{10, 20, 12}\n"
+        "        x := s[0] + s[1] + s[2]\n"
+        "        _ = x\n"
+        "    }\n"
+        "}\n",
+        1, { false }
+    },
+    {
+        35, "slice literal returned from block -> true",
+        "package main\n"
+        "func f() []int {\n"
+        "    arena {\n"
+        "        return []int{1, 2, 3}\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
+    {
+        36, "slice literal passed to append inside block -> true (realloc needs heap header)",
+        "package main\n"
+        "func f() int {\n"
+        "    arena {\n"
+        "        s := []int{1, 2}\n"
+        "        s = append(s, 3)\n"
+        "        return s[2]\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
 };
 
 

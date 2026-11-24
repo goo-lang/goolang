@@ -67,14 +67,18 @@ static void qasm3_emit(Qasm3Ctx* ctx, const char* fmt, ...) {
     ctx->len += (size_t)needed;
 }
 
-static Qasm3Var* qasm3_find_var(Qasm3Ctx* ctx, const char* name) {
+static Qasm3Var* qasm3_find_var_upto(Qasm3Ctx* ctx, const char* name, size_t limit) {
     if (!name) return NULL;
-    for (size_t i = ctx->var_count; i > 0; i--) {
+    for (size_t i = limit; i > 0; i--) {
         if (ctx->vars[i - 1].name && strcmp(ctx->vars[i - 1].name, name) == 0) {
             return &ctx->vars[i - 1];
         }
     }
     return NULL;
+}
+
+static Qasm3Var* qasm3_find_var(Qasm3Ctx* ctx, const char* name) {
+    return qasm3_find_var_upto(ctx, name, ctx->var_count);
 }
 
 static Qasm3Var* qasm3_set_var(Qasm3Ctx* ctx, const char* name, Qasm3VarKind kind, int64_t val) {
@@ -333,7 +337,7 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                     if (!pname) continue;
                     int64_t ival = 0;
                     if (arg->type == AST_IDENTIFIER) {
-                        Qasm3Var* av = qasm3_find_var(ctx, ((IdentifierNode*)arg)->name);
+                        Qasm3Var* av = qasm3_find_var_upto(ctx, ((IdentifierNode*)arg)->name, saved_vars);
                         if (av) {
                             qasm3_set_var(ctx, pname, av->kind, av->index_or_val);
                             continue;
@@ -361,6 +365,9 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
             }
             return;
         }
+        case AST_ARENA_BLOCK:
+            qasm3_walk_stmt(ctx, ((ArenaBlockNode*)stmt)->body);
+            return;
         case AST_VAR_DECL: {
             VarDeclNode* vd = (VarDeclNode*)stmt;
             const char* name = (vd->name_count > 0 && vd->names) ? vd->names[0] : NULL;

@@ -512,7 +512,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
             retains = true;
             why = ESCAPE_REASON_CALL_VARIADIC;   // a spread: no summary reaches it
         } else if (is_append && i == 0) {
-            retains = false;  // append does not store the slice; it returns it
+            retains = (ctx->hooks->expr_source_slot != NULL);  // append does not store the slice; in block_escape realloc requires heap
         } else if (callee) {
             retains = (i < callee_count) ? callee_escapes[i] : true;
             // Past the summary's parameter count -- a variadic user function.
@@ -780,6 +780,8 @@ TaintSet escape_expr_taint(EscapeCtx* ctx, ASTNode* expr) {
         case AST_SLICE_EXPR: { // slice literal (SliceLitNode)
             SliceLitNode* sl = (SliceLitNode*)expr;
             TaintSet t = escape_taint_new(n);
+            size_t idx = source_slot(ctx, expr);
+            if (idx != ESCAPE_NO_SLOT) t.bits[idx] = true;
             for (ASTNode* e = sl->elements; e; e = e->next) {
                 TaintSet et = escape_expr_taint(ctx, e);
                 escape_taint_union_into(&t, &et);

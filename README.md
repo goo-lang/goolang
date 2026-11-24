@@ -2,7 +2,7 @@
 
 # Goo Programming Language
 
-**A deterministic, no-GC superset of Go for systems, parallel, and hybrid quantum–classical computing.**
+**A deterministic, no-GC superset of Go that molds to the hardware it runs on — across CPUs, QPUs, and FPGAs.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Implementation: C23](https://img.shields.io/badge/Implementation-C23-00599C.svg)](https://en.cppreference.com/w/c/23)
@@ -25,6 +25,17 @@
 - **Compile-Time Metaprogramming (`comptime`):** Zig-style compile-time function evaluation and value-specialized monomorphization (`func kernel[T any](comptime N int, ...)`), folding recursive and structural computations before LLVM IR emission.
 - **Type-Safe Error Unions & Nullables:** Explicit `!T` error unions (`try` / `catch`) and `?T` optional types (`if let`) eliminate unchecked `nil` dereferences and boilerplate `if err != nil` chains.
 - **First-Class Hybrid Quantum–Classical Compilation:** Compile-time linear `qir.Qubit` ownership (`src/types/qir_ownership.c`) enforces the quantum no-cloning theorem, distinct multi-qubit operands, and safe uncomputation, lowering directly to **QIR 1.0 Adaptive Profile** (`--emit-qir`), **OpenQASM 3.0** (`--emit-qasm3`), or native binaries linked against an embedded 16-qubit deterministic statevector simulator (`src/runtime/qir_sim.c`).
+
+### One Front-End, Poured Into Each Hardware Mold
+
+Instead of stitching together Python for circuits, C++ for host decoders, Verilog/HLS for FPGAs, and OpenQASM/QIR for the QPU, Goo enforces target-specific physical and memory contracts once at the front-end and lowers cleanly to each hardware backend:
+
+| Target Hardware | Goo Backend | Compile-Time Contract Enforced |
+| :--- | :--- | :--- |
+| **CPU** *(Host / ms-cycle QEC)* | LLVM 22+ native (`-O2`) | No-GC ARC + escape-analysis elision + lexical `arena {}` regions |
+| **QPU** *(Trapped-Ion / Superconducting)* | `--emit-qir` / `--emit-qasm3` | Linear `qir.Qubit` (no cloning, no aliasing, safe uncomputation) |
+| **FPGA** *(Sub-µs QEC / Control — roadmap)* | `--emit-mlir` → CIRCT → `.sv` | Zero-alloc, fixed arrays, statically bounded loops |
+| **Laptop** *(Pre-Flight Verification)* | Embedded `qir_sim.c` & `AerSimulator` | Deterministic native & noisy-ISA execution before touching hardware |
 
 > [!NOTE]
 > Goo is an independent compiler engineering project. It is **not** affiliated with, sponsored by, or endorsed by Google LLC or the Go project. "Go" and the Go gopher are trademarks of Google LLC.
@@ -218,10 +229,17 @@ func correctBitFlip(d0 qir.Qubit, d1 qir.Qubit, d2 qir.Qubit, a0 qir.Qubit, a1 q
 | :--- | :--- | :--- | :---: | :---: | :--- |
 | `qir_teleport_probe.goo` | Embedded `qir_sim.c` (`-O0` / `-O2`) | Native LLVM | 16 | **100.0%** (16/16) | `local` |
 | `qir_bitflip_qec_probe.goo` | Embedded `qir_sim.c` (`-O0` / `-O2`) | Native LLVM | 4 fault modes | **100.0%** (4/4) | `local` |
+| `qir_comptime_stabilizer_probe.goo` | Embedded `qir_sim.c` (`-O0` / `-O2`) | Native LLVM | 4 fault modes | **100.0%** (4/4) | `local` |
 | `qir_teleport_probe.goo` | Qiskit `AerSimulator` (`SamplerV2`) | OpenQASM 3.0 | 100 | **100.0%** (100/100) | `a3294c9e-7486-4666-9403-08ce345259a8` |
-| `qir_bitflip_qec_probe.goo` | Qiskit `AerSimulator` (`SamplerV2`) | OpenQASM 3.0 | 100 | **100.0%** (100/100) | `a3294c9e-7486-4666-9403-08ce345259a8` |
-| `qir_teleport_probe.goo` | IBM Heron `FakeTorino` (`17 cz`, noisy ISA) | OpenQASM 3.0 | 100 | **97.0%** (97/100) | `6a2f07ad-7282-4739-bc9c-c4f755bd344e` |
-| `qir_bitflip_qec_probe.goo` | IBM Heron `FakeTorino` (`104 cz`, noisy ISA) | OpenQASM 3.0 | 100 (400 trials) | **91.3%** per-round (65% all-4) | `6a2f07ad-7282-4739-bc9c-c4f755bd344e` |
+| `qir_comptime_stabilizer_probe.goo` | Qiskit `AerSimulator` (`SamplerV2`) | OpenQASM 3.0 | 100 | **100.0%** (100/100) | `12993239-a815-4f46-b0cc-79e20b896de6` |
+| `qir_teleport_probe.goo` | IBM Heron r2 `ibm_marrakesh` (`FakeMarrakesh`, `17 cz`) | OpenQASM 3.0 | 100 | **99.0%** (99/100) | `d66d29ad-0520-4d93-8c3a-bdc44acebd6d` |
+| `qir_bitflip_qec_probe.goo` | IBM Heron r2 `ibm_marrakesh` (`FakeMarrakesh`, `83 cz`) | OpenQASM 3.0 | 100 (400 rounds) | **94.5%** per-round (79% all-4) | `d66d29ad-0520-4d93-8c3a-bdc44acebd6d` |
+| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `ibm_marrakesh` (`FakeMarrakesh`, `80 cz`) | OpenQASM 3.0 | 100 (400 rounds) | **95.0%** per-round (80% all-4) | `d66d29ad-0520-4d93-8c3a-bdc44acebd6d` |
+| `qir_teleport_probe.goo` | IBM Heron r2 `ibm_kingston` (`FakeKingston`, `17 cz`) | OpenQASM 3.0 | 100 | **99.0%** (99/100) | `7889e58c-b159-4856-8e98-ed4a01335dc7` |
+| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `ibm_kingston` (`FakeKingston`, `104 cz`) | OpenQASM 3.0 | 100 (400 rounds) | **94.3%** per-round (78% all-4) | `7889e58c-b159-4856-8e98-ed4a01335dc7` |
+| `qir_teleport_probe.goo` | IBM Heron r2 `ibm_fez` (`FakeFez`, `17 cz`) | OpenQASM 3.0 | 100 | **95.0%** (95/100) | `5af7af30-1509-4991-abd8-60e6cd966496` |
+| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `ibm_fez` (`FakeFez`, `83 cz`) | OpenQASM 3.0 | 100 (400 rounds) | **92.5%** per-round (71% all-4) | `5af7af30-1509-4991-abd8-60e6cd966496` |
+| `qir_teleport_probe.goo` | IBM Heron r1 `ibm_torino` (`FakeTorino`, `17 cz`) | OpenQASM 3.0 | 100 | **97.0%** (97/100) | `6a2f07ad-7282-4739-bc9c-c4f755bd344e` |
 | `qir_bitflip_qec_probe.goo` | Quantinuum `h1-1sc` / `h1-1e` (pre-flight) | QIR 1.0 Adaptive | 50 | **Verified QIR** (`0.00` / `6.37 HQC`) | `pre-flight` |
 
 ### Quota-Safe QPU Submission Workflows
