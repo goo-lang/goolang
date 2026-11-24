@@ -316,7 +316,7 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
 // one counter here bounds the recursion of all of them. The parser builds long
 // chains iteratively, which is why the checker is where an unbounded depth
 // would otherwise first overflow the C stack.
-#define GOO_MAX_EXPR_DEPTH 2000
+#define GOO_MAX_EXPR_DEPTH 500
 static thread_local int g_expr_check_depth = 0;
 
 static Type* type_check_expression_inner(TypeChecker* checker, ASTNode* expr);
