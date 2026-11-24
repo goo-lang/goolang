@@ -2835,6 +2835,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     free(mangled);
                     return NULL;
                 }
+                // Go panics on `(*p).m()` with a nil p. Without this check the
+                // copy below reads from address 0 (SIGSEGV, rc 139), and from
+                // a large offset for a big struct.
+                codegen_emit_nil_check(codegen, ptr, expr);
                 recv_arg = LLVMBuildLoad2(codegen->builder, val_llvm, ptr, "recv_deref");
             } else {
                 // Value receiver on a value, or pointer receiver on a
