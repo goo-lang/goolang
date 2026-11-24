@@ -4,6 +4,8 @@
 // error split the lanes.go pumps compare against.
 #include "far_transport.h"
 #include "runtime.h"
+#include <nng/nng.h>
+#include <nng/protocol/pair1/pair.h>
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -71,6 +73,27 @@ int main(void) {
     int64_t c = -1;
     assert(goo_far_listen("bogus://nope", &c, &err) == 0);
     assert(str_starts(err, "far: listen failed: "));
+
+    // M5: a peer that sends a 9-byte message is a recoverable error, not a
+    // panic, and the socket stays usable for the next (valid) message.
+    char url2[256];
+    snprintf(url2, sizeof(url2), "ipc://%s/sock2", dir);
+    int64_t l = -1;
+    assert(goo_far_listen(url2, &l, &err) == 1);
+    nng_socket raw;
+    assert(nng_pair1_open(&raw) == 0);
+    assert(nng_dial(raw, url2, NULL, 0) == 0);
+    unsigned char nine[9] = {0};
+    assert(nng_send(raw, nine, sizeof(nine), 0) == 0);
+    double good = 7.25;
+    assert(nng_send(raw, &good, sizeof(good), 0) == 0);
+    double bv = 0.0;
+    assert(goo_far_recv_f64(l, &bv, &err) == 0);
+    assert(str_starts(err, "far: recv failed: "));
+    assert(goo_far_recv_f64(l, &bv, &err) == 1);
+    assert(bv == 7.25);
+    nng_close(raw);
+    goo_far_close(l);
 
     goo_far_close(a);
     printf("far_transport_test: PASS\n");
