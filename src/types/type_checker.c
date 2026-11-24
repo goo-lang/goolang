@@ -833,8 +833,12 @@ int type_check_program_files(TypeChecker* checker, ASTNode** programs,
     // findings.md Section 2.0). Per file: the walk is over one AST at a time.
     for (size_t i = 0; i < program_count; i++) {
         if (!lane_ownership_check_program(checker, programs[i])) return 0;
-        if (!qir_ownership_check_program(checker, programs[i])) return 0;
-        if (!fpga_check_program(checker, programs[i], 0)) return 0;
+        if (!qir_ownership_check_program(checker, programs[i])) {
+            return 0;
+        }
+        if (!fpga_check_program(checker, programs[i], 0)) {
+            return 0;
+        }
     }
 
     return checker->error_count == 0;
@@ -1021,11 +1025,15 @@ void seed_os_package_exports(TypeChecker* checker, Package* pkg) {
 // which looks up these exact `Type*` pointers out of `pkg->exports` to preserve
 // pointer identity across annotations and call signatures.
 void seed_qir_package_exports(TypeChecker* checker, Package* pkg) {
-    if (scope_lookup_variable(pkg->exports, "Qubit")) return;
+    if (scope_lookup_variable(pkg->exports, "Qubit")) {
+        return;
+    }
 
     Type* qubit_t = sync_make_opaque_struct(checker, pkg, "Qubit");
     Type* result_t = sync_make_opaque_struct(checker, pkg, "Result");
-    if (!qubit_t || !result_t) return;
+    if (!qubit_t || !result_t) {
+        return;
+    }
 
     sync_export_type(pkg, "Qubit", qubit_t);
     sync_export_type(pkg, "Result", result_t);
@@ -1343,7 +1351,9 @@ static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports
         if (!spec->path || !type_checker_is_plain_shim_import(spec->path)) continue;
         const char* short_name = spec->alias ? spec->alias : spec->path;
         Package* p = type_checker_add_package(checker, spec->path, short_name);
-        if (!p) return false;
+        if (!p) {
+            return false;
+        }
         // Mirrors goo.c's seed_imported_stdlib_markers: a NULL return here
         // means only "duplicate import of this name" (harmless — the first
         // marker already covers it) or OOM (already unrecoverable via other

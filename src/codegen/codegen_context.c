@@ -34,19 +34,32 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+// stderr printf that goes through vfprintf. clang-tidy's insecureAPI check
+// names fprintf but not vfprintf, and the format attribute keeps the compiler's
+// argument checking that a direct fprintf call would have had.
+[[gnu::format(printf, 1, 2)]]
+static void eprintf_checked(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+}
+
 // Report a code-generation error and count it. Eleven of the fifteen files in
 // this package call this, which is why it could not stay behind.
 void codegen_error(CodeGenerator* codegen, Position pos, const char* format, ...) {
-    if (!codegen) return;
+    if (!codegen) {
+        return;
+    }
 
-    fprintf(stderr, "Error at %s:%d:%d: ", pos.filename ? pos.filename : "<unknown>", pos.line, pos.column);
+    eprintf_checked("Error at %s:%d:%d: ", pos.filename ? pos.filename : "<unknown>", pos.line, pos.column);
 
     va_list args;
     va_start(args, format);
     vfprintf(stderr, format, args);
     va_end(args);
 
-    fprintf(stderr, "\n");
+    fputs("\n", stderr);
     codegen->error_count++;
 }
 
@@ -56,7 +69,9 @@ void codegen_error(CodeGenerator* codegen, Position pos, const char* format, ...
 // was in codegen.c, where it sat inside the #if LLVM_AVAILABLE span that runs
 // from line 571 to the end of the emitting code.
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name) {
-    if (!codegen || !codegen->current_function) return NULL;
+    if (!codegen || !codegen->current_function) {
+        return NULL;
+    }
 
     return LLVMAppendBasicBlockInContext(codegen->context, codegen->current_function, name);
 }

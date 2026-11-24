@@ -55,7 +55,9 @@ Type* type_checker_error_type(TypeChecker* checker) {
 }
 
 Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
-    if (!checker || !checker->current_scope) return NULL;
+    if (!checker || !checker->current_scope) {
+        return NULL;
+    }
     return scope_lookup_variable(checker->current_scope, name);
 }
 
@@ -84,10 +86,14 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
 //     scope, today's behavior.
 Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
                                       const char* method_name, const char* mangled_name) {
-    if (!checker || !mangled_name) return NULL;
+    if (!checker || !mangled_name) {
+        return NULL;
+    }
     struct Package* owner = type_receiver_owner_package(recv_type);
     if (owner && owner != checker->current_package) {
-        if (!method_name || method_name[0] < 'A' || method_name[0] > 'Z') return NULL;
+        if (!method_name || method_name[0] < 'A' || method_name[0] > 'Z') {
+            return NULL;
+        }
         return scope_lookup_variable(owner->exports, mangled_name);
     }
     return type_checker_lookup_variable(checker, mangled_name);

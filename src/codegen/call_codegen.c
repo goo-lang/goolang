@@ -672,7 +672,9 @@ static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, Type
     }
 
     ValueInfo* rv = codegen_generate_expression(codegen, checker, msel->expr);
-    if (!rv) return NULL;
+    if (!rv) {
+        return NULL;
+    }
     LLVMValueRef recv_val = rv->llvm_value;
     if (rv->is_lvalue && rv->goo_type) {
         LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
@@ -2380,47 +2382,67 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     codegen->qir_num_qubits++;
                     Type* q_type = expr->node_type;
                     LLVMTypeRef q_llvm = q_type ? codegen_type_to_llvm(codegen, q_type) : NULL;
-                    if (!q_llvm) return NULL;
+                    if (!q_llvm) {
+                        return NULL;
+                    }
                     LLVMValueRef wrapped = LLVMGetUndef(q_llvm);
                     wrapped = LLVMBuildInsertValue(codegen->builder, wrapped, raw_q, 0, "qir.qubit");
                     return value_info_new(NULL, wrapped, q_type);
                 }
                 if (strcmp(sel->selector, "QubitAt") == 0 || strcmp(sel->selector, "ResultAt") == 0) {
                     int is_qubit = (strcmp(sel->selector, "QubitAt") == 0);
-                    if (!call->args) return NULL;
+                    if (!call->args) {
+                        return NULL;
+                    }
                     uint64_t const_id = 0;
                     if (goo_fold_const_int_ctx(checker, call->args, &const_id)) {
                         if (is_qubit) {
-                            if (const_id + 1 > codegen->qir_num_qubits) codegen->qir_num_qubits = const_id + 1;
+                            if (const_id + 1 > codegen->qir_num_qubits) {
+                                codegen->qir_num_qubits = const_id + 1;
+                            }
                         } else {
-                            if (const_id + 1 > codegen->qir_num_results) codegen->qir_num_results = const_id + 1;
+                            if (const_id + 1 > codegen->qir_num_results) {
+                                codegen->qir_num_results = const_id + 1;
+                            }
                         }
                     }
                     ValueInfo* id_vi = codegen_generate_expression(codegen, checker, call->args);
-                    if (!id_vi) return NULL;
+                    if (!id_vi) {
+                        return NULL;
+                    }
                     LLVMValueRef id_val = id_vi->llvm_value;
                     if (id_vi->is_lvalue && id_vi->goo_type) {
                         LLVMTypeRef it = codegen_type_to_llvm(codegen, id_vi->goo_type);
-                        if (it) id_val = LLVMBuildLoad2(codegen->builder, it, id_val, "qir.id_load");
+                        if (it) {
+                            id_val = LLVMBuildLoad2(codegen->builder, it, id_val, "qir.id_load");
+                        }
                     }
                     value_info_free(id_vi);
                     LLVMValueRef raw_ptr = LLVMBuildIntToPtr(codegen->builder, id_val, ptr_ty,
                                                              is_qubit ? "qir.qubit_at" : "qir.result_at");
                     Type* h_type = expr->node_type;
                     LLVMTypeRef h_llvm = h_type ? codegen_type_to_llvm(codegen, h_type) : NULL;
-                    if (!h_llvm) return NULL;
+                    if (!h_llvm) {
+                        return NULL;
+                    }
                     LLVMValueRef wrapped = LLVMGetUndef(h_llvm);
                     wrapped = LLVMBuildInsertValue(codegen->builder, wrapped, raw_ptr, 0, "qir.handle");
                     return value_info_new(NULL, wrapped, h_type);
                 }
                 if (strcmp(sel->selector, "FreeZero") == 0) {
-                    if (!call->args) return NULL;
+                    if (!call->args) {
+                        return NULL;
+                    }
                     ValueInfo* qv = codegen_generate_expression(codegen, checker, call->args);
-                    if (!qv) return NULL;
+                    if (!qv) {
+                        return NULL;
+                    }
                     LLVMValueRef q_loaded = qv->llvm_value;
                     if (qv->is_lvalue && qv->goo_type) {
                         LLVMTypeRef qt = codegen_type_to_llvm(codegen, qv->goo_type);
-                        if (qt) q_loaded = LLVMBuildLoad2(codegen->builder, qt, q_loaded, "qir.q_load");
+                        if (qt) {
+                            q_loaded = LLVMBuildLoad2(codegen->builder, qt, q_loaded, "qir.q_load");
+                        }
                     }
                     value_info_free(qv);
                     LLVMValueRef q_ptr = LLVMBuildExtractValue(codegen->builder, q_loaded, 0, "qir.q_ptr");
@@ -2435,13 +2457,19 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
                 }
                 if (strcmp(sel->selector, "MeasureReset") == 0) {
-                    if (!call->args) return NULL;
+                    if (!call->args) {
+                        return NULL;
+                    }
                     ValueInfo* qv = codegen_generate_expression(codegen, checker, call->args);
-                    if (!qv) return NULL;
+                    if (!qv) {
+                        return NULL;
+                    }
                     LLVMValueRef q_loaded = qv->llvm_value;
                     if (qv->is_lvalue && qv->goo_type) {
                         LLVMTypeRef qt = codegen_type_to_llvm(codegen, qv->goo_type);
-                        if (qt) q_loaded = LLVMBuildLoad2(codegen->builder, qt, q_loaded, "qir.q_load");
+                        if (qt) {
+                            q_loaded = LLVMBuildLoad2(codegen->builder, qt, q_loaded, "qir.q_load");
+                        }
                     }
                     value_info_free(qv);
                     LLVMValueRef q_ptr = LLVMBuildExtractValue(codegen->builder, q_loaded, 0, "qir.q_ptr");
@@ -2488,13 +2516,17 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     return value_info_new(NULL, bit, type_checker_get_builtin(checker, TYPE_BOOL));
                 }
                 if (strcmp(sel->selector, "ReadResult") == 0) {
-                    if (!call->args) return NULL;
+                    if (!call->args) {
+                        return NULL;
+                    }
                     ValueInfo* rv = codegen_generate_expression(codegen, checker, call->args);
                     if (!rv) return NULL;
                     LLVMValueRef r_loaded = rv->llvm_value;
                     if (rv->is_lvalue && rv->goo_type) {
                         LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
-                        if (rt) r_loaded = LLVMBuildLoad2(codegen->builder, rt, r_loaded, "qir.r_load");
+                        if (rt) {
+                            r_loaded = LLVMBuildLoad2(codegen->builder, rt, r_loaded, "qir.r_load");
+                        }
                     }
                     value_info_free(rv);
                     LLVMValueRef r_ptr = LLVMBuildExtractValue(codegen->builder, r_loaded, 0, "qir.r_ptr");
@@ -2512,25 +2544,35 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 if (strcmp(sel->selector, "Rx") == 0 ||
                     strcmp(sel->selector, "Ry") == 0 ||
                     strcmp(sel->selector, "Rz") == 0) {
-                    if (!call->args || !call->args->next) return NULL;
+                    if (!call->args || !call->args->next) {
+                        return NULL;
+                    }
                     const char* qis_sym = (strcmp(sel->selector, "Rx") == 0) ? "__quantum__qis__rx__body"
                                         : (strcmp(sel->selector, "Ry") == 0) ? "__quantum__qis__ry__body"
                                                                              : "__quantum__qis__rz__body";
                     ValueInfo* tv = codegen_generate_expression(codegen, checker, call->args);
-                    if (!tv) return NULL;
+                    if (!tv) {
+                        return NULL;
+                    }
                     LLVMValueRef theta = tv->llvm_value;
                     if (tv->is_lvalue && tv->goo_type) {
                         LLVMTypeRef tt = codegen_type_to_llvm(codegen, tv->goo_type);
-                        if (tt) theta = LLVMBuildLoad2(codegen->builder, tt, theta, "qir.theta_load");
+                        if (tt) {
+                            theta = LLVMBuildLoad2(codegen->builder, tt, theta, "qir.theta_load");
+                        }
                     }
                     value_info_free(tv);
 
                     ValueInfo* qv = codegen_generate_expression(codegen, checker, call->args->next);
-                    if (!qv) return NULL;
+                    if (!qv) {
+                        return NULL;
+                    }
                     LLVMValueRef q_loaded = qv->llvm_value;
                     if (qv->is_lvalue && qv->goo_type) {
                         LLVMTypeRef qt = codegen_type_to_llvm(codegen, qv->goo_type);
-                        if (qt) q_loaded = LLVMBuildLoad2(codegen->builder, qt, q_loaded, "qir.q_load");
+                        if (qt) {
+                            q_loaded = LLVMBuildLoad2(codegen->builder, qt, q_loaded, "qir.q_load");
+                        }
                     }
                     value_info_free(qv);
                     LLVMValueRef q_ptr = LLVMBuildExtractValue(codegen->builder, q_loaded, 0, "qir.q_ptr");
@@ -2568,13 +2610,17 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                         LLVMValueRef arg_vals[3];
                         ASTNode* cur = call->args;
                         for (unsigned k = 0; k < arity; k++) {
-                            if (!cur) return NULL;
+                            if (!cur) {
+                                return NULL;
+                            }
                             ValueInfo* vi = codegen_generate_expression(codegen, checker, cur);
                             if (!vi) return NULL;
                             LLVMValueRef loaded = vi->llvm_value;
                             if (vi->is_lvalue && vi->goo_type) {
                                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, vi->goo_type);
-                                if (lt) loaded = LLVMBuildLoad2(codegen->builder, lt, loaded, "qir.arg_load");
+                                if (lt) {
+                                    loaded = LLVMBuildLoad2(codegen->builder, lt, loaded, "qir.arg_load");
+                                }
                             }
                             value_info_free(vi);
                             arg_vals[k] = LLVMBuildExtractValue(codegen->builder, loaded, 0, "qir.arg_ptr");
@@ -3854,7 +3900,9 @@ static ValueInfo* codegen_generate_far_result_call(CodeGenerator* codegen, TypeC
         if (!first) return NULL;
     } else {
         ValueInfo* vi = codegen_generate_expression(codegen, checker, arg);
-        if (!vi) return NULL;
+        if (!vi) {
+            return NULL;
+        }
         first = vi->llvm_value;
         if (vi->is_lvalue && vi->goo_type) {
             LLVMTypeRef at = codegen_type_to_llvm(codegen, vi->goo_type);

@@ -781,7 +781,13 @@ TaintSet escape_expr_taint(EscapeCtx* ctx, ASTNode* expr) {
             SliceLitNode* sl = (SliceLitNode*)expr;
             TaintSet t = escape_taint_new(n);
             size_t idx = source_slot(ctx, expr);
-            if (idx != ESCAPE_NO_SLOT) t.bits[idx] = true;
+            if (idx != ESCAPE_NO_SLOT) {
+                // A slot past the set, or a set whose calloc failed, would lose
+                // this taint source, and a lost source can free an escaping
+                // value. Stop instead of dropping it.
+                GOO_ASSERT(t.bits != NULL && idx < t.n);
+                t.bits[idx] = true;
+            }
             for (ASTNode* e = sl->elements; e; e = e->next) {
                 TaintSet et = escape_expr_taint(ctx, e);
                 escape_taint_union_into(&t, &et);

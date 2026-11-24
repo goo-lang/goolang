@@ -189,28 +189,28 @@ static void print_usage(FILE* out, const char* program_name) {
     fprintf(out, "       %s build [options] <input-file>\n", program_name);
     fprintf(out, "       %s run [options] <input-file> [-- <program args...>]\n", program_name);
     fprintf(out, "       %s help | version\n", program_name);
-    fprintf(out, "Subcommands:\n");
-    fprintf(out, "  build                    Compile; executable named <stem> in the current directory\n");
-    fprintf(out, "  run                      Compile to a temporary binary, run it (forwarding args\n");
-    fprintf(out, "                           after --), exit with the program's exit code\n");
-    fprintf(out, "Options:\n");
-    fprintf(out, "  -o, --output <file>      Output file name (default: <input>.out, or <input>.ll with --emit-llvm)\n");
-    fprintf(out, "  -O, --optimize <level>   Optimization level (0-3, default: 0)\n");
-    fprintf(out, "  -g, --debug              Generate debug information\n");
-    fprintf(out, "  -v, --verbose            Verbose output\n");
-    fprintf(out, "  -r, --run                Run the program after compilation (exit code = program's)\n");
-    fprintf(out, "  -l, --link <lib>         Link with library\n");
-    fprintf(out, "  --linker <prog>          Program that links the executable (default: gcc)\n");
-    fprintf(out, "  --link-flag <flag>       Extra flag for that linker (repeatable)\n");
-    fprintf(out, "  --emit-llvm              Emit LLVM IR instead of executable\n");
-    fprintf(out, "  --emit-qir               Emit QIR 1.0 Adaptive Profile LLVM IR\n");
-    fprintf(out, "  --emit-qasm3             Emit OpenQASM 3.0 circuit\n");
-    fprintf(out, "  --emit-ast               Emit AST (for debugging)\n");
-    fprintf(out, "  --emit-tokens            Emit tokens (for debugging)\n");
-    fprintf(out, "  --emit-ast-json          Emit the parsed program as JSON (program dump, parse stage)\n");
-    fprintf(out, "  --emit-program           Emit the typed program + release plan as JSON (program dump)\n");
-    fprintf(out, "  -h, --help               Show this help message\n");
-    fprintf(out, "  --version                Show version information\n");
+    fputs("Subcommands:\n", out);
+    fputs("  build                    Compile; executable named <stem> in the current directory\n", out);
+    fputs("  run                      Compile to a temporary binary, run it (forwarding args\n", out);
+    fputs("                           after --), exit with the program's exit code\n", out);
+    fputs("Options:\n", out);
+    fputs("  -o, --output <file>      Output file name (default: <input>.out, or <input>.ll with --emit-llvm)\n", out);
+    fputs("  -O, --optimize <level>   Optimization level (0-3, default: 0)\n", out);
+    fputs("  -g, --debug              Generate debug information\n", out);
+    fputs("  -v, --verbose            Verbose output\n", out);
+    fputs("  -r, --run                Run the program after compilation (exit code = program's)\n", out);
+    fputs("  -l, --link <lib>         Link with library\n", out);
+    fputs("  --linker <prog>          Program that links the executable (default: gcc)\n", out);
+    fputs("  --link-flag <flag>       Extra flag for that linker (repeatable)\n", out);
+    fputs("  --emit-llvm              Emit LLVM IR instead of executable\n", out);
+    fputs("  --emit-qir               Emit QIR 1.0 Adaptive Profile LLVM IR\n", out);
+    fputs("  --emit-qasm3             Emit OpenQASM 3.0 circuit\n", out);
+    fputs("  --emit-ast               Emit AST (for debugging)\n", out);
+    fputs("  --emit-tokens            Emit tokens (for debugging)\n", out);
+    fputs("  --emit-ast-json          Emit the parsed program as JSON (program dump, parse stage)\n", out);
+    fputs("  --emit-program           Emit the typed program + release plan as JSON (program dump)\n", out);
+    fputs("  -h, --help               Show this help message\n", out);
+    fputs("  --version                Show version information\n", out);
 }
 
 static void print_version(void) {
@@ -249,7 +249,7 @@ static char* make_temp_output_path(void) {
     const char template_tail[] = "/goo-run-XXXXXX";
     char* path = malloc(strlen(tmpdir) + sizeof(template_tail));
     if (!path) {
-        fprintf(stderr, "Error: Out of memory\n");
+        fputs("Error: Out of memory\n", stderr);
         return NULL;
     }
     sprintf(path, "%s%s", tmpdir, template_tail);
@@ -267,7 +267,7 @@ static char* make_temp_output_path(void) {
 static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     CompilerOptions* options = xcalloc(1, sizeof(CompilerOptions));
     if (!options) {
-        fprintf(stderr, "Error: Out of memory\n");
+        fputs("Error: Out of memory\n", stderr);
         return NULL;
     }
     
@@ -304,59 +304,65 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     int option_index = 0;
     
     while ((opt = getopt_long(argc, argv, "o:O:gvrl:h", long_options, &option_index)) != -1) {
+        // Read the getopt globals once, into locals. cppcheck cannot resolve
+        // `struct option::name` or `optarg` (they come from a system header it
+        // does not parse) and reports misra-config for every use, so each use
+        // below would add a finding. Here it adds one per global.
+        const char* arg = optarg;
+        const char* long_name = (opt == 0) ? long_options[option_index].name : NULL;
         switch (opt) {
             case 0:
                 // Long option
-                if (strcmp(long_options[option_index].name, "emit-llvm") == 0) {
+                if (strcmp(long_name, "emit-llvm") == 0) {
                     options->emit_llvm_ir = true;
-                } else if (strcmp(long_options[option_index].name, "emit-qir") == 0) {
+                } else if (strcmp(long_name, "emit-qir") == 0) {
                     options->emit_llvm_ir = true;
                     options->emit_qir = true;
-                } else if (strcmp(long_options[option_index].name, "emit-qasm3") == 0) {
+                } else if (strcmp(long_name, "emit-qasm3") == 0) {
                     options->emit_qasm3 = true;
-                } else if (strcmp(long_options[option_index].name, "emit-mlir") == 0) {
+                } else if (strcmp(long_name, "emit-mlir") == 0) {
                     options->emit_mlir = true;
-                } else if (strcmp(long_options[option_index].name, "emit-sv") == 0) {
+                } else if (strcmp(long_name, "emit-sv") == 0) {
                     options->emit_sv = true;
-                } else if (strcmp(long_options[option_index].name, "check-fpga") == 0) {
+                } else if (strcmp(long_name, "check-fpga") == 0) {
                     options->check_fpga = true;
-                } else if (strcmp(long_options[option_index].name, "emit-ast") == 0) {
+                } else if (strcmp(long_name, "emit-ast") == 0) {
                     options->emit_ast = true;
-                } else if (strcmp(long_options[option_index].name, "emit-tokens") == 0) {
+                } else if (strcmp(long_name, "emit-tokens") == 0) {
                     options->emit_tokens = true;
-                } else if (strcmp(long_options[option_index].name, "emit-ast-json") == 0) {
+                } else if (strcmp(long_name, "emit-ast-json") == 0) {
                     options->emit_ast_json = true;
-                } else if (strcmp(long_options[option_index].name, "emit-program") == 0) {
+                } else if (strcmp(long_name, "emit-program") == 0) {
                     options->emit_program = true;
-                } else if (strcmp(long_options[option_index].name, "dump-packages") == 0) {
+                } else if (strcmp(long_name, "dump-packages") == 0) {
                     options->dump_packages = true;
-                } else if (strcmp(long_options[option_index].name, "emit-testmain") == 0) {
+                } else if (strcmp(long_name, "emit-testmain") == 0) {
                     options->emit_testmain = true;
-                } else if (strcmp(long_options[option_index].name, "linker") == 0) {
+                } else if (strcmp(long_name, "linker") == 0) {
                     // An empty value would become an empty argv[0] and fail
                     // inside execvp. Refuse it here, where the message can
                     // name the option.
-                    if (optarg[0] == '\0') {
-                        fprintf(stderr, "Error: --linker needs a value\n");
+                    if (arg[0] == '\0') {
+                        fputs("Error: --linker needs a value\n", stderr);
                         free(options);
                         return NULL;
                     }
                     free(options->linker);   // a repeated --linker: last wins
-                    options->linker = xstrdup(optarg);
-                } else if (strcmp(long_options[option_index].name, "link-flag") == 0) {
+                    options->linker = xstrdup(arg);
+                } else if (strcmp(long_name, "link-flag") == 0) {
                     // An empty value survives all the way to execvp as an
                     // empty argv element, which the linker reports as an
                     // unreadable file — and which the echoed link command
                     // cannot show, because joining on spaces hides it.
-                    if (optarg[0] == '\0') {
-                        fprintf(stderr, "Error: --link-flag needs a value\n");
+                    if (arg[0] == '\0') {
+                        fputs("Error: --link-flag needs a value\n", stderr);
                         free(options);
                         return NULL;
                     }
-                    options->link_flags = xrealloc(options->link_flags,
-                                                  (options->link_flag_count + 1) * sizeof(char*));
-                    options->link_flags[options->link_flag_count++] = xstrdup(optarg);
-                } else if (strcmp(long_options[option_index].name, "version") == 0) {
+                    size_t flag_slots = (size_t)options->link_flag_count + 1U;
+                    options->link_flags = xrealloc(options->link_flags, flag_slots * sizeof(char*));
+                    options->link_flags[options->link_flag_count++] = xstrdup(arg);
+                } else if (strcmp(long_name, "version") == 0) {
                     print_version();
                     free(options);
                     exit(0);
@@ -364,13 +370,13 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 break;
                 
             case 'o':
-                options->output_file = xstrdup(optarg);
+                options->output_file = xstrdup(arg);
                 break;
                 
             case 'O':
-                options->opt_level = atoi(optarg);
+                options->opt_level = atoi(arg);
                 if (options->opt_level < 0 || options->opt_level > 3) {
-                    fprintf(stderr, "Error: Invalid optimization level: %s\n", optarg);
+                    fprintf(stderr, "Error: Invalid optimization level: %s\n", arg);
                     free(options);
                     return NULL;
                 }
@@ -392,7 +398,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             case 'l':
                 options->link_libs = xrealloc(options->link_libs, 
                                            (options->link_lib_count + 1) * sizeof(char*));
-                options->link_libs[options->link_lib_count++] = xstrdup(optarg);
+                options->link_libs[options->link_lib_count++] = xstrdup(arg);
                 break;
                 
             case 'h':
@@ -413,7 +419,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     // directory, matching `go test`; every other mode still requires one.
     if (optind >= argc) {
         if (mode != GOO_MODE_TEST) {
-            fprintf(stderr, "Error: No input file specified\n");
+            fputs("Error: No input file specified\n", stderr);
             print_usage(stderr, argv[0]);
             free(options);
             return NULL;
@@ -457,7 +463,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     switch (mode) {
         case GOO_MODE_TEST:
             if (options->emit_llvm_ir || options->emit_qasm3) {
-                fprintf(stderr, "Error: --emit-llvm/--emit-qasm3 cannot be combined with 'goo test'\n");
+                fputs("Error: --emit-llvm/--emit-qasm3 cannot be combined with 'goo test'\n", stderr);
                 free(options->output_file);
                 free(options);
                 return NULL;
@@ -473,7 +479,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             break;
         case GOO_MODE_RUN:
             if (options->emit_llvm_ir || options->emit_qasm3) {
-                fprintf(stderr, "Error: --emit-llvm/--emit-qasm3 cannot be combined with 'goo run'\n");
+                fputs("Error: --emit-llvm/--emit-qasm3 cannot be combined with 'goo run'\n", stderr);
                 free(options->output_file);
                 free(options);
                 return NULL;
@@ -900,10 +906,10 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
     }
 
     PkgEntry* e = pkg_graph_add(g, import_path);
-    if (!e) { fprintf(stderr, "Error: out of memory resolving imports\n"); return -1; }
+    if (!e) { fputs("Error: out of memory resolving imports\n", stderr); return -1; }
     if (alias) {
         e->alias = str_dup(alias);
-        if (!e->alias) { fprintf(stderr, "Error: out of memory resolving imports\n"); return -1; }
+        if (!e->alias) { fputs("Error: out of memory resolving imports\n", stderr); return -1; }
     }
     e->state = PKG_IN_PROGRESS;
 
@@ -950,7 +956,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
     e->file_names = calloc(ps.file_count, sizeof(char*));
     if (!e->asts || !e->file_names) {
         package_source_free(&ps);
-        fprintf(stderr, "Error: out of memory resolving imports\n");
+        fputs("Error: out of memory resolving imports\n", stderr);
         return -1;
     }
 
@@ -962,7 +968,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
         e->file_names[fi] = str_dup(ps.files[fi]);
         if (!e->file_names[fi]) {
             package_source_free(&ps);
-            fprintf(stderr, "Error: out of memory resolving imports\n");
+            fputs("Error: out of memory resolving imports\n", stderr);
             return -1;
         }
 
@@ -976,7 +982,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
         if (pkg_graph_keep_source(g, buf) != 0) {
             free(buf);
             package_source_free(&ps);
-            fprintf(stderr, "Error: out of memory resolving imports\n");
+            fputs("Error: out of memory resolving imports\n", stderr);
             return -1;
         }
 
@@ -1008,7 +1014,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
 
     e->state = PKG_DONE;
     if (pkg_graph_append_ordered(g, e) != 0) {
-        fprintf(stderr, "Error: out of memory resolving imports\n");
+        fputs("Error: out of memory resolving imports\n", stderr);
         return -1;
     }
     return 0;
@@ -1184,7 +1190,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     ASTNode** asts    = calloc(nfiles, sizeof(ASTNode*));
     if (!sources || !lexers || !asts) {
         free(sources); free(lexers); free(asts);
-        fprintf(stderr, "Error: out of memory reading input files\n");
+        fputs("Error: out of memory reading input files\n", stderr);
         return false;
     }
 
@@ -1235,12 +1241,12 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         // it, so the next file's parse cannot clobber a pointer we own.
         ast_root = NULL;
         if (parse_input(sources[fi], fname) != 0) {
-            fprintf(stderr, "Error: Parse failed\n");
+            fputs("Error: Parse failed\n", stderr);
             ENTRY_CLEANUP();
             return false;
         }
         if (!ast_root) {
-            fprintf(stderr, "Error: No AST generated\n");
+            fputs("Error: No AST generated\n", stderr);
             ENTRY_CLEANUP();
             return false;
         }
@@ -1298,7 +1304,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         const char** test_names = calloc(nfiles, sizeof(char*));
         if (!test_asts || !test_names) {
             free(test_asts); free(test_names);
-            fprintf(stderr, "Error: out of memory preparing test discovery\n");
+            fputs("Error: out of memory preparing test discovery\n", stderr);
             ENTRY_CLEANUP();
             return false;
         }
@@ -1355,7 +1361,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
                 if (!f->name || f->receiver || strcmp(f->name, "main") != 0) continue;
                 char* renamed = str_dup("main.program");
                 if (!renamed) {
-                    fprintf(stderr, "Error: out of memory preparing the test entry point\n");
+                    fputs("Error: out of memory preparing the test entry point\n", stderr);
                     ENTRY_CLEANUP();
                     return false;
                 }
@@ -1376,7 +1382,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
                                                        &tests);
         test_list_free(&tests);
         if (!testmain_src) {
-            fprintf(stderr, "Error: out of memory generating _testmain.goo\n");
+            fputs("Error: out of memory generating _testmain.goo\n", stderr);
             ENTRY_CLEANUP();
             return false;
         }
@@ -1401,7 +1407,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         if (grown_asts) asts = grown_asts;
         if (!grown_asts) {
             free(testmain_src);
-            fprintf(stderr, "Error: out of memory generating _testmain.goo\n");
+            fputs("Error: out of memory generating _testmain.goo\n", stderr);
             ENTRY_CLEANUP();
             return false;
         }
@@ -1718,8 +1724,8 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     codegen_free(codegen);
 #else
     // Fallback: interpreter mode
-    fprintf(stderr, "Warning: LLVM not available, cannot generate native code\n");
-    fprintf(stderr, "Consider installing LLVM to enable code generation\n");
+    fputs("Warning: LLVM not available, cannot generate native code\n", stderr);
+    fputs("Consider installing LLVM to enable code generation\n", stderr);
     
     // For now, just validate the program
     if (options->verbose) {
@@ -1751,7 +1757,7 @@ static int run_program(const char* path, char** args, int arg_count, bool verbos
     // binary); the forwarded args follow.
     char** child_argv = malloc(((size_t)arg_count + 2) * sizeof(char*));
     if (!child_argv) {
-        fprintf(stderr, "Error: Out of memory\n");
+        fputs("Error: Out of memory\n", stderr);
         return 127;
     }
     child_argv[0] = (char*)path;
