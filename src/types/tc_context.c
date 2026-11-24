@@ -84,7 +84,7 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
 //     unexported methods are correctly callable intra-package.
 //   - owner NULL (a main-declared or anonymous/builtin receiver): current
 //     scope, today's behavior.
-Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
+Variable* type_checker_lookup_method(TypeChecker* checker, const Type* recv_type,
                                       const char* method_name, const char* mangled_name) {
     if (!checker || !mangled_name) {
         return NULL;

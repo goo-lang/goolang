@@ -1026,7 +1026,7 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
 // prefixed — callers needing the prefixed LLVM symbol derive it separately
 // (see codegen_pkg_mangled_symbol, codegen.h) with
 // type_receiver_owner_package.
-Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
+Variable* type_checker_lookup_method(TypeChecker* checker, const Type* recv_type,
                                       const char* method_name, const char* mangled_name);
 
 // Function generics Task 3: active-type-param stack (see TypeChecker's
