@@ -248,6 +248,15 @@ length while the block count holds.
   `./scripts/arc_reason_census.sh`, or read any one program with
   `GOO_ARC_DEBUG=1 ./bin/goo -o /dev/null prog.goo`, which prints a verdict
   AND its reason set for each local.
+- **An escaping address-taken local is heap-promoted and never released.**
+  Triggers: an explicit `&x` that `local_escape` marks escaping; a
+  pointer-receiver call whose `param_escape` summary says the receiver or
+  result escapes; a function with a `go` statement or no verdict (a parameter,
+  a function literal). One block for each execution of the declaration.
+  MEASURED 2026-11-24: 0 block delta on `bench/daemon/daemon.goo` (4,003
+  blocks, both builds); a 1,000-iteration escaping-`&x` probe leaves 1,000
+  blocks, where `main` left a dangling stack slot.
+  docs/adr/0005-measurements/2026-11-24-addr-promotion.md.
 - **A multi-assign target gets no store release.** `a, b = x, y` stores
   without freeing what the slots held. A LEAK, never a use-after-free, and
   untested rather than proven absent.
