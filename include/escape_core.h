@@ -347,6 +347,13 @@ struct EscapeCtx {
 
     const EscapeHooks* hooks;
     void* owner;           // the pass's own context; hooks cast this back
+
+    // The enclosing function's NAMED results, or NULL/0 when the pass does not
+    // track them. A bare `return` returns these names' current taint, so a pass
+    // that sets them MUST also seed each name into `env`: an absent name is a
+    // global-store target, and its taint would never reach the return.
+    char* const* result_names;
+    size_t       result_count;
 };
 
 // Mark every slot in `t` as escaping FOR REASON `why`. Bounded by slot_count,

@@ -438,6 +438,26 @@ static TestRow rows[] = {
         "}\n",
         { { "id", 1, { true }, true, true } }, 1
     },
+    {
+        27, "a bare return returns the named results (C3)",
+        // `r = p; return` has no return VALUES, so the engine saw no flow from
+        // p to the result: return_escapes stayed false and the caller's ARC
+        // freed a live argument. `q` is never stored in a result, so it must
+        // stay non-escaping, which proves the named results are not simply
+        // marked wholesale. `keep` reaches its result through a local.
+        "package main\n"
+        "func pick(p *int, q *int) (r *int) {\n"
+        "    r = p\n"
+        "    return\n"
+        "}\n"
+        "func keep(p *int) (r *int) {\n"
+        "    x := p\n"
+        "    r = x\n"
+        "    return\n"
+        "}\n",
+        { { "pick", 2, { true, false }, true, true },
+          { "keep", 1, { true }, true, true } }, 2
+    },
 };
 
 
