@@ -1556,6 +1556,40 @@ static void codegen_emit_divzero_check(CodeGenerator* codegen, LLVMValueRef divi
     codegen_set_insert_point(codegen, cont_bb);
 }
 
+// H3: signed MinInt / -1 and MinInt % -1 trap on x86 (SIGFPE) and are poison in
+// LLVM IR. Go defines them: x / -1 wraps to 0 - x, and x % -1 is 0. Branch on
+// divisor == -1 and join the two results with a phi, for every signed width.
+static LLVMValueRef codegen_emit_signed_divrem(CodeGenerator* codegen, LLVMValueRef left,
+                                               LLVMValueRef right, bool is_div) {
+    LLVMTypeRef ty = LLVMTypeOf(right);
+    LLVMValueRef neg1 = LLVMConstAllOnes(ty);
+    LLVMValueRef is_neg1 = LLVMBuildICmp(codegen->builder, LLVMIntEQ, right, neg1, "divneg1");
+    LLVMBasicBlockRef neg_bb = codegen_create_block(codegen, "divneg1.wrap");
+    LLVMBasicBlockRef norm_bb = codegen_create_block(codegen, "divneg1.norm");
+    LLVMBasicBlockRef join_bb = codegen_create_block(codegen, "divneg1.join");
+    LLVMBuildCondBr(codegen->builder, is_neg1, neg_bb, norm_bb);
+
+    codegen_set_insert_point(codegen, neg_bb);
+    // Plain Sub, no nsw: the wrap is the defined result.
+    LLVMValueRef wrapped = is_div
+        ? LLVMBuildSub(codegen->builder, LLVMConstInt(ty, 0, 0), left, "negwrap")
+        : LLVMConstInt(ty, 0, 0);
+    LLVMBuildBr(codegen->builder, join_bb);
+
+    codegen_set_insert_point(codegen, norm_bb);
+    LLVMValueRef normal = is_div
+        ? LLVMBuildSDiv(codegen->builder, left, right, "sdiv")
+        : LLVMBuildSRem(codegen->builder, left, right, "srem");
+    LLVMBuildBr(codegen->builder, join_bb);
+
+    codegen_set_insert_point(codegen, join_bb);
+    LLVMValueRef phi = LLVMBuildPhi(codegen->builder, ty, is_div ? "sdiv.res" : "srem.res");
+    LLVMValueRef vals[2] = { wrapped, normal };
+    LLVMBasicBlockRef bbs[2] = { neg_bb, norm_bb };
+    LLVMAddIncoming(phi, vals, bbs, 2);
+    return phi;
+}
+
 // T3 (P2.5): widen the narrower of an int/float pair to match the wider —
 // the same widen-narrower-to-wider rule the ordinary binary-expr path below
 // applies to its two operands, but standalone: the nullable-equality path
@@ -2624,7 +2658,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             if (type_is_integer(left_val->goo_type)) {
                 codegen_emit_divzero_check(codegen, right_llvm, expr); // P1-7
                 if (type_is_signed(left_val->goo_type)) {
-                    result = LLVMBuildSDiv(codegen->builder, left_llvm, right_llvm, "sdiv");
+                    result = codegen_emit_signed_divrem(codegen, left_llvm, right_llvm, true);
                 } else {
                     result = LLVMBuildUDiv(codegen->builder, left_llvm, right_llvm, "udiv");
                 }
@@ -2637,7 +2671,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             if (type_is_integer(left_val->goo_type)) {
                 codegen_emit_divzero_check(codegen, right_llvm, expr); // P1-7
                 if (type_is_signed(left_val->goo_type)) {
-                    result = LLVMBuildSRem(codegen->builder, left_llvm, right_llvm, "srem");
+                    result = codegen_emit_signed_divrem(codegen, left_llvm, right_llvm, false);
                 } else {
                     result = LLVMBuildURem(codegen->builder, left_llvm, right_llvm, "urem");
                 }
