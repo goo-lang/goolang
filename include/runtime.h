@@ -386,7 +386,7 @@ double goo_math_max(double x, double y);
 // future work; on a miss `get` returns 0.
 //
 // Map key kind: how goo_map_key_eq compares two int64 key slots. STRING = the
-// slot holds a char*, compared by strcmp; INLINE = the slot holds the key's
+// slot holds a GooStrKey*, compared by length then memcmp; INLINE = the slot holds the key's
 // bits (int/uint/bool/rune/byte/pointer), compared by ==; STRUCT = the slot
 // holds a pointer to a heap copy of the struct, compared via the per-map
 // key_eq comparator. IFACE = the slot holds a pointer to a heap-copied boxed
@@ -394,6 +394,15 @@ double goo_math_max(double x, double y);
 // below (also reached through the per-map key_eq comparator). New kinds
 // (float) append here later.
 typedef int (*GooKeyEqFn)(int64_t a, int64_t b);
+
+// A string map key. The key slot of a STRING map holds a pointer to one of
+// these, never a bare char*: a char* loses the length, so strcmp saw "x\0y"
+// and "x\0z" as one key, and a substring s[0:5] as equal to its parent s.
+// Layout matches goo_string_t, so codegen stores the string aggregate in
+// directly. Lookups pass a stack GooStrKey. Inserts copy header and bytes into
+// one heap block that the entry owns; goo_map_iter_next_sv hands that stored
+// block back. Compared by `len`, then memcmp.
+typedef struct GooStrKey { const char* ptr; int64_t len; } GooStrKey;
 enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1, GOO_MAPKEY_STRUCT = 2, GOO_MAPKEY_IFACE = 3 };
 
 // Interface-typed map keys (Task 2): compare two boxed interface key slots.
