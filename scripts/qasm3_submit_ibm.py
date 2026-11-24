@@ -26,7 +26,7 @@ if not qasm_paths:
         "python3 scripts/qasm3_submit_ibm.py <file1.qasm> [file2.qasm ...]"
     )
 
-shots = int(os.environ.get("QPU_SHOTS", "100"))
+shots = int(os.environ.get("QPU_SHOTS", "1024"))
 max_exec_s = int(os.environ.get("IBM_MAX_EXEC_SECONDS", "10"))
 live_qpu = os.environ.get("IBM_LIVE_QPU", "0") == "1"
 mode = os.environ.get("IBM_MODE", "live" if live_qpu else "aer").lower()
