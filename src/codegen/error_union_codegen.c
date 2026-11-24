@@ -199,6 +199,8 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
         LLVMTypeRef enclosing_union = codegen_type_to_llvm(codegen, cur->goo_type);
         LLVMValueRef rewrapped =
             codegen_create_error_union_error(codegen, enclosing_union, err_val);
+        // `try` returns early from inside any enclosing map range.
+        codegen_emit_map_iter_ends(codegen, 0, NULL);
         LLVMBuildRet(codegen->builder, rewrapped);
     } else {
         codegen_error(codegen, expr->pos,

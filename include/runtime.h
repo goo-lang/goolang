@@ -452,6 +452,9 @@ typedef struct GooMapSV {
     struct GooMapEntrySV* head;
     int32_t key_kind;
     GooKeyEqFn key_eq;   // per-map struct-key comparator; NULL for string/inline maps
+    // Range loops currently walking this map. While > 0, delete and clear mark
+    // entries dead and free nothing (goo_map_iter_end_sv frees them).
+    int32_t active_iters;
 } GooMapSV;
 GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq);
 void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v);
@@ -484,10 +487,8 @@ int64_t goo_map_len_sv(GooMapSV* m);
 // DETERMINISTIC. Documented deviation: Go deliberately randomizes map
 // iteration order; Goo does not (recorded in the decl-surface-breadth
 // spec). Entries deleted mid-iteration: unlinking a not-yet-visited entry
-// skips it (Go-consistent); deleting the CURRENT entry frees the node the
-// cursor points through — callers of the codegen'd loop cannot do that
-// today (no delete inside range bodies in generated code paths), recorded
-// as a limitation, not defended.
+// skips it (Go-consistent). Deleting ANY entry mid-iteration only marks it
+// dead (see goo_map_iter_end_sv), so the cursor never points at freed memory.
 //
 // GooMapEntrySV stays opaque here (only forward-declared above, as before):
 // `cursor` is typed `struct GooMapEntrySV**`, which is a legal, fully-typed
@@ -508,6 +509,9 @@ int goo_map_iter_next_sv(struct GooMapEntrySV** cursor, int64_t* key_out, int64_
 // keeps GooMapSV's field layout out of generated IR entirely (no
 // GEP-to-head at the range-loop site).
 struct GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m);
+// Ends the iterator that goo_map_iter_init_sv started; the last one frees the
+// entries that delete/clear marked dead meanwhile. Accepts a NULL map.
+void goo_map_iter_end_sv(GooMapSV* m);
 // Deletes the entry for key k, if present. Backs delete(m, k). Does not
 // free k: the map never owns key storage (see goo_map_set_sv above).
 void goo_map_delete_sv(GooMapSV* m, int64_t k);
