@@ -39,6 +39,7 @@ struct BlockEscapeResult;
 struct ReleasePlan;
 // C1: local_escape.h owns the full definition; a pointer-sized member only.
 struct LocalEscapeResult;
+struct ParamEscapeResult;
 
 // Allocation routing (arena-regions groundwork): every heap-allocation call
 // site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
@@ -295,6 +296,9 @@ struct CodeGenerator {
     // which leaks and never dangles. Tail-appended, as above.
     struct LocalEscapeResult* local_escape;
     ASTNode* local_escape_program;
+    // C1: the callee summaries local_escape was computed from, kept for the
+    // pointer-receiver rule: does a method keep or return its receiver?
+    struct ParamEscapeResult* param_escape;
 };
 
 // Function information for code generation

@@ -137,6 +137,7 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->release_plan = NULL;
     codegen->local_escape = NULL;
     codegen->local_escape_program = NULL;
+    codegen->param_escape = NULL;
 
     // Error reporting
     codegen->current_file = NULL;
@@ -269,6 +270,9 @@ void codegen_free(CodeGenerator* codegen) {
     if (codegen->local_escape) {
         local_escape_result_free(codegen->local_escape);
     }
+    if (codegen->param_escape) {
+        param_escape_result_free(codegen->param_escape);
+    }
 #else
     free(codegen->error_message);
     free(codegen->current_file);
@@ -376,7 +380,9 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     }
     codegen->local_escape = local_escape_analyze(program, pe); // does NOT retain pe
     codegen->local_escape_program = program;
-    param_escape_result_free(pe);
+    // Kept, not freed: the pointer-receiver rule reads it during emission.
+    if (codegen->param_escape) param_escape_result_free(codegen->param_escape);
+    codegen->param_escape = pe;
 
     // T4: the release plan, from the SAME `program`, for the same reason the two
     // analyses above run here -- a verdict is looked up by (function name, local

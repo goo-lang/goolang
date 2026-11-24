@@ -2,6 +2,8 @@
 #include "comptime.h"
 #include "value_scope.h"
 #include "local_escape.h"
+#include "param_escape.h"
+#include "embedding.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -38,6 +40,10 @@
 #define ESCAPE_MAX_NAMES 256
 typedef struct {
     const char* names[ESCAPE_MAX_NAMES];  // roots of `&x`, borrowed from the AST
+    // The root goes to the heap whatever local_escape says. Set for the
+    // receiver of a pointer-receiver method call when param_escape gives
+    // evidence (or no answer) that the method keeps or returns the receiver.
+    bool forced[ESCAPE_MAX_NAMES];
     size_t count;
     // Every name counts as a root: the walk met a node kind it does not know,
     // or `names` overflowed. Either way a root may be missing.
@@ -47,6 +53,9 @@ typedef struct {
     // none (a function literal, which local_escape does not analyse as a unit).
     // NULL makes every root escape.
     const FuncDeclNode* decl;
+    // The receiver rule needs the static type of a receiver expression.
+    CodeGenerator* codegen;
+    TypeChecker* checker;
 } EscapePrepass;
 static EscapePrepass g_escape;
 
@@ -66,16 +75,96 @@ static const char* escape_root_local(ASTNode* lv) {
     return NULL;
 }
 
-static void escape_add(const char* name) {
+static void escape_add(const char* name, bool forced) {
     if (!name) return;
-    for (size_t i = 0; i < g_escape.count; i++)
-        if (strcmp(g_escape.names[i], name) == 0) return;  // dedup
+    for (size_t i = 0; i < g_escape.count; i++) {
+        if (strcmp(g_escape.names[i], name) != 0) continue;
+        g_escape.forced[i] = g_escape.forced[i] || forced;  // dedup
+        return;
+    }
     if (g_escape.count >= ESCAPE_MAX_NAMES) {
         // Dropping a root would leave it on the stack: fail closed instead.
         g_escape.all_roots = true;
         return;
     }
+    g_escape.forced[g_escape.count] = forced;
     g_escape.names[g_escape.count++] = name;
+}
+
+// Does the method `sel`, called on a receiver of type `recv`, keep or return
+// its receiver? param_escape answers for a method of the program being
+// emitted: parameter 0 is the receiver, and return_escapes covers `return t`.
+// Its summaries are keyed by bare method name, so this unions every method
+// with that name. A method of another package has no summary here, and a miss
+// answers true.
+static bool escape_method_keeps_receiver(Type* recv, const char* sel) {
+    const CodeGenerator* cg = g_escape.codegen;
+    const ParamEscapeResult* pe = cg ? cg->param_escape : NULL;
+    const ASTNode* prog = cg ? cg->local_escape_program : NULL;
+    if (!pe || !prog || prog->type != AST_PROGRAM) return true;
+    const char* pkg = ((const ProgramNode*)prog)->package_name;
+    const Package* owner = type_receiver_owner_package(recv);
+    // A NULL owner means the type is declared in main.
+    const char* owner_pkg = owner ? owner->name : "main";
+    if (!pkg || !owner_pkg || strcmp(pkg, owner_pkg) != 0) return true;
+    bool found = false;
+    for (size_t i = 0; i < pe->count; i++) {
+        const ParamEscapeSummary* ps = &pe->summaries[i];
+        if (!ps->function_name || strcmp(ps->function_name, sel) != 0) continue;
+        if (ps->param_count == 0 || ps->escapes[0] || ps->return_escapes) return true;
+        found = true;
+    }
+    return !found;
+}
+
+// `x.m()` or `x.m` where m has a pointer receiver and `x` is an addressable
+// VALUE: Go takes `&x` with no `&` in the source, so the explicit-`&` walk
+// cannot see it. C1: `t.reg()` with `func (t *T) reg() { G = t }` dangled.
+//
+// A method VALUE (`f := t.reg`, not called here) is recorded as a plain root,
+// exactly like `&t`: local_escape gives `t.reg` the taint of `t`, so the
+// verdict follows wherever `f` goes. A CALL is decided by param_escape, not
+// by local_escape: local_escape marks every receiver CALLEE_VALUE without
+// evidence, and promoting on that would leak almost every local with a
+// method call.
+static void escape_note_receiver(SelectorExprNode* sel, bool called) {
+    const char* root = escape_root_local(sel->expr);
+    if (!root || !g_escape.checker) return;
+    Type* recv = sel->expr->node_type;
+    if (recv && g_escape.codegen)
+        recv = (Type*)codegen_resolve_type(g_escape.codegen, recv);
+    if (!recv) {
+        // A package-qualified call (`fmt.Println`) has no local root type.
+        // Anything else without a type is unknown, so fail closed.
+        escape_add(root, called);
+        return;
+    }
+    if (recv->kind == TYPE_POINTER || recv->kind == TYPE_INTERFACE ||
+        recv->kind == TYPE_PACKAGE) return;
+    if (recv->kind == TYPE_PARAM) {
+        escape_add(root, called);
+        return;
+    }
+    const char* tn = type_receiver_name(recv);
+    if (!tn) return;  // no method set: a field read or a builtin type
+    char* mangled = type_method_mangled_name(tn, sel->selector);
+    Variable* mv = mangled
+        ? type_checker_lookup_method(g_escape.checker, recv, sel->selector, mangled)
+        : NULL;
+    free(mangled);
+    if (mv && mv->type && mv->type->kind == TYPE_FUNCTION) {
+        if (mv->type->data.function.param_count == 0) return;
+        Type* rp = mv->type->data.function.param_types[0];
+        if (!rp || rp->kind != TYPE_POINTER) return;  // a value receiver copies
+        if (!called) { escape_add(root, false); return; }
+        if (escape_method_keeps_receiver(recv, sel->selector)) escape_add(root, true);
+        return;
+    }
+    // Not a direct method. A method promoted through an embedded field may
+    // take the address of that field, and no summary describes it.
+    if (recv->kind != TYPE_STRUCT) return;
+    EmbedResult er = embedding_resolve(g_escape.checker, recv, sel->selector);
+    if (er.kind == EMBED_METHOD && !er.via_interface) escape_add(root, called);
 }
 
 // Recursively visit a node and its `next`-chained siblings, recording any `&`
@@ -91,7 +180,7 @@ static void escape_walk(ASTNode* n) {
             case AST_UNARY_EXPR: {
                 UnaryExprNode* u = (UnaryExprNode*)n;
                 if (u->operator == TOKEN_BIT_AND)
-                    escape_add(escape_root_local(u->operand));
+                    escape_add(escape_root_local(u->operand), false);
                 escape_walk(u->operand);
                 break;
             }
@@ -122,12 +211,16 @@ static void escape_walk(ASTNode* n) {
                 break;
             }
             case AST_POSTFIX_EXPR: escape_walk(((PostfixExprNode*)n)->operand); break;
-            // (AST_PAREN_EXPR is a repurposed map-literal slot, not a wrapper —
-            // a map-literal value position holding `&x` is rare; left to the
-            // default no-op, which only ever under-promotes, never wrongly.)
             case AST_CALL_EXPR: {
                 CallExprNode* c = (CallExprNode*)n;
-                escape_walk(c->function); escape_walk(c->args);
+                if (c->function && c->function->type == AST_SELECTOR_EXPR) {
+                    SelectorExprNode* sel = (SelectorExprNode*)c->function;
+                    escape_note_receiver(sel, true);
+                    escape_walk(sel->expr);
+                } else {
+                    escape_walk(c->function);
+                }
+                escape_walk(c->args);
                 break;
             }
             case AST_INDEX_EXPR: {
@@ -135,7 +228,12 @@ static void escape_walk(ASTNode* n) {
                 escape_walk(ix->expr); escape_walk(ix->index);
                 break;
             }
-            case AST_SELECTOR_EXPR: escape_walk(((SelectorExprNode*)n)->expr); break;
+            case AST_SELECTOR_EXPR: {
+                SelectorExprNode* sel = (SelectorExprNode*)n;
+                escape_note_receiver(sel, false);
+                escape_walk(sel->expr);
+                break;
+            }
             case AST_SWITCH_STMT: {
                 SwitchStmtNode* s = (SwitchStmtNode*)n;
                 escape_walk(s->tag); escape_walk(s->cases);
@@ -182,7 +280,7 @@ static void escape_walk(ASTNode* n) {
             // against a future AST_ADDR_OF path reaching here.
             case AST_ADDR_OF: {
                 AddrOfNode* a = (AddrOfNode*)n;
-                escape_add(escape_root_local(a->operand));
+                escape_add(escape_root_local(a->operand), false);
                 escape_walk(a->operand);
                 break;
             }
@@ -266,11 +364,14 @@ static void escape_walk(ASTNode* n) {
     }
 }
 
-static void escape_prepass_compute(ASTNode* body, const FuncDeclNode* decl) {
+static void escape_prepass_compute(CodeGenerator* codegen, TypeChecker* checker,
+                                   ASTNode* body, const FuncDeclNode* decl) {
     g_escape.count = 0;
     g_escape.all_roots = false;
     g_escape.has_go = false;
     g_escape.decl = decl;
+    g_escape.codegen = codegen;
+    g_escape.checker = checker;
     escape_walk(body);
 }
 
@@ -340,9 +441,15 @@ static bool escape_local_may_escape(const CodeGenerator* codegen, const FuncDecl
 }
 
 // Should the local `name` of the function now being emitted live on the heap?
+static bool escape_is_forced(const char* name) {
+    for (size_t i = 0; i < g_escape.count; i++)
+        if (g_escape.forced[i] && strcmp(g_escape.names[i], name) == 0) return true;
+    return false;
+}
+
 static bool escape_is_promoted(const CodeGenerator* codegen, const char* name) {
     if (!name || !escape_is_root(name)) return false;
-    if (g_escape.has_go) return true;
+    if (g_escape.has_go || escape_is_forced(name)) return true;
     const FuncDeclNode* fd = g_escape.decl;
     if (!fd || escape_is_signature_name(fd, name)) return true;
     return escape_local_may_escape(codegen, fd, name);
@@ -977,7 +1084,7 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     // heap — scoped fresh per the doc comment above (restored below, not left
     // applied to the enclosing function's remaining codegen). No declaration:
     // local_escape has no unit for a literal, so every root is promoted.
-    escape_prepass_compute(lit->body, NULL);
+    escape_prepass_compute(codegen, checker, lit->body, NULL);
 
     // Mirror the type-checker scope for re-invocations of type_check_* from
     // inside body codegen (same pattern as codegen_generate_function_decl).
@@ -1592,7 +1699,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     codegen_setup_defer_stack_mode(codegen, func_info, func_decl->body);
 
     // M8b/C1: compute which locals' addresses may outlive this frame.
-    escape_prepass_compute(func_decl->body, func_decl);
+    escape_prepass_compute(codegen, checker, func_decl->body, func_decl);
 
     // Mirror the type-checker scope so re-invocations of type_check_*
     // from inside codegen (e.g. type_check_binary_expr at
