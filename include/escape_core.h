@@ -354,6 +354,14 @@ struct EscapeCtx {
     // global-store target, and its taint would never reach the return.
     char* const* result_names;
     size_t       result_count;
+
+    // The enclosing FUNCTION, or NULL when the pass does not know it. Read
+    // only to tell a callee that is a PARAMETER or a NAMED RESULT from the
+    // top-level function of the same name. param_escape seeds both into `env`
+    // already, but local_escape's env holds only body locals, so without this
+    // `func pick(id func(string) string)` took the top-level id's summary for
+    // `id(x)`. NULL keeps the env-only test, which is the old behaviour.
+    const FuncDeclNode* func;
 };
 
 // Mark every slot in `t` as escaping FOR REASON `why`. Bounded by slot_count,

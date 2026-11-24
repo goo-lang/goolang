@@ -67,6 +67,7 @@
 
 typedef struct {
     ASTNode*  body;         // FuncDeclNode's ->body (borrowed)
+    const FuncDeclNode* decl; // the function itself (borrowed), for EscapeCtx.func
     char*     fn_name;      // owned
     char**    local_names;  // owned array of owned strings
     size_t    local_count;
@@ -95,7 +96,7 @@ static void unit_list_free(UnitList* list) {
 
 // Appends an empty unit for `body` and returns its index, or
 // BLOCK_ESCAPE_NO_UNIT on allocation failure.
-static size_t unit_list_push(UnitList* list, ASTNode* body, const char* fn_name) {
+static size_t unit_list_push(UnitList* list, const FuncDeclNode* decl, const char* fn_name) {
     if (list->count >= list->cap) {
         size_t new_cap = list->cap ? list->cap * 2 : 8;
         Unit* grown = realloc(list->items, new_cap * sizeof(Unit));
@@ -104,7 +105,8 @@ static size_t unit_list_push(UnitList* list, ASTNode* body, const char* fn_name)
         list->cap = new_cap;
     }
     Unit* u = &list->items[list->count];
-    u->body = body;
+    u->body = decl->body;
+    u->decl = decl;
     u->fn_name = fn_name ? xstrdup(fn_name) : NULL;
     if (fn_name && !u->fn_name) return BLOCK_ESCAPE_NO_UNIT;
     u->local_names = NULL;
@@ -302,6 +304,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReas
             .reasons = NULL,
             .hooks = &LOCAL_HOOKS,
             .owner = &own,
+            .func = u->decl,
         };
         bool ignored = false;
         escape_walk_stmt(&ctx, u->body, &ignored);
@@ -320,6 +323,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReas
         .reasons = reasons,
         .hooks = &LOCAL_HOOKS,
         .owner = &own,
+        .func = u->decl,
     };
 
     // Defensive backstop, not the termination argument (see param_escape.c's
@@ -357,7 +361,7 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
             if (d->type != AST_FUNC_DECL) continue;
             FuncDeclNode* fd = (FuncDeclNode*)d;
             if (!fd->name || !fd->body) continue;
-            if (unit_list_push(&units, fd->body, fd->name) == BLOCK_ESCAPE_NO_UNIT) {
+            if (unit_list_push(&units, fd, fd->name) == BLOCK_ESCAPE_NO_UNIT) {
                 unit_list_free(&units);
                 return NULL;
             }
@@ -389,7 +393,8 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
             LocalOwner own = { .summaries = summaries, .local_names = NULL,
                                .local_count = 0, .unit = u };
             EscapeCtx ctx = { .env = &env, .slot_count = 0, .reasons = NULL,
-                              .hooks = &LOCAL_HOOKS, .owner = &own };
+                              .hooks = &LOCAL_HOOKS, .owner = &own,
+                              .func = u->decl };
             bool ignored = false;
             escape_walk_stmt(&ctx, u->body, &ignored);
             escape_env_free(&env);

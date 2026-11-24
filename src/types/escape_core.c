@@ -392,6 +392,37 @@ static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_t
 }
 
 
+static bool var_decl_list_has(const ASTNode* list, const char* name) {
+    for (const ASTNode* p = list; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) {
+            continue;
+        }
+        const VarDeclNode* vd = (const VarDeclNode*)p;
+        for (size_t i = 0; vd->names && i < vd->name_count; i++) {
+            if (vd->names[i] && strcmp(vd->names[i], name) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Is `name` a parameter (the receiver included) or a named result of `func`?
+// A NULL func answers false, which keeps the env-only test: every pass that
+// cannot name its function behaves exactly as before.
+static bool func_binds_name(const FuncDeclNode* func, const char* name) {
+    if (!func) {
+        return false;
+    }
+    if (var_decl_list_has(func->params, name)) {
+        return true;
+    }
+    if (func->return_type && func->return_type->type == AST_STRUCT_TYPE) {
+        return var_decl_list_has(((const StructTypeNode*)func->return_type)->fields, name);
+    }
+    return false;
+}
+
 // True when the callee is `base.Sel` and `base` is a LOCAL, not a package.
 //
 // goo_callee_is_non_retaining answers by package name and selector, so a local
@@ -466,8 +497,12 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     // beside a top-level `func id(s string) int` read `x` as not escaping, and
     // ARC freed the string the caller printed (valgrind: 3 invalid reads).
     // Membership in ctx->env is the engine's definition of "a local of this
-    // unit", the same test selector_base_is_local uses.
-    bool callee_is_local = callee_name && escape_env_find(ctx->env, callee_name);
+    // unit", the same test selector_base_is_local uses. A PARAMETER or a NAMED
+    // RESULT is a local too, and local_escape's env does not hold them, so
+    // the enclosing function's own bindings are asked as well.
+    bool callee_is_local = callee_name
+                           && (escape_env_find(ctx->env, callee_name)
+                               || func_binds_name(ctx->func, callee_name));
     const bool* callee_escapes = NULL;
     size_t callee_count = 0;
     bool callee_return_escapes = false;

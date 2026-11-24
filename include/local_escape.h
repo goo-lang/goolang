@@ -149,8 +149,11 @@ const LocalEscapeSummary* local_escape_find_summary(const LocalEscapeResult* res
 // holder or an unknown source answers TRUE. A consumer frees on `false`, so a
 // miss must read as "it may hold it".
 //
-// A SOUND OVER-APPROXIMATION, for the same reasons the reason set is one: the
-// flow is flow-insensitive, and two locals of one name share one row.
+// A SOUND OVER-APPROXIMATION OF THE FLOW, for the same reasons the reason set
+// is one: the flow is flow-insensitive, and two locals of one name share one
+// row. A CONSUMER THAT ALSO KEYS ON NAMES must not assume the same of its own
+// per-name facts: release_decision once kept a name's FIRST declaration depth,
+// which under-states the lifetime of a later, shallower local of that name.
 bool local_escape_may_hold(const LocalEscapeSummary* summary,
                            const char* holder, const char* source);
 

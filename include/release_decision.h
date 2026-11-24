@@ -131,11 +131,21 @@
 // FAIL CLOSED: an unknown function, an unknown holder or an unknown source
 // reads as "may hold" (local_escape_may_hold).
 //
+// TWO LOCALS OF ONE NAME ARE ONE RECORD, and that is NOT automatically safe.
+// For the TAINT it is: the two share one row, so each may hold what either
+// holds, which over-approximates. For the DEPTH it is not: a record that kept
+// only its first declaration's depth UNDER-states how long a later, shallower
+// declaration lives, and a holder declared first inside an earlier loop let a
+// view be released under it (tests/arc_uaf/loop_view_shadowed_holder.goo). So
+// the rule folds every declaration: a holder is compared by its SHALLOWEST
+// declaration, a source by its DEEPEST, and the record itself is a candidate
+// holder. A loop-header declaration lives across every iteration of its own
+// depth, so it counts as longer-lived at that depth too.
+//
 // THE PRECISION IT GIVES UP, named so the next reader does not rediscover it:
-// the taint is flow-insensitive and collapses two locals of one name, so a
-// holder that took the value on one path only, or a different local that
-// shares a name, still refuses. Both are over-approximations, which is the
-// safe direction.
+// the taint is flow-insensitive, so a holder that took the value on one path
+// only still refuses, and a name reused at two depths refuses wherever the
+// shallower local may hold the deeper one's value.
 //
 // =============================================================================
 // CONDITION 2 -- the binding-site table

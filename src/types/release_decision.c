@@ -32,6 +32,7 @@
 #include "shim_signatures.h"
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 // ---------------------------------------------------------------------------
 // Per-function collection
@@ -63,7 +64,7 @@ typedef struct {
     // CONDITION 6. A local declared at a SHALLOWER depth may hold this local's
     // value, so the value outlives one iteration of this local's declaring
     // loop. Set by mark_block_escapes after the walk, from local_escape's
-    // taint. Only consulted when block_depth > 0 -- at function scope the
+    // taint. Only consulted when max_decl_depth > 0 -- at function scope the
     // release is at function exit, and another function-scope local holding
     // the value changes nothing about when that exit happens.
     bool      block_escapes;
@@ -83,6 +84,27 @@ typedef struct {
     // exactly the "safe by accident" shape the measurement that motivated
     // condition 6 recorded as finding 2.
     bool      loop_header;
+
+    // THE DEPTHS OF EVERY DECLARATION OF THIS NAME, folded. One record holds
+    // every local of one name, and block_depth and loop_header above describe
+    // the FIRST declaration only. Condition 6 cannot tell which declaration is
+    // in scope at a given store, so it takes the answer that refuses more:
+    //
+    //   min_decl_depth    the SHALLOWEST declaration, which lives longest.
+    //                     Used for the HOLDER role.
+    //   max_decl_depth    the DEEPEST declaration, which dies first. Used for
+    //                     the SOURCE role, and it decides whether condition 6
+    //                     is asked at all.
+    //   min_header_depth  the shallowest LOOP-HEADER declaration, or INT_MAX.
+    //                     A header lives across every iteration of the depth
+    //                     it is recorded at.
+    //
+    // Measured: a holder declared first inside an earlier loop and again at
+    // function scope kept the depth of the first, so the view it held was
+    // released under it (tests/arc_uaf/loop_view_shadowed_holder.goo).
+    int       min_decl_depth;
+    int       max_decl_depth;
+    int       min_header_depth;
 
     // EVERY value ever bound to this name, in source order, borrowed AST nodes.
     //
@@ -207,6 +229,9 @@ static LocalRecord* intern_record(Collected* c, const char* name) {
     r->declared = false;
     r->block_escapes = false;
     r->loop_header = false;
+    r->min_decl_depth = INT_MAX;
+    r->max_decl_depth = 0;
+    r->min_header_depth = INT_MAX;
     r->values = NULL;
     r->value_count = 0;
     r->value_cap = 0;
@@ -358,6 +383,15 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
         // appended ones do. `[]string{}` records nothing, which is the usual
         // opening move and leaves the appends to decide.
         note_literal_elems(ctx, r->name, value);
+    }
+    // EVERY declaration, not only the first. See LocalRecord.min_decl_depth.
+    // A header declaration anywhere makes the name a header: the release
+    // placement that frees a body local at iteration end is wrong for it.
+    if (ctx->block_depth < r->min_decl_depth) r->min_decl_depth = ctx->block_depth;
+    if (ctx->block_depth > r->max_decl_depth) r->max_decl_depth = ctx->block_depth;
+    if (ctx->in_loop_header) {
+        r->loop_header = true;
+        if (ctx->block_depth < r->min_header_depth) r->min_header_depth = ctx->block_depth;
     }
     if (!record_value(r, value)) { ctx->out->unreadable = true; return; }
     r->binding_count++;
@@ -840,6 +874,11 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
 // taint follows the value through `y`, through `parts[i]`, through a field and
 // through any chain of locals, so condition 6 asks it instead of the names.
 //
+// A NAME DECLARED MORE THAN ONCE is one record, and this function cannot tell
+// which declaration is in scope at a store. So a holder is compared by its
+// SHALLOWEST declaration and a source by its DEEPEST, which is the pairing
+// that refuses more. See LocalRecord.min_decl_depth.
+//
 // A LOOP-HEADER HOLDER OUTLIVES THE ITERATION AT THE SAME DEPTH. The `p` of
 // `for p := ""; p != s; n++` is recorded at the loop's own depth, the depth of
 // the body's locals, but it lives across every iteration and the next
@@ -857,15 +896,18 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
 static void mark_block_escapes(Collected* c, const LocalEscapeSummary* les) {
     for (size_t i = 0; i < c->count; i++) {
         LocalRecord* r = &c->items[i];
-        if (!r->declared || r->block_depth == 0) {
+        if (!r->declared || r->max_decl_depth == 0) {
             continue;
         }
+        // The record itself is a candidate holder too. Two locals of one name
+        // share one record and one taint row, so the shallower one may hold
+        // the deeper one's value; the depth test below answers false for a
+        // name declared at one depth only.
         for (size_t j = 0; j < c->count && !r->block_escapes; j++) {
             const LocalRecord* holder = &c->items[j];
-            bool outlives = j != i && holder->declared
-                            && (holder->block_depth < r->block_depth
-                                || (holder->loop_header
-                                    && holder->block_depth == r->block_depth));
+            bool outlives = holder->declared
+                            && (holder->min_decl_depth < r->max_decl_depth
+                                || holder->min_header_depth <= r->max_decl_depth);
             if (outlives && local_escape_may_hold(les, holder->name, r->name)) {
                 r->block_escapes = true;
             }
@@ -1394,8 +1436,10 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     //                 docs/adr/0002-measurements/loop_carried_store_findings.md,
     //                 where this shape and a plain dead local were shown to be
     //                 INDISTINGUISHABLE under the old condition 4.
-    GOO_TESTCASE(r->block_depth > 0);
-    if (r->block_depth > 0) {
+    // max_decl_depth, not block_depth: a name declared first at function
+    // scope and again inside a loop has an iteration-scoped declaration too.
+    GOO_TESTCASE(r->max_decl_depth > 0);
+    if (r->max_decl_depth > 0) {
         GOO_TESTCASE(r->loop_header);
         if (r->loop_header) return RELEASE_NO_LOOP_SCOPE;
         GOO_TESTCASE(r->block_escapes);

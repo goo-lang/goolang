@@ -909,6 +909,23 @@ static TestRow rows[] = {
                  .expected_reasons = ESCAPE_REASON_CALL_OPAQUE | ESCAPE_REASON_RETURN,
                  .check_reasons = true } }, 1
     },
+    {
+        // The same hole through a PARAMETER. local_escape's environment holds
+        // no parameters, so membership there cannot see that `id` is the
+        // parameter and not the top-level function.
+        52, "a call through a PARAMETER named like a top-level function -> opaque",
+        "package main\n"
+        "func id(s *int) int {\n"
+        "    return 0\n"
+        "}\n"
+        "func f(id func(*int) *int) *int {\n"
+        "    x := new(int)\n"
+        "    return id(x)\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CALL_OPAQUE | ESCAPE_REASON_RETURN,
+                 .check_reasons = true } }, 1
+    },
 };
 
 

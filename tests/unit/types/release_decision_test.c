@@ -1178,6 +1178,29 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
     },
+    {
+        // A HOLDER NAME DECLARED TWICE. The first `keep` lives in an earlier
+        // loop, the second at function scope. One record holds both, so the
+        // depth of the FIRST declaration made `keep` look as short-lived as
+        // `s`, and `s` was released while the second `keep` held it. The
+        // holder role must use the SHALLOWEST declaration of the name.
+        79, "a holder whose name was first declared inside a loop -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        keep := makeOwned()\n"
+        "        _ = keep\n"
+        "    }\n"
+        "    keep := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        keep = s\n"
+        "    }\n"
+        "    _ = keep\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
 };
 
 // =============================================================================
