@@ -311,8 +311,30 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
 
 // Expression type checking implementation
 
+// M3: every nested expression form (call, binary, selector, index, slice,
+// type assertion, ...) reaches its operand through type_check_expression, so
+// one counter here bounds the recursion of all of them. The parser builds long
+// chains iteratively, which is why the checker is where an unbounded depth
+// would otherwise first overflow the C stack.
+#define GOO_MAX_EXPR_DEPTH 2000
+static thread_local int g_expr_check_depth = 0;
+
+static Type* type_check_expression_inner(TypeChecker* checker, ASTNode* expr);
+
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr) return NULL;
+    if (g_expr_check_depth >= GOO_MAX_EXPR_DEPTH) {
+        type_error(checker, expr->pos, "expression nesting exceeds %d levels",
+                   GOO_MAX_EXPR_DEPTH);
+        return type_checker_error_type(checker);
+    }
+    g_expr_check_depth++;
+    Type* result = type_check_expression_inner(checker, expr);
+    g_expr_check_depth--;
+    return result;
+}
+
+static Type* type_check_expression_inner(TypeChecker* checker, ASTNode* expr) {
     
     switch (expr->type) {
         case AST_IDENTIFIER:
