@@ -33,9 +33,14 @@ trap cleanup EXIT
 # Work files go in directory $3. Prints the reason and returns 1 on failure.
 check_binary() {
     local bin="$1" expected="$2" work="$3"
-    valgrind --error-exitcode=$VG_EXIT -q "$bin" \
+    # timeout: a hung fixture must not hang make verify-core.
+    timeout 60 valgrind --error-exitcode=$VG_EXIT -q "$bin" \
         > "$work/stdout" 2> "$work/vg.err"
     local rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "  FAIL (timeout)"
+        return 1
+    fi
     if [ "$rc" -eq "$VG_EXIT" ]; then
         echo "  FAIL (valgrind reported errors)"; head -20 "$work/vg.err"
         return 1
@@ -123,7 +128,10 @@ for src in "${fixtures[@]}"; do
         echo "  $name: FAIL (no $expected)"; fail=1; continue
     fi
     mkdir "$SCRATCH/$name"
-    "$COMPILER" -o "$SCRATCH/$name/prog" "$src" > "$SCRATCH/$name/cerr" 2>&1
+    # env -u: the ARC kill switch in the caller's environment would turn
+    # release off, and the gate would then test nothing.
+    env -u GOO_ARC_RELEASE -u GOO_ARC_DEBUG \
+        "$COMPILER" -o "$SCRATCH/$name/prog" "$src" > "$SCRATCH/$name/cerr" 2>&1
     rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "  $name: FAIL (compile exit $rc)"; cat "$SCRATCH/$name/cerr"
