@@ -69,6 +69,8 @@ typedef struct CompilerOptions {
     bool emit_llvm_ir;
     bool emit_qir;
     bool emit_qasm3;
+    bool emit_mlir;
+    bool emit_sv;
     bool check_fpga;
     bool emit_ast;
     bool emit_tokens;
@@ -284,6 +286,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         {"emit-llvm", no_argument, 0, 0},
         {"emit-qir", no_argument, 0, 0},
         {"emit-qasm3", no_argument, 0, 0},
+        {"emit-mlir", no_argument, 0, 0},
+        {"emit-sv", no_argument, 0, 0},
         {"check-fpga", no_argument, 0, 0},
         {"emit-ast", no_argument, 0, 0},
         {"emit-tokens", no_argument, 0, 0},
@@ -310,6 +314,10 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                     options->emit_qir = true;
                 } else if (strcmp(long_options[option_index].name, "emit-qasm3") == 0) {
                     options->emit_qasm3 = true;
+                } else if (strcmp(long_options[option_index].name, "emit-mlir") == 0) {
+                    options->emit_mlir = true;
+                } else if (strcmp(long_options[option_index].name, "emit-sv") == 0) {
+                    options->emit_sv = true;
                 } else if (strcmp(long_options[option_index].name, "check-fpga") == 0) {
                     options->check_fpga = true;
                 } else if (strcmp(long_options[option_index].name, "emit-ast") == 0) {
@@ -556,6 +564,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             case GOO_MODE_LEGACY:
                 options->output_file = get_output_filename(options->input_file, NULL,
                                                            options->emit_qasm3 ? ".qasm"
+                                                           : options->emit_mlir ? ".mlir"
+                                                           : options->emit_sv ? ".sv"
                                                            : (options->emit_llvm_ir ? ".ll" : ".out"));
                 break;
         }
@@ -1658,6 +1668,26 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         }
         if (options->verbose) {
             printf("OpenQASM 3.0 written to: %s\n", options->output_file);
+        }
+    } else if (options->emit_mlir) {
+        if (!codegen_emit_mlir(codegen, type_checker, asts[0], options->output_file)) {
+            codegen_free(codegen);
+            type_checker_free(type_checker);
+            ENTRY_CLEANUP();
+            return false;
+        }
+        if (options->verbose) {
+            printf("CIRCT MLIR written to: %s\n", options->output_file);
+        }
+    } else if (options->emit_sv) {
+        if (!codegen_emit_sv(codegen, type_checker, asts[0], options->output_file)) {
+            codegen_free(codegen);
+            type_checker_free(type_checker);
+            ENTRY_CLEANUP();
+            return false;
+        }
+        if (options->verbose) {
+            printf("SystemVerilog written to: %s\n", options->output_file);
         }
     } else if (options->emit_llvm_ir) {
         if (!codegen_emit_llvm_ir(codegen, options->output_file)) {

@@ -178,6 +178,7 @@ script far-halo-probe
 script far-jacobi-probe
 script far-stencil-r2-probe
 script findings-probe
+script fpga-equiv-probe
 script goo-assert-probe
 script goo-check-probe
 script goo-test-probe

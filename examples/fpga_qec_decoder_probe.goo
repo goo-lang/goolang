@@ -1,0 +1,74 @@
+// Phase 8 M2 — 3-Mold Hardware Decoder Probe (CPU LLVM -O2 + CIRCT MLIR + SystemVerilog RTL)
+// Compiles the exact same Goo `fpga_*` functions to:
+//   1. Native x86_64/ARM64 LLVM -O2 machine code (`./bin/goo -O2`),
+//   2. CIRCT `hw.module` + `comb` dialect MLIR (`./bin/goo --emit-mlir`), and
+//   3. IEEE 1800-2012 synthesizable SystemVerilog (`./bin/goo --emit-sv`).
+package main
+
+import "fmt"
+
+// Real-time 2-bit Heron r2 stabilizer syndrome decoder:
+//   (s0, s1) = (0, 0) -> 0 (no fault)
+//   (s0, s1) = (1, 0) -> 1 (X fault on data qubit 0)
+//   (s0, s1) = (1, 1) -> 2 (X fault on data qubit 1)
+//   (s0, s1) = (0, 1) -> 4 (X fault on data qubit 2)
+func fpga_decode_bitflip(s0 int, s1 int) int {
+	mask := 0
+	if s0 == 1 && s1 == 0 {
+		mask = 1
+	}
+	if s0 == 1 && s1 == 1 {
+		mask = 2
+	}
+	if s0 == 0 && s1 == 1 {
+		mask = 4
+	}
+	return mask
+}
+
+// ARQ Canary Trap Threshold & Coincidence Detector:
+// Returns 2*coincident + any_triggered across interleaved |+> canary traps.
+func fpga_canary_alarm(trap0 int, trap1 int) int {
+	counts := [2]int{trap0, trap1}
+	triggered := 0
+	i := 0
+	for i < 2 {
+		if counts[i] > 0 {
+			triggered = triggered + 1
+		}
+		i = i + 1
+	}
+	coincident := 0
+	if trap0 > 0 && trap1 > 0 {
+		coincident = 1
+	}
+	return coincident*10 + triggered
+}
+
+// 4-Tap FIR Syndrome Accumulator over fixed-size register `[4]int`:
+func fpga_syndrome_accum(history [4]int, latest int) int {
+	acc := latest
+	i := 0
+	for i < 4 {
+		acc = acc + history[i]
+		i = i + 1
+	}
+	return acc
+}
+
+func main() {
+	// Exhaustive 2-bit syndrome table (4 states)
+	for s0 := 0; s0 < 2; s0 = s0 + 1 {
+		for s1 := 0; s1 < 2; s1 = s1 + 1 {
+			fmt.Println("decode", s0, s1, fpga_decode_bitflip(s0, s1))
+		}
+	}
+	// Exhaustive 2-trap binary alarm table (4 states)
+	for t0 := 0; t0 < 2; t0 = t0 + 1 {
+		for t1 := 0; t1 < 2; t1 = t1 + 1 {
+			fmt.Println("canary", t0, t1, fpga_canary_alarm(t0, t1))
+		}
+	}
+	hist := [4]int{1, 2, 3, 4}
+	fmt.Println("accum", fpga_syndrome_accum(hist, 5))
+}

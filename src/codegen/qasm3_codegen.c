@@ -618,3 +618,477 @@ int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
     free(ctx.buf);
     return 1;
 }
+
+// ===========================================================================
+// Phase 8 M2 — CIRCT MLIR (`--emit-mlir`) & SystemVerilog (`--emit-sv`)
+// ===========================================================================
+// Lowers `fpga_*` hardware functions (verified by `fpga_check_program` to use
+// zero heap allocations, fixed-width value types, and statically bounded `for`
+// loops) into:
+//   1. CIRCT `hw.module` + `comb` dialect MLIR (`--emit-mlir`), and
+//   2. Synthesizable IEEE 1800-2012 SystemVerilog RTL (`--emit-sv`).
+
+#define FPGA_MAX_VARS 128
+
+typedef struct {
+    int     is_const;
+    int     is_bool;
+    int64_t const_val;
+    char    mlir_ssa[64];
+    char    sv_expr[128];
+} FpgaVal;
+
+typedef struct {
+    char    name[64];
+    FpgaVal val;
+} FpgaVar;
+
+typedef struct {
+    TypeChecker* checker;
+    FpgaVar      vars[FPGA_MAX_VARS];
+    size_t       var_count;
+    int          ssa_id;
+    int          emit_sv_mode; // 0 = CIRCT MLIR, 1 = SystemVerilog
+    char*        buf;
+    size_t       len;
+    size_t       cap;
+    FpgaVal      ret_val;
+    int          has_ret;
+} FpgaCtx;
+
+static void fpga_emit(FpgaCtx* ctx, const char* fmt, ...) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(fmt != NULL);
+    va_list ap;
+    va_start(ap, fmt);
+    int needed = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (needed <= 0) return;
+    if (ctx->len + (size_t)needed + 2 > ctx->cap) {
+        size_t ncap = ctx->cap ? ctx->cap * 2 : 4096;
+        while (ncap < ctx->len + (size_t)needed + 2) ncap *= 2;
+        ctx->buf = xrealloc(ctx->buf, ncap);
+        ctx->cap = ncap;
+    }
+    va_start(ap, fmt);
+    vsnprintf(ctx->buf + ctx->len, ctx->cap - ctx->len, fmt, ap);
+    va_end(ap);
+    ctx->len += (size_t)needed;
+}
+
+static FpgaVar* fpga_find_var(FpgaCtx* ctx, const char* name) {
+    GOO_ASSERT(ctx != NULL);
+    if (!name) return NULL;
+    for (size_t i = ctx->var_count; i > 0; i--) {
+        if (strcmp(ctx->vars[i - 1].name, name) == 0) {
+            return &ctx->vars[i - 1];
+        }
+    }
+    return NULL;
+}
+
+static void fpga_set_var(FpgaCtx* ctx, const char* name, FpgaVal val) {
+    GOO_ASSERT(ctx != NULL);
+    if (!name) return;
+    FpgaVar* existing = fpga_find_var(ctx, name);
+    if (existing) {
+        existing->val = val;
+        return;
+    }
+    if (ctx->var_count >= FPGA_MAX_VARS) return;
+    FpgaVar* v = &ctx->vars[ctx->var_count++];
+    memset(v, 0, sizeof(*v));
+    snprintf(v->name, sizeof(v->name), "%s", name);
+    v->val = val;
+}
+
+static FpgaVal fpga_make_const(FpgaCtx* ctx, int64_t val, int is_bool) {
+    FpgaVal out;
+    memset(&out, 0, sizeof(out));
+    out.is_const = 1;
+    out.is_bool = is_bool;
+    out.const_val = val;
+    int id = ctx->ssa_id++;
+    if (!ctx->emit_sv_mode) {
+        fpga_emit(ctx, "    %%c%d = hw.constant %lld : %s\n",
+                  id, (long long)val, is_bool ? "i1" : "i64");
+    }
+    snprintf(out.mlir_ssa, sizeof(out.mlir_ssa), "%%c%d", id);
+    if (is_bool) {
+        snprintf(out.sv_expr, sizeof(out.sv_expr), "1'b%d", val ? 1 : 0);
+    } else {
+        snprintf(out.sv_expr, sizeof(out.sv_expr), "64'sd%lld", (long long)val);
+    }
+    return out;
+}
+
+static FpgaVal fpga_eval_expr(FpgaCtx* ctx, ASTNode* expr) {
+    GOO_ASSERT(ctx != NULL);
+    if (!expr) return fpga_make_const(ctx, 0, 0);
+
+    switch (expr->type) {
+        case AST_LITERAL: {
+            LiteralNode* lit = (LiteralNode*)expr;
+            int64_t v = (lit->literal_type == TOKEN_INT && lit->value)
+                ? strtoll(lit->value, NULL, 10) : 0;
+            return fpga_make_const(ctx, v, 0);
+        }
+        case AST_IDENTIFIER: {
+            const char* nm = ((IdentifierNode*)expr)->name;
+            FpgaVar* v = fpga_find_var(ctx, nm);
+            if (v) return v->val;
+            return fpga_make_const(ctx, 0, 0);
+        }
+        case AST_INDEX_EXPR: {
+            IndexExprNode* idx = (IndexExprNode*)expr;
+            FpgaVal iv = fpga_eval_expr(ctx, idx->index);
+            if (idx->expr && idx->expr->type == AST_IDENTIFIER && iv.is_const) {
+                char key[64];
+                snprintf(key, sizeof(key), "%s[%lld]",
+                         ((IdentifierNode*)idx->expr)->name, (long long)iv.const_val);
+                FpgaVar* v = fpga_find_var(ctx, key);
+                if (v) return v->val;
+            }
+            return fpga_make_const(ctx, 0, 0);
+        }
+        case AST_UNARY_EXPR: {
+            UnaryExprNode* u = (UnaryExprNode*)expr;
+            FpgaVal op = fpga_eval_expr(ctx, u->operand);
+            if (u->operator == TOKEN_MINUS) {
+                if (op.is_const) return fpga_make_const(ctx, -op.const_val, 0);
+                FpgaVal z = fpga_make_const(ctx, 0, 0);
+                int id = ctx->ssa_id++;
+                FpgaVal out = {0};
+                snprintf(out.mlir_ssa, sizeof(out.mlir_ssa), "%%%d", id);
+                snprintf(out.sv_expr, sizeof(out.sv_expr), "w_%d", id);
+                if (!ctx->emit_sv_mode) {
+                    fpga_emit(ctx, "    %%%d = comb.sub %s, %s : i64\n",
+                              id, z.mlir_ssa, op.mlir_ssa);
+                } else {
+                    fpga_emit(ctx, "  logic signed [63:0] w_%d;\n  assign w_%d = -(%s);\n",
+                              id, id, op.sv_expr);
+                }
+                return out;
+            }
+            return op;
+        }
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            FpgaVal l = fpga_eval_expr(ctx, b->left);
+            FpgaVal r = fpga_eval_expr(ctx, b->right);
+            if (l.is_const && r.is_const) {
+                switch (b->operator) {
+                    case TOKEN_PLUS:     return fpga_make_const(ctx, l.const_val + r.const_val, 0);
+                    case TOKEN_MINUS:    return fpga_make_const(ctx, l.const_val - r.const_val, 0);
+                    case TOKEN_MULTIPLY: return fpga_make_const(ctx, l.const_val * r.const_val, 0);
+                    case TOKEN_LT:       return fpga_make_const(ctx, l.const_val < r.const_val, 1);
+                    case TOKEN_LE:       return fpga_make_const(ctx, l.const_val <= r.const_val, 1);
+                    case TOKEN_GT:       return fpga_make_const(ctx, l.const_val > r.const_val, 1);
+                    case TOKEN_GE:       return fpga_make_const(ctx, l.const_val >= r.const_val, 1);
+                    case TOKEN_EQ:       return fpga_make_const(ctx, l.const_val == r.const_val, 1);
+                    case TOKEN_NE:       return fpga_make_const(ctx, l.const_val != r.const_val, 1);
+                    case TOKEN_AND:      return fpga_make_const(ctx, l.const_val && r.const_val, 1);
+                    case TOKEN_OR:       return fpga_make_const(ctx, l.const_val || r.const_val, 1);
+                    default:             break;
+                }
+            }
+            int id = ctx->ssa_id++;
+            FpgaVal out;
+            memset(&out, 0, sizeof(out));
+            snprintf(out.mlir_ssa, sizeof(out.mlir_ssa), "%%%d", id);
+            snprintf(out.sv_expr, sizeof(out.sv_expr), "w_%d", id);
+
+            const char* mlir_op = NULL;
+            const char* mlir_pred = NULL;
+            const char* sv_op = "+";
+            int is_cmp = 0;
+            int is_logic_i1 = 0;
+
+            switch (b->operator) {
+                case TOKEN_PLUS:     mlir_op = "comb.add"; sv_op = "+"; break;
+                case TOKEN_MINUS:    mlir_op = "comb.sub"; sv_op = "-"; break;
+                case TOKEN_MULTIPLY: mlir_op = "comb.mul"; sv_op = "*"; break;
+                case TOKEN_BIT_AND:  mlir_op = "comb.and"; sv_op = "&"; break;
+                case TOKEN_BIT_OR:   mlir_op = "comb.or";  sv_op = "|"; break;
+                case TOKEN_BIT_XOR:  mlir_op = "comb.xor"; sv_op = "^"; break;
+                case TOKEN_AND:      mlir_op = "comb.and"; sv_op = "&&"; is_logic_i1 = 1; break;
+                case TOKEN_OR:       mlir_op = "comb.or";  sv_op = "||"; is_logic_i1 = 1; break;
+                case TOKEN_EQ:       mlir_pred = "eq";  sv_op = "=="; is_cmp = 1; break;
+                case TOKEN_NE:       mlir_pred = "ne";  sv_op = "!="; is_cmp = 1; break;
+                case TOKEN_LT:       mlir_pred = "slt"; sv_op = "<";  is_cmp = 1; break;
+                case TOKEN_LE:       mlir_pred = "sle"; sv_op = "<="; is_cmp = 1; break;
+                case TOKEN_GT:       mlir_pred = "sgt"; sv_op = ">";  is_cmp = 1; break;
+                case TOKEN_GE:       mlir_pred = "sge"; sv_op = ">="; is_cmp = 1; break;
+                default:             mlir_op = "comb.add"; sv_op = "+"; break;
+            }
+
+            if (is_cmp) {
+                out.is_bool = 1;
+                if (!ctx->emit_sv_mode) {
+                    fpga_emit(ctx, "    %%%d = comb.icmp bin %s %s, %s : i64\n",
+                              id, mlir_pred, l.mlir_ssa, r.mlir_ssa);
+                } else {
+                    fpga_emit(ctx, "  logic w_%d;\n  assign w_%d = (%s %s %s);\n",
+                              id, id, l.sv_expr, sv_op, r.sv_expr);
+                }
+            } else if (is_logic_i1) {
+                out.is_bool = 1;
+                if (!ctx->emit_sv_mode) {
+                    fpga_emit(ctx, "    %%%d = %s %s, %s : i1\n",
+                              id, mlir_op, l.mlir_ssa, r.mlir_ssa);
+                } else {
+                    fpga_emit(ctx, "  logic w_%d;\n  assign w_%d = (%s %s %s);\n",
+                              id, id, l.sv_expr, sv_op, r.sv_expr);
+                }
+            } else {
+                out.is_bool = 0;
+                if (!ctx->emit_sv_mode) {
+                    fpga_emit(ctx, "    %%%d = %s %s, %s : i64\n",
+                              id, mlir_op, l.mlir_ssa, r.mlir_ssa);
+                } else {
+                    fpga_emit(ctx, "  logic signed [63:0] w_%d;\n  assign w_%d = (%s %s %s);\n",
+                              id, id, l.sv_expr, sv_op, r.sv_expr);
+                }
+            }
+            return out;
+        }
+        default:
+            return fpga_make_const(ctx, 0, 0);
+    }
+}
+
+static void fpga_exec_stmt(FpgaCtx* ctx, ASTNode* stmt) {
+    GOO_ASSERT(ctx != NULL);
+    if (!stmt) return;
+
+    switch (stmt->type) {
+        case AST_BLOCK_STMT: {
+            BlockStmtNode* b = (BlockStmtNode*)stmt;
+            for (ASTNode* s = b->statements; s; s = s->next) {
+                fpga_exec_stmt(ctx, s);
+            }
+            return;
+        }
+        case AST_VAR_DECL: {
+            VarDeclNode* vd = (VarDeclNode*)stmt;
+            const char* nm = (vd->name_count > 0 && vd->names) ? vd->names[0] : NULL;
+            if (!nm) return;
+            if (vd->values && vd->values->type == AST_ARRAY_LITERAL) {
+                ArrayLitNode* al = (ArrayLitNode*)vd->values;
+                size_t k = 0;
+                for (ASTNode* e = al->elements; e; e = e->next, k++) {
+                    char key[64];
+                    snprintf(key, sizeof(key), "%s[%zu]", nm, k);
+                    fpga_set_var(ctx, key, fpga_eval_expr(ctx, e));
+                }
+                return;
+            }
+            FpgaVal v = vd->values ? fpga_eval_expr(ctx, vd->values) : fpga_make_const(ctx, 0, 0);
+            fpga_set_var(ctx, nm, v);
+            return;
+        }
+        case AST_EXPR_STMT: {
+            ExprStmtNode* es = (ExprStmtNode*)stmt;
+            if (es->expr && es->expr->type == AST_BINARY_EXPR) {
+                BinaryExprNode* bin = (BinaryExprNode*)es->expr;
+                if (bin->operator == TOKEN_ASSIGN &&
+                    bin->left && bin->left->type == AST_IDENTIFIER) {
+                    const char* lhs = ((IdentifierNode*)bin->left)->name;
+                    FpgaVal rhs = fpga_eval_expr(ctx, bin->right);
+                    fpga_set_var(ctx, lhs, rhs);
+                }
+            }
+            return;
+        }
+        case AST_IF_STMT: {
+            IfStmtNode* ifs = (IfStmtNode*)stmt;
+            FpgaVal cond = fpga_eval_expr(ctx, ifs->condition);
+            if (cond.is_const) {
+                if (cond.const_val) {
+                    fpga_exec_stmt(ctx, ifs->then_stmt);
+                } else if (ifs->else_stmt) {
+                    fpga_exec_stmt(ctx, ifs->else_stmt);
+                }
+                return;
+            }
+            // Hardware multiplexer (`comb.mux` in CIRCT MLIR, `?:` in SystemVerilog):
+            FpgaVar pre_vars[FPGA_MAX_VARS];
+            size_t pre_count = ctx->var_count;
+            memcpy(pre_vars, ctx->vars, sizeof(pre_vars));
+
+            fpga_exec_stmt(ctx, ifs->then_stmt);
+            FpgaVar then_vars[FPGA_MAX_VARS];
+            memcpy(then_vars, ctx->vars, sizeof(then_vars));
+
+            memcpy(ctx->vars, pre_vars, sizeof(pre_vars));
+            ctx->var_count = pre_count;
+            if (ifs->else_stmt) {
+                fpga_exec_stmt(ctx, ifs->else_stmt);
+            }
+            FpgaVar else_vars[FPGA_MAX_VARS];
+            memcpy(else_vars, ctx->vars, sizeof(else_vars));
+
+            for (size_t i = 0; i < pre_count; i++) {
+                if (strcmp(then_vars[i].val.mlir_ssa, else_vars[i].val.mlir_ssa) != 0 ||
+                    strcmp(then_vars[i].val.sv_expr, else_vars[i].val.sv_expr) != 0) {
+                    int id = ctx->ssa_id++;
+                    FpgaVal mux_v;
+                    memset(&mux_v, 0, sizeof(mux_v));
+                    snprintf(mux_v.mlir_ssa, sizeof(mux_v.mlir_ssa), "%%%d", id);
+                    snprintf(mux_v.sv_expr, sizeof(mux_v.sv_expr), "w_%d", id);
+                    if (!ctx->emit_sv_mode) {
+                        fpga_emit(ctx, "    %%%d = comb.mux %s, %s, %s : i64\n",
+                                  id, cond.mlir_ssa, then_vars[i].val.mlir_ssa, else_vars[i].val.mlir_ssa);
+                    } else {
+                        fpga_emit(ctx, "  logic signed [63:0] w_%d;\n  assign w_%d = %s ? %s : %s;\n",
+                                  id, id, cond.sv_expr, then_vars[i].val.sv_expr, else_vars[i].val.sv_expr);
+                    }
+                    ctx->vars[i].val = mux_v;
+                }
+            }
+            return;
+        }
+        case AST_FOR_STMT: {
+            ForStmtNode* f = (ForStmtNode*)stmt;
+            fpga_exec_stmt(ctx, f->init);
+            int guard = 0;
+            while (guard < 64) {
+                FpgaVal cval = fpga_eval_expr(ctx, f->condition);
+                if (!cval.is_const || !cval.const_val) break;
+                fpga_exec_stmt(ctx, f->body);
+                fpga_exec_stmt(ctx, f->post);
+                guard++;
+            }
+            return;
+        }
+        case AST_RETURN_STMT: {
+            ReturnStmtNode* r = (ReturnStmtNode*)stmt;
+            if (r->values) {
+                ctx->ret_val = fpga_eval_expr(ctx, r->values);
+                ctx->has_ret = 1;
+            }
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+static int fpga_emit_program(CodeGenerator* codegen, TypeChecker* checker,
+                             ASTNode* program, const char* filename, int emit_sv_mode) {
+    GOO_ASSERT(codegen != NULL);
+    GOO_ASSERT(checker != NULL);
+    GOO_ASSERT(program != NULL);
+    GOO_ASSERT(filename != NULL);
+    if (!codegen || !checker || !program || program->type != AST_PROGRAM || !filename) return 0;
+
+    FILE* out = fopen(filename, "w");
+    if (!out) return 0;
+
+    if (!emit_sv_mode) {
+        fprintf(out, "// Generated by Goo Compiler (--emit-mlir: CIRCT hw/comb dialect)\n");
+        fprintf(out, "module {\n");
+    } else {
+        fprintf(out, "// Generated by Goo Compiler (--emit-sv: IEEE 1800-2012 SystemVerilog)\n");
+        fprintf(out, "`default_nettype none\n\n");
+    }
+
+    ProgramNode* prog = (ProgramNode*)program;
+    for (ASTNode* d = prog->decls; d; d = d->next) {
+        if (d->type != AST_FUNC_DECL) continue;
+        FuncDeclNode* fd = (FuncDeclNode*)d;
+        if (!fd->name || strncmp(fd->name, "fpga_", 5) != 0) continue;
+
+        FpgaCtx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.checker = checker;
+        ctx.emit_sv_mode = emit_sv_mode;
+
+        if (!emit_sv_mode) {
+            fprintf(out, "  hw.module @%s(", fd->name);
+        } else {
+            fprintf(out, "module %s(\n", fd->name);
+        }
+
+        int first_port = 1;
+        for (ASTNode* p = fd->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pvd = (VarDeclNode*)p;
+            Type* pt = pvd->type ? type_from_ast(checker, pvd->type) : pvd->base.node_type;
+            for (size_t i = 0; i < pvd->name_count; i++) {
+                const char* pname = pvd->names ? pvd->names[i] : NULL;
+                if (!pname) continue;
+                if (pt && pt->kind == TYPE_ARRAY) {
+                    size_t alen = (size_t)pt->data.array.length;
+                    for (size_t k = 0; k < alen; k++) {
+                        if (!first_port) fprintf(out, emit_sv_mode ? ",\n" : ", ");
+                        first_port = 0;
+                        if (!emit_sv_mode) {
+                            fprintf(out, "in %%%s_%zu : i64", pname, k);
+                        } else {
+                            fprintf(out, "  input  logic signed [63:0] %s_%zu", pname, k);
+                        }
+                        char key[64];
+                        snprintf(key, sizeof(key), "%s[%zu]", pname, k);
+                        FpgaVal pv = {0};
+                        snprintf(pv.mlir_ssa, sizeof(pv.mlir_ssa), "%%%s_%zu", pname, k);
+                        snprintf(pv.sv_expr, sizeof(pv.sv_expr), "%s_%zu", pname, k);
+                        fpga_set_var(&ctx, key, pv);
+                    }
+                } else {
+                    if (!first_port) fprintf(out, emit_sv_mode ? ",\n" : ", ");
+                    first_port = 0;
+                    if (!emit_sv_mode) {
+                        fprintf(out, "in %%%s : i64", pname);
+                    } else {
+                        fprintf(out, "  input  logic signed [63:0] %s", pname);
+                    }
+                    FpgaVal pv = {0};
+                    snprintf(pv.mlir_ssa, sizeof(pv.mlir_ssa), "%%%s", pname);
+                    snprintf(pv.sv_expr, sizeof(pv.sv_expr), "%s", pname);
+                    fpga_set_var(&ctx, pname, pv);
+                }
+            }
+        }
+
+        if (!emit_sv_mode) {
+            fprintf(out, ", out out_0 : i64) {\n");
+        } else {
+            if (!first_port) fprintf(out, ",\n");
+            fprintf(out, "  output logic signed [63:0] out_0\n);\n");
+        }
+
+        fpga_exec_stmt(&ctx, fd->body);
+        if (!ctx.has_ret) {
+            ctx.ret_val = fpga_make_const(&ctx, 0, 0);
+        }
+
+        if (ctx.buf && ctx.len > 0) {
+            fwrite(ctx.buf, 1, ctx.len, out);
+        }
+        if (!emit_sv_mode) {
+            fprintf(out, "    hw.output %s : i64\n  }\n", ctx.ret_val.mlir_ssa);
+        } else {
+            fprintf(out, "  assign out_0 = %s;\nendmodule\n\n", ctx.ret_val.sv_expr);
+        }
+        free(ctx.buf);
+    }
+
+    if (!emit_sv_mode) {
+        fprintf(out, "}\n");
+    } else {
+        fprintf(out, "`default_nettype wire\n");
+    }
+    fclose(out);
+    return 1;
+}
+
+int codegen_emit_mlir(CodeGenerator* codegen, TypeChecker* checker,
+                      ASTNode* program, const char* filename) {
+    return fpga_emit_program(codegen, checker, program, filename, 0);
+}
+
+int codegen_emit_sv(CodeGenerator* codegen, TypeChecker* checker,
+                    ASTNode* program, const char* filename) {
+    return fpga_emit_program(codegen, checker, program, filename, 1);
+}

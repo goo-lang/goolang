@@ -3263,6 +3263,8 @@ VERIFY_ALL_DEPS := \
     frontend-diff-selftest \
     diagnostics-drift-selftest \
     diagnostics-drift-probe \
+    fpga-equiv-selftest \
+    fpga-equiv-probe \
     assert-corpus-selftest \
     golden-selftest \
     goo-check-probe \
@@ -6745,6 +6747,13 @@ qir-runner-probe: $(COMPILER)
 	./bin/goo --emit-qir examples/qir_bitflip_qec_probe.goo -o /tmp/goo_qec.ll
 	qir-runner -f /tmp/goo_qec.ll -e main -s 100
 .PHONY: qir-runner-probe
+
+.PHONY: fpga-equiv-probe fpga-equiv-selftest
+fpga-equiv-probe: $(COMPILER)
+	@bash scripts/fpga_equiv_probe.sh
+
+fpga-equiv-selftest: $(COMPILER)
+	@bash scripts/fpga_equiv_probe.sh --self-test
 
 # Task 14 of the 2026-09-02 verification tooling plan: keeps
 # build/compile_commands.json a DERIVATION of GOO_OBJS, never a file that

@@ -238,11 +238,13 @@ func correctBitFlip(d0 qir.Qubit, d1 qir.Qubit, d2 qir.Qubit, a0 qir.Qubit, a1 q
 | `qir_arq_canary_probe.goo` | **IBM Heron r2 `ibm_fez` (Live QPU, `18 cz`, 0 SWAPs)** | OpenQASM 3.0 | 1024 (4 regimes) | **0.53%** per-qubit tax; **27.15%** $R_z(\pi/4)$ drift; **99.41%** `CZ` attack (`0.00%` clean coincident FA) | `dc2o7nts2omc738cabp0` |
 | `qir_iqpe_probe.goo` | **IBM Heron r2 `ibm_fez` (Live QPU, 2Q, `3 cz`, `3 if_else`)** | OpenQASM 3.0 | 1024 | **84.67%** exact 3-bit $\phi=3/8$ (`97.95%` LSB, `93.26%` mid, `89.06%` MSB) | `dc2o7nts2omc738cabp0` |
 | `qir_dynamic_ghz_probe.goo` | **IBM Heron r2 `ibm_fez` (Live QPU, 6Q, `12 cz`, `1 if_else`)** | OpenQASM 3.0 | 1024 | **88.16%** per-qubit (**86.33%** 4Q stitched GHZ) | `dc2o7nts2omc738cabp0` |
+| `qir_12q_ghz_crossover_probe.goo` | IBM Heron r2 `FakeMarrakesh` (12Q, `28 cz`, `3 if_else`, snapshot) | OpenQASM 3.0 | 1024 | **98.27%** per-qubit (**87.79%** strict 9Q $Z+X^{\otimes 9}$ GHZ) | `snapshot` |
+| `fpga_qec_decoder_probe.goo` | **3-Mold Equivalence (`-O2` LLVM vs CIRCT MLIR vs SystemVerilog)** | Native / MLIR / `.sv` | Exhaustive | **100.00%** truth-table match (`fpga-equiv-probe`) | `local` |
 | `qir_teleport_probe.goo` | IBM Heron r2 `FakeMarrakesh` (`12 cz`, snapshot) | OpenQASM 3.0 | 1024 | **98.44%** (1008/1024) | `9d6130fa-7313-4196-8901-c90496e4968e` |
 | `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeMarrakesh` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **95.43%** per-round (83.50% all-4) | `9d6130fa-7313-4196-8901-c90496e4968e` |
 | `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeKingston` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **93.82%** per-round (77.44% all-4) | `b541e64c-19b8-4a05-8ed2-f78a82c7168f` |
 | `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeFez` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **91.70%** per-round (72.46% all-4) | `337cdad3-67a2-4872-a5b4-2801b5a25e67` |
-| `qir_bitflip_qec_probe.goo` | Quantinuum `h2-1sc` / `h2-1e` (pre-flight) | QIR 1.0 Adaptive | 50 | **Verified QIR** (`0.00` / `6.37 HQC`) | `pre-flight` |
+| `qir_bitflip_qec_probe.goo` | Quantinuum `h2-1sc` (56Q Trapped-Ion Compiler / Syntax Pass) | QIR 1.0 Adaptive | 50 | **Verified QIR** (`0.000 HQC` syntax pass / `6.37 HQC` `h2-1e`) | `pre-flight` |
 
 ### Quota-Safe QPU Submission Workflows
 
@@ -258,6 +260,11 @@ python3 scripts/qir_submit_azure.py build/qir_qec.ll
 ./bin/goo --emit-qasm3 examples/qir_teleport_probe.goo -o build/qir_teleport.qasm
 ./bin/goo --emit-qasm3 examples/qir_bitflip_qec_probe.goo -o build/qir_qec.qasm
 python3 scripts/qasm3_submit_ibm.py build/qir_teleport.qasm build/qir_qec.qasm
+
+# FPGA Hardware Synthesis (--check-fpga, --emit-mlir CIRCT hw/comb, --emit-sv SystemVerilog)
+./bin/goo --emit-mlir examples/fpga_qec_decoder_probe.goo -o build/fpga_qec.mlir
+./bin/goo --emit-sv   examples/fpga_qec_decoder_probe.goo -o build/fpga_qec.sv
+make fpga-equiv-probe
 ```
 
 ---

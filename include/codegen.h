@@ -1163,6 +1163,10 @@ void* codegen_generate_error_return_stub(CodeGenerator* codegen, void* return_va
 int codegen_emit_llvm_ir(CodeGenerator* codegen, const char* filename);
 int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
                        ASTNode* program, const char* filename);
+int codegen_emit_mlir(CodeGenerator* codegen, TypeChecker* checker,
+                      ASTNode* program, const char* filename);
+int codegen_emit_sv(CodeGenerator* codegen, TypeChecker* checker,
+                    ASTNode* program, const char* filename);
 int codegen_emit_object_file(CodeGenerator* codegen, const char* filename);
 int codegen_emit_executable(CodeGenerator* codegen, const char* filename);
 int codegen_optimize(CodeGenerator* codegen, int level);
