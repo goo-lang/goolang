@@ -34,7 +34,7 @@ static void add_runtime_function(CodeGenerator* codegen, const char* name,
     func->param_count = param_count;
     
     if (param_count > 0) {
-        func->param_types = malloc(sizeof(LLVMTypeRef) * param_count);
+        func->param_types = xmalloc(sizeof(LLVMTypeRef) * param_count);
         memcpy(func->param_types, param_types, sizeof(LLVMTypeRef) * param_count);
     } else {
         func->param_types = NULL;

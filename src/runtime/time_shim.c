@@ -67,7 +67,9 @@ goo_channel_t* goo_time_after(int64_t ns) {
     // Element type is time.Time, which the checker builds as a one-field
     // struct { int64 _nanos } — so 8 bytes, matching what the worker sends.
     goo_channel_t* ch = goo_make_chan(sizeof(int64_t), 1);
-    if (!ch) return NULL;
+    if (!ch) {
+        return NULL;
+    }
 
     goo_after_arg_t* arg = xmalloc(sizeof(goo_after_arg_t));
     arg->ch = ch;

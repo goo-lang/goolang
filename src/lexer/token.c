@@ -218,15 +218,20 @@ static const KeywordEntry keywords[] = {
     // REMOVED 2026-08-17 — 25 keywords that lexer_bridge.c never mapped to a
     // bison token. Each was a SILENT HAZARD in two directions:
     //
-    //   1. The bridge's unmapped arm is `if (bison_token == -1) { /* Skip
-    //      unknown tokens */ return bridge_next_mapped(); }`. So the token
-    //      vanished and the parser never saw it. `gpu_kernel func f() {}`
-    //      compiled as an ordinary function; `wasm_export` alone on a line
-    //      compiled with exit 0. That is the hole P0.4 closed for
-    //      TOKEN_UNKNOWN, reopened by the keyword table.
+    //   1. The bridge's unmapped arm is `if (bison_token == -1) { return
+    //      bridge_next_mapped(); }`, whose body just skips the unknown
+    //      token. So the token vanished and the parser never saw it.
+    //      `gpu_kernel func f() {}` compiled as an ordinary function;
+    //      `wasm_export` alone on a line compiled with exit 0. That is the
+    //      hole P0.4 closed for TOKEN_UNKNOWN, reopened by the keyword table.
     //   2. They were stolen identifiers. `wasm_memory := 3` was a PARSE
     //      ERROR — the user could not name a variable any of these 25 words,
     //      for a feature that does not exist.
+    //
+    // MISRA 3.1 (2026-09-03): item 1 above used to quote the bridge's body
+    // with its own inline comment marking the skip, which put a nested
+    // comment-open-and-close pair inside this line comment. Reworded to
+    // describe the body in prose instead, with no nested comment markers.
     //
     // The words: asm extern msg_from ll_volatile ll_inline no_std
     // par_parallel par_reduce par_barrier par_atomic par_thread_local

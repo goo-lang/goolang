@@ -1,0 +1,150 @@
+name: nightly
+
+# The heavy lane. It runs `make verify-nightly` once a day and uploads the
+# findings SARIF to code scanning under its own category.
+#
+# WHAT IT RUNS. `verify-nightly` is VERIFY_ALL_DEPS minus ONE gate. That is
+# everything in `verify-core` (the PR lane) plus:
+#   - repro-build-probe and podman-image-probe (podman reproducible build)
+# and, inside verify-core already, the sanitizer gates (obj-header-tsan,
+# far-transport-asan) and the analyser lanes (analyzer-lanes-probe,
+# findings-probe). The set lives in the Makefile, so it cannot drift from
+# this file and a person can run it locally.
+#
+# EXCLUDED ON PURPOSE: v2-bootstrap-pilot, the CompCert bootstrap pilot. It
+# needs an opam CompCert switch. CompCert's licence permits non-commercial
+# and research use only, so installing it on a CI runner is a licence
+# decision that belongs to the repository owner. This workflow installs no
+# CompCert, no opam and no CompCert package. `make verify` still runs the
+# pilot on a machine where the owner has set it up.
+#
+# `schedule` runs only on the DEFAULT branch. This file does nothing until it
+# merges. Until then, start it by hand with workflow_dispatch (see the
+# runbook in the task report). 16:00 UTC is 02:00 AEST, outside the working
+# day.
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+# One nightly run at a time. A new run does not cancel a running one, because
+# a half-finished nightly gives no verdict.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  verify-nightly:
+    runs-on: ubuntu-24.04
+    # Job level on purpose, as in tests.yml: only this job uploads SARIF.
+    permissions:
+      contents: read
+      security-events: write
+    # verify-core takes about 3.5 minutes of gates plus two golden suites;
+    # the podman gates add four container builds. 180 minutes leaves a wide
+    # margin, so a timeout never hides a real result. The public limit is 6h.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # repro-build-probe builds from `git archive HEAD`
+
+      - name: Install toolchain
+        # Same packages as tests.yml (see the reasons there). This step does
+        # not install podman. The Tool versions step runs `podman --version`
+        # and fails the job if podman is absent, and the skip guard below
+        # fails the run if a podman gate skipped.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make gcc-14 bison llvm-dev clang libblocksruntime-dev \
+            valgrind cmake \
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev \
+            clang-tidy cppcheck python3-jsonschema
+
+      - name: Tool versions
+        run: |
+          gcc-14 --version | head -1
+          clang --version | head -1
+          bison --version | head -1
+          valgrind --version
+          cmake --version | head -1
+          clang-tidy --version | head -1
+          cppcheck --version
+          podman --version
+          python3 -c "import jsonschema; print('jsonschema', jsonschema.__version__)"
+
+      - name: Build the pinned image
+        # podman-image is NOT in VERIFY_ALL_DEPS, so nothing in verify-nightly
+        # builds the image. podman-image-probe FAILS when the image is absent
+        # ("is not built -- run 'make podman-image'"), and repro-build-probe
+        # only uses it. repro.yml runs this same command first.
+        run: make podman-image
+
+      - name: make verify-nightly
+        run: |
+          export GOMAXPROCS=4
+          LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
+          echo "Using LLVM_CONFIG=${LLVMCFG:-llvm-config}"
+          make CC=gcc-14 LLVM_CONFIG="${LLVMCFG:-llvm-config}" \
+            GOLDEN_JOBS="$(nproc)" verify-nightly 2>&1 | tee verify-nightly.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Prove the skip-prone gates actually ran
+        # A GATE THAT SILENTLY SKIPS IS NOT A GATE. These targets print
+        # SKIPPED and return success when their tool is absent. Require a
+        # positive PASS line from each. The two podman gates are new here
+        # compared with tests.yml: repro.yml guards them the same way.
+        if: always()
+        run: |
+          rc=0
+          if grep -q "valgrind not found" verify-nightly.log; then
+            echo "::error::valgrind is missing — arc-release-probe and arena-valgrind-probe proved nothing"
+            rc=1
+          fi
+          for gate in arc-release-probe arena-valgrind-probe obj-header-tsan \
+                      podman-image-probe repro-build-probe; do
+            if grep -q "^${gate}: PASS" verify-nightly.log; then
+              echo "ok: ${gate} ran and passed"
+            else
+              echo "::error::${gate} did not report PASS — it skipped or never ran (podman-image-probe and repro-build-probe need podman and the image built by 'make podman-image')"
+              rc=1
+            fi
+          done
+          exit $rc
+
+      - name: Upload the gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-nightly-log
+          path: verify-nightly.log
+          retention-days: 14
+
+      - name: Upload the generated findings baseline
+        # A runner whose toolchain signature has no committed baseline fails
+        # findings-probe loudly and writes a candidate here. See tests.yml.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: findings-baseline-candidate-nightly
+          path: |
+            build/findings-baseline.*.tsv
+            build/findings.sarif
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload the findings to code scanning
+        # Same action, same SHA pin and same reasons as tests.yml. A schedule
+        # or dispatch run never comes from a fork, so no fork guard is needed;
+        # hashFiles skips the step when the gate died before it wrote the file.
+        #
+        # Its OWN category. A re-upload with the same category replaces the
+        # earlier analysis, so sharing `goolang-findings` with the PR lane
+        # would let a nightly run overwrite the result of a pull request.
+        if: always() && hashFiles('build/findings.sarif') != ''
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: build/findings.sarif
+          category: goolang-findings-nightly
+          wait-for-processing: true

@@ -1,11 +1,17 @@
+// Guarded: a build with -D_GNU_SOURCE already makes <features.h> define
+// this, and a newer glibc defines a different value (gcc warns on a redefinition).
+#ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700  // For ucontext functions
+#endif
 
 #include "runtime.h"
 #include "platform.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
+#include <stdatomic.h>
 
 #ifdef GOO_PLATFORM_UNIX
     #include <pthread.h>
@@ -145,55 +151,64 @@ void goo_scheduler_wait(void) {
         return;  // No goroutines were ever started.
     }
 
-    goo_mutex_lock(g_scheduler->scheduler_mutex);
-    g_scheduler->deadlock_detector.main_in_wait = 1;  // main's body is done
-    goo_mutex_unlock(g_scheduler->scheduler_mutex);
-
-    // STABILITY-based deadlock detector: we require the "all goroutines asleep"
-    // condition to hold for 3 CONSECUTIVE polls (~1.5ms total) before aborting.
-    // A goroutine that has been pthread_cond_signal'd but hasn't yet returned from
-    // cond_wait to call goo_sched_block_end is still counted as blocked, making
-    // (blocked_goroutines == num_goroutines) transiently true for a live program.
-    // A real wakeup usually resolves in microseconds, but under genuine OS-thread
-    // contention (4 workers, thousands of rapid batches — fanin-stress) a woken
-    // thread can sit unscheduled well past 1.5ms, so the original 3-poll streak
-    // produced rare FALSE deadlock aborts (~1-in-3 across 8000 batches; predicted
-    // by the 2026-07-10 P3 review, observed blocking a pre-push verify). 100
-    // consecutive ~0.5ms polls ≈ 50ms of unbroken all-parked state: still an
-    // instant abort on a human scale for a genuinely deadlocked C test, but far
-    // beyond any plausible scheduler delay. This loop only serves C stress tests
-    // now — generated code stopped emitting goo_scheduler_wait at P3.3 — so the
-    // threshold trades nothing user-visible.
+    // THE DEADLOCK DETECTOR. `blocked_goroutines` is the size of a SET, and a
+    // goroutine leaves that set at the instant its waker decides to wake it
+    // (goo_sched_wake_waiters), never when it is next scheduled. So
+    // (blocked_goroutines == num_goroutines) with an empty ready queue means
+    // every live goroutine is parked and NO waker has released any of them:
+    // nothing in the process can change that state, and it is a real deadlock.
+    //
+    // WHAT THIS REPLACES, and why the old numbers are gone. Until 2026-09-02 a
+    // goroutine counted as blocked from goo_sched_block_begin until it returned
+    // from pthread_cond_wait and ran goo_sched_block_end. That interval is
+    // scheduler latency, which the OS does not bound, so the equality was
+    // transiently true for LIVE programs and the threshold was a bet on how
+    // long a wake takes: 3 polls first, then 100 after 3 proved too few under 4
+    // workers. SPIN proved the bet cannot be won — for every finite threshold
+    // there is a live program the detector aborts — and proved the protocol
+    // above correct at a threshold of ONE. tests/models/README.md carries both
+    // results, the model, and the three rulings this code implements.
+    //
+    // WHY 3 AND NOT 1. The model says a threshold of 1 is enough, and 1 is what
+    // correctness needs. The README recommends a small streak anyway, for a
+    // reason outside the model: a mistake in the new accounting then shows up
+    // as an abort 1.5 ms late instead of a wrong abort, and 1.5 ms is not a
+    // human-visible delay on a program that is already dead. It buys nothing
+    // the count does not already give, and it costs 3 polls.
+    //
+    // THE DECISION AND THE ABORT ARE BOTH UNDER THE MUTEX (ruling 3). The old
+    // loop dropped the mutex between reading the three conjuncts and calling
+    // goo_deadlock_abort, so the state could move in between. goo_deadlock_abort
+    // is one fprintf, one fflush and exit(2); it takes no lock, so it cannot
+    // deadlock against the mutex it holds, and the process is ending anyway.
+    // The `done || stopped` break stays outside: it makes no claim about a
+    // state that must not move.
+    const int GOO_DEADLOCK_POLL_STREAK = 3;
     int asleep_streak = 0;
 
     for (;;) {
-        // Sleep first so any goroutine that was *signaled* just before main_in_wait
-        // was set has time to call goo_sched_block_end (decrement blocked_goroutines)
-        // before we inspect the count.
         goo_platform_sleep_ns(500000);  // 0.5ms
 
         goo_mutex_lock(g_scheduler->scheduler_mutex);
         int done = (g_scheduler->stats.num_goroutines == 0 &&
                     g_scheduler->ready_queue == NULL);
         int stopped = !g_scheduler->running;
-        // All live goroutines asleep and none runnable → candidate for deadlock.
+        // Every live goroutine is parked, none is runnable, and no waker has
+        // released any of them.
         int all_asleep = (g_scheduler->stats.num_goroutines > 0) &&
                          (g_scheduler->deadlock_detector.blocked_goroutines ==
                           (int)g_scheduler->stats.num_goroutines) &&
                          (g_scheduler->ready_queue == NULL);
-        goo_mutex_unlock(g_scheduler->scheduler_mutex);
-
         if (all_asleep) {
             asleep_streak++;
         } else {
             asleep_streak = 0;
         }
-
-        // 100 consecutive snapshots (~50ms) of all-parked state confirms a
-        // deadlock — see the threshold rationale above.
-        if (asleep_streak >= 100) {
-            goo_deadlock_abort();
+        if (asleep_streak >= GOO_DEADLOCK_POLL_STREAK) {
+            goo_deadlock_abort();   // noreturn: exit(2) with the mutex held
         }
+        goo_mutex_unlock(g_scheduler->scheduler_mutex);
+
         if (done || stopped) {
             break;
         }
@@ -235,8 +250,10 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     //
     // The current implementation works on all Unix-like systems and provides
     // the necessary goroutine functionality for the Goo language runtime.
+#ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     if (getcontext(&goroutine->context) == -1) {
         goo_panic("Failed to get goroutine context");
     }
@@ -246,7 +263,9 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     goroutine->context.uc_link = NULL;  // overridden by scheduler_main_loop before each swap
     
     makecontext(&goroutine->context, goroutine_wrapper, 0);
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 #endif
     
     // Add to scheduler
@@ -265,12 +284,16 @@ void goo_yield(void) {
     t_requeue = current;   // scheduler re-enqueues AFTER the swap saves our context
 
 #ifdef GOO_PLATFORM_UNIX
+#ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     if (swapcontext(&current->context, &t_sched_ctx) == -1) {
         goo_panic("Failed to yield goroutine");
     }
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 #endif
 }
 
@@ -278,14 +301,46 @@ goo_goroutine_t* goo_current_goroutine(void) {
     return t_current;
 }
 
+// Remove one goroutine from a condvar's waiter list. Both mutexes are held.
+// Returns 1 if it was on the list, 0 if it was not — the caller asserts on 0,
+// because a registered goroutine is always on the list it registered with.
+static int waiter_list_remove(goo_goroutine_t** head, goo_goroutine_t* g) {
+    // MISRA 14.2 (2026-09-03): a `for` loop's own third clause must be the
+    // only place its control expression's operands change. This traversal
+    // rewrites *p (the list link) inside the body, so it is a `while`, not a
+    // `for` -- MISRA 14.2 does not apply to `while`. Same traversal, same
+    // mutation, unchanged behavior.
+    goo_goroutine_t** p = head;
+    while (*p) {
+        if (*p == g) {
+            *p = g->next_waiter;
+            g->next_waiter = NULL;
+            return 1;
+        }
+        // Every OTHER node on the list is registered: block_begin sets the bit
+        // before it links, and the wake path and block_end clear the bit in the
+        // same scheduler_mutex section that unlinks. block_end clears g's bit
+        // before this call, which is why only the non-g nodes are checked.
+        GOO_ASSERT((*p)->counted_blocked);
+        p = &(*p)->next_waiter;
+    }
+    return 0;
+}
+
 // M9: called by a participant immediately before it blocks on a channel
-// (cond_wait), while holding that channel's mutex. Accounts the block and, for
+// (cond_wait), while holding that channel's mutex. Registers the block and, for
 // the main-thread path, immediately detects deadlocks where no goroutine can
-// ever signal main. Goroutine-path detection is deferred to the poll loop in
-// goo_scheduler_wait to avoid false positives from the transient over-count
-// (a goroutine signaled but not yet through cond_wait still holds its slot in
-// blocked_goroutines — resolves in microseconds, harmlessly absorbed by the
-// 3-poll stability streak in the poll loop).
+// ever signal main.
+//
+// 2026-09-02: this is a SET INSERTION, not an increment. `waiters` is the
+// waiter list of the condition variable this goroutine is about to wait on;
+// goo_sched_wake_waiters walks that same list and removes every member before
+// it broadcasts. The membership bit makes the insertion idempotent, which is
+// what lets goo_sched_block_end be an unconditional caller.
+//
+// `waiters` is NULL only for a wait no wake site can ever reach
+// (goo_chan_nil_block). Such a goroutine registers and never leaves the set,
+// which is the truth about it.
 //
 // KNOWN LIMITATION: if main blocks on a channel mid-body WHILE one or more
 // goroutines are themselves all blocked (num_goroutines > 0), that deadlock is
@@ -293,27 +348,37 @@ goo_goroutine_t* goo_current_goroutine(void) {
 // might be runnable and about to signal). The poll loop would detect it, but
 // main is not in goo_scheduler_wait yet. Go avoids this because main is itself
 // a goroutine; Goo's main is an OS thread, so this gap is structural.
-void goo_sched_block_begin(void) {
+void goo_sched_block_begin(goo_goroutine_t** waiters) {
     if (!g_scheduler) {
         // No scheduler means no goroutines were ever spawned.  If we reach
         // here, main itself is blocking on a channel with nobody to wake it.
         goo_deadlock_abort();
     }
-    int is_goroutine = (goo_current_goroutine() != NULL);
+    goo_goroutine_t* self = goo_current_goroutine();
 
     goo_mutex_lock(g_scheduler->scheduler_mutex);
-    if (is_goroutine) {
-        // Count this goroutine as blocked. Detection is handled by the stability
-        // streak in goo_scheduler_wait — not here — so we simply update the
-        // counter and return. An instant check at this point would race with
-        // goroutines that are signaled but haven't yet decremented the counter.
-        g_scheduler->deadlock_detector.blocked_goroutines++;
+    if (self) {
+        // The wait loop unregisters before it re-registers, on the woken path
+        // (the waker cleared the bit) and on the spurious path alike
+        // (goo_sched_block_end cleared it), so the bit is always clear here.
+        // GOO_NEVER keeps the guard under GOO_ASSERT_OFF: a wrong belief
+        // degrades into a no-op rather than a double count.
+        if (!GOO_NEVER(self->counted_blocked)) {
+            self->counted_blocked = 1;
+            if (waiters) {
+                self->next_waiter = *waiters;
+                *waiters = self;
+            }
+            g_scheduler->deadlock_detector.blocked_goroutines++;
+        }
+        GOO_ASSERT(g_scheduler->deadlock_detector.blocked_goroutines > 0);
         goo_mutex_unlock(g_scheduler->scheduler_mutex);
         return;
     }
 
     // Main-thread path: deadlock iff there is no goroutine that could ever
-    // signal us (none exists and none is runnable).
+    // signal us (none exists and none is runnable). main is never a member of
+    // the set and never joins a waiter list; the broadcast reaches it anyway.
     int deadlock = (g_scheduler->stats.num_goroutines == 0 &&
                     g_scheduler->ready_queue == NULL);
     goo_mutex_unlock(g_scheduler->scheduler_mutex);
@@ -323,14 +388,136 @@ void goo_sched_block_begin(void) {
     }
 }
 
-// M9: called by a goroutine immediately after it wakes from a channel cond_wait.
-void goo_sched_block_end(void) {
-    if (!g_scheduler) return;
-    if (goo_current_goroutine() == NULL) return;  // main is not counted
-    goo_mutex_lock(g_scheduler->scheduler_mutex);
-    if (g_scheduler->deadlock_detector.blocked_goroutines > 0) {
-        g_scheduler->deadlock_detector.blocked_goroutines--;
+// 2026-09-02: called immediately BEFORE the pthread_cond_broadcast that wakes
+// this condition variable, with the channel mutex held. It removes EVERY
+// goroutine on that condvar's waiter list from the blocked set, so the set the
+// waker empties is exactly the set the broadcast wakes.
+//
+// Why every wake is a broadcast. pthread_cond_signal gives the caller no way
+// to learn which waiter the OS woke, so a signal site cannot pair itself with
+// "clear the bit of the one waiter this wakes": clear X's bit, the OS wakes Y,
+// and Y runs while still counted. That is the defect this whole change fixes.
+// The three former signal sites in channels.c are broadcasts now. The cost is
+// a thundering herd on a condvar with many waiters; the alternative is a
+// detector that aborts live programs. See tests/models/README.md, "Ruling 1".
+//
+// Why before, and not after, the broadcast. Between the removal and the
+// broadcast a waiter is parked but out of the set, so the count is LOWER than
+// the truth, never higher, and (blocked_goroutines == num_goroutines) cannot
+// hold: that waiter is itself live and uncounted. The window can only PREVENT
+// an abort. The other order gives back the defect at a smaller scale.
+void goo_sched_wake_waiters(goo_goroutine_t** waiters) {
+    if (!g_scheduler || !waiters) {
+        return;
     }
+
+    goo_mutex_lock(g_scheduler->scheduler_mutex);
+    int n = 0;
+    // MISRA 14.2 (2026-09-03): the third clause is empty and the body
+    // advances `w` itself (it must read next_waiter before clearing it, so
+    // the advance cannot move into a for-clause) -- a `while` says the same
+    // thing without a `for` whose control variable moves outside its own
+    // third clause.
+    goo_goroutine_t* w = *waiters;
+    while (w) {
+        goo_goroutine_t* next = w->next_waiter;
+        // The list holds registered goroutines only. This is the local form of
+        // "the list length equals the count of registered goroutines": the
+        // global form would need a registry of every live channel, which the
+        // runtime does not keep.
+        GOO_ASSERT(w->counted_blocked);
+        w->counted_blocked = 0;
+        w->next_waiter = NULL;
+        n++;
+        w = next;
+    }
+    *waiters = NULL;
+    GOO_ASSERT(g_scheduler->deadlock_detector.blocked_goroutines >= n);
+    g_scheduler->deadlock_detector.blocked_goroutines -= n;
+    GOO_ASSERT(g_scheduler->deadlock_detector.blocked_goroutines >= 0);
+    goo_mutex_unlock(g_scheduler->scheduler_mutex);
+}
+
+// TEST-ONLY hook. GOO_TEST_WAKE_DELAY_NS, when it is set to a positive integer,
+// makes every goroutine sleep that many nanoseconds at the START of
+// goo_sched_block_end — that is, inside the interval between the wake and the
+// unregister. That interval is scheduler latency, so no test can widen it any
+// other way, and it is the exact interval the detector used to mis-read.
+// tests/concurrency/false_deadlock_test.c holds it open past the poll streak
+// and requires the program to survive. Unset (the only state any gate but that
+// probe runs in) the hook is one relaxed atomic load per wake.
+//
+// The cached value is read at most once per thread and never written after the
+// first store, so two threads racing here compute the same number from the same
+// environment; getenv is only ever read, never written, by this runtime.
+static uint64_t goo_test_wake_delay_ns(void) {
+    static _Atomic long cached = -1;   // -1 = not read yet
+    long v = atomic_load_explicit(&cached, memory_order_relaxed);
+    if (v < 0) {
+        const char* s = getenv("GOO_TEST_WAKE_DELAY_NS");
+        long parsed = 0;
+        if (s && *s) {
+            // MISRA 22.8/22.9 (2026-09-03): errno must be zeroed before, and
+            // tested after, an errno-setting Standard Library call. strtol
+            // sets errno on overflow (ERANGE); treat an out-of-range or
+            // unparsable value the same as "unset" -- this is a test-only
+            // delay knob, so there is nothing else a bad value could mean.
+            errno = 0;
+            parsed = strtol(s, NULL, 10);
+            if (errno != 0) {
+                parsed = 0;
+            }
+        }
+        v = (parsed > 0) ? parsed : 0;
+        atomic_store_explicit(&cached, v, memory_order_relaxed);
+    }
+    return (uint64_t)v;
+}
+
+// M9: called by a goroutine immediately after it wakes from a channel
+// cond_wait, with the channel mutex re-acquired by that cond_wait.
+//
+// 2026-09-02: an IDEMPOTENT UNREGISTER, not a decrement. On the woken path the
+// waker already removed this goroutine, so this is a no-op — and the model
+// proves it with a full search: assert(counted[_pid] == 0) holds on every
+// reachable path with no spurious wakeup.
+//
+// It is NOT dead code, and a plain decrement here would drive the count below
+// zero (that is the model's DOUBLE_DEC mutant, which fails at N = 2 in 139
+// states). It is what stops a SPURIOUS return from pthread_cond_wait leaking a
+// set member. POSIX takes a thread off the condvar queue the moment the wait
+// returns, so no later broadcast can reach it; if its predicate has since
+// stopped holding, it leaves the `while` loop and would carry its bit forever,
+// and blocked_goroutines would be one too high for the life of the program.
+// The model cannot show that leak — it has no condvar queue — so the argument
+// is a C-level one; tests/models/README.md, "The leak is a C-level argument",
+// carries it with the line numbers.
+void goo_sched_block_end(goo_goroutine_t** waiters) {
+    uint64_t delay = goo_test_wake_delay_ns();
+    if (delay) {
+        goo_platform_sleep_ns(delay);
+    }
+    if (!g_scheduler) return;
+    goo_goroutine_t* self = goo_current_goroutine();
+    if (!self) {
+        return;                                   // main is not counted
+    }
+
+    goo_mutex_lock(g_scheduler->scheduler_mutex);
+    if (self->counted_blocked) {
+        self->counted_blocked = 0;
+        if (waiters) {
+            int removed = waiter_list_remove(waiters, self);
+            GOO_ASSERT(removed);                  // registered => on its list
+            (void)removed;
+        }
+        GOO_ASSERT(g_scheduler->deadlock_detector.blocked_goroutines > 0);
+        g_scheduler->deadlock_detector.blocked_goroutines--;
+    } else {
+        // The waker removed it, and removal unlinks as well as clearing.
+        GOO_ASSERT(self->next_waiter == NULL);
+    }
+    GOO_ASSERT(g_scheduler->deadlock_detector.blocked_goroutines >= 0);
     goo_mutex_unlock(g_scheduler->scheduler_mutex);
 }
 
@@ -355,10 +542,14 @@ void goo_goroutine_exit(void) {
 
     // Return control to this worker's scheduler context.
 #ifdef GOO_PLATFORM_UNIX
+#ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     setcontext(&t_sched_ctx);
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 #endif
 }
 
@@ -390,15 +581,19 @@ static void* scheduler_main_loop(void* arg) {
             goo_mutex_unlock(g_scheduler->scheduler_mutex);
 
 #ifdef GOO_PLATFORM_UNIX
+#ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
             // Return to THIS worker's scheduler context when the goroutine
             // exits or yields.
             goroutine->context.uc_link = &t_sched_ctx;
             if (swapcontext(&t_sched_ctx, &goroutine->context) == -1) {
                 goo_panic("Failed to switch to goroutine");
             }
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 #endif
 
             // Back on this worker's own stack. Reap ONLY via t_reap, which the

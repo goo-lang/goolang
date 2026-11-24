@@ -114,7 +114,18 @@ No new files. No public API change. No header change.
 
 These were surfaced by the final whole-branch review. None block M8c (default stays 1) but all gate the eventual default-flip:
 
-1. **Deadlock-detector / `current_goroutine` regression.** `channels.c` marks channel-blocked goroutines via `g_scheduler->current_goroutine`, which M8c leaves NULL. Restore detector visibility (e.g. a `goo_current_goroutine()` accessor returning `t_current`, or sync the field, or delete the dead bookkeeping and document). Non-fatal today (condvar-based block/wake; detector already ineffective for channel deadlocks).
+1. **Deadlock-detector / `current_goroutine` regression. RESOLVED 2026-09-02 by the third option, with one piece of dead bookkeeping left standing.**
+
+   *What was done.* The detector no longer reads `g_scheduler->current_goroutine` and never did on the path that matters: it goes through the `goo_current_goroutine()` accessor, which returns the per-worker `t_current`. `blocked_goroutines` stopped being a tally of `goo_sched_block_begin` calls and became the SIZE OF A SET — the goroutines that are parked and that no waker has released. A goroutine leaves that set at the WAKE SITE, before the wake, not when it is next scheduled. The pieces:
+   - `goo_goroutine_t` carries `counted_blocked` (the membership bit) and `next_waiter`; `goo_channel_t`'s `send_waiters` / `recv_waiters`, empty since they were declared, are now the per-condvar waiter lists.
+   - `goo_sched_block_begin(&list)` registers, `goo_sched_wake_waiters(&list)` unregisters every waiter immediately before the broadcast, and `goo_sched_block_end(&list)` is an idempotent unregister that stops a spurious `pthread_cond_wait` return leaking a set member.
+   - The three `pthread_cond_signal` calls in `channels.c` became `pthread_cond_broadcast`: POSIX gives a signaller no way to learn which waiter it woke, so the set the waker unregisters must be the whole set the OS wakes.
+   - `goo_scheduler_wait` decides AND aborts with the scheduler mutex held, so the state cannot move between the snapshot and the abort. The poll streak dropped from 100 to 3.
+   - The dead field `deadlock_detector.main_in_wait` was removed. It had one write, one initialisation and no read.
+
+   *Why, and on what evidence.* The old accounting counted a goroutine as blocked from `goo_sched_block_begin` until it returned from `pthread_cond_wait`, which is unbounded scheduler latency, so `blocked_goroutines == num_goroutines` was transiently true for LIVE programs and the threshold was a bet on wake latency — a bet already lost once, at 3 polls, and re-made at 100. SPIN proved the bet cannot be won for any finite threshold, and proved the corrected protocol correct at a threshold of one poll. The model, the proof, the three rulings and the C-level design are in `tests/models/README.md`; `spin-deadlock-model-probe` gates the model and `false-deadlock-probe` gates the C.
+
+   *What remains.* `g_scheduler->current_goroutine` and `g_scheduler->main_context` are still declared and still unused. Nothing reads them now, so neither is a correctness risk; deleting them is a header change and a separate cleanup.
 2. **`goo_yield` save-before-publish race.** `goo_yield` re-enqueues `current` before `swapcontext` writes `current->context`; at N>1 another worker could swap into it first. Currently **unreachable** (no caller — channels use cond_wait). Must be fixed before any `goo_yield` caller is added *and* before the default-flip (swap-then-handoff).
 3. **Channel-using N=4 stress variant.** Add a stress test that drives channel send/recv across workers under N=4 (the current test does not).
 

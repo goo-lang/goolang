@@ -1,0 +1,4 @@
+{
+  "//": "Default cppcheck addon config for the MISRA checks. This file names ONLY the addon script, not a --rule-texts= file, so it carries no guideline text and no copyright concern (see README.md's 'One-time setup'). VERIFIED (task 17): a --rule-texts= config changes only the human-readable message on each finding, never a rule ID or a count -- so this bare config is safe for a gate everyone must be able to run, at the cost of a generic message: 'misra violation (use --rule-texts=<file> to get proper output)'. Set MISRA_JSON to your own licensed config for real guideline text; the numbers do not move either way.",
+  "script": "misra.py"
+}
