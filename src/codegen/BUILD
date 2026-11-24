@@ -66,6 +66,7 @@ goo_cc_library(
         "lowlevel_codegen.c",
         "monomorphize.c",
         "nullable_codegen.c",
+        "qasm3_codegen.c",
         "statement_codegen.c",
         "value_scope.c",
     ],

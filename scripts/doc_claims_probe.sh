@@ -72,7 +72,7 @@ if [ "${1:-}" = "--self-test" ]; then
 	inject "an unclassified goostd package" \
 		'mkdir -p goostd/newpkg && printf "package newpkg\nfunc F() int { return 1 }\n" > goostd/newpkg/newpkg.go'
 	inject "the shim list changes" \
-		'sed -i "s/\"testing\"};/\"testing\", \"json\"};/" src/compiler/goo.c'
+		'sed -i "s/\"qir\"};/\"qir\", \"json\"};/" src/compiler/goo.c'
 	inject "a third /proc/self/exe site" \
 		'printf "// /proc/self/exe\n" >> src/package/import_resolver.c && cp src/package/import_resolver.c src/compiler/third.c'
 	inject "make install regresses to a bare cp" \
@@ -119,21 +119,21 @@ else
 	[ "$unclassified" -eq 0 ] && note "goostd: $shipped shipped, $fixture fixtures, 0 unclassified"
 fi
 
-# --- 2. The shim package set, which ADR 0006 states as eight names. These
+# --- 2. The shim package set, which ADR 0006 states as nine names. These
 # short-circuit before the resolver, so a fetched package can never shadow
 # them -- a fact sub-project B's design depends on.
-EXPECTED_SHIMS='"fmt", "os", "math", "errors", "sync", "time", "far", "testing"'
+EXPECTED_SHIMS='"fmt", "os", "math", "errors", "sync", "time", "far", "testing", "qir"'
 # EXACT comparison, not `grep -qF`. The first version of this check used a
-# substring match, and its own self-test caught the hole: adding a ninth shim
-# leaves the eight-name string present as a substring, so an ADDITION -- the
+# substring match, and its own self-test caught the hole: adding an extra shim
+# leaves the prefix string present as a substring, so an ADDITION -- the
 # likeliest change of all -- passed silently.
 ACTUAL_SHIMS="$(sed -n 's/.*static const char\* const shim\[\] = {\(.*\)};.*/\1/p' "$ROOT/src/compiler/goo.c" | head -1)"
 if [ "$ACTUAL_SHIMS" != "$EXPECTED_SHIMS" ]; then
-	bad "the shim list in goo.c no longer matches the eight names ADR 0006 states"
+	bad "the shim list in goo.c no longer matches the nine names ADR 0006 states"
 	note "expected: $EXPECTED_SHIMS"
 	note "found   : ${ACTUAL_SHIMS:-<no shim[] initialiser found>}"
 else
-	note "shim set: the documented eight, exactly"
+	note "shim set: the documented nine, exactly"
 fi
 
 # --- 3. /proc/self/exe lives in exactly two files. ADR 0006 names extracting

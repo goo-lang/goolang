@@ -250,6 +250,7 @@ goo_cc_library(
         "expression_helpers.c",
         "lane_ownership.c",
         "ownership_checker.c",
+        "qir_ownership.c",
         "type_checker.c",
     ],
     visibility = [
@@ -274,6 +275,7 @@ goo_cc_library(
         "//include:embedding_h",
         "//include:lane_ownership_h",
         "//include:ownership_checker_h",
+        "//include:qir_ownership_h",
         "//include:shim_signatures_h",
         "//include:types_h",
         "//src/ast",

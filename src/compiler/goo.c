@@ -61,6 +61,8 @@ typedef struct CompilerOptions {
     bool  input_is_dir;
     char* output_file;
     bool emit_llvm_ir;
+    bool emit_qir;
+    bool emit_qasm3;
     bool emit_ast;
     bool emit_tokens;
     bool optimize;
@@ -191,6 +193,8 @@ static void print_usage(FILE* out, const char* program_name) {
     fprintf(out, "  --linker <prog>          Program that links the executable (default: gcc)\n");
     fprintf(out, "  --link-flag <flag>       Extra flag for that linker (repeatable)\n");
     fprintf(out, "  --emit-llvm              Emit LLVM IR instead of executable\n");
+    fprintf(out, "  --emit-qir               Emit QIR 1.0 Adaptive Profile LLVM IR\n");
+    fprintf(out, "  --emit-qasm3             Emit OpenQASM 3.0 circuit\n");
     fprintf(out, "  --emit-ast               Emit AST (for debugging)\n");
     fprintf(out, "  --emit-tokens            Emit tokens (for debugging)\n");
     fprintf(out, "  -h, --help               Show this help message\n");
@@ -268,6 +272,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         {"linker", required_argument, 0, 0},
         {"link-flag", required_argument, 0, 0},
         {"emit-llvm", no_argument, 0, 0},
+        {"emit-qir", no_argument, 0, 0},
+        {"emit-qasm3", no_argument, 0, 0},
         {"emit-ast", no_argument, 0, 0},
         {"emit-tokens", no_argument, 0, 0},
         {"dump-packages", no_argument, 0, 0},
@@ -286,6 +292,11 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 // Long option
                 if (strcmp(long_options[option_index].name, "emit-llvm") == 0) {
                     options->emit_llvm_ir = true;
+                } else if (strcmp(long_options[option_index].name, "emit-qir") == 0) {
+                    options->emit_llvm_ir = true;
+                    options->emit_qir = true;
+                } else if (strcmp(long_options[option_index].name, "emit-qasm3") == 0) {
+                    options->emit_qasm3 = true;
                 } else if (strcmp(long_options[option_index].name, "emit-ast") == 0) {
                     options->emit_ast = true;
                 } else if (strcmp(long_options[option_index].name, "emit-tokens") == 0) {
@@ -418,8 +429,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     // P5.3: mode-specific argument handling.
     switch (mode) {
         case GOO_MODE_TEST:
-            if (options->emit_llvm_ir) {
-                fprintf(stderr, "Error: --emit-llvm cannot be combined with 'goo test'\n");
+            if (options->emit_llvm_ir || options->emit_qasm3) {
+                fprintf(stderr, "Error: --emit-llvm/--emit-qasm3 cannot be combined with 'goo test'\n");
                 free(options->output_file);
                 free(options);
                 return NULL;
@@ -434,8 +445,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             options->run_after_compile = true;
             break;
         case GOO_MODE_RUN:
-            if (options->emit_llvm_ir) {
-                fprintf(stderr, "Error: --emit-llvm cannot be combined with 'goo run'\n");
+            if (options->emit_llvm_ir || options->emit_qasm3) {
+                fprintf(stderr, "Error: --emit-llvm/--emit-qasm3 cannot be combined with 'goo run'\n");
                 free(options->output_file);
                 free(options);
                 return NULL;
@@ -525,7 +536,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 break;
             case GOO_MODE_LEGACY:
                 options->output_file = get_output_filename(options->input_file, NULL,
-                                                           options->emit_llvm_ir ? ".ll" : ".out");
+                                                           options->emit_qasm3 ? ".qasm"
+                                                           : (options->emit_llvm_ir ? ".ll" : ".out"));
                 break;
         }
     }
@@ -781,7 +793,7 @@ static bool is_stdlib_shim_import(const char* path) {
     // P4.6: "time" joins sync as a method-aware bespoke shim (Duration/Time
     // synthesized below, no GOOROOT source dir) — same reasoning as sync's
     // own entry.
-    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time", "far", "testing"};
+    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time", "far", "testing", "qir"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
     }
@@ -827,6 +839,8 @@ static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports)
             // with a method set, which stdlib_package_lookup's per-symbol
             // table cannot model.
             seed_testing_package_exports(checker, p);
+        } else if (strcmp(normalize_import_path(spec->path), "qir") == 0) {
+            seed_qir_package_exports(checker, p);
         }
         type_checker_seed_package_marker(checker, short_name, p);
     }
@@ -1463,6 +1477,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // codegen_optimize below and the target-machine mapping inside
     // codegen_emit_executable) rather than being threaded through call sites.
     codegen->opt_level = options->opt_level;
+    codegen->emit_qir = options->emit_qir ? 1 : 0;
 
     // P3.11: link_libs/link_lib_count travel on the codegen object so
     // codegen_emit_executable's fork/execvp argv construction can append
@@ -1551,7 +1566,17 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // P5.2: --emit-llvm writes the textual IR to the output path itself and
     // produces NO executable (pre-fix, an always-true conditional wrote the
     // ELF to the -o path and the IR to <path>.ll).
-    if (options->emit_llvm_ir) {
+    if (options->emit_qasm3) {
+        if (!codegen_emit_qasm3(codegen, type_checker, asts[0], options->output_file)) {
+            codegen_free(codegen);
+            type_checker_free(type_checker);
+            ENTRY_CLEANUP();
+            return false;
+        }
+        if (options->verbose) {
+            printf("OpenQASM 3.0 written to: %s\n", options->output_file);
+        }
+    } else if (options->emit_llvm_ir) {
         if (!codegen_emit_llvm_ir(codegen, options->output_file)) {
             codegen_free(codegen);
             type_checker_free(type_checker);

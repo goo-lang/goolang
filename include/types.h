@@ -1127,6 +1127,7 @@ void seed_time_package_exports(TypeChecker* checker, Package* pkg);
 // with a method set, which stdlib_package_lookup cannot model. Write's
 // implementation is a codegen-emitted adapter, not a Goo function.
 void seed_os_package_exports(TypeChecker* checker, Package* pkg);
+void seed_qir_package_exports(TypeChecker* checker, Package* pkg);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);

@@ -1,0 +1,78 @@
+package main
+
+import "fmt"
+import "qir"
+
+func main() {
+	failures := 0
+	shot := 0
+	for shot < 16 {
+		msg := qir.Alloc()
+		alice := qir.Alloc()
+		bob := qir.Alloc()
+		r0 := qir.ResultAt(0)
+		r1 := qir.ResultAt(1)
+
+		// Prepare state on msg: Ry(1.2345)|0> (with canceling phase gates to
+		// exercise Rz, S, SAdj, T, TAdj).
+		qir.Ry(1.2345, msg)
+		qir.Rz(0.6789, msg)
+		qir.S(msg)
+		qir.T(msg)
+		qir.TAdj(msg)
+		qir.SAdj(msg)
+		qir.Rz(-0.6789, msg)
+
+		// Entangle Bell pair (alice, bob).
+		qir.H(alice)
+		qir.CX(alice, bob)
+
+		// Bell-basis measurement on (msg, alice).
+		qir.CX(msg, alice)
+		qir.H(msg)
+		qir.Mz(msg, r0)
+		qir.Mz(alice, r1)
+
+		// Real-time classical feed-forward to bob.
+		if qir.ReadResult(r1) {
+			qir.X(bob)
+		}
+		if qir.ReadResult(r0) {
+			qir.Z(bob)
+		}
+
+		// Uncompute Ry(1.2345) on bob; must deterministically return to |0>.
+		qir.Ry(-1.2345, bob)
+		if qir.MeasureReset(bob) {
+			failures = failures + 1
+		}
+
+		qir.Reset(msg)
+		qir.Reset(alice)
+		qir.FreeZero(msg)
+		qir.FreeZero(alice)
+		shot = shot + 1
+	}
+
+	// Verify static hardware addressing and multi-qubit gates (CCX, CZ, Swap, Rx, Y).
+	q0 := qir.QubitAt(0)
+	q1 := qir.QubitAt(1)
+	q2 := qir.QubitAt(2)
+	qir.Rx(0.0, q0)
+	qir.Y(q0)
+	qir.Y(q0)
+	qir.X(q0)
+	qir.X(q1)
+	qir.CCX(q0, q1, q2)
+	qir.CZ(q0, q1)
+	qir.CZ(q0, q1)
+	qir.Swap(q0, q1)
+	toffoli := qir.MeasureReset(q2)
+	qir.X(q0)
+	qir.X(q1)
+	qir.FreeZero(q0)
+	qir.FreeZero(q1)
+
+	fmt.Println("teleport failures:", failures)
+	fmt.Println("toffoli result:", toffoli)
+}

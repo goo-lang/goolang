@@ -1,0 +1,10 @@
+package main
+
+import "qir"
+
+func main() {
+	q1 := qir.Alloc()
+	q2 := q1
+	qir.H(q1)
+	qir.FreeZero(q2)
+}

@@ -178,6 +178,9 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // Function-generics Task 9: no override until codegen_generate_function_
     // instance installs one around a single instantiation's stamping.
     codegen->symbol_override = NULL;
+    codegen->emit_qir = 0;
+    codegen->qir_num_qubits = 0;
+    codegen->qir_num_results = 0;
 
     // Comptime value params Task 3: no active comptime instance until
     // codegen_generate_comptime_function_instance installs one around a
@@ -484,6 +487,25 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     // see the prototype gate above.
     if (is_main_pass && !codegen_generate_global_init_function(codegen, checker)) {
         return 0;
+    }
+
+    // Phase 7 M1 (`--emit-qir`): stamp `main` with the QIR 1.0 Adaptive Profile
+    // entry-point attributes after every declaration's body has been emitted,
+    // so `qir_num_qubits` and `qir_num_results` reflect all static and dynamic
+    // qubit/result allocations across the module.
+    if (is_main_pass && codegen->emit_qir) {
+        LLVMValueRef main_fn = LLVMGetNamedFunction(codegen->module, "main");
+        if (main_fn) {
+            char qbuf[32];
+            char rbuf[32];
+            snprintf(qbuf, sizeof(qbuf), "%llu", (unsigned long long)codegen->qir_num_qubits);
+            snprintf(rbuf, sizeof(rbuf), "%llu", (unsigned long long)codegen->qir_num_results);
+            LLVMAddTargetDependentFunctionAttr(main_fn, "entry_point", "");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "qir_profiles", "adaptive_profile");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "output_labeling_schema", "schema_id");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "required_num_qubits", qbuf);
+            LLVMAddTargetDependentFunctionAttr(main_fn, "required_num_results", rbuf);
+        }
     }
 
     return codegen->error_count == 0;

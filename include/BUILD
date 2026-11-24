@@ -202,6 +202,14 @@ cc_library(
 )
 
 cc_library(
+    name = "qir_ownership_h",
+    hdrs = ["qir_ownership.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [":types_h"],
+)
+
+cc_library(
     name = "nonretaining_h",
     hdrs = ["nonretaining.h"],
     includes = ["."],

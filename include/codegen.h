@@ -291,6 +291,15 @@ struct CodeGenerator {
     const char* linker;
     const char** link_flags;
     size_t link_flag_count;
+
+    // Phase 7 M1 (Quantum QIR): when `emit_qir != 0` (`--emit-qir`), suppresses
+    // the POSIX `goo_os_args_init` prologue on `main` and stamps `main` with
+    // the QIR 1.0 Adaptive Profile LLVM function attributes (`"entry_point"`,
+    // `"qir_profiles"="adaptive_profile"`, `"required_num_qubits"`,
+    // `"required_num_results"`). Tail-appended per the no-header-deps rule.
+    int emit_qir;
+    uint64_t qir_num_qubits;
+    uint64_t qir_num_results;
 };
 
 // Function information for code generation
@@ -1152,6 +1161,8 @@ void* codegen_generate_error_return_stub(CodeGenerator* codegen, void* return_va
 
 // Output generation
 int codegen_emit_llvm_ir(CodeGenerator* codegen, const char* filename);
+int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
+                       ASTNode* program, const char* filename);
 int codegen_emit_object_file(CodeGenerator* codegen, const char* filename);
 int codegen_emit_executable(CodeGenerator* codegen, const char* filename);
 int codegen_optimize(CodeGenerator* codegen, int level);

@@ -38,6 +38,7 @@ RUNTIME_UNITS = [
     ":channels",
     ":core",
     ":defer",
+    ":qir_sim",
     ":sync_shim",
     ":testing",
     ":time_shim",
@@ -159,6 +160,14 @@ goo_cc_library(
         ":platform_h",
         "//include:runtime_h",
     ],
+)
+
+goo_cc_library(
+    name = "qir_sim",
+    srcs = ["qir_sim.c"],
+    copts = NO_SANITIZE_COPTS,
+    linkopts = ["-lm"],
+    visibility = ["//tests/unit/runtime:__pkg__"],
 )
 
 # io.c is in the archive and NOT in the Makefile's RUNTIME_SRCS, which is why

@@ -64,12 +64,12 @@ char* codegen_type_mangle_token(const Type* t) {
     switch (t->kind) {
         case TYPE_POINTER: {
             char* inner = codegen_type_mangle_token(t->data.pointer.pointee_type);
-            char* out = malloc(strlen(inner) + 5);
+            char* out = xmalloc(strlen(inner) + 5);
             sprintf(out, "ptr_%s", inner); free(inner); return out;
         }
         case TYPE_SLICE: {
             char* inner = codegen_type_mangle_token(t->data.slice.element_type);
-            char* out = malloc(strlen(inner) + 7);
+            char* out = xmalloc(strlen(inner) + 7);
             sprintf(out, "slice_%s", inner); free(inner); return out;
         }
         default: {

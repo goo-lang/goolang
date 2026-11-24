@@ -1,0 +1,8 @@
+package main
+
+import "qir"
+
+func main() {
+	q := qir.Alloc()
+	qir.H(q)
+}

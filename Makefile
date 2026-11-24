@@ -81,9 +81,9 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_state.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
-TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c
-CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/codegen_context.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c
-RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
+TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c $(SRCDIR)/types/qir_ownership.c
+CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/codegen_context.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c $(SRCDIR)/codegen/qasm3_codegen.c
+RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c $(SRCDIR)/runtime/qir_sim.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c
 # Only import_resolver.c from package/ is part of the compiler. The rest of
 # the directory (IPFS/registry/p2p modules) is compiled by nothing and has
@@ -116,7 +116,7 @@ OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
 # with its header included nowhere. Channels, select and close are probe-gated
 # and work, so their type checking happens on another path. Kept in TYPES_SRCS
 # for the standalone test targets.
-GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/lane_ownership.c
+GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/lane_ownership.c $(SRCDIR)/types/qir_ownership.c
 # P5.6 quarantine, extended 2026-08-08 by the coverage measurement.
 # ergonomic_errors.c took ZERO branches across all 810 fixtures, and a static
 # check found no caller anywhere in src/ for any of its entry points. It depends
@@ -134,7 +134,7 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # the runtime entrypoints. runtime.o's goo_init/goo_exit call into
 # deadlock.o, and concurrency.o calls channels/sync/platform — leaving
 # any of these out fails the link of even a hello-world executable.
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/testing.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/testing.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o $(BUILDDIR)/runtime/qir_sim.o
 
 # M2-B1: vendored NNG (far transport). Pinned tarball, static lib, merged
 # into libgoo_runtime.a below so bin/goo-linked executables need no new
@@ -6555,3 +6555,11 @@ podman-image-probe:
 repro-build-probe:
 	@bash scripts/repro_build_probe.sh
 .PHONY: repro-build-probe
+
+qir-runner-probe: $(COMPILER)
+	@command -v qir-runner >/dev/null || (echo "install qir-runner: cargo install qir-runner" && exit 1)
+	./bin/goo --emit-qir examples/qir_teleport_probe.goo -o /tmp/goo_teleport.ll
+	qir-runner -f /tmp/goo_teleport.ll -e main -s 100
+	./bin/goo --emit-qir examples/qir_bitflip_qec_probe.goo -o /tmp/goo_qec.ll
+	qir-runner -f /tmp/goo_qec.ll -e main -s 100
+.PHONY: qir-runner-probe

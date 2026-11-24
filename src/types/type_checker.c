@@ -2,6 +2,7 @@
 #include "comptime.h"
 #include "embedding.h"
 #include "lane_ownership.h"
+#include "qir_ownership.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -832,6 +833,7 @@ int type_check_program_files(TypeChecker* checker, ASTNode** programs,
     // findings.md Section 2.0). Per file: the walk is over one AST at a time.
     for (size_t i = 0; i < program_count; i++) {
         if (!lane_ownership_check_program(checker, programs[i])) return 0;
+        if (!qir_ownership_check_program(checker, programs[i])) return 0;
     }
 
     return checker->error_count == 0;
@@ -1008,6 +1010,24 @@ void seed_os_package_exports(TypeChecker* checker, Package* pkg) {
 
     Type* params[] = { bytes_t };
     sync_export_method(pkg, file_t, "Write", params, 1, ret_t, 0);
+}
+
+// Phase 7 M1 (Quantum QIR): seed the `qir` package's two opaque handle types,
+// `qir.Qubit` and `qir.Result`. Both are single-field opaque structs (`_state`
+// pointer at offset 0) stamped with `owner_package = pkg` so type identity and
+// `--emit-program` JSON serialization treat them identically to `sync.Mutex`
+// and `os.File`. All `qir.*` functions live in `src/types/shim_signatures.c`,
+// which looks up these exact `Type*` pointers out of `pkg->exports` to preserve
+// pointer identity across annotations and call signatures.
+void seed_qir_package_exports(TypeChecker* checker, Package* pkg) {
+    if (scope_lookup_variable(pkg->exports, "Qubit")) return;
+
+    Type* qubit_t = sync_make_opaque_struct(checker, pkg, "Qubit");
+    Type* result_t = sync_make_opaque_struct(checker, pkg, "Result");
+    if (!qubit_t || !result_t) return;
+
+    sync_export_type(pkg, "Qubit", qubit_t);
+    sync_export_type(pkg, "Result", result_t);
 }
 
 // `goo test`: the testing package's exports. A bespoke shim for the same reason
@@ -1296,6 +1316,14 @@ static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports
             Package* p = type_checker_add_package(checker, spec->path, short_name);
             if (!p) return false;
             seed_os_package_exports(checker, p);
+            type_checker_seed_package_marker(checker, short_name, p);
+            continue;
+        }
+        if (spec->path && strcmp(spec->path, "qir") == 0) {
+            const char* short_name = spec->alias ? spec->alias : spec->path;
+            Package* p = type_checker_add_package(checker, spec->path, short_name);
+            if (!p) return false;
+            seed_qir_package_exports(checker, p);
             type_checker_seed_package_marker(checker, short_name, p);
             continue;
         }
