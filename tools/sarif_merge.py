@@ -223,6 +223,19 @@ def merge(input_paths):
                 fp = dict(fp)
                 fp["goo/v1"] = fingerprint(rule_id, rel_path, line_text)
                 result["fingerprints"] = fp
+                # Strip relatedLocations entries that omit physicalLocation
+                # (e.g., GCC 14 -Wanalyzer-out-of-bounds ASCII-art diagram
+                # notes), which GitHub Code Scanning rejects with
+                # "buildRelatedLocations:expected physical location".
+                if "relatedLocations" in result:
+                    kept_rl = [
+                        rl for rl in (result.get("relatedLocations") or [])
+                        if isinstance(rl, dict) and "physicalLocation" in rl
+                    ]
+                    if kept_rl:
+                        result["relatedLocations"] = kept_rl
+                    else:
+                        del result["relatedLocations"]
                 bucket.append(result)
 
     runs = []

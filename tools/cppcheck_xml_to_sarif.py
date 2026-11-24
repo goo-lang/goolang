@@ -18,6 +18,16 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 LEVELS = {"error": "error", "warning": "warning"}
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _uri(path):
+    abs_p = os.path.realpath(os.path.abspath(path))
+    root = os.path.realpath(REPO_ROOT)
+    rel = os.path.relpath(abs_p, root)
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return os.path.abspath(path)
+    return rel
 
 
 def convert(xml_path):
@@ -34,14 +44,14 @@ def convert(xml_path):
             if not f:
                 continue
             locs.append({"physicalLocation": {
-                "artifactLocation": {"uri": os.path.abspath(f)},
+                "artifactLocation": {"uri": _uri(f)},
                 "region": {"startLine": max(int(loc.get("line", "1")), 1)}}})
         res = {"ruleId": err.get("id", ""),
                "level": LEVELS.get(err.get("severity", ""), "note"),
                "message": {"text": err.get("msg", "")}}
         if not locs and err.get("file0"):
             locs.append({"physicalLocation": {
-                "artifactLocation": {"uri": os.path.abspath(err.get("file0"))},
+                "artifactLocation": {"uri": _uri(err.get("file0"))},
                 "region": {"startLine": 1}}})
         if locs:
             # cppcheck lists the primary location last
