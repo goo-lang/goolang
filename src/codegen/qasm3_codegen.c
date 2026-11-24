@@ -366,6 +366,10 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
         }
         FuncDeclNode* fd = qasm3_find_func(ctx, fn_name);
         if (fd && fd->body) {
+            int is_perturbation = (fn_name && strcmp(fn_name, "injectPerturbation") == 0);
+            if (is_perturbation) {
+                qasm3_emit(ctx, "barrier q;\n");
+            }
             size_t saved_vars = ctx->var_count;
             ASTNode* arg = call->args;
             for (ASTNode* p = fd->params; p; p = p->next) {
@@ -390,6 +394,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
             }
             qasm3_walk_stmt(ctx, fd->body);
             ctx->var_count = saved_vars;
+            if (is_perturbation) {
+                qasm3_emit(ctx, "barrier q;\n");
+            }
         }
     }
 }
@@ -466,15 +473,37 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                 CallExprNode* c = (CallExprNode*)ifs->condition;
                 if (c->function && c->function->type == AST_SELECTOR_EXPR) {
                     SelectorExprNode* sel = (SelectorExprNode*)c->function;
+                    char rref[64];
                     if (sel->selector && strcmp(sel->selector, "ReadResult") == 0 &&
-                        c->args && c->args->type == AST_IDENTIFIER) {
-                        Qasm3Var* rv = qasm3_find_var(ctx, ((IdentifierNode*)c->args)->name);
+                        qasm3_resolve_ref(ctx, c->args, rref, sizeof(rref))) {
+                        Qasm3Var* rv = qasm3_find_var(ctx, rref);
                         int64_t bit = rv ? rv->index_or_val : 0;
+                        size_t saved_len = ctx->len;
                         qasm3_emit(ctx, "if (c[%lld] == true) {\n", (long long)bit);
+                        size_t header_len = ctx->len;
                         ctx->indent++;
                         qasm3_walk_stmt(ctx, ifs->then_stmt);
                         ctx->indent--;
-                        qasm3_emit(ctx, "}\n");
+                        if (ctx->len == header_len) {
+                            ctx->len = saved_len;
+                            if (ctx->buf) ctx->buf[ctx->len] = '\0';
+                        } else {
+                            qasm3_emit(ctx, "}\n");
+                        }
+                        if (ifs->else_stmt) {
+                            size_t saved_else = ctx->len;
+                            qasm3_emit(ctx, "if (c[%lld] == false) {\n", (long long)bit);
+                            size_t else_hdr = ctx->len;
+                            ctx->indent++;
+                            qasm3_walk_stmt(ctx, ifs->else_stmt);
+                            ctx->indent--;
+                            if (ctx->len == else_hdr) {
+                                ctx->len = saved_else;
+                                if (ctx->buf) ctx->buf[ctx->len] = '\0';
+                            } else {
+                                qasm3_emit(ctx, "}\n");
+                            }
+                        }
                         return;
                     }
                 }
