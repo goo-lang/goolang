@@ -118,8 +118,8 @@ typedef struct {
 ComptimeContext* comptime_context_new(ComptimeContext* parent);
 
 // Maximum calls plus loop iterations for one top-level comptime evaluation.
-#define GOO_COMPTIME_STEP_BUDGET 10000000
-#define GOO_COMPTIME_BUDGET_ERROR "comptime evaluation exceeded 10000000 steps"
+#define GOO_COMPTIME_STEP_BUDGET 1000000
+#define GOO_COMPTIME_BUDGET_ERROR "comptime evaluation exceeded 1000000 steps"
 
 // Start a fresh step budget. A caller that reuses one root context for many
 // top-level evaluations must call this before each, so one evaluation does
