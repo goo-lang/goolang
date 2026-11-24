@@ -37,6 +37,8 @@ typedef struct {
     size_t        var_count;
     uint64_t      num_qubits;
     uint64_t      num_results;
+    uint64_t      num_syn_bits;
+    int           has_syndrome_reg;
     uint64_t      active_qubit_mask;
     char*         buf;
     size_t        len;
@@ -214,7 +216,15 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
             if (strcmp(op, "ResultAt") == 0) {
                 int64_t id = 0;
                 qasm3_eval_int(ctx, call->args, &id);
-                if ((uint64_t)(id + 1) > ctx->num_results) ctx->num_results = (uint64_t)(id + 1);
+                if (ctx->has_syndrome_reg) {
+                    if ((uint64_t)(id + 1) > ctx->num_syn_bits) {
+                        ctx->num_syn_bits = (uint64_t)(id + 1);
+                    }
+                } else {
+                    if ((uint64_t)(id + 1) > ctx->num_results) {
+                        ctx->num_results = (uint64_t)(id + 1);
+                    }
+                }
                 if (lhs_name) qasm3_set_var(ctx, lhs_name, QASM3_VAR_RESULT, id);
                 return;
             }
@@ -261,7 +271,11 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                     Qasm3Var* v = qasm3_find_var(ctx, ((IdentifierNode*)rarg)->name);
                     if (v) r = v->index_or_val;
                 }
-                qasm3_emit(ctx, "c[%lld] = measure q[%lld];\n", (long long)r, (long long)q);
+                if (ctx->has_syndrome_reg) {
+                    qasm3_emit(ctx, "syn[%lld] = measure q[%lld];\n", (long long)r, (long long)q);
+                } else {
+                    qasm3_emit(ctx, "c[%lld] = measure q[%lld];\n", (long long)r, (long long)q);
+                }
                 return;
             }
             {
@@ -436,23 +450,18 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                 }
             }
             // Dynamic syndrome comparison: `if syn == SYNDROME_Q0`
+            // Emits flat, non-nested `if (syn == mask) { ... }` over `bit[2] syn;`
+            // so IBM Heron r2 hardware controllers execute without Error 1524
+            // ("Circuits with nested control-flow operations are not supported").
             if (ifs->condition && ifs->condition->type == AST_BINARY_EXPR) {
                 BinaryExprNode* b = (BinaryExprNode*)ifs->condition;
                 if (b->operator == TOKEN_EQ && b->left && b->left->type == AST_IDENTIFIER) {
                     Qasm3Var* sv = qasm3_find_var(ctx, ((IdentifierNode*)b->left)->name);
                     int64_t mask = 0;
                     if (sv && sv->is_syndrome && qasm3_eval_int(ctx, b->right, &mask)) {
-                        int b0 = (mask & 1) ? 1 : 0;
-                        int b1 = (mask & 2) ? 1 : 0;
-                        qasm3_emit(ctx, "if (c[%d] == %s) {\n",
-                                   sv->r0_bit, b0 ? "true" : "false");
-                        ctx->indent++;
-                        qasm3_emit(ctx, "if (c[%d] == %s) {\n",
-                                   sv->r1_bit, b1 ? "true" : "false");
+                        qasm3_emit(ctx, "if (syn == %lld) {\n", (long long)mask);
                         ctx->indent++;
                         qasm3_walk_stmt(ctx, ifs->then_stmt);
-                        ctx->indent--;
-                        qasm3_emit(ctx, "}\n");
                         ctx->indent--;
                         qasm3_emit(ctx, "}\n");
                         if (ifs->else_stmt) {
@@ -517,6 +526,9 @@ int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
                 main_fd = fd;
             } else if (ctx.func_count < QASM3_MAX_FUNCS) {
                 ctx.funcs[ctx.func_count++] = fd;
+                if (fd->name && strcmp(fd->name, "syndromeMask") == 0) {
+                    ctx.has_syndrome_reg = 1;
+                }
             }
         }
     }
@@ -536,6 +548,9 @@ int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
     fprintf(out, "OPENQASM 3.0;\n");
     fprintf(out, "include \"stdgates.inc\";\n");
     fprintf(out, "qubit[%llu] q;\n", (unsigned long long)ctx.num_qubits);
+    if (ctx.has_syndrome_reg && ctx.num_syn_bits > 0) {
+        fprintf(out, "bit[%llu] syn;\n", (unsigned long long)ctx.num_syn_bits);
+    }
     fprintf(out, "bit[%llu] c;\n\n", (unsigned long long)ctx.num_results);
     if (ctx.buf && ctx.len > 0) {
         fwrite(ctx.buf, 1, ctx.len, out);

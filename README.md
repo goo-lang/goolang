@@ -232,13 +232,13 @@ func correctBitFlip(d0 qir.Qubit, d1 qir.Qubit, d2 qir.Qubit, a0 qir.Qubit, a1 q
 | `qir_comptime_stabilizer_probe.goo` | Embedded `qir_sim.c` (`-O0` / `-O2`) | Native LLVM | 4 fault modes | **100.0%** (4/4) | `local` |
 | `qir_teleport_probe.goo` | Qiskit `AerSimulator` (`SamplerV2`) | OpenQASM 3.0 | 1024 | **100.00%** (1024/1024) | `a867b5c5-20f2-45e3-acc8-6f67e88cf24a` |
 | `qir_comptime_stabilizer_probe.goo` | Qiskit `AerSimulator` (`SamplerV2`) | OpenQASM 3.0 | 1024 (4096 rounds) | **100.00%** (4096/4096) | `a867b5c5-20f2-45e3-acc8-6f67e88cf24a` |
-| `qir_teleport_probe.goo` | IBM Heron r2 `ibm_marrakesh` (`FakeMarrakesh`, `12 cz`) | OpenQASM 3.0 | 1024 | **98.44%** (1008/1024) | `9d6130fa-7313-4196-8901-c90496e4968e` |
-| `qir_bitflip_qec_probe.goo` | IBM Heron r2 `ibm_marrakesh` (`FakeMarrakesh`, `83 cz`) | OpenQASM 3.0 | 1024 (4096 rounds) | **92.60%** per-round (74.22% all-4) | `9d6130fa-7313-4196-8901-c90496e4968e` |
-| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `ibm_marrakesh` (`FakeMarrakesh`, `78 cz`) | OpenQASM 3.0 | 1024 (4096 rounds) | **95.43%** per-round (83.50% all-4) | `9d6130fa-7313-4196-8901-c90496e4968e` |
-| `qir_teleport_probe.goo` | IBM Heron r2 `ibm_kingston` (`FakeKingston`, `12 cz`) | OpenQASM 3.0 | 1024 | **98.24%** (1006/1024) | `b541e64c-19b8-4a05-8ed2-f78a82c7168f` |
-| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `ibm_kingston` (`FakeKingston`, `78 cz`) | OpenQASM 3.0 | 1024 (4096 rounds) | **93.82%** per-round (77.44% all-4) | `b541e64c-19b8-4a05-8ed2-f78a82c7168f` |
-| `qir_teleport_probe.goo` | IBM Heron r2 `ibm_fez` (`FakeFez`, `12 cz`) | OpenQASM 3.0 | 1024 | **97.27%** (996/1024) | `337cdad3-67a2-4872-a5b4-2801b5a25e67` |
-| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `ibm_fez` (`FakeFez`, `78 cz`) | OpenQASM 3.0 | 1024 (4096 rounds) | **91.70%** per-round (72.46% all-4) | `337cdad3-67a2-4872-a5b4-2801b5a25e67` |
+| `qir_teleport_probe.goo` | **IBM Heron r2 `ibm_marrakesh` (Live QPU, `12 cz`)** | OpenQASM 3.0 | 1024 | **91.02%** (932/1024) | `dc2n70inj2vs73dh0mag` |
+| `qir_comptime_stabilizer_probe.goo` | **IBM Heron r2 `ibm_marrakesh` (Live QPU, `78 cz`)** | OpenQASM 3.0 | 1024 (4096 rounds) | **82.79%** logical $\|1\rangle_L$ (`67.09%` 3-bit) | `dc2n70inj2vs73dh0mag` |
+| `qir_bitflip_qec_probe.goo` | **IBM Heron r2 `ibm_marrakesh` (Live QPU, `83 cz`)** | OpenQASM 3.0 | 1024 (4096 rounds) | **79.05%** logical $\|1\rangle_L$ (`59.47%` 3-bit) | `dc2n70inj2vs73dh0mag` |
+| `qir_teleport_probe.goo` | IBM Heron r2 `FakeMarrakesh` (`12 cz`, snapshot) | OpenQASM 3.0 | 1024 | **98.44%** (1008/1024) | `9d6130fa-7313-4196-8901-c90496e4968e` |
+| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeMarrakesh` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **95.43%** per-round (83.50% all-4) | `9d6130fa-7313-4196-8901-c90496e4968e` |
+| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeKingston` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **93.82%** per-round (77.44% all-4) | `b541e64c-19b8-4a05-8ed2-f78a82c7168f` |
+| `qir_comptime_stabilizer_probe.goo` | IBM Heron r2 `FakeFez` (`78 cz`, snapshot) | OpenQASM 3.0 | 1024 (4096 rounds) | **91.70%** per-round (72.46% all-4) | `337cdad3-67a2-4872-a5b4-2801b5a25e67` |
 | `qir_bitflip_qec_probe.goo` | Quantinuum `h1-1sc` / `h1-1e` (pre-flight) | QIR 1.0 Adaptive | 50 | **Verified QIR** (`0.00` / `6.37 HQC`) | `pre-flight` |
 
 ### Quota-Safe QPU Submission Workflows

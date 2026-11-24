@@ -38,10 +38,24 @@ for path in qasm_paths:
 
 max_qubits = max(qc.num_qubits for _, qc in circuits)
 
-if mode == "live" or live_qpu:
+def get_ibm_service():
     from qiskit_ibm_runtime import QiskitRuntimeService
 
-    service = QiskitRuntimeService()  # uses saved ~/.qiskit/qiskit-ibm.json
+    token = os.environ.get("IBM_QUANTUM_TOKEN") or os.environ.get("QISKIT_IBM_TOKEN")
+    instance = os.environ.get("IBM_QUANTUM_INSTANCE") or os.environ.get("QISKIT_IBM_INSTANCE")
+    channel = os.environ.get("IBM_QUANTUM_CHANNEL") or os.environ.get(
+        "QISKIT_IBM_CHANNEL", "ibm_quantum_platform"
+    )
+    if token:
+        kwargs = {"channel": channel, "token": token}
+        if instance:
+            kwargs["instance"] = instance
+        return QiskitRuntimeService(**kwargs)
+    return QiskitRuntimeService()  # uses saved ~/.qiskit/qiskit-ibm.json
+
+
+if mode == "live" or live_qpu:
+    service = get_ibm_service()
     try:
         usage = service.usage()
         print(f"IBM Quantum monthly quota usage: {json.dumps(usage)}", file=sys.stderr)
@@ -83,9 +97,7 @@ elif mode == "fake":
     )
     hw_snapshot = fake_cls()
     if os.environ.get("IBM_REFRESH_CALIBRATION", "0") == "1":
-        from qiskit_ibm_runtime import QiskitRuntimeService
-
-        service = QiskitRuntimeService()
+        service = get_ibm_service()
         hw_snapshot.refresh(service, persist=False)
         print(
             f"[Calibration refresh] Refreshed {hw_snapshot.name} in-memory from live IBM service",
