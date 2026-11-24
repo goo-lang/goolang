@@ -4,7 +4,10 @@ import "fmt"
 
 type Box struct{ v int }
 
-func mk(n int) *Box { return &Box{v: n} }
+// No parameter: a parameter's taint sets return_escapes, which makes the
+// result unowned and hides the alias this fixture exists to test.
+func mk1() *Box { return &Box{v: 1} }
+func mk2() *Box { return &Box{v: 2} }
 
 func yes(c bool) int {
 	if c {
@@ -16,9 +19,9 @@ func yes(c bool) int {
 // xs holds the first box through a slice literal. The store to x must not
 // release that box, because xs[0] still reads it.
 func s3() int {
-	x := mk(1)
+	x := mk1()
 	xs := []*Box{x}
-	x = mk(2)
+	x = mk2()
 	return yes(xs[0].v > 0) + yes(x.v > 0)
 }
 
