@@ -455,17 +455,30 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     // in-progress Registry (it is COMPUTING these summaries and must see the
     // current iterate), the other two from a finished ParamEscapeResult. Same
     // (count, escapes[]) shape either way, so the hook returns that pair.
+    //
+    // A LOCAL CALLEE IS NOT THE TOP-LEVEL FUNCTION OF THE SAME NAME. `id(x)`
+    // where `id` is a local func value calls that value, so neither a summary
+    // looked up by the bare name, nor the builtin whitelist, nor the `append`
+    // rule describes it. All three are skipped, and the call takes the opaque
+    // arm below: every argument retained, every argument in the result.
+    //
+    // MEASURED: `id := func(s string) string { return s }; return id(x)`
+    // beside a top-level `func id(s string) int` read `x` as not escaping, and
+    // ARC freed the string the caller printed (valgrind: 3 invalid reads).
+    // Membership in ctx->env is the engine's definition of "a local of this
+    // unit", the same test selector_base_is_local uses.
+    bool callee_is_local = callee_name && escape_env_find(ctx->env, callee_name);
     const bool* callee_escapes = NULL;
     size_t callee_count = 0;
     bool callee_return_escapes = false;
-    bool callee = callee_name && ctx->hooks->callee_retention
+    bool callee = callee_name && !callee_is_local && ctx->hooks->callee_retention
                   && ctx->hooks->callee_retention(ctx, callee_name,
                                                   &callee_escapes, &callee_count,
                                                   &callee_return_escapes);
     // 7a' non-retaining whitelist: only for calls that do NOT resolve to a user
     // function (callee == NULL) — a user body, even one shadowing a builtin
     // name, is analysed by its real summary above.
-    bool whitelisted = !callee
+    bool whitelisted = !callee && !callee_is_local
                        && !selector_base_is_local(ctx, call->function)
                        && goo_callee_is_non_retaining(call->function);
 
@@ -486,7 +499,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     //
     // Guarded the same way the whitelist is: a user function named `append`, or a
     // local shadowing the name, must not collect this rule.
-    bool is_append = !callee && !whitelisted && callee_name
+    bool is_append = !callee && !whitelisted && !callee_is_local && callee_name
                      && strcmp(callee_name, "append") == 0
                      && !selector_base_is_local(ctx, call->function);
 
