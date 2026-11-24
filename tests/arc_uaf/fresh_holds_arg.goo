@@ -1,0 +1,30 @@
+package main
+
+import "fmt"
+
+type Box struct{ v int }
+type Holder struct{ p *Box }
+
+func yes(c bool) int {
+	if c {
+		return 1
+	}
+	return 0
+}
+
+// wrap returns fresh memory that holds its argument. The caller must not
+// treat the result as free of its own locals.
+func wrap(b *Box) *Holder {
+	return &Holder{p: b}
+}
+
+func s() int {
+	x := &Box{v: 1}
+	h := wrap(x)
+	x = &Box{v: 2}
+	return yes(h.p.v > 0) + yes(x.v > 0)
+}
+
+func main() {
+	fmt.Println(s(), s())
+}

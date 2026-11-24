@@ -1,0 +1,28 @@
+package main
+
+import "fmt"
+
+type Box struct{ v int }
+type Holder struct{ p *Box }
+
+func mk(n int) *Box { return &Box{v: n} }
+
+func yes(c bool) int {
+	if c {
+		return 1
+	}
+	return 0
+}
+
+// h holds the first box through a struct literal. The store to x must not
+// release that box, because h.p still reads it.
+func s2() int {
+	x := mk(1)
+	h := Holder{p: x}
+	x = mk(2)
+	return yes(h.p.v > 0) + yes(x.v > 0)
+}
+
+func main() {
+	fmt.Println(s2(), s2())
+}

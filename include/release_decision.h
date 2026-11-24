@@ -134,9 +134,12 @@
 //   ----------------------------------------  -------------------------------
 //   new(T), &T{}                              YES, the site is an allocation
 //   a struct/slice/array/map literal          YES, a fresh allocation
-//   a call to a Goo function                  iff EVERY ParamEscapeSummary
+//   a call to a Goo function                  iff EVERY non-method summary
 //                                             with its name has returns_fresh
+//                                             and not return_escapes
 //   a call to a C shim                        iff shim_signature_is_non_retaining
+//   ONE result of a multi-value Goo call      NO -- two results can be one object
+//   ONE result of a multi-value shim call     as for the shim: an error union
 //   a slice, index or selector expression      NO -- a view into something else
 //   another local, or any identifier           NO -- an alias; one owner only
 //   anything not listed                        NO -- conservative

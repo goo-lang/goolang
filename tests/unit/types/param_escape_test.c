@@ -470,6 +470,8 @@ typedef struct {
     // The name belongs to more than one function, so param_escape_lookup's
     // first match is not THE summary. Only the all-matches helper is checked.
     bool        name_is_shared;
+    // param_escape_call_result_is_owned: returns_fresh AND not return_escapes.
+    bool        expected_owned;
 } FreshExpectation;
 
 typedef struct {
@@ -515,8 +517,8 @@ static FreshRow fresh_rows[] = {
         "    r = p\n"
         "    return\n"
         "}\n",
-        { { "getS", false, false }, { "mkReg", false, false },
-          { "mk", true, false },    { "pick", false, false } }, 4
+        { { "getS", false, false, false }, { "mkReg", false, false, false },
+          { "mk", true, false, true },     { "pick", false, false, false } }, 4
     },
     {
         29, "returns_fresh: the local rule, and the shapes it must refuse",
@@ -565,34 +567,55 @@ static FreshRow fresh_rows[] = {
         "    }\n"
         "    return nil\n"
         "}\n",
-        { { "viaLocal", true, false },      { "addrTaken", false, false },
-          { "shadowGlobal", false, false }, { "rebound", false, false },
-          { "orNil", true, false } }, 5
+        { { "viaLocal", true, false, true },      { "addrTaken", false, false, false },
+          { "shadowGlobal", false, false, false }, { "rebound", false, false, false },
+          { "orNil", true, false, true } }, 5
     },
     {
-        30, "returns_fresh: a name shared by two functions needs EVERY match fresh (R13)",
-        // Summaries are found by bare name, and a method can share its name
-        // with a function. The function get comes first and is fresh; the
-        // method B.get returns a global. Neither the ownership lookup nor the
-        // fixpoint can tell which one a call means, so both must say no:
-        // get itself, and viaGet, which returns get's result.
+        30, "returns_fresh: a bare call never matches a method (C-3), and a multi-result function is never fresh (C-2)",
+        // A bare call `get()` calls a function or a func VARIABLE, never a
+        // method. Here the only `get` is a method, so a bare `get()` has no
+        // summary: the helper answers false, and viaGet, which returns get's
+        // result, is not fresh. At run time that call reaches a package-level
+        // func variable that returns a container element.
+        //
+        // dup has a method of the same name as well; the method is skipped, so
+        // the function's own answer stands.
+        //
+        // two returns one box in both results. Each result is fresh on its
+        // own, but a caller that owned both would free the box twice.
+        //
+        // wrap is fresh but holds its argument, so returns_fresh is true and
+        // the OWNERSHIP helper, which also needs !return_escapes, is false.
         "package main\n"
         "type Box struct{ v int }\n"
+        "type Holder struct{ p *Box }\n"
         "type B struct{}\n"
-        "var G *Box\n"
-        "func get() *Box {\n"
-        "    return &Box{v: 1}\n"
-        "}\n"
         "func (b *B) get() *Box {\n"
-        "    return G\n"
+        "    return &Box{v: 1}\n"
         "}\n"
         "func viaGet() *Box {\n"
         "    return get()\n"
         "}\n"
+        "func dup() *Box {\n"
+        "    return &Box{v: 3}\n"
+        "}\n"
+        "func (b *B) dup() *Box {\n"
+        "    return nil\n"
+        "}\n"
+        "func two() (*Box, *Box) {\n"
+        "    b := &Box{v: 5}\n"
+        "    return b, b\n"
+        "}\n"
+        "func wrap(b *Box) *Holder {\n"
+        "    return &Holder{p: b}\n"
+        "}\n"
         "func only() *Box {\n"
         "    return &Box{v: 2}\n"
         "}\n",
-        { { "get", false, true }, { "viaGet", false, false }, { "only", true, false } }, 3
+        { { "get", false, true, false }, { "viaGet", false, false, false },
+          { "dup", true, true, true },   { "two", false, false, false },
+          { "wrap", true, false, false }, { "only", true, false, true } }, 6
     },
 };
 
@@ -630,10 +653,17 @@ static void run_fresh_row(const FreshRow* row) {
                  row->row, fe->fn_name, fe->expected ? "true" : "false",
                  via_helper ? "true" : "false");
         goo_check(via_helper == fe->expected, buf);
+        bool owned = param_escape_call_result_is_owned(result, fe->fn_name);
+        snprintf(buf, sizeof(buf), "row %d: param_escape_call_result_is_owned('%s') == %s (got %s)",
+                 row->row, fe->fn_name, fe->expected_owned ? "true" : "false",
+                 owned ? "true" : "false");
+        goo_check(owned == fe->expected_owned, buf);
     }
     if (result) {
         goo_check(!param_escape_returns_fresh(result, "__no_such_function__"),
                   "unknown function name is conservatively not fresh");
+        goo_check(!param_escape_call_result_is_owned(result, "__no_such_function__"),
+                  "unknown function name is conservatively not owned");
         param_escape_result_free(result);
     }
     if (checker) type_checker_free(checker);

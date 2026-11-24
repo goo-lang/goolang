@@ -429,6 +429,7 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
         s->function_name = xstrdup(reg.items[i].name);
         s->param_count = reg.items[i].param_count;
         s->return_escapes = reg.items[i].return_escapes;
+        s->is_method = reg.items[i].decl->receiver != NULL;
         s->escapes = NULL;
         if (s->param_count > 0) {
             s->escapes = calloc(s->param_count, sizeof(bool));
@@ -694,9 +695,18 @@ static void scan_expr(FreshScan* s, ASTNode* e) {
     }
 }
 
-// `names` fed by a parallel `values` list. One value for several names is a
-// multi-result call, and each name then holds one of its results, so the call
-// is that name's binding. Any other count mismatch has no value to name.
+// One value for several names is a multi-result call. A Goo call's results
+// can be one object (`return b, b`), so its names get no value to prove fresh.
+// A selector call keeps the call as the binding: classify_value accepts only an
+// audited shim row there, and every multi-result shim is an error union whose
+// two sides are never one object. release_decision's seed_names makes the same
+// split.
+static ASTNode* multi_result_binding(ASTNode* values, size_t value_count) {
+    if (value_count != 1 || values->type != AST_CALL_EXPR) return NULL;
+    ASTNode* fn = ((CallExprNode*)values)->function;
+    return (fn && fn->type == AST_SELECTOR_EXPR) ? values : NULL;
+}
+
 static void scan_bind_names(FreshScan* s, char** names, size_t name_count, ASTNode* values,
                             bool declare) {
     size_t value_count = 0;
@@ -704,7 +714,7 @@ static void scan_bind_names(FreshScan* s, char** names, size_t name_count, ASTNo
     ASTNode* v = values;
     for (size_t i = 0; i < name_count; i++) {
         ASTNode* bound = (value_count == name_count) ? v
-                       : (value_count == 1) ? values : NULL;
+                       : multi_result_binding(values, value_count);
         if (declare) scan_declare(s, names[i]);
         scan_bind(s, names[i], bound);
         if (v) v = v->next;
@@ -850,8 +860,9 @@ static void scan_stmts(FreshScan* s, ASTNode* stmt, bool has_results) {
                     if (t->type == AST_IDENTIFIER) {
                         const char* name = ((IdentifierNode*)t)->name;
                         if (n->is_short_decl) scan_declare(s, name);
+                        // A mismatch is a multi-result call: see scan_bind_names.
                         scan_bind(s, name, (tcount == vcount) ? v
-                                           : (vcount == 1) ? n->values : NULL);
+                                           : multi_result_binding(n->values, vcount));
                     }
                     if (v) v = v->next;
                 }
@@ -1069,10 +1080,27 @@ static void classify_local(FreshClassify* c, const FreshReturn* r) {
     if (!any) c->facts->borrowed = true;
 }
 
+// The number of result slots. Several results come as an AST_STRUCT_TYPE of
+// VarDecl fields, and so does one NAMED result. An anonymous struct result
+// type has the same shape and can count as several, which only refuses more.
+static size_t result_slot_count(const FuncDeclNode* decl) {
+    if (!decl->return_type) return 0;
+    if (decl->return_type->type != AST_STRUCT_TYPE) return 1;
+    size_t n = 0;
+    for (ASTNode* fld = ((StructTypeNode*)decl->return_type)->fields; fld; fld = fld->next) {
+        n += (fld->type == AST_VAR_DECL) ? ((VarDeclNode*)fld)->name_count : 1;
+    }
+    return n;
+}
+
 static void collect_fresh_facts(const Registry* reg, const FuncInfo* f,
                                 const LocalEscapeSummary* locals, FreshFacts* facts) {
     // No body means nothing to prove from.
     if (!f->decl->body) { facts->borrowed = true; return; }
+    // Each result can be fresh on its own while two of them are one object
+    // (`return b, b`, or `return b, &Holder{p: b}`). A caller that owned both
+    // would free the object twice, so no multi-result function is fresh.
+    if (result_slot_count(f->decl) > 1) { facts->borrowed = true; return; }
 
     FreshScan scan = {0};
     scan_stmts(&scan, f->decl->body, f->decl->return_type != NULL);
@@ -1095,8 +1123,8 @@ static void collect_fresh_facts(const Registry* reg, const FuncInfo* f,
 
 // local_escape keeps one summary per function WITH A BODY, in declaration
 // order, and the registry keeps one per function. Pair them by walking both,
-// not by name: two methods can share a name. A mismatch pairs nothing, and a
-// function with no local summary proves nothing about its locals.
+// not by name: two methods can share a name. The name of each pair is checked,
+// and the first mismatch ends the pairing.
 static const LocalEscapeSummary** pair_local_summaries(const Registry* reg,
                                                        const LocalEscapeResult* le) {
     const LocalEscapeSummary** out = xcalloc(reg->count, sizeof(*out));   // count > 0: the caller returns early on 0
@@ -1105,7 +1133,12 @@ static const LocalEscapeSummary** pair_local_summaries(const Registry* reg,
         if (!reg->items[fi].decl->body) continue;
         if (li >= le->count) break;
         const LocalEscapeSummary* ls = &le->summaries[li++];
-        if (ls->function_name && strcmp(ls->function_name, reg->items[fi].name) == 0) out[fi] = ls;
+        // Once one pair disagrees, every later pair may be shifted, and a
+        // shifted pair can still match by name when two methods share one.
+        // Leave this entry and all later ones NULL: those functions prove
+        // nothing about their locals.
+        if (!ls->function_name || strcmp(ls->function_name, reg->items[fi].name) != 0) break;
+        out[fi] = ls;
     }
     return out;
 }
@@ -1133,10 +1166,13 @@ static void compute_returns_fresh(Registry* reg, ParamEscapeResult* result,
             if (may_borrow[fi]) continue;
             for (size_t k = 0; k < facts[fi].callee_count; k++) {
                 const char* callee = facts[fi].callees[k];
-                // By bare name, so EVERY function with that name must be
-                // fresh. No function at all is an unknown callee.
+                // A bare call never calls a method, so only a function with no
+                // receiver can match. EVERY such function with that name must
+                // be fresh, and no match at all is an unknown callee: a func
+                // variable, or a name this registry never saw.
                 bool found = false, borrowed = false;
                 for (size_t gj = 0; gj < reg->count; gj++) {
+                    if (reg->items[gj].decl->receiver) continue;
                     if (strcmp(reg->items[gj].name, callee) != 0) continue;
                     found = true;
                     if (may_borrow[gj]) borrowed = true;
@@ -1161,14 +1197,25 @@ static void compute_returns_fresh(Registry* reg, ParamEscapeResult* result,
     local_escape_result_free(le);
 }
 
-bool param_escape_returns_fresh(const ParamEscapeResult* result, const char* fn) {
+// Every summary a bare call `fn()` could mean must pass `want_owned`'s test.
+static bool every_bare_callee(const ParamEscapeResult* result, const char* fn, bool want_owned) {
     if (!result || !fn) return false;
     bool found = false;
     for (size_t i = 0; i < result->count; i++) {
         const ParamEscapeSummary* s = &result->summaries[i];
+        if (s->is_method) continue;
         if (!s->function_name || strcmp(s->function_name, fn) != 0) continue;
         if (!s->returns_fresh) return false;
+        if (want_owned && s->return_escapes) return false;
         found = true;
     }
     return found;
+}
+
+bool param_escape_returns_fresh(const ParamEscapeResult* result, const char* fn) {
+    return every_bare_callee(result, fn, false);
+}
+
+bool param_escape_call_result_is_owned(const ParamEscapeResult* result, const char* fn) {
+    return every_bare_callee(result, fn, true);
 }

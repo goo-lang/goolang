@@ -938,7 +938,9 @@ static TestRow rows[] = {
         // THE ROW THIS CHANGE EXISTS FOR. Two targets, ONE value. Before this,
         // both recorded NULL and condition 2 refused. strconv.Atoi is
         // non_retaining = 1, which is defined over the WHOLE result list, so
-        // no result aliases the argument and every result is owned.
+        // no result aliases the argument. Its results are an error union, so
+        // they are never one object either, and every result is owned. A GOO
+        // multi-value call stays refused: see row 76.
         37, "a tuple destructure from a non-retaining shim -> owned",
         "package main\n"
         "import \"strconv\"\n"
@@ -1066,6 +1068,77 @@ static TestRow rows[] = {
         "    return last\n"
         "}\n",
         "f", { { "last", RELEASE_NO_ESCAPES } }, 1
+    },
+    {
+        // FINDING C2, review C-1. A composite literal is owned, and has_alias
+        // pruned an owned value whole. But `Holder{p: x}` holds x, so the
+        // store release on `x = makeOwned()` freed the value h.p still read.
+        // A composite is now scanned like any other value.
+        73, "a struct literal that holds the local is an ALIAS -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "type Holder struct{ p *int }\n"
+        "func f() int {\n"
+        "    x := makeOwned()\n"
+        "    h := Holder{p: x}\n"
+        "    x = makeOwned()\n"
+        "    if *h.p > 0 && *x > 0 {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", { { "x", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        // FINDING C2, review C-3. A parameter spelled like a top-level
+        // function is a func VALUE, and a bare call reaches whatever it holds.
+        // makeOwned's summary says nothing about that.
+        74, "a bare call through a PARAMETER named like a function -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "func f(makeOwned func() *int) int {\n"
+        "    b := makeOwned()\n"
+        "    if *b > 0 {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", { { "b", RELEASE_NO_NOT_OWNED } }, 1
+    },
+    {
+        // The same through a LOCAL func variable that shadows the function.
+        75, "a bare call through a LOCAL named like a function -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "var G *int\n"
+        "func f() int {\n"
+        "    makeOwned := func() *int { return G }\n"
+        "    b := makeOwned()\n"
+        "    if *b > 0 {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", { { "b", RELEASE_NO_NOT_OWNED } }, 1
+    },
+    {
+        // FINDING C2, review C-2. Both results of `two` are ONE object, each
+        // fresh on its own. A caller that owned both would release it twice,
+        // so no result of a Goo multi-value call is owned.
+        76, "a tuple destructure from a Goo callee whose results share -> refuse both",
+        "package main\n"
+        "func two() (*int, *int) {\n"
+        "    b := new(int)\n"
+        "    return b, b\n"
+        "}\n"
+        "func f() int {\n"
+        "    x, y := two()\n"
+        "    if *x+*y > 0 {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", { { "x", RELEASE_NO_NOT_OWNED }, { "y", RELEASE_NO_NOT_OWNED } }, 2
     },
 };
 

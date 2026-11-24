@@ -1,0 +1,27 @@
+package main
+
+import "fmt"
+
+type Box struct{ v int }
+
+func mk(n int) *Box { return &Box{v: n} }
+
+func yes(c bool) int {
+	if c {
+		return 1
+	}
+	return 0
+}
+
+// xs holds the first box through a slice literal. The store to x must not
+// release that box, because xs[0] still reads it.
+func s3() int {
+	x := mk(1)
+	xs := []*Box{x}
+	x = mk(2)
+	return yes(xs[0].v > 0) + yes(x.v > 0)
+}
+
+func main() {
+	fmt.Println(s3(), s3())
+}

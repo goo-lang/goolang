@@ -173,6 +173,10 @@ typedef struct {
     // `counts` and `parts` -- three live reclamations -- to answer a question
     // that is not asked about them.
     bool         loop_locals_unreadable;
+
+    // The function being walked. A bare call `f()` whose name is one of its
+    // parameters or named results calls that variable, not a top-level f.
+    const FuncDeclNode* decl;
 } Collected;
 
 typedef struct {
@@ -665,6 +669,13 @@ static bool is_assign_operator(TokenType op) {
 
 static void walk_stmts(WalkCtx* ctx, ASTNode* stmt);
 
+// `pkg.Fn(...)` or `x.m(...)`. condition 2 decides whether the base is a
+// package and the row is audited; this only keeps a bare Goo call out.
+static bool is_selector_call(const ASTNode* v) {
+    return v && v->type == AST_CALL_EXPR && ((const CallExprNode*)v)->function
+           && ((const CallExprNode*)v)->function->type == AST_SELECTOR_EXPR;
+}
+
 // Seed `names` from a parallel `values` list. The shape `a, b := f(), g()` and
 // `var a, b = x, y` share it. When ONE value feeds several names -- the daemon's
 // `n, err := strconv.Atoi(f)` shape -- that value is attributed to every target.
@@ -682,20 +693,20 @@ static void seed_names(WalkCtx* ctx, char** names, size_t name_count, ASTNode* v
         }
         return;
     }
-    // COUNTS DIFFER: `a, b := f()`, one call feeding several names. Attribute
-    // the SINGLE value to every target rather than recording NULL.
+    // COUNTS DIFFER: `a, b := f()`, one call feeding several names.
     //
-    // SOUNDNESS COMES FROM AN EXISTING DEFINITION, not a new one. Both
-    // ownership sources are already stated over the WHOLE result list:
-    // shim_signature_is_non_retaining is "does not retain a pointer argument
-    // AND does not return a value that aliases one", and
-    // ParamEscapeSummary.returns_fresh is "every return path gives fresh memory
-    // in EVERY result position". Neither is per-result and neither needs to be:
-    // if every result is fresh, then every result is owned.
+    // "No result aliases an ARGUMENT" does not make every result owned: two
+    // results can be ONE object. A Goo `return b, b` gave the caller two owners
+    // of one box, and both released it (finding C2, review C-2). So a Goo
+    // call's results record NULL here, and no Goo summary with several results
+    // is returns_fresh either.
     //
-    // Only the one-value case qualifies. Any other mismatch is a shape this
-    // module does not understand, and the safe answer there is still NULL.
-    ASTNode* single = (value_count == 1) ? values : NULL;
+    // A SHIM call keeps the attribution. Every multi-result shim is an error
+    // union (SHIM_RET_ATOI_RESULT, _STRING_RESULT, _F64_RESULT): one side is
+    // filled and the other is zero on every path, so the two results are never
+    // one object. condition 2 still asks the audited non_retaining row, and
+    // examples/arc_release_tuple_probe.goo pins the bytes.
+    ASTNode* single = (value_count == 1 && is_selector_call(values)) ? values : NULL;
     for (size_t i = 0; i < name_count; i++) note_declaration(ctx, names[i], single);
 }
 
@@ -739,10 +750,9 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // `targets` is a NODE LIST, not a name array. `a, b := f()`
                 // declares, `a, b = x, y` assigns; either way condition 4 only
                 // needs the count. When ONE value feeds several names -- the
-                // daemon's `n, err := strconv.Atoi(f)` shape -- that value is
-                // attributed to every target, because non_retaining and
-                // returns_fresh are both defined over the whole result list.
-                // Any other count mismatch stays NULL, which refuses.
+                // daemon's `n, err := strconv.Atoi(f)` shape -- a SHIM call is
+                // attributed to every target and a Goo call records NULL: two
+                // results of a Goo call can be one object. See seed_names.
                 size_t tcount = 0, vcount = 0;
                 for (ASTNode* t = n->targets; t; t = t->next) tcount++;
                 for (ASTNode* v = n->values; v; v = v->next) vcount++;
@@ -782,7 +792,8 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                         if (t->type == AST_IDENTIFIER) {
                             note_declaration(ctx, ((IdentifierNode*)t)->name,
                                              (tcount == vcount) ? v
-                                                 : ((vcount == 1) ? n->values : NULL));
+                                                 : ((vcount == 1 && is_selector_call(n->values))
+                                                        ? n->values : NULL));
                         }
                     } else {
                         // The mismatch path pre-scanned above, so hand the rhs
@@ -1026,18 +1037,48 @@ static bool selector_base_is_local(Collected* c, ASTNode* selector) {
     return find_record(c, ((IdentifierNode*)base)->name) != NULL;
 }
 
+static bool var_decl_list_has(const ASTNode* list, const char* name) {
+    for (const ASTNode* p = list; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        const VarDeclNode* vd = (const VarDeclNode*)p;
+        for (size_t i = 0; vd->names && i < vd->name_count; i++) {
+            if (vd->names[i] && strcmp(vd->names[i], name) == 0) return true;
+        }
+    }
+    return false;
+}
+
+// Is `name` a parameter (the receiver included) or a named result of `decl`?
+// No decl answers true, which refuses: the caller cannot rule the name out.
+static bool decl_binds_name(const FuncDeclNode* decl, const char* name) {
+    if (!decl) return true;
+    if (var_decl_list_has(decl->params, name)) return true;
+    if (decl->return_type && decl->return_type->type == AST_STRUCT_TYPE) {
+        return var_decl_list_has(((const StructTypeNode*)decl->return_type)->fields, name);
+    }
+    return false;
+}
+
 static bool call_result_is_owned(Collected* c, const ParamEscapeResult* pe, ASTNode* expr) {
     CallExprNode* call = (CallExprNode*)expr;
     if (!call->function) return false;
 
     if (call->function->type == AST_IDENTIFIER) {
         const char* name = ((IdentifierNode*)call->function)->name;
+        // A local, a parameter or a named result spelled like a function is a
+        // func VALUE. Its call reaches whatever it holds, not the summary.
+        if (find_record(c, name) || decl_binds_name(c->decl, name)) return false;
         // Owned only on a positive proof (finding C2). `!return_escapes` was
         // used here, and it says only that the result derives from no
         // PARAMETER: a callee returning a global, or a value it also stored in
         // a container, passed that test and the caller freed live memory.
-        // A miss, or any same-named summary that is not fresh, answers false.
-        return param_escape_returns_fresh(pe, name);
+        //
+        // The helper also requires !return_escapes, because has_alias prunes
+        // an owned call result whole: fresh memory that holds an argument
+        // (`return &Holder{p: b}`) must not count as free of our locals. It
+        // skips method summaries, since a bare call never calls a method, and
+        // a miss -- a package-level func variable, an external -- is false.
+        return param_escape_call_result_is_owned(pe, name);
     }
 
     if (call->function->type == AST_SELECTOR_EXPR) {
@@ -1277,6 +1318,21 @@ static bool expr_names_local(ASTNode* e, const char* target, bool* unknown) {
     }
 }
 
+// A struct, slice, array or map literal, or the address of one: owned memory
+// whose elements can be pointers the literal copied in.
+static bool is_composite_value(const ASTNode* v) {
+    if (!v) return false;
+    switch (v->type) {
+        case AST_STRUCT_LITERAL:
+        case AST_SLICE_EXPR:      // a slice literal (SliceLitNode)
+        case AST_ARRAY_LITERAL:
+        case AST_PAREN_EXPR:      // a map literal (MapLitNode)
+            return true;
+        default:
+            return is_addr_of_composite((ASTNode*)v);
+    }
+}
+
 // Does another local hold a second pointer to what this one holds?
 //
 // THIS IS THE CONDITION NOTHING ELSE PROVIDES. `p := last` keeps a pointer to
@@ -1294,10 +1350,12 @@ static bool expr_names_local(ASTNode* e, const char* target, bool* unknown) {
 // value that could carry a pointer out counts.
 //
 // AN OWNED VALUE IS PRUNED WHOLE, and that is what makes this usable rather than
-// merely safe. binding_is_owned already means "this expression yields FRESH
-// memory" -- a new/composite, a concat, a call whose callee is returns_fresh, a
-// non-retaining shim. Fresh memory cannot contain a pointer into our local, so
-// no mention inside it can be an alias.
+// merely safe -- with ONE exception. binding_is_owned means "this expression
+// yields FRESH memory": a new/composite, a concat, an owned call result, a
+// non-retaining shim. A concat copies, new(T) holds nothing, and an owned call
+// result holds no argument (param_escape_call_result_is_owned requires
+// !return_escapes). A COMPOSITE LITERAL is the exception: it is fresh memory
+// that holds its own elements, so it is scanned like any other value.
 //
 // MEASURED, not reasoned. Without this prune, scanning every mention refused
 // `u := strings.ToUpper(last)` -- an ordinary read into a new local, which
@@ -1311,7 +1369,12 @@ static bool has_alias(Collected* c, const ParamEscapeResult* pe, const char* nam
         for (size_t j = 0; j < other->value_count; j++) {
             ASTNode* v = other->values[j];
             if (!v) continue;                       // nothing bound, nothing held
-            if (binding_is_owned(c, pe, v)) continue;   // fresh: cannot alias
+            // Fresh: cannot alias -- EXCEPT a composite literal, which is
+            // fresh memory built FROM its elements. `Holder{p: x}` and
+            // `[]*Box{x}` hold x, and the store release on `x = ...` freed the
+            // box they still read (review C-1). Scan a composite, nested
+            // literals included, like any other value.
+            if (binding_is_owned(c, pe, v) && !is_composite_value(v)) continue;
             bool unknown = false;
             if (expr_names_local(v, name, &unknown)) return true;
             if (unknown) return true;   // fail closed
@@ -1577,6 +1640,7 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         if (!name) continue;
 
         Collected c = { 0 };
+        c.decl = (const FuncDeclNode*)d;
         WalkCtx ctx = { .out = &c, .block_depth = 0, .arena_depth = 0,
                         .in_loop_header = false, };
         walk_stmts(&ctx, ((FuncDeclNode*)d)->body);

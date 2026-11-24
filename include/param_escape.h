@@ -47,6 +47,10 @@ typedef struct ParamEscapeSummary {
     // return_escapes reads false for it -- and ARC freed it (finding C2).
     // Anything this analysis cannot prove reads false, and false only leaks.
     bool   returns_fresh;
+
+    // F has a receiver. A bare call `name()` never calls a method, so the
+    // ownership lookup skips a method summary that shares the name.
+    bool   is_method;
 } ParamEscapeSummary;
 
 typedef struct ParamEscapeResult {
@@ -67,9 +71,17 @@ void param_escape_result_free(ParamEscapeResult* result);
 const ParamEscapeSummary* param_escape_lookup(const ParamEscapeResult* result, const char* fn);
 bool param_escape_param_escapes(const ParamEscapeResult* result, const char* fn, size_t param_idx);
 
-// Does the caller own the result of a call to `fn`? A lookup is by bare name,
-// and two methods on different types can share one. So the answer is true only
-// when EVERY summary with that name has returns_fresh. A miss is false.
+// Is every value that a bare call `fn()` returns fresh memory? Only a summary
+// with no receiver can match, because a bare call never calls a method. The
+// answer is true only when EVERY such summary with that name has returns_fresh.
+// A miss is false.
 bool param_escape_returns_fresh(const ParamEscapeResult* result, const char* fn);
+
+// Does the caller own the result of a bare call `fn()`? That is
+// param_escape_returns_fresh AND no matching summary has return_escapes: fresh
+// memory that holds an argument (`return &Holder{p: b}`) is owned, but it is
+// not free of the caller's locals, and release_decision's alias scan prunes an
+// owned call result whole. A miss is false.
+bool param_escape_call_result_is_owned(const ParamEscapeResult* result, const char* fn);
 
 #endif // PARAM_ESCAPE_H
