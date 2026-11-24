@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>   // SIZE_MAX, for the read_file growth bound
 #include <unistd.h>
 #include <getopt.h>
 #include <libgen.h>
@@ -517,23 +518,51 @@ static char* read_file(const char* filename) {
         return NULL;
     }
     
-    // Get file size
-    fseek(file, 0, SEEK_END);
-    long size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    
-    // Allocate buffer
-    char* buffer = malloc(size + 1);
+    // A pipe or a FIFO has no size, so ftell returns -1 and cannot size the
+    // buffer. Read to EOF instead, and grow the buffer as the data arrives.
+    size_t cap = 4096;
+    size_t len = 0;
+    char* buffer = malloc(cap + 1);
     if (!buffer) {
         fclose(file);
         fprintf(stderr, "Error: Out of memory reading file: %s\n", filename);
         return NULL;
     }
-    
-    // Read file
-    size_t read_size = fread(buffer, 1, size, file);
-    buffer[read_size] = '\0';
-    
+
+    for (;;) {
+        if (len == cap) {
+            if (cap > SIZE_MAX / 2 - 1) {
+                free(buffer);
+                fclose(file);
+                fprintf(stderr, "Error: Out of memory reading file: %s\n", filename);
+                return NULL;
+            }
+            size_t new_cap = cap * 2;
+            char* grown = realloc(buffer, new_cap + 1);
+            if (!grown) {
+                free(buffer);
+                fclose(file);
+                fprintf(stderr, "Error: Out of memory reading file: %s\n", filename);
+                return NULL;
+            }
+            buffer = grown;
+            cap = new_cap;
+        }
+        // fread returns a short count only at EOF or on error, so a zero
+        // count ends the loop. ferror below tells the two apart.
+        size_t n = fread(buffer + len, 1, cap - len, file);
+        len += n;
+        if (n == 0) break;
+    }
+
+    if (ferror(file)) {
+        free(buffer);
+        fclose(file);
+        fprintf(stderr, "Error: Cannot read file: %s\n", filename);
+        return NULL;
+    }
+
+    buffer[len] = '\0';
     fclose(file);
     return buffer;
 }

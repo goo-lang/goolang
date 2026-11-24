@@ -279,5 +279,19 @@ check test-package-main       0     "~ok"         empty                sh -c "cd
 # ...and the program itself still builds and runs normally.
 check test-package-main-builds 0    "42"          empty                sh -c "cd '$WORK/mainpkg' && '$COMPILER' run ."
 
+# M2: a source file that is a pipe has no size, so the reader cannot use
+# ftell to size its buffer. The file reaches the compiler through a pipe, not
+# a regular file. bash sets pipefail so a failing cat cannot hide behind goo.
+check stdin-source-builds     0     ""            empty                bash -c "set -o pipefail; cat '$WORK/ok.goo' | timeout 10 '$COMPILER' build -o '$WORK/stdin_bin' /dev/stdin"
+check stdin-binary-runs       0     "ok"          empty                "$WORK/stdin_bin"
+
+# L5: a FIFO named like a source file must be skipped. Opening it blocks
+# forever, so every run carries timeout 10 and a hang fails the row.
+FIFO_DIR=$(mktemp -d "$WORK/fifo.XXXXXX") || { echo "  FAIL fifo-setup: mktemp"; exit 1; }
+cp "$WORK/ok.goo" "$FIFO_DIR/main.go"
+mkfifo "$FIFO_DIR/y.go" || { echo "  FAIL fifo-setup: mkfifo"; exit 1; }
+check fifo-source-skipped     0     ""            empty                sh -c "cd '$FIFO_DIR' && timeout 10 '$COMPILER' build ."
+rm -rf "$FIFO_DIR"
+
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]
