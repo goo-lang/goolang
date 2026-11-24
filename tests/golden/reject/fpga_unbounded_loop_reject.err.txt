@@ -1,0 +1,1 @@
+FPGA synthesis subset requires statically bounded 'for' loop in 'fpga_bad_loop'

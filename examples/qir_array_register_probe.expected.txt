@@ -1,0 +1,1 @@
+array_ghz_uncomputed 0 0 0 fpga_score 4

@@ -22,6 +22,7 @@
 #include "runtime.h"
 #include "import_resolver.h"
 #include "test_discovery.h"
+#include "qir_ownership.h"
 
 // Compiler version. The build can stamp a real one with
 // -DGOO_VERSION='"x.y.z"' (see the Makefile's GOO_VERSION), which is how a
@@ -63,6 +64,7 @@ typedef struct CompilerOptions {
     bool emit_llvm_ir;
     bool emit_qir;
     bool emit_qasm3;
+    bool check_fpga;
     bool emit_ast;
     bool emit_tokens;
     bool optimize;
@@ -274,6 +276,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
         {"emit-llvm", no_argument, 0, 0},
         {"emit-qir", no_argument, 0, 0},
         {"emit-qasm3", no_argument, 0, 0},
+        {"check-fpga", no_argument, 0, 0},
         {"emit-ast", no_argument, 0, 0},
         {"emit-tokens", no_argument, 0, 0},
         {"dump-packages", no_argument, 0, 0},
@@ -297,6 +300,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                     options->emit_qir = true;
                 } else if (strcmp(long_options[option_index].name, "emit-qasm3") == 0) {
                     options->emit_qasm3 = true;
+                } else if (strcmp(long_options[option_index].name, "check-fpga") == 0) {
+                    options->check_fpga = true;
                 } else if (strcmp(long_options[option_index].name, "emit-ast") == 0) {
                     options->emit_ast = true;
                 } else if (strcmp(long_options[option_index].name, "emit-tokens") == 0) {
@@ -1528,6 +1533,23 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         type_checker_free(type_checker);
         ENTRY_CLEANUP();
         return false;
+    }
+
+    if (options->check_fpga) {
+        bool fpga_ok = true;
+        for (size_t fi = 0; fi < nfiles; fi++) {
+            if (!fpga_check_program(type_checker, asts[fi], 1)) {
+                fpga_ok = false;
+            }
+        }
+        if (!fpga_ok) {
+#if LLVM_AVAILABLE
+            codegen_free(codegen);
+#endif
+            type_checker_free(type_checker);
+            ENTRY_CLEANUP();
+            return false;
+        }
     }
 
     // Phase 4: Code Generation

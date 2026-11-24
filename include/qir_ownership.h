@@ -32,4 +32,13 @@
 
 int qir_ownership_check_program(TypeChecker* checker, ASTNode* program);
 
+// Phase 8 M1 — FPGA hardware-control synthesis contract verifier (`--check-fpga`
+// and `fpga_*` functions). Enforces:
+//   1. Zero heap allocations (`new`, `make`, `append`, slice/map literals,
+//      capturing closures, `go`, `defer`).
+//   2. Fixed-size arrays and scalar/value-struct types only (no slices, maps,
+//      channels, interfaces, or dynamic strings).
+//   3. Statically bounded `for` loops (no unbounded `for { ... }` loops).
+int fpga_check_program(TypeChecker* checker, ASTNode* program, int check_all_funcs);
+
 #endif // QIR_OWNERSHIP_H

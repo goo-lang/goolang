@@ -4,6 +4,7 @@
 
 #include "qir_ownership.h"
 #include "ownership_checker.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,7 +17,7 @@ typedef enum {
 } QirBindingState;
 
 typedef struct {
-    const char*     name;              // Borrowed AST identifier string
+    char            name[64];          // Inline binding/element name (e.g. "q0" or "d[0]")
     QirBindingState state;
     Position        decl_pos;
     Position        transition_pos;
@@ -50,6 +51,14 @@ static int type_is_qir_qubit(const Type* t) {
            strcmp(t->data.struct_type.name, "Qubit") == 0;
 }
 
+static int type_is_qir_qubit_array(const Type* t, size_t* out_len) {
+    if (!t || t->kind != TYPE_ARRAY) return 0;
+    if (!type_is_qir_qubit(t->data.array.element_type)) return 0;
+    if (t->data.array.length == 0 || t->data.array.length > 16) return 0;
+    if (out_len) *out_len = t->data.array.length;
+    return 1;
+}
+
 // True if `t` is a container, pointer, channel, nullable, error-union, or
 // user-defined named struct holding `qir.Qubit`. Anonymous result tuples
 // (`func f() (qir.Qubit, qir.Qubit)`, where `struct_type.name == NULL`) are
@@ -64,6 +73,7 @@ static int type_is_illegal_qubit_container(const Type* t) {
             return type_is_qir_qubit(t->data.slice.element_type) ||
                    type_is_illegal_qubit_container(t->data.slice.element_type);
         case TYPE_ARRAY:
+            if (type_is_qir_qubit_array(t, NULL)) return 0;
             return type_is_qir_qubit(t->data.array.element_type) ||
                    type_is_illegal_qubit_container(t->data.array.element_type);
         case TYPE_MAP:
@@ -145,7 +155,7 @@ static QirBinding* qir_find_binding(QirBindingTable* tbl, const char* name) {
     if (!tbl || !name) return NULL;
     // Innermost scope wins (reverse search).
     for (size_t i = tbl->count; i > 0; i--) {
-        if (tbl->items[i - 1].name && strcmp(tbl->items[i - 1].name, name) == 0) {
+        if (tbl->items[i - 1].name[0] != '\0' && strcmp(tbl->items[i - 1].name, name) == 0) {
             return &tbl->items[i - 1];
         }
     }
@@ -169,7 +179,7 @@ static void qir_add_binding(QirWalkContext* ctx, const char* name, Position pos,
     if (ctx->table.count >= QIR_MAX_BINDINGS_PER_FUNC) return;
 
     QirBinding* b = &ctx->table.items[ctx->table.count++];
-    b->name = name;
+    snprintf(b->name, sizeof(b->name), "%s", name);
     b->state = QIR_STATE_LIVE;
     b->decl_pos = pos;
     b->transition_pos = pos;
@@ -178,6 +188,35 @@ static void qir_add_binding(QirWalkContext* ctx, const char* name, Position pos,
     b->is_borrowed_param = is_borrowed_param;
     b->has_static_id = has_static_id;
     b->static_id = static_id;
+}
+
+// Resolve a qubit lvalue/argument (`q0` or `d[const_idx]`) into `out_name`.
+static int qir_resolve_qubit_ref(QirWalkContext* ctx, ASTNode* node, char* out_name, size_t cap) {
+    if (!node || !out_name || cap == 0) return 0;
+    if (node->type == AST_IDENTIFIER) {
+        const char* nm = ((IdentifierNode*)node)->name;
+        if (!nm) return 0;
+        snprintf(out_name, cap, "%s", nm);
+        return 1;
+    }
+    if (node->type == AST_INDEX_EXPR) {
+        IndexExprNode* ie = (IndexExprNode*)node;
+        if (ie->expr && ie->expr->type == AST_IDENTIFIER &&
+            (type_is_qir_qubit(node->node_type) ||
+             type_is_qir_qubit_array(ie->expr->node_type, NULL))) {
+            const char* base = ((IdentifierNode*)ie->expr)->name;
+            uint64_t idx = 0;
+            if (!goo_fold_const_int_ctx(ctx->checker, ie->index, &idx)) {
+                type_error(ctx->checker, ie->index ? ie->index->pos : node->pos,
+                    "linear qubit array '%s' requires a compile-time constant integer index",
+                    base ? base : "<array>");
+                return 0;
+            }
+            snprintf(out_name, cap, "%s[%llu]", base, (unsigned long long)idx);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 // Check that `b` is currently LIVE before reading/borrowing it; emit the
@@ -251,8 +290,8 @@ static int qir_consume_qubit_rhs(QirWalkContext* ctx, ASTNode* rhs,
     if (out_static_id) *out_static_id = 0;
     if (!rhs) return 0;
 
-    if (rhs->type == AST_IDENTIFIER) {
-        const char* src_name = ((IdentifierNode*)rhs)->name;
+    char src_name[64];
+    if (qir_resolve_qubit_ref(ctx, rhs, src_name, sizeof(src_name))) {
         QirBinding* src = qir_find_binding(&ctx->table, src_name);
         if (!src) return 0;
         if (out_has_static) *out_has_static = src->has_static_id;
@@ -318,8 +357,8 @@ static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_i
 
     if (is_qir && qir_selector_is_consumer(qir_sel)) {
         ASTNode* arg0 = call->args;
-        if (arg0 && arg0->type == AST_IDENTIFIER) {
-            const char* qname = ((IdentifierNode*)arg0)->name;
+        char qname[64];
+        if (arg0 && qir_resolve_qubit_ref(ctx, arg0, qname, sizeof(qname))) {
             QirBinding* b = qir_find_binding(&ctx->table, qname);
             Position pos = call->function ? call->function->pos : expr->pos;
             qir_transition_binding(ctx, b, QIR_STATE_CONSUMED, pos);
@@ -336,7 +375,7 @@ static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_i
     // 1. Check non-Qubit subexpressions and collect Qubit arguments.
     // 2. Enforce Obligation 2: all Qubit arguments in a single call must be
     //    distinct live bindings.
-    const char* qubit_arg_names[16];
+    char        qubit_arg_names[16][64];
     QirBinding* qubit_arg_bindings[16];
     size_t      qubit_arg_indices[16];
     size_t      qubit_arg_count = 0;
@@ -356,14 +395,15 @@ static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_i
     size_t arg_idx = 1;
     for (ASTNode* a = call->args; a; a = a->next, arg_idx++) {
         int is_qubit_arg = type_is_qir_qubit(a->node_type);
-        if (!is_qubit_arg && a->type == AST_IDENTIFIER) {
-            if (qir_find_binding(&ctx->table, ((IdentifierNode*)a)->name) != NULL) {
+        char aname[64];
+        int has_ref = qir_resolve_qubit_ref(ctx, a, aname, sizeof(aname));
+        if (!is_qubit_arg && has_ref) {
+            if (qir_find_binding(&ctx->table, aname) != NULL) {
                 is_qubit_arg = 1;
             }
         }
         if (is_qubit_arg) {
-            if (a->type == AST_IDENTIFIER) {
-                const char* aname = ((IdentifierNode*)a)->name;
+            if (has_ref) {
                 QirBinding* b = qir_find_binding(&ctx->table, aname);
                 if (qir_require_live(ctx, b, a->pos)) {
                     // Check for duplicate Qubit argument in the same call (Obligation 2).
@@ -380,7 +420,8 @@ static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_i
                         }
                     }
                     if (qubit_arg_count < 16) {
-                        qubit_arg_names[qubit_arg_count] = aname;
+                        snprintf(qubit_arg_names[qubit_arg_count],
+                                 sizeof(qubit_arg_names[qubit_arg_count]), "%s", aname);
                         qubit_arg_bindings[qubit_arg_count] = b;
                         qubit_arg_indices[qubit_arg_count] = arg_idx;
                         qubit_arg_count++;
@@ -461,6 +502,19 @@ static void qir_check_expr(QirWalkContext* ctx, ASTNode* expr, int allow_qubit_v
             return;
         case AST_INDEX_EXPR: {
             IndexExprNode* idx = (IndexExprNode*)expr;
+            if (type_is_qir_qubit(expr->node_type)) {
+                char ref_name[64];
+                if (qir_resolve_qubit_ref(ctx, expr, ref_name, sizeof(ref_name))) {
+                    QirBinding* b = qir_find_binding(&ctx->table, ref_name);
+                    qir_require_live(ctx, b, expr->pos);
+                    if (!allow_qubit_value) {
+                        type_error(ctx->checker, expr->pos,
+                            "linear qubit '%s' cannot be copied or used as a general value; pass it to a 'qir' gate or consume it",
+                            ref_name);
+                    }
+                }
+                return;
+            }
             qir_check_expr(ctx, idx->expr, 0);
             qir_check_expr(ctx, idx->index, 0);
             return;
@@ -489,7 +543,8 @@ static void qir_check_expr(QirWalkContext* ctx, ASTNode* expr, int allow_qubit_v
         }
         case AST_ARRAY_LITERAL: {
             ArrayLitNode* lit = (ArrayLitNode*)expr;
-            if (type_is_illegal_qubit_container(expr->node_type)) {
+            if (type_is_qir_qubit_array(expr->node_type, NULL) ||
+                type_is_illegal_qubit_container(expr->node_type)) {
                 type_error(ctx->checker, expr->pos,
                     "linear type 'qir.Qubit' cannot be stored in a struct, slice, array, map, channel, or pointer");
             }
@@ -602,6 +657,30 @@ static void qir_handle_var_decl(QirWalkContext* ctx, VarDeclNode* vd) {
         return;
     }
 
+    // Phase 7 M4: fixed-size linear qubit register `var q [N]qir.Qubit`.
+    size_t qarr_len = 0;
+    if (type_is_qir_qubit_array(decl_type, &qarr_len)) {
+        if (vd->values) {
+            type_error(ctx->checker, vd->base.pos,
+                "linear type 'qir.Qubit' cannot be stored in a struct, slice, array, map, channel, or pointer");
+            return;
+        }
+        for (size_t i = 0; i < vd->name_count; i++) {
+            const char* nm = (vd->names && vd->names[i]) ? vd->names[i] : NULL;
+            if (!nm || strcmp(nm, "_") == 0) continue;
+            for (size_t k = 0; k < qarr_len; k++) {
+                char elem_name[64];
+                snprintf(elem_name, sizeof(elem_name), "%s[%zu]", nm, k);
+                qir_add_binding(ctx, elem_name, vd->base.pos, 0, 0, 0);
+                // Slot starts unallocated (CONSUMED) until assigned via `q[k] = qir.Alloc()`.
+                if (ctx->table.count > 0) {
+                    ctx->table.items[ctx->table.count - 1].state = QIR_STATE_CONSUMED;
+                }
+            }
+        }
+        return;
+    }
+
     // Multi-value call destructuring: `a, b := makeBell()`
     if (vd->name_count > 1 && vd->values && !vd->values->next &&
         vd->values->type == AST_CALL_EXPR &&
@@ -667,12 +746,14 @@ static void qir_handle_expr_stmt(QirWalkContext* ctx, ASTNode* expr) {
             // Check if LHS or RHS is a `qir.Qubit`.
             int lhs_is_blank = (bin->left && bin->left->type == AST_IDENTIFIER &&
                                 strcmp(((IdentifierNode*)bin->left)->name, "_") == 0);
-            QirBinding* lhs_b = (bin->left && bin->left->type == AST_IDENTIFIER)
-                ? qir_find_binding(&ctx->table, ((IdentifierNode*)bin->left)->name)
+            char lhs_ref[64];
+            QirBinding* lhs_b = (bin->left && qir_resolve_qubit_ref(ctx, bin->left, lhs_ref, sizeof(lhs_ref)))
+                ? qir_find_binding(&ctx->table, lhs_ref)
                 : NULL;
             int rhs_is_qubit = bin->right && type_is_qir_qubit(bin->right->node_type);
-            if (!rhs_is_qubit && bin->right && bin->right->type == AST_IDENTIFIER) {
-                if (qir_find_binding(&ctx->table, ((IdentifierNode*)bin->right)->name) != NULL) {
+            char rhs_ref[64];
+            if (!rhs_is_qubit && bin->right && qir_resolve_qubit_ref(ctx, bin->right, rhs_ref, sizeof(rhs_ref))) {
+                if (qir_find_binding(&ctx->table, rhs_ref) != NULL) {
                     rhs_is_qubit = 1;
                 }
             }
@@ -1114,7 +1195,7 @@ int qir_ownership_check_program(TypeChecker* checker, ASTNode* program) {
             Type* t = vd->base.node_type;
             if (!t && vd->type) t = type_from_ast(checker, vd->type);
             if (!t && vd->values) t = vd->values->node_type;
-            if (type_is_qir_qubit(t) || type_is_illegal_qubit_container(t)) {
+            if (type_is_qir_qubit(t) || type_is_qir_qubit_array(t, NULL) || type_is_illegal_qubit_container(t)) {
                 type_error(checker, decl->pos,
                     "linear type 'qir.Qubit' cannot be stored in a global variable");
             }
@@ -1123,7 +1204,7 @@ int qir_ownership_check_program(TypeChecker* checker, ASTNode* program) {
         if (decl->type == AST_TYPE_DECL) {
             TypeDeclNode* td = (TypeDeclNode*)decl;
             Variable* tv = td->name ? type_checker_lookup_variable(checker, td->name) : NULL;
-            if (tv && tv->type && type_is_illegal_qubit_container(tv->type)) {
+            if (tv && tv->type && (type_is_qir_qubit_array(tv->type, NULL) || type_is_illegal_qubit_container(tv->type))) {
                 type_error(checker, decl->pos,
                     "linear type 'qir.Qubit' cannot be stored in a struct, slice, array, map, channel, or pointer");
             }
@@ -1140,7 +1221,7 @@ int qir_ownership_check_program(TypeChecker* checker, ASTNode* program) {
         ctx.block_terminated = 0;
 
         Type* ret_type = func->return_type ? type_from_ast(checker, func->return_type) : NULL;
-        if (type_is_illegal_qubit_container(ret_type)) {
+        if (type_is_qir_qubit_array(ret_type, NULL) || type_is_illegal_qubit_container(ret_type)) {
             type_error(checker, func->base.pos,
                 "linear type 'qir.Qubit' cannot be stored in a struct, slice, array, map, channel, or pointer");
         }
@@ -1151,7 +1232,7 @@ int qir_ownership_check_program(TypeChecker* checker, ASTNode* program) {
             if (p->type != AST_VAR_DECL) continue;
             VarDeclNode* pvd = (VarDeclNode*)p;
             Type* pt = pvd->type ? type_from_ast(checker, pvd->type) : pvd->base.node_type;
-            if (type_is_illegal_qubit_container(pt)) {
+            if (type_is_qir_qubit_array(pt, NULL) || type_is_illegal_qubit_container(pt)) {
                 type_error(checker, p->pos,
                     "linear type 'qir.Qubit' cannot be stored in a struct, slice, array, map, channel, or pointer");
                 continue;
@@ -1178,6 +1259,222 @@ int qir_ownership_check_program(TypeChecker* checker, ASTNode* program) {
                 qir_pop_scope_bindings(&ctx, -1, 1);
             }
         }
+    }
+
+    return checker->error_count == errors_before;
+}
+
+// ===========================================================================
+// Phase 8 M1 — FPGA Synthesis Subset Checker (`fpga_check_program`)
+// ===========================================================================
+// Verifies that functions prefixed with `fpga_` (or all functions when the
+// compiler is invoked with `--check-fpga`) obey the deterministic RTL/HLS
+// hardware-synthesis subset:
+//   1. Zero heap allocations (`new`, `make`, `append`, slice/map/closure literals).
+//   2. Fixed-width value types only (no slices, maps, channels, or interfaces).
+//   3. No runtime scheduler or unwinding constructs (`go`, `defer`, `select`, `panic`).
+//   4. Statically bounded `for` loops (unbounded `for {}` loops are rejected).
+
+static int type_is_fpga_forbidden(Type* t) {
+    if (!t) return 0;
+    switch (t->kind) {
+        case TYPE_SLICE:
+        case TYPE_MAP:
+        case TYPE_CHANNEL:
+        case TYPE_INTERFACE:
+        case TYPE_FUNCTION:
+            return 1;
+        case TYPE_ARRAY:
+            return type_is_fpga_forbidden(t->data.array.element_type);
+        case TYPE_STRUCT:
+            for (size_t i = 0; i < t->data.struct_type.field_count; i++) {
+                if (type_is_fpga_forbidden(t->data.struct_type.fields[i].type)) {
+                    return 1;
+                }
+            }
+            return 0;
+        default:
+            return 0;
+    }
+}
+
+static void fpga_walk_stmt(TypeChecker* checker, const char* fn_name, ASTNode* stmt);
+
+static void fpga_walk_expr(TypeChecker* checker, const char* fn_name, ASTNode* expr) {
+    if (!expr) return;
+    switch (expr->type) {
+        case AST_SLICE_EXPR:
+        case AST_PAREN_EXPR:
+        case AST_FUNC_LIT:
+            type_error(checker, expr->pos,
+                "FPGA synthesis subset forbids heap-allocated literal in '%s'; use fixed-size arrays or value structs",
+                fn_name);
+            return;
+        case AST_CALL_EXPR: {
+            CallExprNode* c = (CallExprNode*)expr;
+            if (c->function && c->function->type == AST_IDENTIFIER) {
+                const char* callee = ((IdentifierNode*)c->function)->name;
+                if (callee && (strcmp(callee, "new") == 0 ||
+                               strcmp(callee, "make") == 0 ||
+                               strcmp(callee, "append") == 0 ||
+                               strcmp(callee, "delete") == 0 ||
+                               strcmp(callee, "panic") == 0)) {
+                    type_error(checker, expr->pos,
+                        "FPGA synthesis subset forbids heap allocation or dynamic builtin '%s' in '%s'",
+                        callee, fn_name);
+                }
+            }
+            for (ASTNode* a = c->args; a; a = a->next) {
+                fpga_walk_expr(checker, fn_name, a);
+            }
+            return;
+        }
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            fpga_walk_expr(checker, fn_name, b->left);
+            fpga_walk_expr(checker, fn_name, b->right);
+            return;
+        }
+        case AST_UNARY_EXPR:
+            fpga_walk_expr(checker, fn_name, ((UnaryExprNode*)expr)->operand);
+            return;
+        case AST_POSTFIX_EXPR:
+            fpga_walk_expr(checker, fn_name, ((PostfixExprNode*)expr)->operand);
+            return;
+        case AST_INDEX_EXPR: {
+            IndexExprNode* idx = (IndexExprNode*)expr;
+            fpga_walk_expr(checker, fn_name, idx->expr);
+            fpga_walk_expr(checker, fn_name, idx->index);
+            return;
+        }
+        case AST_ARRAY_LITERAL: {
+            ArrayLitNode* lit = (ArrayLitNode*)expr;
+            for (ASTNode* e = lit->elements; e; e = e->next) {
+                fpga_walk_expr(checker, fn_name, e);
+            }
+            return;
+        }
+        case AST_STRUCT_LITERAL: {
+            StructLiteralNode* sl = (StructLiteralNode*)expr;
+            for (ASTNode* f = sl->field_values; f; f = f->next) {
+                fpga_walk_expr(checker, fn_name, f);
+            }
+            return;
+        }
+        case AST_KEYED_ELEMENT: {
+            KeyedElementNode* ke = (KeyedElementNode*)expr;
+            fpga_walk_expr(checker, fn_name, ke->key);
+            fpga_walk_expr(checker, fn_name, ke->value);
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+static void fpga_walk_stmt(TypeChecker* checker, const char* fn_name, ASTNode* stmt) {
+    if (!stmt) return;
+    switch (stmt->type) {
+        case AST_BLOCK_STMT: {
+            BlockStmtNode* b = (BlockStmtNode*)stmt;
+            for (ASTNode* s = b->statements; s; s = s->next) {
+                fpga_walk_stmt(checker, fn_name, s);
+            }
+            return;
+        }
+        case AST_VAR_DECL: {
+            VarDeclNode* vd = (VarDeclNode*)stmt;
+            Type* t = vd->base.node_type;
+            if (!t && vd->type) t = vd->type->node_type;
+            if (!t && vd->values) t = vd->values->node_type;
+            if (type_is_fpga_forbidden(t)) {
+                type_error(checker, stmt->pos,
+                    "FPGA synthesis subset forbids dynamic type in '%s'; use fixed-size arrays or value structs",
+                    fn_name);
+            }
+            for (ASTNode* v = vd->values; v; v = v->next) {
+                fpga_walk_expr(checker, fn_name, v);
+            }
+            return;
+        }
+        case AST_EXPR_STMT:
+            fpga_walk_expr(checker, fn_name, ((ExprStmtNode*)stmt)->expr);
+            return;
+        case AST_RETURN_STMT: {
+            ReturnStmtNode* r = (ReturnStmtNode*)stmt;
+            for (ASTNode* v = r->values; v; v = v->next) {
+                fpga_walk_expr(checker, fn_name, v);
+            }
+            return;
+        }
+        case AST_IF_STMT: {
+            IfStmtNode* ifs = (IfStmtNode*)stmt;
+            fpga_walk_expr(checker, fn_name, ifs->condition);
+            fpga_walk_stmt(checker, fn_name, ifs->then_stmt);
+            fpga_walk_stmt(checker, fn_name, ifs->else_stmt);
+            return;
+        }
+        case AST_FOR_STMT: {
+            ForStmtNode* f = (ForStmtNode*)stmt;
+            if (!f->condition && !f->range_expr) {
+                type_error(checker, stmt->pos,
+                    "FPGA synthesis subset requires statically bounded 'for' loop in '%s' (unbounded 'for' cannot be unrolled for RTL pipeline synthesis)",
+                    fn_name);
+            }
+            if (f->range_expr && f->range_expr->node_type &&
+                f->range_expr->node_type->kind != TYPE_ARRAY) {
+                type_error(checker, stmt->pos,
+                    "FPGA synthesis subset requires fixed-size array in 'for range' loop in '%s'",
+                    fn_name);
+            }
+            fpga_walk_stmt(checker, fn_name, f->init);
+            fpga_walk_expr(checker, fn_name, f->condition);
+            fpga_walk_expr(checker, fn_name, f->range_expr);
+            fpga_walk_stmt(checker, fn_name, f->body);
+            fpga_walk_stmt(checker, fn_name, f->post);
+            return;
+        }
+        case AST_GO_STMT:
+        case AST_DEFER_STMT:
+        case AST_SELECT_STMT:
+            type_error(checker, stmt->pos,
+                "FPGA synthesis subset forbids runtime scheduler or concurrency construct in '%s'",
+                fn_name);
+            return;
+        default:
+            return;
+    }
+}
+
+int fpga_check_program(TypeChecker* checker, ASTNode* program, int check_all_funcs) {
+    if (!checker || !program || program->type != AST_PROGRAM) return 0;
+    int errors_before = checker->error_count;
+    ProgramNode* prog = (ProgramNode*)program;
+
+    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+        if (decl->type != AST_FUNC_DECL) continue;
+        FuncDeclNode* func = (FuncDeclNode*)decl;
+        if (!func->name) continue;
+        int is_fpga_fn = check_all_funcs || (strncmp(func->name, "fpga_", 5) == 0);
+        if (!is_fpga_fn) continue;
+
+        Type* ret_type = func->return_type ? type_from_ast(checker, func->return_type) : NULL;
+        if (type_is_fpga_forbidden(ret_type)) {
+            type_error(checker, func->base.pos,
+                "FPGA synthesis subset forbids dynamic return type in '%s'; use fixed-size arrays or value structs",
+                func->name);
+        }
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pvd = (VarDeclNode*)p;
+            Type* pt = pvd->type ? type_from_ast(checker, pvd->type) : pvd->base.node_type;
+            if (type_is_fpga_forbidden(pt)) {
+                type_error(checker, p->pos,
+                    "FPGA synthesis subset forbids dynamic parameter type in '%s'; use fixed-size arrays or value structs",
+                    func->name);
+            }
+        }
+        fpga_walk_stmt(checker, func->name, func->body);
     }
 
     return checker->error_count == errors_before;

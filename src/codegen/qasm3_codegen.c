@@ -21,7 +21,7 @@ typedef enum {
 } Qasm3VarKind;
 
 typedef struct {
-    const char*  name;
+    char         name[64];
     Qasm3VarKind kind;
     int64_t      index_or_val;
     int          r0_bit; // for syndrome expressions derived from (r0, r1)
@@ -72,7 +72,7 @@ static void qasm3_emit(Qasm3Ctx* ctx, const char* fmt, ...) {
 static Qasm3Var* qasm3_find_var_upto(Qasm3Ctx* ctx, const char* name, size_t limit) {
     if (!name) return NULL;
     for (size_t i = limit; i > 0; i--) {
-        if (ctx->vars[i - 1].name && strcmp(ctx->vars[i - 1].name, name) == 0) {
+        if (ctx->vars[i - 1].name[0] != '\0' && strcmp(ctx->vars[i - 1].name, name) == 0) {
             return &ctx->vars[i - 1];
         }
     }
@@ -88,7 +88,7 @@ static Qasm3Var* qasm3_set_var(Qasm3Ctx* ctx, const char* name, Qasm3VarKind kin
     if (ctx->var_count >= QASM3_MAX_VARS) return NULL;
     Qasm3Var* v = &ctx->vars[ctx->var_count++];
     memset(v, 0, sizeof(*v));
-    v->name = name;
+    snprintf(v->name, sizeof(v->name), "%s", name);
     v->kind = kind;
     v->index_or_val = val;
     return v;
@@ -190,6 +190,26 @@ static void qasm3_format_float(ASTNode* expr, char* buf, size_t n) {
     snprintf(buf, n, "0.0");
 }
 
+static int qasm3_resolve_ref(Qasm3Ctx* ctx, ASTNode* expr, char* out, size_t cap) {
+    if (!expr || !out || cap == 0) return 0;
+    if (expr->type == AST_IDENTIFIER) {
+        const char* nm = ((IdentifierNode*)expr)->name;
+        if (!nm) return 0;
+        snprintf(out, cap, "%s", nm);
+        return 1;
+    }
+    if (expr->type == AST_INDEX_EXPR) {
+        IndexExprNode* idx = (IndexExprNode*)expr;
+        int64_t k = 0;
+        if (idx->expr && idx->expr->type == AST_IDENTIFIER &&
+            qasm3_eval_int(ctx, idx->index, &k)) {
+            snprintf(out, cap, "%s[%lld]", ((IdentifierNode*)idx->expr)->name, (long long)k);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt);
 
 static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs_name) {
@@ -229,15 +249,17 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 return;
             }
             if (strcmp(op, "FreeZero") == 0) {
-                if (call->args && call->args->type == AST_IDENTIFIER) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ((IdentifierNode*)call->args)->name);
+                char ref[64];
+                if (qasm3_resolve_ref(ctx, call->args, ref, sizeof(ref))) {
+                    Qasm3Var* v = qasm3_find_var(ctx, ref);
                     if (v) qasm3_free_qubit(ctx, v->index_or_val);
                 }
                 return;
             }
             if (strcmp(op, "MeasureReset") == 0) {
-                if (call->args && call->args->type == AST_IDENTIFIER) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ((IdentifierNode*)call->args)->name);
+                char ref[64];
+                if (qasm3_resolve_ref(ctx, call->args, ref, sizeof(ref))) {
+                    Qasm3Var* v = qasm3_find_var(ctx, ref);
                     int64_t q = v ? v->index_or_val : 0;
                     int64_t c = qasm3_alloc_result(ctx);
                     qasm3_emit(ctx, "c[%lld] = measure q[%lld];\n", (long long)c, (long long)q);
@@ -252,8 +274,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 char tbuf[64];
                 qasm3_format_float(call->args, tbuf, sizeof(tbuf));
                 ASTNode* qarg = call->args ? call->args->next : NULL;
-                if (qarg && qarg->type == AST_IDENTIFIER) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ((IdentifierNode*)qarg)->name);
+                char ref[64];
+                if (qasm3_resolve_ref(ctx, qarg, ref, sizeof(ref))) {
+                    Qasm3Var* v = qasm3_find_var(ctx, ref);
                     int64_t q = v ? v->index_or_val : 0;
                     qasm3_emit(ctx, "%s(%s) q[%lld];\n", g, tbuf, (long long)q);
                 }
@@ -263,12 +286,13 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 ASTNode* qarg = call->args;
                 ASTNode* rarg = qarg ? qarg->next : NULL;
                 int64_t q = 0, r = 0;
-                if (qarg && qarg->type == AST_IDENTIFIER) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ((IdentifierNode*)qarg)->name);
+                char qref[64], rref[64];
+                if (qasm3_resolve_ref(ctx, qarg, qref, sizeof(qref))) {
+                    Qasm3Var* v = qasm3_find_var(ctx, qref);
                     if (v) q = v->index_or_val;
                 }
-                if (rarg && rarg->type == AST_IDENTIFIER) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ((IdentifierNode*)rarg)->name);
+                if (qasm3_resolve_ref(ctx, rarg, rref, sizeof(rref))) {
+                    Qasm3Var* v = qasm3_find_var(ctx, rref);
                     if (v) r = v->index_or_val;
                 }
                 if (ctx->has_syndrome_reg) {
@@ -299,8 +323,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                     int64_t qs[3] = {0, 0, 0};
                     ASTNode* a = call->args;
                     for (int k = 0; k < arity && a; k++, a = a->next) {
-                        if (a->type == AST_IDENTIFIER) {
-                            Qasm3Var* v = qasm3_find_var(ctx, ((IdentifierNode*)a)->name);
+                        char qref[64];
+                        if (qasm3_resolve_ref(ctx, a, qref, sizeof(qref))) {
+                            Qasm3Var* v = qasm3_find_var(ctx, qref);
                             if (v) qs[k] = v->index_or_val;
                         }
                     }
@@ -350,8 +375,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                     const char* pname = pvd->names ? pvd->names[i] : NULL;
                     if (!pname) continue;
                     int64_t ival = 0;
-                    if (arg->type == AST_IDENTIFIER) {
-                        Qasm3Var* av = qasm3_find_var_upto(ctx, ((IdentifierNode*)arg)->name, saved_vars);
+                    char aref[64];
+                    if (qasm3_resolve_ref(ctx, arg, aref, sizeof(aref))) {
+                        Qasm3Var* av = qasm3_find_var_upto(ctx, aref, saved_vars);
                         if (av) {
                             qasm3_set_var(ctx, pname, av->kind, av->index_or_val);
                             continue;
@@ -404,12 +430,16 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
             }
             if (es->expr->type == AST_BINARY_EXPR) {
                 BinaryExprNode* bin = (BinaryExprNode*)es->expr;
+                char lhs_ref[64];
                 if (bin->operator == TOKEN_ASSIGN &&
-                    bin->left && bin->left->type == AST_IDENTIFIER) {
-                    const char* lhs = ((IdentifierNode*)bin->left)->name;
+                    qasm3_resolve_ref(ctx, bin->left, lhs_ref, sizeof(lhs_ref))) {
+                    if (bin->right && bin->right->type == AST_CALL_EXPR) {
+                        qasm3_handle_call(ctx, (CallExprNode*)bin->right, lhs_ref);
+                        return;
+                    }
                     int64_t ival = 0;
                     if (qasm3_eval_int(ctx, bin->right, &ival)) {
-                        Qasm3Var* v = qasm3_find_var(ctx, lhs);
+                        Qasm3Var* v = qasm3_find_var(ctx, lhs_ref);
                         if (v) v->index_or_val = ival;
                     }
                 } else {

@@ -834,6 +834,7 @@ int type_check_program_files(TypeChecker* checker, ASTNode** programs,
     for (size_t i = 0; i < program_count; i++) {
         if (!lane_ownership_check_program(checker, programs[i])) return 0;
         if (!qir_ownership_check_program(checker, programs[i])) return 0;
+        if (!fpga_check_program(checker, programs[i], 0)) return 0;
     }
 
     return checker->error_count == 0;
