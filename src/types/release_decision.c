@@ -14,7 +14,8 @@
 // 3 and 4). LocalEscapeResult is a name plus a boolean, so none of them survives
 // there. The walk here is deliberately NOT another copy of escape_core's engine:
 // it propagates no taint and applies no sink. It only collects declarations and
-// assignments.
+// assignments. Where a condition needs a value FLOW -- condition 6 -- it reads
+// local_escape's taint rather than deriving one from names here.
 //
 // CONSERVATIVE ON AN UNREADABLE FUNCTION. If the walk meets a statement kind it
 // does not recognise, it cannot know whether that statement assigns to a local,
@@ -31,7 +32,6 @@
 #include "shim_signatures.h"
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 
 // ---------------------------------------------------------------------------
 // Per-function collection
@@ -60,11 +60,12 @@ typedef struct {
     int       arena_depth;   // arena nesting at the DECLARATION
     bool      declared;      // a declaration was seen (not only an assignment)
 
-    // CONDITION 6. The name appeared in the right-hand side of a store whose
-    // TARGET outlives one iteration of this local's declaring loop. Only
-    // consulted when loop_depth > 0 -- at function scope the release is at
-    // function exit, and a store to another function-scope local changes
-    // nothing about when that exit happens.
+    // CONDITION 6. A local declared at a SHALLOWER depth may hold this local's
+    // value, so the value outlives one iteration of this local's declaring
+    // loop. Set by mark_block_escapes after the walk, from local_escape's
+    // taint. Only consulted when block_depth > 0 -- at function scope the
+    // release is at function exit, and another function-scope local holding
+    // the value changes nothing about when that exit happens.
     bool      block_escapes;
 
     // Declared by the loop HEADER -- the `i` of `for i := 0; ...`, or a range
@@ -164,17 +165,6 @@ typedef struct {
     size_t       elem_count;
     size_t       elem_cap;
 
-    // CONDITION 6's own `unreadable`, and it is DELIBERATELY SEPARATE from the
-    // field above. An expression kind the mention scanner cannot descend might
-    // hide a store to something outliving the iteration, so every LOOP-declared
-    // local must refuse. A FUNCTION-scope local is unaffected: its release is at
-    // function exit, which no store can move.
-    //
-    // Refusing the whole function instead would cost the daemon's `fields`,
-    // `counts` and `parts` -- three live reclamations -- to answer a question
-    // that is not asked about them.
-    bool         loop_locals_unreadable;
-
     // The function being walked. A bare call `f()` whose name is one of its
     // parameters or named results calls that variable, not a top-level f.
     const FuncDeclNode* decl;
@@ -245,129 +235,14 @@ static bool record_value(LocalRecord* r, ASTNode* value) {
 }
 
 // ---------------------------------------------------------------------------
-// Condition 6 — the mention scanner
-// ---------------------------------------------------------------------------
-
-// Mark every local mentioned in `expr` whose declaring loop is DEEPER than
-// `target_depth`, meaning the store about to happen outlives its iteration.
-//
-// `target_depth` is the loop depth of the thing being stored INTO: the depth of
-// the target local's own declaration, or -1 when the target is anything this
-// module cannot resolve to a local (a field, an index, a parameter, a global).
-// -1 is below every real depth, so an unresolved target marks everything —
-// which is the conservative answer and the one a wrong guess must land on.
-//
-// A MENTION, NOT A FLOW. `n = n + len(s)` marks `s`, because proving `len` does
-// not propagate its argument needs the inverse of condition 2's binding table
-// and this increment does not have it. Named in include/release_decision.h as
-// the precision this deliberately gives up.
-static void mark_mentions(WalkCtx* ctx, ASTNode* expr, int target_depth) {
-    if (!expr) return;
-    Collected* c = ctx->out;
-
-    switch (expr->type) {
-        case AST_IDENTIFIER: {
-            const char* name = ((IdentifierNode*)expr)->name;
-            if (!name) return;
-            LocalRecord* r = find_record(c, name);
-            if (r && r->block_depth > target_depth) r->block_escapes = true;
-            return;
-        }
-
-        // Nothing to descend into, and nothing that can name a local.
-        case AST_LITERAL:
-            return;
-
-        case AST_BINARY_EXPR:
-            mark_mentions(ctx, ((BinaryExprNode*)expr)->left, target_depth);
-            mark_mentions(ctx, ((BinaryExprNode*)expr)->right, target_depth);
-            return;
-
-        case AST_UNARY_EXPR:
-            mark_mentions(ctx, ((UnaryExprNode*)expr)->operand, target_depth);
-            return;
-
-        case AST_CALL_EXPR: {
-            CallExprNode* call = (CallExprNode*)expr;
-            // The CALLEE too: a method value's receiver is its base, and
-            // `f(x)` where f is a local names that local.
-            mark_mentions(ctx, call->function, target_depth);
-            for (ASTNode* a = call->args; a; a = a->next) {
-                mark_mentions(ctx, a, target_depth);
-            }
-            return;
-        }
-
-        case AST_INDEX_EXPR:
-            mark_mentions(ctx, ((IndexExprNode*)expr)->expr, target_depth);
-            mark_mentions(ctx, ((IndexExprNode*)expr)->index, target_depth);
-            return;
-
-        case AST_SELECTOR_EXPR:
-            // The BASE only. The selector is a field name, not an expression.
-            mark_mentions(ctx, ((SelectorExprNode*)expr)->expr, target_depth);
-            return;
-
-        case AST_SLICE_INDEX_EXPR: {
-            SliceIndexExprNode* s = (SliceIndexExprNode*)expr;
-            mark_mentions(ctx, s->expr, target_depth);
-            mark_mentions(ctx, s->low, target_depth);
-            mark_mentions(ctx, s->high, target_depth);
-            return;
-        }
-
-        case AST_SLICE_EXPR:
-            for (ASTNode* e = ((SliceLitNode*)expr)->elements; e; e = e->next) {
-                mark_mentions(ctx, e, target_depth);
-            }
-            return;
-
-        case AST_ARRAY_LITERAL:
-            for (ASTNode* e = ((ArrayLitNode*)expr)->elements; e; e = e->next) {
-                mark_mentions(ctx, e, target_depth);
-            }
-            return;
-
-        // A MAP LITERAL IS TAGGED AST_PAREN_EXPR (include/ast.h): that enum slot
-        // was reserved for parenthesized expressions, which Goo parses inline as
-        // identity, so the slot was free. Both lists carry expressions.
-        case AST_PAREN_EXPR: {
-            MapLitNode* m = (MapLitNode*)expr;
-            for (ASTNode* k = m->keys; k; k = k->next) mark_mentions(ctx, k, target_depth);
-            for (ASTNode* v = m->values; v; v = v->next) mark_mentions(ctx, v, target_depth);
-            return;
-        }
-
-        case AST_STRUCT_LITERAL:
-            for (ASTNode* f = ((StructLiteralNode*)expr)->field_values; f; f = f->next) {
-                mark_mentions(ctx, f, target_depth);
-            }
-            return;
-
-        default:
-            // An expression kind this scanner cannot descend MIGHT name a local,
-            // so no loop-declared local in this function can be trusted. See
-            // Collected.loop_locals_unreadable for why this is not the
-            // function-wide `unreadable`.
-            c->loop_locals_unreadable = true;
-            return;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // The concat-operand scanner
 // ---------------------------------------------------------------------------
 
 // Record both operands of every `+` in `expr`, then descend.
 //
-// DELIBERATELY A SECOND TRAVERSAL rather than a hook inside mark_mentions. That
-// one runs only for a STORE and carries a target depth, and it marks a local as
-// escaping its block. Reusing it would tie a reclamation to condition 6's
-// question and fire it on the wrong statements.
-//
-// Node coverage MIRRORS mark_mentions above, and the default arm is the reason
-// this is safe to extend later: an expression kind nobody added records nothing,
-// so its operands stay borrowed. A missed operand is a leak we already have.
+// The default arm is the reason this is safe to extend later: an expression kind
+// nobody added records nothing, so its operands stay borrowed. A missed operand
+// is a leak we already have.
 static void note_concat_operands(WalkCtx* ctx, ASTNode* expr) {
     if (!expr) return;
     Collected* c = ctx->out;
@@ -454,10 +329,9 @@ static void note_concat_operands(WalkCtx* ctx, ASTNode* expr) {
             return;
 
         default:
-            // Records nothing and marks nothing. Unlike mark_mentions this
-            // scanner has no conservative direction to take: it only ever ADDS
-            // a reclamation, so not reaching an expression costs bytes rather
-            // than safety.
+            // Records nothing and marks nothing. This scanner has no
+            // conservative direction to take: it only ever ADDS a reclamation,
+            // so not reaching an expression costs bytes rather than safety.
             return;
     }
 }
@@ -467,24 +341,6 @@ static void note_concat_operand_list(WalkCtx* ctx, ASTNode* list) {
     for (ASTNode* e = list; e; e = e->next) note_concat_operands(ctx, e);
 }
 
-// The loop depth a store into `lhs` must be compared against. See mark_mentions.
-static int target_lifetime_depth(Collected* c, ASTNode* lhs) {
-    if (!lhs || lhs->type != AST_IDENTIFIER) return -1;   // a field or index store
-    const char* name = ((IdentifierNode*)lhs)->name;
-    if (!name) return -1;
-    // THE BLANK IDENTIFIER STORES NOTHING. `_ = err` is a discard, so no value
-    // survives it and no local it names can outlive its iteration. INT_MAX is
-    // deeper than any real loop nesting, so the comparison in mark_mentions
-    // never marks. Without this the daemon's own `err` shape refuses, because
-    // `_ = err` is how a Goo program says "used, deliberately".
-    if (strcmp(name, "_") == 0) return INT_MAX;
-    LocalRecord* r = find_record(c, name);
-    // NOT A LOCAL of this function: a parameter, a global, or a name declared
-    // by a construct the walk records no binding for. Each outlives the loop.
-    if (!r || !r->declared) return -1;
-    return r->block_depth;
-}
-
 // Defined below, next to the append collector it pairs with.
 static void note_literal_elems(WalkCtx* ctx, const char* target, ASTNode* value);
 
@@ -492,11 +348,6 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
     if (!name || strcmp(name, "_") == 0) return;
     LocalRecord* r = intern_record(ctx->out, name);
     if (!r) { ctx->out->unreadable = true; return; }
-    // CONDITION 6, and it runs BEFORE the record is marked declared so that
-    // `s := s` compares against s's PREVIOUS depth rather than this one.
-    // A declaration stores into a name whose lifetime is the block being
-    // declared in, so the current loop depth is the target depth.
-    mark_mentions(ctx, value, ctx->block_depth);
     if (!r->declared) {
         r->declared = true;
         r->bound_value = value;
@@ -610,11 +461,6 @@ static void note_append_elems(WalkCtx* ctx, const char* target, ASTNode* rhs) {
 // assigned value needs classifying only far enough to spot a self-append.
 static void note_assignment(WalkCtx* ctx, ASTNode* lhs, ASTNode* rhs, bool plain_assign) {
     if (!lhs) return;
-    // CONDITION 6, and it runs FIRST because it is the one part of this function
-    // that applies to EVERY assignment shape. The identifier test below returns
-    // early for a field or index store, and such a store is precisely the case
-    // that must mark hardest -- target_lifetime_depth answers -1 for it.
-    mark_mentions(ctx, rhs, target_lifetime_depth(ctx->out, lhs));
     // Before the identifier test below returns: an index target is not a rebind
     // of any local, but its KEY is a candidate for map ownership.
     note_key_site(ctx, lhs);
@@ -758,35 +604,6 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 for (ASTNode* t = n->targets; t; t = t->next) tcount++;
                 for (ASTNode* v = n->values; v; v = v->next) vcount++;
 
-                // CONDITION 6 ON THE COUNT-MISMATCH PATH, where the per-pair
-                // scan below cannot reach. `x, keep = f(s)` hands the ONE value
-                // to the FIRST target and NULL to the rest, so a scan against
-                // each pair compares `f(s)` with x's depth only -- and never
-                // with keep's, which may be shallower and outlive the iteration.
-                //
-                // Scan once against the SHALLOWEST target instead, because the
-                // value reaches all of them and the longest-lived one decides.
-                //
-                // MEASURED AS NOT-YET-A-DEFECT, and fixed anyway. A mismatch
-                // needs a CALL, and a call that propagates an argument into a
-                // result is what param_escape's return_escapes reports, so
-                // condition 1 refuses such an `s` today -- verified: the shape
-                // reads RELEASE_NO_ESCAPES. That makes this guard safe because
-                // ANOTHER rule fires first, which is the arrangement that
-                // already cost this branch one use-after-free on the switch
-                // scope. return_escapes precision is live work; this does not
-                // wait for it.
-                if (!n->is_short_decl && tcount != vcount) {
-                    int min_depth = INT_MAX;
-                    for (ASTNode* t = n->targets; t; t = t->next) {
-                        int d = target_lifetime_depth(ctx->out, t);
-                        if (d < min_depth) min_depth = d;
-                    }
-                    for (ASTNode* val = n->values; val; val = val->next) {
-                        mark_mentions(ctx, val, min_depth);
-                    }
-                }
-
                 ASTNode* v = n->values;
                 for (ASTNode* t = n->targets; t; t = t->next) {
                     if (n->is_short_decl) {
@@ -797,10 +614,9 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                                                         ? n->values : NULL));
                         }
                     } else {
-                        // The mismatch path pre-scanned above, so hand the rhs
-                        // over only when the pairing is real. Everything else
-                        // note_assignment does -- the binding count, the key
-                        // sites -- still runs.
+                        // Hand the rhs over only when the pairing is real.
+                        // Everything else note_assignment does -- the binding
+                        // count, the key sites -- still runs.
                         note_assignment(ctx, t, (tcount == vcount) ? v : NULL,
                                         !n->is_short_decl);
                     }
@@ -1005,6 +821,45 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // way because the safe answer here is `false`.
                 ctx->out->unreadable = true;
                 break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Condition 6 — the loop-carried store, read from local_escape's taint
+// ---------------------------------------------------------------------------
+
+// Mark every loop-declared local whose value a SHALLOWER local may hold. That
+// holder outlives one iteration of the local's declaring loop, so a release at
+// iteration end frees memory the holder still reaches.
+//
+// A FLOW, NOT A MENTION, and that is finding C4. The old test marked a local
+// only when its NAME appeared in the right-hand side of a store into a
+// shallower target. `y := x[1:]; outer = y` names only `y` in the store, so `x`
+// was released while `outer` still pointed into its buffer. local_escape's
+// taint follows the value through `y`, through `parts[i]`, through a field and
+// through any chain of locals, so condition 6 asks it instead of the names.
+//
+// WHY AN UNDECLARED HOLDER IS SKIPPED. A record that was only ever assigned is
+// a parameter, a named result or a global. None of them is a local of
+// local_escape's LocalEnv, so a store into one is a GLOBAL_STORE sink: every
+// value it receives already escapes, and condition 1 refuses its source.
+//
+// FAILS CLOSED otherwise. local_escape_may_hold answers true for any name it
+// does not know, and for every pair when the function has no summary.
+static void mark_block_escapes(Collected* c, const LocalEscapeSummary* les) {
+    for (size_t i = 0; i < c->count; i++) {
+        LocalRecord* r = &c->items[i];
+        if (!r->declared || r->block_depth == 0) {
+            continue;
+        }
+        for (size_t j = 0; j < c->count && !r->block_escapes; j++) {
+            const LocalRecord* holder = &c->items[j];
+            bool outlives = j != i && holder->declared
+                            && holder->block_depth < r->block_depth;
+            if (outlives && local_escape_may_hold(les, holder->name, r->name)) {
+                r->block_escapes = true;
+            }
         }
     }
 }
@@ -1248,9 +1103,8 @@ static bool all_values_release_safe(Collected* c, const ParamEscapeResult* pe,
 // Does any expression under `e` name `target`?
 //
 // Sets *unknown on a node kind it cannot descend, which the caller reads as
-// "assume an alias". Same fail-closed shape as mark_mentions' handling of an
-// unrecognised expression, and for the same reason: an alias this scanner
-// cannot see is a use-after-free, not lost precision.
+// "assume an alias", and for a good reason: an alias this scanner cannot see is
+// a use-after-free, not lost precision.
 static bool expr_names_local(ASTNode* e, const char* target, bool* unknown) {
     if (!e) return false;
 
@@ -1297,7 +1151,9 @@ static bool expr_names_local(ASTNode* e, const char* target, bool* unknown) {
                 if (expr_names_local(x, target, unknown)) return true;
             }
             return false;
-        // A map literal is tagged AST_PAREN_EXPR -- see mark_mentions.
+        // A MAP LITERAL IS TAGGED AST_PAREN_EXPR (include/ast.h): that enum
+        // slot was reserved for parenthesized expressions, which Goo parses
+        // inline as identity, so the slot was free.
         case AST_PAREN_EXPR: {
             MapLitNode* m = (MapLitNode*)e;
             for (ASTNode* k = m->keys; k; k = k->next) {
@@ -1499,7 +1355,7 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     // those four is PROVEN side-effect free -- marking them would trade a
     // measurement for a behaviour risk. Giving them markers means hoisting
     // each call into a local first, which is a change to this function's shape
-    // rather than an observation of it. The seven marked above are field
+    // rather than an observation of it. The six marked here are field
     // reads, so they cost nothing and can change nothing.
     //
     // Condition 1 first: it is the cheapest, and local_escape is conservative on
@@ -1533,10 +1389,6 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     if (r->block_depth > 0) {
         GOO_TESTCASE(r->loop_header);
         if (r->loop_header) return RELEASE_NO_LOOP_SCOPE;
-        // The scanner met an expression it could not descend somewhere in this
-        // function, so no loop-declared local here has a trustworthy answer.
-        GOO_TESTCASE(c->loop_locals_unreadable);
-        if (c->loop_locals_unreadable) return RELEASE_NO_BLOCK_ESCAPE;
         GOO_TESTCASE(r->block_escapes);
         if (r->block_escapes) return RELEASE_NO_BLOCK_ESCAPE;
     }
@@ -1647,6 +1499,7 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         WalkCtx ctx = { .out = &c, .block_depth = 0, .arena_depth = 0,
                         .in_loop_header = false, };
         walk_stmts(&ctx, ((FuncDeclNode*)d)->body);
+        mark_block_escapes(&c, local_escape_find_summary(le, name));
 
         ReleasePlanFunction* pf = &plan->functions[plan->count];
         pf->function_name = xstrdup(name);

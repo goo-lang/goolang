@@ -76,6 +76,18 @@ typedef struct LocalEscapeSummary {
     // wants the boolean is unchanged.
     EscapeReasons* reasons;
     size_t local_count;
+    // The FINAL taint of every local, local_count x local_count, row-major:
+    // holds[h * local_count + s] is true when local h may hold a value that
+    // local s was bound to -- `s` itself, a view of it (`s[1:]`, `parts[i]`),
+    // or anything built from it, through any chain of locals. Read it through
+    // local_escape_may_hold, which fails closed.
+    //
+    // WHY IT IS EXPORTED. `escapes` answers "does the value outlive the
+    // FUNCTION", which is the wrong boundary for a loop-declared local:
+    // `y := x[1:]; outer = y` keeps x's buffer alive past the ITERATION while
+    // never leaving the function. release_decision's condition 6 asks this
+    // matrix instead of re-deriving the flow from names (finding C4).
+    bool* holds;
 } LocalEscapeSummary;
 
 typedef struct LocalEscapeResult {
@@ -123,5 +135,23 @@ bool local_escape_local_escapes(const LocalEscapeResult* result,
 // map's value slot.
 EscapeReasons local_escape_local_reasons(const LocalEscapeResult* result,
                                          const char* fn, const char* local);
+
+// The summary for `fn`, or NULL when there is none. Look it up ONCE per
+// function: a lookup walks every summary, and a caller that asks about every
+// pair of locals would otherwise pay that walk for each pair.
+const LocalEscapeSummary* local_escape_find_summary(const LocalEscapeResult* result,
+                                                    const char* fn);
+
+// May local `holder` hold a value that local `source` was bound to? See
+// LocalEscapeSummary.holds.
+//
+// FAILS CLOSED, exactly as the lookups above do: a NULL summary, an unknown
+// holder or an unknown source answers TRUE. A consumer frees on `false`, so a
+// miss must read as "it may hold it".
+//
+// A SOUND OVER-APPROXIMATION, for the same reasons the reason set is one: the
+// flow is flow-insensitive, and two locals of one name share one row.
+bool local_escape_may_hold(const LocalEscapeSummary* summary,
+                           const char* holder, const char* source);
 
 #endif // LOCAL_ESCAPE_H

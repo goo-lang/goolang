@@ -340,8 +340,9 @@ static TestRow rows[] = {
         //
         // `pass` returns a value derived from its argument, so condition 1
         // ALSO refuses `s` here -- this row would pass without condition 6 at
-        // all. It is kept because it pins the SHALLOWEST-TARGET rule, which is
-        // what stops the verdict depending on which rule happens to fire first.
+        // all. It is kept because it pins that the ONE value reaches EVERY
+        // target: local_escape unions a multi-assign's value taint into each
+        // target, so `keep` holds `s` and condition 6 would refuse it too.
         47, "multi-assign, one call feeding two targets -> refuse `s`",
         "package main\n"
         "func pass(a *int) (int, *int) {\n"
@@ -1139,6 +1140,27 @@ static TestRow rows[] = {
         "    return 0\n"
         "}\n",
         "f", { { "x", RELEASE_NO_NOT_OWNED }, { "y", RELEASE_NO_NOT_OWNED } }, 2
+    },
+    {
+        // FINDING C4. `y` is a VIEW of `s` declared in the SAME iteration, so
+        // the store `y := s` outlives nothing, and `keep = y` names `y` alone.
+        // A test on the names in each right-hand side never connects `keep` to
+        // `s`, and `s` was released while `keep` still held it. The value flow
+        // does connect them, which is why condition 6 reads local_escape's
+        // taint rather than the names. Row 40 is the direct form.
+        77, "a loop local reaching an OUTER local through an intermediate -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    keep := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        y := s\n"
+        "        keep = y\n"
+        "    }\n"
+        "    _ = keep\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
     },
 };
 

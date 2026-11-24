@@ -108,23 +108,34 @@
 // the function and it therefore answers, correctly and uselessly, that nothing
 // escaped. `last = s` is that shape.
 //
-// THE RULE, and it is deliberately a MENTION test rather than a value-flow one:
-// a local declared at loop depth D is refused when its name appears anywhere in
-// the right-hand side of an assignment or declaration whose target lives longer
-// than depth D. A target lives longer when it is a local declared at a
-// shallower loop depth, or when it is not a plain identifier at all -- a field,
-// an index or any other store this module cannot resolve.
+// THE RULE, and it is a VALUE-FLOW test, not a MENTION test: a local declared
+// at break-scope depth D is refused when local_escape's final taint says that
+// some local declared at a depth shallower than D may hold its value. The taint
+// follows the value through views (`x[1:]`, `parts[i]`, a field) and through
+// any chain of locals.
 //
-// SOUND BY CONSTRUCTION, which a blacklist of sink shapes would not be. The
-// walk is TOTAL: a statement kind it does not recognise sets `unreadable` and
-// refuses the whole function, so enumerating the assignment forms it does
-// recognise enumerates every store a readable function can perform.
+// WHY NOT A MENTION TEST, which is what this was until finding C4. The old rule
+// refused a local only when its NAME appeared in the right-hand side of a store
+// into a longer-lived target. `y := x[1:]; outer = y` names only `y` in that
+// store, because `y` is declared in the same iteration as `x`. So `x` was
+// released at iteration end while `outer` still pointed into its buffer --
+// measured as invalid reads under valgrind (tests/arc_uaf/loop_view_*.goo).
+//
+// WHAT THE OTHER TARGETS COST. A store into a field, an index, a dereference,
+// a parameter, a named result or a global is a SINK in local_escape, so its
+// source already escapes the function and condition 1 refuses it first. Only a
+// store into a plain local needs this rule, and local_escape's taint covers
+// every such store, because that engine walks every statement or marks every
+// local escaping.
+//
+// FAIL CLOSED: an unknown function, an unknown holder or an unknown source
+// reads as "may hold" (local_escape_may_hold).
 //
 // THE PRECISION IT GIVES UP, named so the next reader does not rediscover it:
-// `n = n + len(s)` refuses `s`, even though `len` propagates nothing. A mention
-// is not a flow. Refining that needs the reverse of condition 2's binding table
-// -- does this expression PROPAGATE its operand, or merely READ it -- and the
-// loop-carried probe is what makes such a refinement safe to attempt.
+// the taint is flow-insensitive and collapses two locals of one name, so a
+// holder that took the value on one path only, or a different local that
+// shares a name, still refuses. Both are over-approximations, which is the
+// safe direction.
 //
 // =============================================================================
 // CONDITION 2 -- the binding-site table
