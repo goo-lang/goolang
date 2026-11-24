@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
-# fpga_equiv_probe.sh — Phase 8 M2: Exhaustive truth-table equivalence gate
-# between native LLVM (-O2) execution, CIRCT hw/comb MLIR (--emit-mlir), and
-# module-scope continuous-assignment SystemVerilog (--emit-sv) on
-# examples/fpga_qec_decoder_probe.goo.
+# fpga_equiv_probe.sh — Phase 8 M2: compares the -O2 native binary with the
+# --emit-sv output of examples/fpga_qec_decoder_probe.goo, and checks the
+# --emit-mlir output for structure.
+#
+# What this gate does NOT do: it runs no RTL simulator (Verilator, Icarus) and
+# no CIRCT tool (circt-opt). The SystemVerilog is evaluated by a Python model
+# of its `assign` statements below, so a construct that model reads
+# differently from a real simulator would pass here. The MLIR is only checked
+# for the module names and op names; nothing parses or executes it.
+# Coverage: decode and canary are exhaustive (two 1-bit inputs each); accum
+# takes 64-bit ints and is sampled (ACCUM_VECTORS).
 set -euo pipefail
 
 COMPILER="${COMPILER:-./bin/goo}"
@@ -73,7 +80,12 @@ for s0 in (0, 1):
 for t0 in (0, 1):
     for t1 in (0, 1):
         sv_lines.append(f"canary {t0} {t1} {eval_sv_mod('fpga_canary_alarm', {'trap0': t0, 'trap1': t1})}")
-sv_lines.append(f"accum {eval_sv_mod('fpga_syndrome_accum', {'history_0': 1, 'history_1': 2, 'history_2': 3, 'history_3': 4, 'latest': 5})}")
+# Must list the same vectors, in the same order, as main() in the fixture.
+ACCUM_VECTORS = [((1, 2, 3, 4), 5), ((0, 0, 0, 0), 0), ((-3, 7, -11, 2), -1)]
+for hist, latest in ACCUM_VECTORS:
+    ins = {f"history_{i}": v for i, v in enumerate(hist)}
+    ins["latest"] = latest
+    sv_lines.append(f"accum {eval_sv_mod('fpga_syndrome_accum', ins)}")
 
 if sv_lines != native_lines:
     sys.exit(f"FAIL: SystemVerilog truth table mismatch vs -O2 binary:\n  SV:     {sv_lines}\n  Native: {native_lines}")
@@ -113,4 +125,4 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 evaluate_sv_and_mlir "$WORK/fpga.sv" "$WORK/fpga.mlir" "$WORK/native.out"
-echo "fpga-equiv-probe: PASS (exhaustive truth table matches across LLVM -O2, CIRCT MLIR, and SystemVerilog RTL)"
+echo "fpga-equiv-probe: PASS (-O2 binary matches a Python model of the --emit-sv assigns: decode, canary exhaustive; accum 3 sampled vectors. --emit-mlir checked for structure only, no circt-opt)"

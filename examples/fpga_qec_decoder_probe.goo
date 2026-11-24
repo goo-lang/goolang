@@ -69,6 +69,13 @@ func main() {
 			fmt.Println("canary", t0, t1, fpga_canary_alarm(t0, t1))
 		}
 	}
+	// The accumulator takes 64-bit ints, so its inputs cannot be enumerated.
+	// These vectors are sampled; scripts/fpga_equiv_probe.sh replays the same
+	// list (ACCUM_VECTORS) against the emitted SystemVerilog.
 	hist := [4]int{1, 2, 3, 4}
 	fmt.Println("accum", fpga_syndrome_accum(hist, 5))
+	zero := [4]int{0, 0, 0, 0}
+	fmt.Println("accum", fpga_syndrome_accum(zero, 0))
+	mixed := [4]int{-3, 7, -11, 2}
+	fmt.Println("accum", fpga_syndrome_accum(mixed, -1))
 }
