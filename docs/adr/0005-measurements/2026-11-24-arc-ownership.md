@@ -78,15 +78,16 @@ a local.
 
 ## Known loss: a scalar parameter sets `return_escapes`
 
-`mk(n int) *Box { return &Box{v: n} }` is not owned, because the int parameter
-sets `return_escapes`. The rule cannot tell an int that flows to the result
-from a pointer that flows to the result. The census reasons do not isolate this
+`mk(n int) *Box { return &Box{v: n} }` is, by source reading, not owned because the
+int parameter sets `return_escapes`. No measurement confirms this cause. By
+the same reading, the rule cannot tell an int that flows to the result from a
+pointer that flows to the result. The census reasons do not isolate this
 case, and the only corpus members I could tie to a parameter are the two rows in
 the last group plus `v` in the named-result group. I did NOT measure the bytes
 that this rule leaks. A synthetic `mk` program did not discriminate the two
 builds, because `main` already refused the local for reason `RETURN`
-(both builds, 24,000 bytes in 1,000 blocks). Refining the rule to ignore
-non-pointer parameters is the fix, and it is not part of this track.
+(both builds, 24,000 bytes in 1,000 blocks). A rule that ignores non-pointer parameters might recover this loss. It is
+not tested and it is not part of this track.
 
 ## Daemon benchmark: no change
 
@@ -109,13 +110,45 @@ three review rounds give 0 valgrind errors. The same programs give 35 errors on
 `origin/main`. The programs are in the controller scratchpad and are not in the
 repository.
 
+## Recount of the 216 no-evidence locals
+
+CLAUDE.md quotes 216 user-code locals refused ONLY by a no-evidence mark. The
+census script does not print this figure. The method is the one in
+`reason-census.md`: user-code rows, not `RELEASE_OK`, with a reason set made
+only of `CALL_OPAQUE` and `CALL_VARIADIC`. An awk filter over the per-local rows
+gives, on both builds:
+
+| Build | Locals | Of those, `RELEASE_NO_ESCAPES` |
+|---|---|---|
+| `origin/main` d2aa8864 | 216 | 216 |
+| branch e1663104 | 216 | 216 |
+
+The figure is unchanged, so CLAUDE.md keeps 216. The one `RELEASE_NO_ESCAPES`
+row that gained `GLOBAL_STORE` (`main: a` in `arena_named_result_probe`) already
+carried `CALL_RETAIN`, an evidenced reason, so it was never in the 216 set.
+The main build reproduces the documented 216, which is the positive control for
+the filter.
+
+## Daemon bytes
+
+CLAUDE.md quotes 82,207 bytes. Both builds here read 82,204. The byte total
+moves with the output path length, so the block count (4,003) is the figure to
+compare.
+
 ## Verdict
 
-The fixes cost 40 released locals in the corpus (365 to 325), all in `examples/`
-probe programs, and 3 locals gain a release. The daemon keeps the same 4,003
-blocks. The cost is real in the sense that the compiler releases less. The safety
-evidence says the lost releases were unsound or unproven. 3 of the 43 were
-releases of a global alias.
+What each piece of evidence shows, and no more:
+
+- Census: 43 locals changed from released to not owned, and 3 gained a release.
+  All are in `examples/` probe programs.
+- Daemon: the same 4,003 blocks on both builds. This is one program.
+- Source reading, not measurement: the grouping of the 43 locals by cause, and
+  the statement that 3 of them (`arc_release_global_probe`) came from a callee
+  that returns a global.
+- Controller measurement: 85 probe programs give 0 valgrind errors on the
+  branch and 35 on `origin/main`. This covers those programs as a whole. No
+  per-local link to the 43 locals exists, so it does not show that any one lost
+  release was unsound.
 
 ## Not done
 
