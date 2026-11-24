@@ -879,22 +879,32 @@ LLVMValueRef codegen_string_from_bytes(CodeGenerator* codegen, LLVMValueRef ptr,
     return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "kstr_copy");
 }
 
-// Get-or-declare the libc `strcmp(const char*, const char*) -> int` extern,
-// mirroring codegen_string_from_cstr's LLVMGetNamedFunction-or-declare
-// pattern above. Used by codegen_get_or_emit_struct_key_eq for STRING struct
-// fields. The final link already pulls in libc (codegen_emit_executable
-// shells out to `clang ... -lm -lpthread`, which links libc by default), so
-// declaring the extern here (never defining it) resolves at link time like
-// any other libc call.
-static LLVMValueRef codegen_get_or_declare_strcmp(CodeGenerator* codegen) {
-    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "strcmp");
-    if (fn) return fn;
+// i1: do two goo string aggregates {ptr, len} hold the same bytes? Length
+// first, then memcmp. strcmp stopped at the first NUL and read to the end of a
+// substring's parent buffer, so the struct- and interface-key comparators
+// merged distinct keys (H2). The memcmp length is forced to 0 when the lengths
+// differ, so it never reads past a shorter operand.
+static LLVMValueRef codegen_emit_string_eq(CodeGenerator* codegen, LLVMValueRef va, LLVMValueRef vb) {
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
-    LLVMTypeRef params[2] = { i8p, i8p };
-    LLVMTypeRef fnty = LLVMFunctionType(i32, params, 2, 0);
-    return LLVMAddFunction(codegen->module, "strcmp", fnty);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "memcmp");
+    if (!fn) {
+        LLVMTypeRef params[3] = { i8p, i8p, i64 };
+        fn = LLVMAddFunction(codegen->module, "memcmp", LLVMFunctionType(i32, params, 3, 0));
+    }
+    LLVMBuilderRef b = codegen->builder;
+    LLVMValueRef pa = LLVMBuildExtractValue(b, va, 0, "seq.pa");
+    LLVMValueRef pb = LLVMBuildExtractValue(b, vb, 0, "seq.pb");
+    LLVMValueRef la = LLVMBuildExtractValue(b, va, 1, "seq.la");
+    LLVMValueRef lb = LLVMBuildExtractValue(b, vb, 1, "seq.lb");
+    LLVMValueRef len_eq = LLVMBuildICmp(b, LLVMIntEQ, la, lb, "seq.leneq");
+    LLVMValueRef n = LLVMBuildSelect(b, len_eq, la, LLVMConstInt(i64, 0, 0), "seq.n");
+    LLVMValueRef args[3] = { pa, pb, n };
+    LLVMValueRef r = LLVMBuildCall2(b, LLVMGlobalGetValueType(fn), fn, args, 3, "seq.memcmp");
+    LLVMValueRef bytes_eq = LLVMBuildICmp(b, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "seq.bytes");
+    return LLVMBuildAnd(b, len_eq, bytes_eq, "seq.eq");
 }
 
 // Single funnel point for every heap allocation the compiler emits: new(T),
@@ -988,7 +998,7 @@ LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, Alloc
 // order, so LLVM struct-field index == Goo field index — codegen_get_struct_
 // type builds them 1:1):
 //   - string             : extract field 0 (char*) from both loaded string
-//                           aggregates, `strcmp(...) == 0`.
+//                           aggregates, length then memcmp.
 //   - nested struct       : GEP the field's ADDRESS in both operands,
 //                           PtrToInt, and call THAT type's comparator
 //                           (recursive codegen_get_or_emit_struct_key_eq,
@@ -1078,13 +1088,7 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
                 LLVMBuildStructGEP2(codegen->builder, sty, pa, (unsigned)i, "fa.ptr"), "fa");
             LLVMValueRef fb = LLVMBuildLoad2(codegen->builder, fllty,
                 LLVMBuildStructGEP2(codegen->builder, sty, pb, (unsigned)i, "fb.ptr"), "fb");
-            LLVMValueRef ca = LLVMBuildExtractValue(codegen->builder, fa, 0, "ca");
-            LLVMValueRef cb = LLVMBuildExtractValue(codegen->builder, fb, 0, "cb");
-            LLVMValueRef strcmp_fn = codegen_get_or_declare_strcmp(codegen);
-            LLVMValueRef sargs[2] = { ca, cb };
-            LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(strcmp_fn),
-                                            strcmp_fn, sargs, 2, "strcmp.r");
-            eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "streq");
+            eq_bit = codegen_emit_string_eq(codegen, fa, fb);
         } else if (ft && ft->kind == TYPE_STRUCT) {
             LLVMValueRef nested_eq = codegen_get_or_emit_struct_key_eq(codegen, checker, ft);
             if (!nested_eq) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
@@ -1160,7 +1164,7 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
 //   - float32/float64: same shape, fcmp oeq (a NaN field is therefore never
 //     equal to itself, matching Go/IEEE-754 — not a bug).
 //   - string: inttoptr each word to the `{i8*,i64}` string aggregate, load,
-//     extractvalue the char* (field 0), strcmp == 0.
+//     compare length, then memcmp (codegen_emit_string_eq).
 //   - struct (all fields comparator-safe): delegates STRAIGHT to
 //     codegen_get_or_emit_struct_key_eq (#129) — its i32(i64,i64)-over-ptr-
 //     to-heap-copy signature already matches a struct concrete's boxing
@@ -1303,13 +1307,7 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
         LLVMValueRef pb = LLVMBuildIntToPtr(codegen->builder, b, strptr, "typeeq.pb");
         LLVMValueRef va = LLVMBuildLoad2(codegen->builder, strty, pa, "typeeq.va");
         LLVMValueRef vb = LLVMBuildLoad2(codegen->builder, strty, pb, "typeeq.vb");
-        LLVMValueRef ca = LLVMBuildExtractValue(codegen->builder, va, 0, "typeeq.ca");
-        LLVMValueRef cb = LLVMBuildExtractValue(codegen->builder, vb, 0, "typeeq.cb");
-        LLVMValueRef strcmp_fn = codegen_get_or_declare_strcmp(codegen);
-        LLVMValueRef sargs[2] = { ca, cb };
-        LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(strcmp_fn),
-                                        strcmp_fn, sargs, 2, "typeeq.strcmp");
-        eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "typeeq.streq");
+        eq_bit = codegen_emit_string_eq(codegen, va, vb);
     } else {
         // integer/bool/char/float32/float64: deref both words as T*.
         LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
