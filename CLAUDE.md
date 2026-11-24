@@ -236,7 +236,8 @@ length while the block count holds.
   declining to answer, not a measured escape.**
   **216 locals are refused ONLY by a no-evidence mark** (all reading
   `RELEASE_NO_ESCAPES`), which is the upper bound on what precision here would
-  unlock, against 365 released today.
+  unlock, against 325 released today (365 before the 2026-11-24 ownership
+  fixes, docs/adr/0005-measurements/2026-11-24-arc-ownership.md).
   **The reachable fix is NARROWER than 578 suggests**: the dominant opaque
   callees are builtins and type conversions (`make`, `rune`, `uint64`, `int`),
   and most of their arguments are integers no release path would free. Decide
