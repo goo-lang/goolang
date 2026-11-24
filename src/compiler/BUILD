@@ -25,7 +25,11 @@ goo_cc_library(
 # only wraps cc_library and cc_test.
 cc_binary(
     name = "goo",
-    srcs = ["goo.c"],
+    # Makefile:99 COMPILER_SRCS minus test_discovery.c (its own library above).
+    srcs = [
+        "goo.c",
+        "program_dump.c",
+    ],
     copts = [
         "-include",
         "include/xalloc.h",
@@ -41,13 +45,20 @@ cc_binary(
         "//include:ast_h",
         "//include:codegen_h",
         "//include:error_h",
+        "//include:escape_core_h",
         "//include:import_resolver_h",
+        "//include:json_writer_h",
         "//include:lexer_h",
         "//include:parser_h",
         "//include:prelude",
+        "//include:program_dump_h",
+        "//include:qir_ownership_h",
+        "//include:release_decision_h",
         "//include:runtime_h",
         "//include:test_discovery_h",
+        "//include:token_h",
         "//include:types_h",
+        "//src/ast:json_writer",
         "//src/codegen",
         "//src/types:frontend",
     ],

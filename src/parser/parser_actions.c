@@ -594,7 +594,7 @@ ASTNode* short_var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNod
     VarDeclNode* var = ast_var_decl_new(get_current_position());
     IdentifierNode* i1 = (IdentifierNode*)name_ident1;
     IdentifierNode* i2 = (IdentifierNode*)name_ident2;
-    var->names = malloc(sizeof(char*) * 2);
+    var->names = xmalloc(sizeof(char*) * 2);
     var->names[0] = xstrdup(i1->name);
     var->names[1] = xstrdup(i2->name);
     var->name_count = 2;

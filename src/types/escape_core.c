@@ -417,7 +417,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     for (ASTNode* a = call->args; a; a = a->next) argc++;
 
     TaintSet* arg_taints = NULL;
-    if (argc > 0) arg_taints = calloc(argc, sizeof(TaintSet));
+    if (argc > 0) arg_taints = xcalloc(argc, sizeof(TaintSet));
     size_t i = 0;
     for (ASTNode* a = call->args; a; a = a->next, i++) {
         arg_taints[i] = escape_expr_taint(ctx, a);

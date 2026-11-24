@@ -1996,7 +1996,7 @@ unary_expr:
 
 postfix_expr:
     primary_expr NOT {
-        PostfixExprNode* postfix = ast_postfix_expr_new($1, NOT, POS(@$));
+        PostfixExprNode* postfix = ast_postfix_expr_new($1, bison_token_to_token_type(NOT), POS(@$));
         $$ = (ASTNode*)postfix;
     }
     | primary_expr INCREMENT {

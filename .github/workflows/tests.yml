@@ -61,6 +61,12 @@ concurrency:
 jobs:
   verify-core:
     runs-on: ubuntu-24.04
+    # Job level on purpose: only this job uploads SARIF, so any other job added
+    # later keeps the default read-only token. security-events: write is what
+    # code scanning requires for an upload.
+    permissions:
+      contents: read
+      security-events: write
     # verify-core runs 493 golden fixtures twice (-O0 and -O2) plus valgrind and
     # tsan gates. Generous, because a timeout that fires mid-suite is a red that
     # says nothing. A public repo's job limit is 6h.
@@ -77,12 +83,23 @@ jobs:
         # valgrind: arena-valgrind-probe and arc-release-probe need it.
         # cmake: builds nng from the vendored tarball in third_party/.
         # json-c / curl / zlib: LDFLAGS links -ljson-c -lcurl -lz.
+        # clang-tidy: scripts/analyzer_lanes_probe.sh's clang-tidy lane (task
+        #   16) -- a pre-existing gap this run confirmed: analyzer-lanes-probe
+        #   joined VERIFY_ALL_DEPS in task 16 with no matching apt install, so
+        #   `make verify-core` could not have been green on this runner before
+        #   task 17 either.
+        # cppcheck: the same probe's third, MISRA-scanning lane (task 17).
+        # python3-jsonschema: tools/sarif_merge.py --validate checks the
+        #   merged SARIF against the vendored schema (task 17); apt, not pip,
+        #   since Ubuntu 24.04's system pip is externally managed (PEP 668)
+        #   and every other tool here already comes from apt.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             make gcc-14 bison llvm-dev clang libblocksruntime-dev \
             valgrind cmake \
-            libjson-c-dev libcurl4-openssl-dev zlib1g-dev
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev \
+            clang-tidy cppcheck python3-jsonschema
 
       - name: Tool versions
         run: |
@@ -91,6 +108,9 @@ jobs:
           bison --version | head -1
           valgrind --version
           cmake --version | head -1
+          clang-tidy --version | head -1
+          cppcheck --version
+          python3 -c "import jsonschema; print('jsonschema', jsonschema.__version__)"
           (ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 | xargs -r -I{} sh -c '{} --version') || echo "no llvm-config"
 
       - name: make verify-core
@@ -146,3 +166,46 @@ jobs:
           name: verify-core-log
           path: verify-core.log
           retention-days: 14
+
+      - name: Upload the generated findings baseline
+        # A runner whose toolchain signature has no committed baseline fails
+        # findings-probe loudly and writes a candidate here. A person commits
+        # that file as scripts/findings-baseline.<signature>.tsv. On a green
+        # run the candidate is absent, and the SARIF is the only upload.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: findings-baseline-candidate
+          path: |
+            build/findings-baseline.*.tsv
+            build/findings.sarif
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload the findings to code scanning
+        # Runs after the gate and with always(), so a red gate still uploads
+        # what it found. hashFiles skips the step when verify-core died before
+        # findings-probe wrote the file.
+        #
+        # A pull request from a fork gets a read-only token that cannot write
+        # security events, so the upload would fail for a reason that is not a
+        # defect of the change. The guard skips it for those pull requests.
+        #
+        # One category: a re-upload replaces the earlier analysis and does not
+        # add to it. findings-probe has already checked the GitHub limits (20
+        # runs, 25,000 results per run, 10 MB gzipped) on this exact file and
+        # marked the suppressed results, which the Security tab shows as
+        # suppressed.
+        #
+        # Pinned to a commit SHA because this job holds security-events: write.
+        # A moving tag could run other code with that token.
+        if: >-
+          always()
+          && hashFiles('build/findings.sarif') != ''
+          && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: build/findings.sarif
+          category: goolang-findings
+          wait-for-processing: true

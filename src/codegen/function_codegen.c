@@ -1184,7 +1184,7 @@ static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* chec
         if (func_var && func_var->type->kind == TYPE_FUNCTION &&
             func_var->type->data.function.param_count > 0) {
             param_count = func_var->type->data.function.param_count;
-            param_types = malloc(sizeof(LLVMTypeRef) * param_count);
+            param_types = xmalloc(sizeof(LLVMTypeRef) * param_count);
             for (int i = 0; i < param_count; i++) {
                 param_types[i] = codegen_type_to_llvm(
                     codegen, func_var->type->data.function.param_types[i]);
@@ -1368,9 +1368,8 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         // Add WebAssembly-specific function attributes
         if (return_type && return_type->kind == TYPE_VOID) {
             // Add no-return attribute for void functions if they don't return
-            LLVMAttributeRef no_return_attr = LLVMCreateEnumAttribute(codegen->context, 
-                                                                     LLVMGetEnumAttributeKindForName("noreturn", 8), 0);
-            // Only add if function actually doesn't return (TODO: analyze control flow)
+            // TODO: attach a "noreturn" enum attribute only when control-flow
+            // analysis shows the function never returns.
         }
     }
     

@@ -1178,6 +1178,8 @@ static int program_imports_qir(ASTNode* program) {
 }
 
 int qir_ownership_check_program(TypeChecker* checker, ASTNode* program) {
+    GOO_ASSERT(checker != NULL);
+    GOO_ASSERT(program != NULL);
     if (!checker || !program || program->type != AST_PROGRAM) return 0;
 
     // Fast path: if `"qir"` is not imported in this file and never seeded in
@@ -1447,6 +1449,8 @@ static void fpga_walk_stmt(TypeChecker* checker, const char* fn_name, ASTNode* s
 }
 
 int fpga_check_program(TypeChecker* checker, ASTNode* program, int check_all_funcs) {
+    GOO_ASSERT(checker != NULL);
+    GOO_ASSERT(program != NULL);
     if (!checker || !program || program->type != AST_PROGRAM) return 0;
     int errors_before = checker->error_count;
     ProgramNode* prog = (ProgramNode*)program;

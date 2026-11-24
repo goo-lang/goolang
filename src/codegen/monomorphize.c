@@ -84,9 +84,9 @@ char* codegen_type_mangle_token(const Type* t) {
 // -> `Map__int__string`. Caller frees the result.
 char* codegen_mangle_instance(const char* base, Type* const* args, size_t n) {
     size_t cap = strlen(base) + 1;
-    char** toks = calloc(n ? n : 1, sizeof(char*));
+    char** toks = xcalloc(n ? n : 1, sizeof(char*));
     for (size_t i = 0; i < n; i++) { toks[i] = codegen_type_mangle_token(args[i]); cap += strlen(toks[i]) + 2; }
-    char* out = malloc(cap); strcpy(out, base);
+    char* out = xmalloc(cap); strcpy(out, base);
     for (size_t i = 0; i < n; i++) { strcat(out, "__"); strcat(out, toks[i]); free(toks[i]); }
     free(toks); return out;
 }

@@ -105,6 +105,9 @@ ValueInfo* codegen_generate_nullable_access(CodeGenerator* codegen, TypeChecker*
                                            LLVMValueRef nullable_value, Type* nullable_type, 
                                            Position pos, const char* access_description) {
     if (!codegen || !nullable_value || !nullable_type || !type_is_nullable(nullable_type)) return NULL;
+    // Kept for the public signature; the null path emits unreachable for now.
+    (void)checker;
+    (void)pos;
     
     // Check if the nullable value is null
     LLVMValueRef is_null = codegen_nullable_is_null(codegen, nullable_value);
@@ -121,7 +124,8 @@ ValueInfo* codegen_generate_nullable_access(CodeGenerator* codegen, TypeChecker*
     codegen_set_insert_point(codegen, null_block);
     
     // Generate a null pointer access error
-    LLVMValueRef error_message = LLVMBuildGlobalStringPtr(codegen->builder, 
+    // Emitted for its side effect (a module-level string); the handle is unused until the panic call below exists.
+    LLVMBuildGlobalStringPtr(codegen->builder, 
         access_description ? access_description : "null pointer access", "null_error");
     
     // Call panic function (for now, just unreachable)
@@ -158,6 +162,9 @@ ValueInfo* codegen_generate_if_let_nullable(CodeGenerator* codegen, TypeChecker*
                                            ASTNode* then_stmt, ASTNode* else_stmt,
                                            const char* var_name, Position pos) {
     if (!codegen || !nullable_value || !nullable_type || !type_is_nullable(nullable_type)) return NULL;
+    // Kept for the public signature; binding var_name into scope is still a TODO.
+    (void)var_name;
+    (void)pos;
     
     // Check if the nullable value is null
     LLVMValueRef is_null = codegen_nullable_is_null(codegen, nullable_value);
@@ -173,7 +180,8 @@ ValueInfo* codegen_generate_if_let_nullable(CodeGenerator* codegen, TypeChecker*
     
     // Non-null block: extract value and execute then statement
     codegen_set_insert_point(codegen, non_null_block);
-    LLVMValueRef unwrapped_value = codegen_nullable_get_value(codegen, nullable_value);
+    // Emitted for its side effect (the extractvalue instruction); the handle is unused until var_name binding exists.
+    codegen_nullable_get_value(codegen, nullable_value);
     
     // TODO: Add unwrapped value to scope with var_name if provided
     // For now, just execute the then statement
@@ -272,6 +280,7 @@ int codegen_generate_nullable_assignment(CodeGenerator* codegen, TypeChecker* ch
                                         LLVMValueRef nullable_target, LLVMValueRef source_value,
                                         Type* target_type, Type* source_type, Position pos) {
     if (!codegen || !nullable_target || !source_value) return 0;
+    (void)checker;  // Kept for the public signature.
     
     if (!type_is_nullable(target_type)) {
         codegen_error(codegen, pos, "Cannot assign to non-nullable type");

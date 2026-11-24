@@ -1,0 +1,22 @@
+# findings-probe suppression list. Generalises docs/misra/misra-suppressions.txt's
+# own policy across every tool in build/findings.sarif, not cppcheck alone.
+#
+# Format: tool<TAB>rule<TAB>file-glob<TAB>justification, one entry per line.
+#   tool          exact SARIF tool.driver.name (for example "Cppcheck",
+#                 "clang-tidy", "GNU C23"), or "*" for any tool.
+#   rule          exact ruleId, or an fnmatch glob (for example "misra-c2012-*").
+#   file-glob     an fnmatch glob against the repo-relative file path.
+#   justification "D-NN" naming a deviation record under docs/misra/deviations/,
+#                 or "defect:<tool>:<id>" naming a documented checker defect.
+#                 A row whose justification matches neither shape makes
+#                 scripts/findings_probe.sh RED -- see tools/findings_gate.py's
+#                 own docstring. Put the decision in a deviation record first;
+#                 a suppression with no justification is not a suppression, it
+#                 is silence.
+#
+# Empty today: scripts/findings-baseline.<signature>.tsv already accepts every finding
+# present at the time findings-probe was added (task 17), so nothing here
+# needs a SEPARATE, permanent exclusion yet. Add a row only for a finding
+# that should never count again regardless of the baseline -- for example a
+# checker defect this repository has already diagnosed under
+# docs/misra/misra-suppressions.txt's own "Checker defects" section.

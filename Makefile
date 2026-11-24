@@ -17,10 +17,17 @@ CC = $(CCACHE) gcc
 # avoids "fatal error: include/foo.h: No such file" in those targets.
 # include/goo_assert.h is force-included next to xalloc.h so GOO_ASSERT,
 # GOO_NEVER and GOO_ALWAYS are available in every TU with no #include churn.
-# It defines NOTHING in a production build: all three macros compile away
-# unless GOO_DEBUG or GOO_COVERAGE is defined, which only `make debug` and the
-# coverage build do.
-CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h
+# Since the 2026-09-02 flip (Task 24b), assertions are ON BY DEFAULT: this
+# build compiles all three macros to a check that aborts, unless
+# GOO_ASSERT_OFF is defined. GOO_DEBUG forces the check on regardless of
+# GOO_ASSERT_OFF. GOO_COVERAGE keeps its own no-op / constant carve-out, so
+# the coverage denominator is unaffected. See include/goo_assert.h for the
+# four build modes and the reason for the default.
+# WERROR stops the build on a warning (Power of Ten rule 10). It is a variable so
+# a person with a newer compiler that adds warnings can build with `make WERROR=`.
+# CI and verify-core use the default.
+WERROR ?= -Werror
+CFLAGS = -Wall -Wextra -Wpedantic $(WERROR) -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h -include include/goo_assert.h
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
 # Incremental, header-aware builds ("only rebuild what changed"). -MMD writes a
@@ -80,7 +87,7 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 # Source files (lexer + parser + AST + types + error handling + test framework)
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_state.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
-AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
+AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/ast/json_writer.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c $(SRCDIR)/types/qir_ownership.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/codegen_context.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c $(SRCDIR)/codegen/qasm3_codegen.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c $(SRCDIR)/runtime/qir_sim.c
@@ -96,7 +103,10 @@ TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
 COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c
 CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(PACKAGE_SRCS) $(COMPTIME_SRCS)
-COMPILER_SRCS = $(COMPILERDIR)/goo.c $(COMPILERDIR)/test_discovery.c
+# program_dump.c is driver-layer on purpose: it reads the AST, the type table
+# and the release plan, so it lives beside goo.c rather than under src/ast/,
+# where it would be an upward edge into src/types and src/lexer.
+COMPILER_SRCS = $(COMPILERDIR)/goo.c $(COMPILERDIR)/test_discovery.c $(COMPILERDIR)/program_dump.c
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
 OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
@@ -188,8 +198,7 @@ TEST_RUNNER = $(BINDIR)/test_runner
 # each fabricated its results (hardcoded eval, demo menus, simulated PID,
 # canned metrics) or did not compile (gmod). Recover from git history if a
 # real implementation is ever built (see docs/2026-07-08-v1-roadmap.md
-# post-v1 list). lsp-enhanced stays pending the P5.11 open decision.
-LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
+# post-v1 list). lsp_enhanced.c moved to attic/src/ide/ (see attic/README.md).
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
@@ -1483,6 +1492,39 @@ fanin-stress: $(RUNTIME_LIB)
 	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/fanin_stress.c $(RUNTIME_LIB) -lpthread -lm -o build/fanin_stress
 	@timeout 120 ./build/fanin_stress; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "fanin-stress: PASS"; else echo "fanin-stress: FAIL (exit $$rc)"; exit 1; fi
+
+# 2026-09-02: the detector must NOT abort a LIVE program. The negative control
+# for deadlock-probe below, and the C-level counterpart of the SPIN model in
+# tests/models/ (see tests/models/README.md, "The C-level fix").
+# GOO_TEST_WAKE_DELAY_NS holds the wake-to-unregister window open for 100 ms,
+# which is 200 polls of the detector's 0.5 ms loop. RED against the runtime
+# before the fix: exit 2 with "all goroutines are asleep - deadlock!" while both
+# goroutines are alive. GREEN after: exit 0.
+#
+# 2026-09-03: the recipe moved into scripts/false_deadlock_probe.sh. As a
+# recipe it sat outside probe-teeth-probe's scan of scripts/*.sh, so it had no
+# in-tree negative control and nothing said so.
+false-deadlock-probe: $(RUNTIME_LIB)
+	@CC_PROBE="$(CC)" bash scripts/false_deadlock_probe.sh
+
+# Teeth: the pre-2026-09-02 wake site restored in a SCRATCH copy of
+# src/runtime/concurrency.c must bring the false abort back, and a run with the
+# wake delay unset must fail rather than pass blind.
+false-deadlock-selftest: $(RUNTIME_LIB)
+	@CC_PROBE="$(CC)" bash scripts/false_deadlock_probe.sh --self-test
+
+# 2026-09-03: the poll loop's own positive control. deadlock-probe aborts in
+# goo_sched_block_begin's main-thread branch and spawns no goroutine, so
+# nothing in the tree read GOO_DEADLOCK_POLL_STREAK or the `all_asleep`
+# conjunction until this gate. Two goroutines park for ever; main polls; the
+# process must leave through goo_deadlock_abort with exit 2.
+deadlock-poll-probe: $(RUNTIME_LIB)
+	@CC_PROBE="$(CC)" bash scripts/deadlock_poll_probe.sh
+
+# Teeth: with the threshold raised past the timeout the same program hangs,
+# which is also the evidence that the abort comes from the poll loop.
+deadlock-poll-selftest: $(RUNTIME_LIB)
+	@CC_PROBE="$(CC)" bash scripts/deadlock_poll_probe.sh --self-test
 
 # M9: a fully-deadlocked program aborts with Go's message + exit 2 (not a hang).
 deadlock-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -3218,6 +3260,9 @@ VERIFY_ALL_DEPS := \
     targets-current-selftest \
     source-drift-probe \
     source-drift-selftest \
+    frontend-diff-selftest \
+    diagnostics-drift-selftest \
+    diagnostics-drift-probe \
     assert-corpus-selftest \
     golden-selftest \
     goo-check-probe \
@@ -3283,6 +3328,10 @@ VERIFY_ALL_DEPS := \
     yield-stress \
     chan-mt-stress \
     fanin-stress \
+    false-deadlock-probe \
+    false-deadlock-selftest \
+    deadlock-poll-probe \
+    deadlock-poll-selftest \
     deadlock-probe \
     deadlock-goroutine-probe \
     default-thread-count-test \
@@ -3409,6 +3458,12 @@ VERIFY_ALL_DEPS := \
     ast-free-leak-selftest \
     alloc-doors-selftest \
     goo-assert-probe \
+    assertion-density-probe \
+    pthread-return-probe \
+    misra-r3-2-probe \
+    warning-count-probe \
+    spin-bootstrap-probe \
+    spin-deadlock-model-probe \
     string-literal-header-probe \
     test-golden \
     test-golden-o2 \
@@ -3432,8 +3487,16 @@ VERIFY_ALL_DEPS := \
     nil-deref-probe \
     goo-test-probe \
     proof-cache-shell-probe \
+    json-writer-test \
+    program-dump-selftest \
+    program-dump-probe \
     archive-determinism-probe \
     repro-build-probe \
+    compile-commands-current-probe \
+    analyzer-lanes-probe \
+    analyzer-lanes-selftest \
+    findings-probe \
+    findings-probe-selftest \
     podman-image-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the heavy-toolchain set. This is the
@@ -3449,7 +3512,22 @@ VERIFY_ALL_DEPS := \
 HEAVY_DEPS       := v2-bootstrap-pilot repro-build-probe podman-image-probe
 VERIFY_CORE_DEPS := $(filter-out $(HEAVY_DEPS),$(VERIFY_ALL_DEPS))
 
-.PHONY: verify verify-core
+# verify-nightly = VERIFY_ALL_DEPS minus the CompCert bootstrap pilot. It is
+# what `verify` runs, less the one gate whose toolchain this project does not
+# install in CI: CompCert's licence permits non-commercial and research use
+# only, so installing it on a runner is a licence decision for the owner. The
+# set includes the podman reproducible-build gates, the sanitizer gates
+# (obj-header-tsan, far-transport-asan) and both analyser lanes
+# (analyzer-lanes-probe, findings-probe). Derived from VERIFY_ALL_DEPS, so it
+# cannot drift.
+NIGHTLY_EXCLUDED := v2-bootstrap-pilot
+VERIFY_NIGHTLY_DEPS := $(filter-out $(NIGHTLY_EXCLUDED),$(VERIFY_ALL_DEPS))
+
+.PHONY: verify verify-core verify-nightly
+
+verify-nightly: $(VERIFY_NIGHTLY_DEPS)
+	@echo ""
+	@echo "verify-nightly: ALL GREEN GATES PASSED (no CompCert pilot)"
 
 # Exits non-zero on any failure. Use this on cross-cutting changes;
 # use individual targets when iterating on a specific area.
@@ -4750,7 +4828,7 @@ far-transport-asan: $(NNG_LIB)
 far-shim-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	$(COMPILER) -o build/far_shim_probe examples/far_shim_probe.goo
-	@sock="ipc://$(abspath build)/far_shim_probe_$$$$.sock"; \
+	@sock="ipc://$${TMPDIR:-/tmp}/goo_far_shim_probe_$$$$.sock"; \
 	rm -f "$${sock#ipc://}"; \
 	./build/far_shim_probe "$$sock" > build/far_shim_probe.actual.txt; \
 	rc=$$?; \
@@ -4902,15 +4980,6 @@ test-ergonomic-errors: $(ERGONOMIC_ERROR_TEST)
 $(ERGONOMIC_ERROR_TEST): $(TEST_UNIT_DIR)/error/ergonomic_errors_test.c $(ERROR_SRCS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-# Enhanced LSP Server with AST integration. Known broken link (undefined
-# parser_cleanup) — repairing it is the P5.11 open decision; kept because it
-# is real AST-integrated code, unlike the quarantined toy LSPs (P5.5).
-lsp-enhanced: $(LSP_ENHANCED_SERVER)
-
-$(LSP_ENHANCED_SERVER): $(SRCDIR)/ide/lsp_enhanced.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Async Streams Test
 # async_streams.c calls into the structured-concurrency runtime (concurrent_block_*,
@@ -5088,6 +5157,31 @@ obj_header_test: $(TEST_UNIT_DIR)/runtime/obj_header_test.c $(TEST_UNIT_DIR)/goo
 obj-header-test: obj_header_test
 	@echo "Running ARC object-header tests..."
 	./obj_header_test
+
+# Phase 0 (program dump): the writer is byte-exact by contract. Rows compare
+# whole strings, so a key reorder or an indent change is a red row, not a
+# style nit.
+json_writer_test: $(TEST_UNIT_DIR)/ast/json_writer_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRCDIR)/ast/json_writer.c
+	$(CC) $(CFLAGS) -o $@ $< $(SRCDIR)/ast/json_writer.c
+
+json-writer-test: json_writer_test
+	@echo "Running JSON writer tests..."
+	./json_writer_test
+
+# The frontend_diff harness itself has teeth: identical producers report 0,
+# one rewritten fixture reports 1 and is named. Without this a broken harness
+# could report "0 differ" between a real front end and an empty one.
+frontend-diff-selftest:
+	@bash scripts/frontend_diff.sh --self-test
+
+# The type checker's diagnostic strings, as a table the Haskell front end
+# reads. Reject fixtures match stderr substrings, so verbatim text is the
+# parity contract; this gate keeps the table equal to the source.
+diagnostics-drift-probe:
+	@bash scripts/diagnostics_drift_probe.sh
+
+diagnostics-drift-selftest:
+	@bash scripts/diagnostics_drift_probe.sh --self-test
 
 # ARC step 1, race gate. The ordinary build CANNOT see a data race on the
 # reference count: rows 12-14 of obj_header_test caught the non-atomic version
@@ -5350,6 +5444,15 @@ dead-package-code-probe: $(COMPILER) $(RUNTIME_LIB)
 alloc-doors-probe:
 	@bash scripts/alloc_doors_probe.sh
 
+# Phase 0 (front-end migration): the program dump is the interchange every
+# later differential gate compares. Determinism + structure over every
+# fixture, and an abort-by-name on any kind the walker does not cover.
+program-dump-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/program_dump_probe.sh
+
+program-dump-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/program_dump_probe.sh --self-test
+
 # proof_cache_create() must not hand its argument to a shell. It used to build
 # `mkdir -p %s` into a 512-byte buffer and call system(), so a ';' in the path
 # ran an arbitrary command. Found by the MISRA scan, 2026-08-14; see
@@ -5472,22 +5575,101 @@ fuzz-clean:
 # exemption list.
 alloc-doors-selftest:
 	@bash scripts/alloc_doors_probe.sh --self-test
-# The three build modes of include/goo_assert.h. GOO_ASSERT, GOO_NEVER and
-# GOO_ALWAYS expand to DIFFERENT code in a production, a debug and a coverage
-# build, which is the point of them and also the risk: a production build where
-# GOO_ASSERT still aborts ships a compiler that dies on a recoverable
-# condition, and a debug build where it quietly does nothing is a check that is
+# The four build modes of include/goo_assert.h. GOO_ASSERT, GOO_NEVER and
+# GOO_ALWAYS expand to DIFFERENT code across a default, a GOO_ASSERT_OFF, a
+# debug and a coverage build, which is the point of them and also the risk.
+# Assertions are ON BY DEFAULT since the 2026-09-02 flip (Task 24b), so a
+# default build where GOO_ASSERT does NOT abort ships a compiler whose checks
+# are dead, and a debug build where it quietly does nothing is a check that is
 # not one. The preprocessor picks the arm, so reading the header cannot tell
-# you which happened. Compile the same fixture three ways and observe it.
+# you which happened. Compile the same fixtures four ways and observe them.
 goo-assert-probe:
 	@CC_PROBE="$(CC)" CSTD_PROBE="-std=c23" bash scripts/goo_assert_probe.sh
 
-# The corpus against an ASSERT-ENABLED compiler. Deliberately NOT in
-# verify-core: `make debug` and `make lexer` both write bin/goo, so this would
-# swap the binary out from under the other 197 gates mid-run. It is the
-# pre-release sweep, and it is what stops every assert in the tree from being a
-# comment with parentheses -- verify-core builds production, where they are all
-# (void)0.
+# The assertion-density gate (Holzmann's Power of Ten, rule 5). Counts
+# assertion lines and executable lines across src/*.c (generated files
+# excluded), refuses a drop below scripts/assertion-density-baseline.txt in
+# either the raw count or the density, and never writes the baseline itself
+# -- see scripts/assertion_density_probe.sh --update-baseline. Self-test runs
+# in the same invocation, in the shape of goo-check-probe above: it removes
+# one assertion line from a scratch copy and requires that to go red, and an
+# unmodified copy to stay green.
+.PHONY: assertion-density-probe
+assertion-density-probe:
+	@bash scripts/assertion_density_probe.sh
+	@bash scripts/assertion_density_probe.sh --self-test
+
+# The pthread return value discard count (shrink-only). MISRA Rule 17.7's
+# pthread slice, from task 1 of the 2026-09-02 verification tooling plan.
+.PHONY: pthread-return-probe
+pthread-return-probe:
+	@bash scripts/pthread_return_probe.sh
+	@bash scripts/pthread_return_probe.sh --self-test
+
+# MISRA Rule 3.2 (no line-splice in a // comment). Grep over git ls-files, bar 0,
+# no baseline file. Replaces the closed Cobra track (docs/misra/cobra-calibration.md).
+.PHONY: misra-r3-2-probe
+misra-r3-2-probe:
+	@bash scripts/misra_r3_2_probe.sh
+	@bash scripts/misra_r3_2_probe.sh --self-test
+
+# The warning-count gate (Holzmann's Power of Ten, rule 10: compile with all
+# warnings on, stop the build on one). Today's build is warning-heavy, so
+# this does not yet stop on ONE warning -- task 22 removes them and adds
+# -Werror. Until then this refuses an INCREASE: it rebuilds bin/goo from
+# clean in its own sandboxed build directory (never bin/goo or
+# lib/libgoo_runtime.a themselves -- proved every run, not assumed) and
+# holds the C warning count to scripts/warning-count-baseline.txt, one row
+# per compiler since CC differs here (gcc-16) and on CI (gcc-14). The bison
+# warning count is printed but not gated -- scripts/grammar-tripwire.sh
+# already owns that number. Self-test runs in the same invocation: it
+# injects one unused variable into a copy of a small file and requires that
+# to go red against the real build log, and the unmodified log to stay
+# green.
+.PHONY: warning-count-probe
+warning-count-probe: $(NNG_LIB)
+	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(filter-out -Werror,$(CFLAGS))" bash scripts/warning_count_probe.sh
+	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(filter-out -Werror,$(CFLAGS))" bash scripts/warning_count_probe.sh --self-test
+
+# Vendored SPIN (task 4 of the 2026-09-02 verification tooling plan; Track
+# B's Promela gate over the runtime deadlock detector, tasks 5-7, is not yet
+# on this branch). Builds or finds a spin >= 6.5 with no network read --
+# see third_party/README.md for the pinned tarball and scripts/spin_bootstrap.sh
+# for the PATH/prior-build/build order. Self-test runs in the same
+# invocation, in the shape of assertion-density-probe above: a corrupted
+# tarball copy must exit 3 naming the file, a real build must produce a
+# working spin, and a second run against the same build dir must not
+# rebuild.
+.PHONY: spin-bootstrap-probe
+spin-bootstrap-probe:
+	@bash scripts/spin_bootstrap.sh
+	@bash scripts/spin_bootstrap.sh --self-test
+
+# The Track B Promela gate itself (tasks 5-7 of the 2026-09-02 verification
+# tooling plan): runs tests/models/deadlock_detector.pml through
+# tests/models/run_deadlock_model.sh. FIX=1 (the corrected protocol) must
+# find 0 errors in a full search at K=1 for N=2, 3 and 4; FIX=0 (as it ships
+# today) is the negative control and must fail on assert(rd), by name, not
+# merely exit non-zero. A truncated or otherwise INCONCLUSIVE run (runner
+# exit 2) is never a pass in any row -- see scripts/spin_deadlock_model_probe.sh
+# for the full account and the measured wall time. Depends on
+# spin-bootstrap-probe so the outer `make` bootstraps SPIN once before this
+# runs; the runner then finds that same build on every row it invokes
+# scripts/spin_bootstrap.sh for. Self-test runs in the same invocation, in
+# the shape of assertion-density-probe above.
+.PHONY: spin-deadlock-model-probe
+spin-deadlock-model-probe: spin-bootstrap-probe
+	@bash scripts/spin_deadlock_model_probe.sh
+	@bash scripts/spin_deadlock_model_probe.sh --self-test
+
+# The corpus against an explicitly ASSERT-ENABLED (-DGOO_DEBUG) compiler.
+# Deliberately NOT in verify-core: `make debug` and `make lexer` both write
+# bin/goo, so this would swap the binary out from under the other gates
+# mid-run. Assertions are ON BY DEFAULT since the 2026-09-02 flip (Task 24b),
+# so verify-core's own production build already evaluates every GOO_ASSERT in
+# the tree -- this target is no longer what makes them evaluated at all, it is
+# the pre-release sweep against the DEBUG build specifically, which also
+# forces every GOO_ASSERT on regardless of the GOO_ASSERT_OFF kill switch.
 assert-corpus:
 	@bash scripts/assert_corpus.sh
 
@@ -6563,3 +6745,59 @@ qir-runner-probe: $(COMPILER)
 	./bin/goo --emit-qir examples/qir_bitflip_qec_probe.goo -o /tmp/goo_qec.ll
 	qir-runner -f /tmp/goo_qec.ll -e main -s 100
 .PHONY: qir-runner-probe
+
+# Task 14 of the 2026-09-02 verification tooling plan: keeps
+# build/compile_commands.json a DERIVATION of GOO_OBJS, never a file that
+# drifts from the Makefile. tools/gen_compile_commands.sh does the parsing
+# (a `make -Bn lexer` dry run, filtered to GOO_OBJS); this gate regenerates
+# it, checks the entry count against $(words $(GOO_OBJS)) and that every
+# entry's file is unique, and checks the derivation twice against itself for
+# self-consistency. build/ is git-ignored, so this is the only thing that
+# keeps the file current — task 15 (cppcheck) and task 16 (the gcc/clang-tidy
+# strict lanes) both read it. Filesystem plus a dry-run `make`, no toolchain
+# beyond what verify-core already assumes, so it belongs there.
+.PHONY: compile-commands-current-probe
+compile-commands-current-probe:
+	@bash scripts/compile_commands_current_probe.sh
+	@bash scripts/compile_commands_current_probe.sh --self-test
+
+# Task 16 of the 2026-09-02 verification tooling plan: two static-analysis
+# lanes over the SAME capture compile-commands-current-probe keeps fresh --
+# gcc with -Wall -Wextra -Wpedantic -fanalyzer, SARIF to build/sarif/gcc/,
+# and clang-tidy, plain text (+ YAML fixes where supported) to
+# build/sarif/clang-tidy/. Both lanes regenerate the capture themselves, the
+# same "just derive it again" rule scripts/misra-scan.sh already follows.
+# scripts/analyzer_lanes_probe.sh's header records a real ccache defect this
+# lane tripped over: ccache does not track -fanalyzer's SARIF side file, so
+# a warm cache silently drops it on a hit (exit 0, no file) -- the gcc lane
+# forces CCACHE_DISABLE=1 for every compile it runs. Both lanes parallelise
+# across JOBS (default nproc); on this machine the full 58-entry run is
+# ~20 s (gcc) + ~24 s (clang-tidy), well inside verify-core's budget, but
+# the task's own instruction is to keep this gate in verify-core even if a
+# slower machine pushes it past a minute.
+.PHONY: analyzer-lanes-probe analyzer-lanes-selftest
+analyzer-lanes-probe:
+	@bash scripts/analyzer_lanes_probe.sh
+
+analyzer-lanes-selftest:
+	@bash scripts/analyzer_lanes_probe.sh --self-test
+
+# Task 17 of the 2026-09-02 verification tooling plan: one SARIF findings
+# database over gcc, clang-tidy, cppcheck, the pthread-return-probe ratchet
+# and the gate log those probes print, with a shrink-only gate that
+# generalises docs/misra/tools/gate.py's own (file, rule) tally into
+# (tool, rule, file) result counts across every one of them. Re-runs
+# analyzer-lanes-probe and pthread-return-probe itself (see
+# scripts/findings_probe.sh's own header on why: it must also work
+# standalone, with no Makefile dependency graph to rely on), so this adds
+# roughly another minute on top of analyzer-lanes-probe's own budget.
+# M2: findings-probe and analyzer-lanes-probe both write build/sarif/*. The
+# prerequisite below orders them, so they cannot race under `make -j`. Under
+# verify-core, analyzer-lanes-probe is already a dependency, so make runs it
+# once; the script then runs the lanes once more for its own pipeline.
+.PHONY: findings-probe findings-probe-selftest
+findings-probe: analyzer-lanes-probe
+	@bash scripts/findings_probe.sh
+
+findings-probe-selftest:
+	@bash scripts/findings_probe.sh --self-test

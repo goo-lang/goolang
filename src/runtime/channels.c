@@ -92,9 +92,12 @@ void goo_chan_close(goo_channel_t* ch) {
     }
     ch->closed = 1;
 
-    // Wake up all waiting goroutines
+    // Wake up all waiting goroutines. Both condvars, so both waiter lists
+    // leave the detector's blocked set — before the wake, as everywhere.
 #ifdef GOO_PLATFORM_UNIX
+    goo_sched_wake_waiters(&ch->recv_waiters);
     pthread_cond_broadcast(&ch->not_empty->cond);
+    goo_sched_wake_waiters(&ch->send_waiters);
     pthread_cond_broadcast(&ch->not_full->cond);
 #endif
 
@@ -175,7 +178,11 @@ void goo_chan_free(goo_channel_t* ch) {
 // select is unaffected: goo_chan_try_send/try_recv keep their own nil
 // guard reporting "not ready", matching Go's nil-case-never-fires rule.
 static void goo_chan_nil_block(void) {
-    goo_sched_block_begin();
+    // No channel, so no waiter list: nothing can ever wake this, and a
+    // goroutine that lands here stays in the blocked set for good. That is the
+    // truth about it, and it is what lets the detector call the all-parked
+    // state a deadlock.
+    goo_sched_block_begin(NULL);
     for (;;) {
         goo_platform_sleep_ns(1000000000);  // 1s; nothing can ever wake this.
     }
@@ -278,12 +285,12 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
     if (ch->capacity > 0) {
         // Wait for space in buffer
         while (ch->length >= ch->capacity && !ch->closed) {
-            // Mark the running goroutine as waiting for send. NOTE: this
-            // bookkeeping is per-thread-correct but the deadlock detector still
-            // cannot observe it — a channel-blocked goroutine parks in the
-            // pthread_cond_wait below, not in g_scheduler->ready_queue (which is
-            // all the detector walks). Working channel-deadlock detection needs
-            // a separate blocked-set and is a future milestone.
+            // Mark the running goroutine as waiting for send. This
+            // bookkeeping is diagnostic only: the detector reads the blocked
+            // SET that goo_sched_block_begin below maintains, not these two
+            // fields and not g_scheduler->ready_queue. The separate blocked
+            // set this note once called a future milestone arrived on
+            // 2026-09-02 — see goo_sched_block_begin in concurrency.c.
             goo_goroutine_t* self = goo_current_goroutine();
             if (self) {
                 self->waiting_on_channel = ch;
@@ -292,9 +299,9 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
             }
 
 #ifdef GOO_PLATFORM_UNIX
-            goo_sched_block_begin();
+            goo_sched_block_begin(&ch->send_waiters);
             pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
-            goo_sched_block_end();
+            goo_sched_block_end(&ch->send_waiters);
 #endif
 
             // Clear waiting state when unblocked.
@@ -320,11 +327,16 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
         ch->tail = (ch->tail + 1) % ch->capacity;
         ch->length++;
         
-        // Signal receivers
+        // Wake receivers. BROADCAST, not signal, since 2026-09-02: the waker
+        // must remove from the detector's blocked set exactly the waiters it
+        // wakes, and pthread_cond_signal never says WHICH one it woke. Clear
+        // X's bit, wake Y, and Y runs while still counted — the defect the SPIN
+        // model found (tests/models/README.md, "Ruling 1").
 #ifdef GOO_PLATFORM_UNIX
-        pthread_cond_signal(&ch->not_empty->cond);
+        goo_sched_wake_waiters(&ch->recv_waiters);
+        pthread_cond_broadcast(&ch->not_empty->cond);
 #endif
-        
+
         goo_mutex_unlock(ch->mutex);
         return 1;  // Success
     } else {
@@ -334,9 +346,9 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
 #ifdef GOO_PLATFORM_UNIX
         // Wait until the slot is free (a previous sender's value was consumed).
         while (ch->rv_full && !ch->closed) {
-            goo_sched_block_begin();
+            goo_sched_block_begin(&ch->send_waiters);
             pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
-            goo_sched_block_end();
+            goo_sched_block_end(&ch->send_waiters);
         }
         if (ch->closed) {
             // Closed by another goroutine while this send was blocked
@@ -352,14 +364,16 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
         memcpy(ch->rv_slot, data, ch->elem_size);
         ch->rv_full = 1;
 
-        // Wake a waiting receiver.
-        pthread_cond_signal(&ch->not_empty->cond);
+        // Wake the waiting receivers. BROADCAST for the accounting reason at
+        // the buffered send above (ruling 1).
+        goo_sched_wake_waiters(&ch->recv_waiters);
+        pthread_cond_broadcast(&ch->not_empty->cond);
 
         // Block until the receiver has copied the value out.
         while (ch->rv_full && !ch->closed) {
-            goo_sched_block_begin();
+            goo_sched_block_begin(&ch->send_waiters);
             pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
-            goo_sched_block_end();
+            goo_sched_block_end(&ch->send_waiters);
         }
 
         // If the channel was closed before a receiver took the parked value,
@@ -432,9 +446,9 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
             }
 
 #ifdef GOO_PLATFORM_UNIX
-            goo_sched_block_begin();
+            goo_sched_block_begin(&ch->recv_waiters);
             pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
-            goo_sched_block_end();
+            goo_sched_block_end(&ch->recv_waiters);
 #endif
 
             // Clear waiting state when unblocked.
@@ -470,8 +484,11 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         // class and strand the other forever — the 2-sender unbuffered
         // fan-in lost-wakeup found by the 2026-07-10 review (fanin-stress
         // pins it). Buffered channels have one class today, but broadcast
-        // keeps every not_full wakeup uniformly safe.
+        // keeps every not_full wakeup uniformly safe. Since 2026-09-02 the
+        // detector needs the broadcast too, so the set it unregisters equals
+        // the set the OS wakes (tests/models/README.md, "Ruling 1").
 #ifdef GOO_PLATFORM_UNIX
+        goo_sched_wake_waiters(&ch->send_waiters);
         pthread_cond_broadcast(&ch->not_full->cond);
 #endif
         
@@ -482,9 +499,9 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         // parked a value, copy it out, clear the slot, and wake the sender.
 #ifdef GOO_PLATFORM_UNIX
         while (!ch->rv_full && !ch->closed) {
-            goo_sched_block_begin();
+            goo_sched_block_begin(&ch->recv_waiters);
             pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
-            goo_sched_block_end();
+            goo_sched_block_end(&ch->recv_waiters);
         }
         if (!ch->rv_full && ch->closed) {
             // Same zero-value contract as the buffered path above.
@@ -502,6 +519,7 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         // could wake the already-satisfied delivery-waiter and strand the
         // slot-waiter forever (the 2-sender unbuffered fan-in lost-wakeup;
         // fanin-stress pins it).
+        goo_sched_wake_waiters(&ch->send_waiters);
         pthread_cond_broadcast(&ch->not_full->cond);
 
         goo_mutex_unlock(ch->mutex);
@@ -539,10 +557,12 @@ int goo_chan_try_send(goo_channel_t* ch, void* data) {
         ch->tail = (ch->tail + 1) % ch->capacity;
         ch->length++;
 
+        // BROADCAST for the accounting reason at goo_chan_send (ruling 1).
 #ifdef GOO_PLATFORM_UNIX
-        pthread_cond_signal(&ch->not_empty->cond);
+        goo_sched_wake_waiters(&ch->recv_waiters);
+        pthread_cond_broadcast(&ch->not_empty->cond);
 #endif
-        
+
         goo_mutex_unlock(ch->mutex);
         return 1;  // Success
     }
@@ -571,6 +591,7 @@ int goo_chan_try_recv(goo_channel_t* ch, void* data) {
 #ifdef GOO_PLATFORM_UNIX
         // Broadcast for the same two-predicate-class reason as the blocking
         // recv above (see that comment; fanin-stress).
+        goo_sched_wake_waiters(&ch->send_waiters);
         pthread_cond_broadcast(&ch->not_full->cond);
 #endif
 

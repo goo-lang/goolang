@@ -35,6 +35,16 @@ ARGS=(
   "-I$LLVM_INC"
   -D_GNU_SOURCE
   -DLLVM_AVAILABLE=1
+  # llvm-c/DataTypes.h stops with #error unless <stdint.h> has defined
+  # UINT32_MAX and UINT32_C. gcc reads the real <stdint.h>; cppcheck does
+  # not read system headers (missingIncludeSystem below), and its std.cfg
+  # defines UINT32_MAX but not UINT32_C. The -D__STDC_*_MACROS flags from
+  # llvm-config --cflags are already in each entry and do not help: the
+  # header tests the macro, not the flag. Without this define, every unit
+  # that includes an LLVM header (src/codegen/*.c, src/compiler/goo.c)
+  # stopped at that #error and cppcheck analysed nothing in it. The value
+  # is glibc's.
+  '-DUINT32_C(c)=c ## U'
   --include=include/xalloc.h
   --include=include/goo_assert.h
   --suppress=missingIncludeSystem

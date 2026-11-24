@@ -880,7 +880,6 @@ Type* type_concept(const char* name);
 Type* type_param(const char* name, int index, Type* constraint);
 Type* type_param_hkt(const char* name, int index, size_t arity, const char* kind_signature, Type* constraint);
 Type* type_constructor(const char* name, size_t arity, const char* kind_signature);
-Type* type_application(Type* constructor, Type** arguments, size_t arg_count);
 
 // Type operations
 void type_free(Type* type);

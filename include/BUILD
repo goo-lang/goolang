@@ -99,6 +99,31 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+cc_library(
+    name = "json_writer_h",
+    hdrs = ["json_writer.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "platform_detect_h",
+    hdrs = ["platform_detect.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "program_dump_h",
+    hdrs = ["program_dump.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":ast_h",
+        ":release_decision_h",
+    ],
+)
+
 # ---------------------------------------------------------------------------
 # Front end
 # ---------------------------------------------------------------------------
