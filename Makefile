@@ -194,7 +194,7 @@ TEST_RUNNER = $(BINDIR)/test_runner
 # post-v1 list). lsp_enhanced.c moved to attic/src/ide/ (see attic/README.md).
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-uaf-probe arc-uaf-selftest arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe goo-assert-probe assert-corpus string-literal-header-probe
 
 all: lexer
@@ -3382,6 +3382,8 @@ VERIFY_ALL_DEPS := \
     arena-free-probe \
     arena-valgrind-probe \
     arc-release-probe \
+    arc-uaf-probe \
+    arc-uaf-selftest \
     arc-loop-carried-probe \
     arc-concat-operand-probe \
     arena-rss-probe \
@@ -5678,6 +5680,12 @@ arc-multi-assign-probe: $(COMPILER) $(RUNTIME_LIB)
 # plan, including the alias condition that no existing rule provides.
 arc-reassign-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_reassign_probe.sh
+
+arc-uaf-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/arc_uaf_probe.sh
+
+arc-uaf-selftest:
+	@CC="$(CC)" ./scripts/arc_uaf_probe.sh --self-test
 
 arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
