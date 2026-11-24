@@ -840,6 +840,13 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
 // taint follows the value through `y`, through `parts[i]`, through a field and
 // through any chain of locals, so condition 6 asks it instead of the names.
 //
+// A LOOP-HEADER HOLDER OUTLIVES THE ITERATION AT THE SAME DEPTH. The `p` of
+// `for p := ""; p != s; n++` is recorded at the loop's own depth, the depth of
+// the body's locals, but it lives across every iteration and the next
+// condition reads it. So `p = x` in the body frees `x` under `p` unless the
+// header counts as longer-lived. Measured: tests/arc_uaf/loop_view_header_var
+// read freed memory in goo_string_eq.
+//
 // WHY AN UNDECLARED HOLDER IS SKIPPED. A record that was only ever assigned is
 // a parameter, a named result or a global. None of them is a local of
 // local_escape's LocalEnv, so a store into one is a GLOBAL_STORE sink: every
@@ -856,7 +863,9 @@ static void mark_block_escapes(Collected* c, const LocalEscapeSummary* les) {
         for (size_t j = 0; j < c->count && !r->block_escapes; j++) {
             const LocalRecord* holder = &c->items[j];
             bool outlives = j != i && holder->declared
-                            && holder->block_depth < r->block_depth;
+                            && (holder->block_depth < r->block_depth
+                                || (holder->loop_header
+                                    && holder->block_depth == r->block_depth));
             if (outlives && local_escape_may_hold(les, holder->name, r->name)) {
                 r->block_escapes = true;
             }

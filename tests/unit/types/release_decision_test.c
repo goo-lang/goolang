@@ -1162,6 +1162,22 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
     },
+    {
+        // A LOOP-HEADER HOLDER. `p` is recorded at the SAME depth as the body,
+        // but it lives across every iteration and the next condition reads
+        // it. A depth comparison alone sees two locals of one iteration and
+        // releases `s` under `p`.
+        78, "a loop local stored into the loop's HEADER local -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for p := makeOwned(); *p < n; n = n - 1 {\n"
+        "        s := makeOwned()\n"
+        "        p = s\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
 };
 
 // =============================================================================
