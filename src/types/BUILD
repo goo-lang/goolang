@@ -22,7 +22,8 @@ load("//tools:defs.bzl", "goo_cc_library")
 #   param_escape      -> escape_core
 #   block_escape      -> escape_core, param_escape
 #   local_escape      -> escape_core, param_escape
-#   release_decision  -> param_escape, local_escape
+#   returns_fresh     -> param_escape, local_escape
+#   release_decision  -> param_escape, local_escape, returns_fresh
 #
 # Acyclic, and none of it is visible in the Makefile, which links $(SRC_OBJS)
 # as one flat set. Phase 1 declared all five as leaves with no deps and put
@@ -74,12 +75,23 @@ goo_cc_library(
 )
 
 goo_cc_library(
+    name = "returns_fresh",
+    srcs = ["returns_fresh.c"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":local_escape",
+        ":param_escape",
+    ],
+)
+
+goo_cc_library(
     name = "release_decision",
     srcs = ["release_decision.c"],
     visibility = ["//visibility:public"],
     deps = [
         ":local_escape",
         ":param_escape",
+        ":returns_fresh",
     ],
 )
 
@@ -113,6 +125,7 @@ goo_cc_library(
         ":nonretaining",
         ":param_escape",
         ":release_decision",
+        ":returns_fresh",
         "//src/ast",
         "//src/comptime",
         "//src/errors",

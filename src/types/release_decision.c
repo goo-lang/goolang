@@ -27,6 +27,7 @@
 #include "release_decision.h"
 #include "param_escape.h"
 #include "local_escape.h"
+#include "returns_fresh.h"
 #include "shim_signatures.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1615,6 +1616,8 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
     ParamEscapeResult* pe = param_escape_analyze(program);
     LocalEscapeResult* le = local_escape_analyze(program, pe);
     if (!le) { param_escape_result_free(pe); return plan; }
+    // Condition 2 reads returns_fresh, and only this pass fills it.
+    returns_fresh_compute(program, pe, le);
 
     size_t fn_count = 0;
     for (ASTNode* d = ((ProgramNode*)program)->decls; d; d = d->next) {

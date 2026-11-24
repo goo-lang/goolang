@@ -24,6 +24,8 @@
 #include "ast.h"
 #include "types.h"
 #include "param_escape.h"
+#include "local_escape.h"
+#include "returns_fresh.h"
 #include "../goo_check.h"
 #include <stdio.h>
 #include <string.h>
@@ -635,6 +637,11 @@ static void run_fresh_row(const FreshRow* row) {
 
     ParamEscapeResult* result = param_escape_analyze(ast_root);
     goo_check(result != NULL, "param_escape_analyze returned a result");
+    // returns_fresh is filled by its own pass, the way release_plan_analyze
+    // runs it.
+    LocalEscapeResult* locals = local_escape_analyze(ast_root, result);
+    goo_check(locals != NULL, "local_escape_analyze returned a result");
+    returns_fresh_compute(ast_root, result, locals);
     for (int e = 0; result && e < row->expect_count; e++) {
         const FreshExpectation* fe = &row->expect[e];
         if (!fe->name_is_shared) {
@@ -666,6 +673,7 @@ static void run_fresh_row(const FreshRow* row) {
                   "unknown function name is conservatively not owned");
         param_escape_result_free(result);
     }
+    local_escape_result_free(locals);
     if (checker) type_checker_free(checker);
     ast_node_free(ast_root);
     ast_root = NULL;

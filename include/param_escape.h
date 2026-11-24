@@ -36,7 +36,9 @@ typedef struct ParamEscapeSummary {
                              // own params? (interprocedural fixpoint signal;
                              // also exposed for callers/tests that want it)
 
-    // Does the caller OWN every value F returns? True only on a positive
+    // Does the caller OWN every value F returns? Filled by
+    // returns_fresh_compute (include/returns_fresh.h), not by
+    // param_escape_analyze, which leaves it false. True only on a positive
     // proof: every return path gives a fresh allocation, a literal, an
     // owned-result shim call, a call to a function that is itself
     // returns_fresh, or a local that holds only such values and escapes only
@@ -56,6 +58,9 @@ typedef struct ParamEscapeSummary {
 typedef struct ParamEscapeResult {
     ParamEscapeSummary* summaries;   // one per user-defined function/method
     size_t count;
+    // The fixpoint hit its cap and every summary is a fail-closed guess.
+    // returns_fresh_compute then proves nothing.
+    bool fail_closed;
 } ParamEscapeResult;
 
 // Analyze every AST_FUNC_DECL reachable from `program`'s top-level
