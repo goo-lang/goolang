@@ -134,15 +134,17 @@
 //   ----------------------------------------  -------------------------------
 //   new(T), &T{}                              YES, the site is an allocation
 //   a struct/slice/array/map literal          YES, a fresh allocation
-//   a call to a Goo function                  iff its ParamEscapeSummary
-//                                             .return_escapes is FALSE
+//   a call to a Goo function                  iff EVERY ParamEscapeSummary
+//                                             with its name has returns_fresh
 //   a call to a C shim                        iff shim_signature_is_non_retaining
 //   a slice, index or selector expression      NO -- a view into something else
 //   another local, or any identifier           NO -- an alias; one owner only
 //   anything not listed                        NO -- conservative
 //
-// `return_escapes` is documented as "does F return a value derived from one of
-// its own params?", which IS the borrowed-result relation. The shim column is
+// `returns_fresh` is a POSITIVE proof that every return path gives fresh
+// memory. It replaced `!return_escapes`, which says only that the result
+// derives from no PARAMETER -- a global, or a value the callee also stored in
+// a container, passed that test and was freed (finding C2). The shim column is
 // justified in src/types/shim_signatures.c against each runtime body, and that
 // audit is explicit that every whitelisted `strings` entry COPIES -- the table
 // even notes TrimSpace copies where Go's returns a slice of its argument.

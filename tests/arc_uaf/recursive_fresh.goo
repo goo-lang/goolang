@@ -1,0 +1,19 @@
+package main
+
+import "fmt"
+
+type Box struct{ v int }
+
+func mk(n int) *Box {
+	if n == 0 {
+		return &Box{v: 7}
+	}
+	return mk(n - 1)
+}
+
+func main() {
+	for i := 0; i < 3; i++ {
+		b := mk(2)
+		fmt.Println(b.v)
+	}
+}

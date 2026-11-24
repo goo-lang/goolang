@@ -1,0 +1,26 @@
+package main
+
+import "fmt"
+
+type Box struct{ v int }
+type Reg struct{ items []*Box }
+
+func mkReg(r *Reg) *Box {
+	b := &Box{v: 30}
+	r.items = append(r.items, b)
+	return b
+}
+
+func use(r *Reg) int {
+	b := mkReg(r)
+	if b.v > 0 {
+		return 1
+	}
+	return 0
+}
+
+func main() {
+	r := &Reg{}
+	n := use(r)
+	fmt.Println(n, r.items[0].v)
+}

@@ -35,6 +35,18 @@ typedef struct ParamEscapeSummary {
     bool   return_escapes;  // does F return a value derived from one of its
                              // own params? (interprocedural fixpoint signal;
                              // also exposed for callers/tests that want it)
+
+    // Does the caller OWN every value F returns? True only on a positive
+    // proof: every return path gives a fresh allocation, a literal, an
+    // owned-result shim call, a call to a function that is itself
+    // returns_fresh, or a local that holds only such values and escapes only
+    // by being returned.
+    //
+    // NOT the negation of return_escapes. A value from a global, or one that
+    // F also stored in a container, carries no parameter taint, so
+    // return_escapes reads false for it -- and ARC freed it (finding C2).
+    // Anything this analysis cannot prove reads false, and false only leaks.
+    bool   returns_fresh;
 } ParamEscapeSummary;
 
 typedef struct ParamEscapeResult {
@@ -54,5 +66,10 @@ void param_escape_result_free(ParamEscapeResult* result);
 // be silently treated as "does not escape" by any consumer.
 const ParamEscapeSummary* param_escape_lookup(const ParamEscapeResult* result, const char* fn);
 bool param_escape_param_escapes(const ParamEscapeResult* result, const char* fn, size_t param_idx);
+
+// Does the caller own the result of a call to `fn`? A lookup is by bare name,
+// and two methods on different types can share one. So the answer is true only
+// when EVERY summary with that name has returns_fresh. A miss is false.
+bool param_escape_returns_fresh(const ParamEscapeResult* result, const char* fn);
 
 #endif // PARAM_ESCAPE_H

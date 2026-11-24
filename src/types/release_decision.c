@@ -689,9 +689,9 @@ static void seed_names(WalkCtx* ctx, char** names, size_t name_count, ASTNode* v
     // ownership sources are already stated over the WHOLE result list:
     // shim_signature_is_non_retaining is "does not retain a pointer argument
     // AND does not return a value that aliases one", and
-    // ParamEscapeSummary.return_escapes is "does F return a value derived from
-    // one of its own params?". Neither is per-result and neither needs to be:
-    // if NO result aliases an argument, then EVERY result is owned.
+    // ParamEscapeSummary.returns_fresh is "every return path gives fresh memory
+    // in EVERY result position". Neither is per-result and neither needs to be:
+    // if every result is fresh, then every result is owned.
     //
     // Only the one-value case qualifies. Any other mismatch is a shape this
     // module does not understand, and the safe answer there is still NULL.
@@ -741,7 +741,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // needs the count. When ONE value feeds several names -- the
                 // daemon's `n, err := strconv.Atoi(f)` shape -- that value is
                 // attributed to every target, because non_retaining and
-                // return_escapes are both defined over the whole result list.
+                // returns_fresh are both defined over the whole result list.
                 // Any other count mismatch stays NULL, which refuses.
                 size_t tcount = 0, vcount = 0;
                 for (ASTNode* t = n->targets; t; t = t->next) tcount++;
@@ -1032,14 +1032,12 @@ static bool call_result_is_owned(Collected* c, const ParamEscapeResult* pe, ASTN
 
     if (call->function->type == AST_IDENTIFIER) {
         const char* name = ((IdentifierNode*)call->function)->name;
-        const ParamEscapeSummary* s = param_escape_lookup(pe, name);
-        // No summary means an unresolved or external callee. Conservative:
-        // assume the result may alias an argument.
-        if (!s) return false;
-        // return_escapes is "does F return a value derived from one of its own
-        // params?" -- exactly the borrowed-result relation. False means the
-        // result derives from no argument, so the caller owns it.
-        return !s->return_escapes;
+        // Owned only on a positive proof (finding C2). `!return_escapes` was
+        // used here, and it says only that the result derives from no
+        // PARAMETER: a callee returning a global, or a value it also stored in
+        // a container, passed that test and the caller freed live memory.
+        // A miss, or any same-named summary that is not fresh, answers false.
+        return param_escape_returns_fresh(pe, name);
     }
 
     if (call->function->type == AST_SELECTOR_EXPR) {
@@ -1297,7 +1295,7 @@ static bool expr_names_local(ASTNode* e, const char* target, bool* unknown) {
 //
 // AN OWNED VALUE IS PRUNED WHOLE, and that is what makes this usable rather than
 // merely safe. binding_is_owned already means "this expression yields FRESH
-// memory" -- a new/composite, a concat, a call whose return_escapes is false, a
+// memory" -- a new/composite, a concat, a call whose callee is returns_fresh, a
 // non-retaining shim. Fresh memory cannot contain a pointer into our local, so
 // no mention inside it can be an alias.
 //
