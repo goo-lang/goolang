@@ -42,6 +42,11 @@ static SourceEntry* find_source(const char* name) {
 }
 
 void diag_register_source(const char* filename, const char* text, size_t len) {
+    // A NULL here is a caller bug that would silently drop the source line of
+    // every later diagnostic for the file, so stop loudly. The early return
+    // keeps a GOO_ASSERT_OFF build from crashing.
+    GOO_ASSERT(filename != NULL);
+    GOO_ASSERT(text != NULL || len == 0U);
     if (filename == NULL || (text == NULL && len > 0U)) {
         return;
     }
