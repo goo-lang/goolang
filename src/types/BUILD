@@ -274,6 +274,7 @@ goo_cc_library(
         ":terminating_stmt",
         ":types",
         "//include:comptime_h",
+        "//include:diagnostic_h",
         "//include:embedding_h",
         "//include:lane_ownership_h",
         "//include:ownership_checker_h",
@@ -283,6 +284,7 @@ goo_cc_library(
         "//src/ast",
         "//src/comptime",
         "//src/errors",
+        "//src/errors:diagnostic",
         "//src/package",
     ],
 )
