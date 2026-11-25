@@ -112,13 +112,14 @@ static bool is_name_byte(char c) {
            ((unsigned char)c >= 0x80U);
 }
 
-// Index of the byte after the closing quote of the literal that opens at
-// `i`, or SIZE_MAX when it runs to a newline or the end of the text.
-static size_t skip_literal(const SourceEntry* e, size_t i) {
-    char quote = e->text[i];
+// Index of the byte after the closing `quote` of the literal whose opening
+// quote is at `i`, or SIZE_MAX when it runs to a newline or the end of the
+// text. A backslash escapes the next byte, except in a raw string.
+static size_t skip_literal(const SourceEntry* e, size_t i, char quote) {
+    const bool escapes = quote != '`';
     i++;
     while (i < e->len && e->text[i] != '\n') {
-        if (e->text[i] == '\\' && quote != '`') {
+        if (escapes && e->text[i] == '\\') {
             i += 2U;
         } else if (e->text[i] == quote) {
             return i + 1U;
@@ -127,6 +128,21 @@ static size_t skip_literal(const SourceEntry* e, size_t i) {
         }
     }
     return SIZE_MAX;
+}
+
+// Copies text[start, end) into buf and ends it with NUL. False when it does
+// not fit.
+static bool copy_span(const SourceEntry* e, size_t start, size_t end,
+                      char* buf, size_t cap) {
+    size_t n = end - start;
+    if (n >= cap) {
+        return false;
+    }
+    for (size_t k = 0U; k < n; k++) {
+        buf[k] = e->text[start + k];
+    }
+    buf[n] = '\0';
+    return true;
 }
 
 bool diag_source_call_text(Position pos, char* buf, size_t cap) {
@@ -138,7 +154,8 @@ bool diag_source_call_text(Position pos, char* buf, size_t cap) {
     if (e == NULL || !line_start(e, pos.line, &i)) {
         return false;
     }
-    size_t start = i + (size_t)(pos.column - 1);
+    const size_t column = (size_t)pos.column;
+    const size_t start = i + column - 1U;
     i = start;
     while (i < e->len && is_name_byte(e->text[i])) {
         i++;
@@ -147,24 +164,25 @@ bool diag_source_call_text(Position pos, char* buf, size_t cap) {
         return false;
     }
     int depth = 0;
-    for (; i < e->len && e->text[i] != '\n'; i++) {
-        char c = e->text[i];
+    while (i < e->len && e->text[i] != '\n') {
+        const char c = e->text[i];
         if (c == '"' || c == '\'' || c == '`') {
-            i = skip_literal(e, i);
+            i = skip_literal(e, i, c);
             if (i == SIZE_MAX) {
                 return false;
             }
-            i--;
-        } else if (c == '(') {
-            depth++;
-        } else if (c == ')' && --depth == 0) {
-            size_t n = i + 1U - start;
-            if (n >= cap) {
-                return false;
+        } else {
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else {
+                /* any other byte only advances */
             }
-            memcpy(buf, e->text + start, n);
-            buf[n] = '\0';
-            return true;
+            i++;
+            if (depth == 0) {
+                return copy_span(e, start, i, buf, cap);
+            }
         }
     }
     return false;
