@@ -1,1 +1,1 @@
--o /nonexistent-goo-diag-dir/out codegen_error.goo
+-o @OUT@/missing/out codegen_error.goo
