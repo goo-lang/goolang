@@ -573,9 +573,17 @@ static void* scheduler_main_loop(void* arg) {
         goo_goroutine_t* goroutine = scheduler_get_next_goroutine();
         
         if (goroutine) {
-            goo_os_tls()->current = goroutine;
-            goo_os_tls()->reap = NULL;                 // cleared each run; the goroutine sets it on exit
-            goo_os_tls()->requeue = NULL;              // cleared each run; the goroutine sets it on yield
+            // One read of the worker state, held across the swap. This loop
+            // never changes thread: only this worker swaps back into its own
+            // sched_ctx, so the pointer stays this worker's. A goroutine
+            // writes tls->reap or tls->requeue through its own goo_os_tls()
+            // call, and the swap's &tls->sched_ctx argument tells a reader
+            // (and cppcheck, which reported each repeated goo_os_tls()->reap
+            // read as "always false") that the call can change the struct.
+            goo_worker_tls_t* tls = goo_os_tls();
+            tls->current = goroutine;
+            tls->reap = NULL;                 // cleared each run; the goroutine sets it on exit
+            tls->requeue = NULL;              // cleared each run; the goroutine sets it on yield
             goroutine->state = GOO_GOROUTINE_RUNNING;
 
             goo_mutex_lock(g_scheduler->scheduler_mutex);
@@ -589,8 +597,8 @@ static void* scheduler_main_loop(void* arg) {
 #endif
             // Return to THIS worker's scheduler context when the goroutine
             // exits or yields.
-            goroutine->context.uc_link = &goo_os_tls()->sched_ctx;
-            if (swapcontext(&goo_os_tls()->sched_ctx, &goroutine->context) == -1) {
+            goroutine->context.uc_link = &tls->sched_ctx;
+            if (swapcontext(&tls->sched_ctx, &goroutine->context) == -1) {
                 goo_panic("Failed to switch to goroutine");
             }
 #ifdef __clang__
@@ -598,23 +606,23 @@ static void* scheduler_main_loop(void* arg) {
 #endif
 #endif
 
-            // Back on this worker's own stack. Reap ONLY via goo_os_tls()->reap, which the
+            // Back on this worker's own stack. Reap ONLY via tls->reap, which the
             // goroutine set (to itself) iff it EXITED; a yielded goroutine set
-            // goo_os_tls()->requeue instead (handled just below) and leaves goo_os_tls()->reap NULL.
-            // A DONE goroutine is never re-enqueued, so goo_os_tls()->reap is ours alone.
-            if (goo_os_tls()->reap) {
-                goo_free(goo_os_tls()->reap->stack);
-                goo_free(goo_os_tls()->reap);
-                goo_os_tls()->reap = NULL;
+            // tls->requeue instead (handled just below) and leaves tls->reap NULL.
+            // A DONE goroutine is never re-enqueued, so tls->reap is ours alone.
+            if (tls->reap) {
+                goo_free(tls->reap->stack);
+                goo_free(tls->reap);
+                tls->reap = NULL;
             }
             // A yielded goroutine is published to the ready queue ONLY here —
             // after swapcontext has fully saved its context — so no other worker
             // can swap into a half-saved context.
-            if (goo_os_tls()->requeue) {
-                scheduler_add_goroutine(goo_os_tls()->requeue);
-                goo_os_tls()->requeue = NULL;
+            if (tls->requeue) {
+                scheduler_add_goroutine(tls->requeue);
+                tls->requeue = NULL;
             }
-            goo_os_tls()->current = NULL;
+            tls->current = NULL;
         } else {
             // No goroutine ready; idle briefly. (Deadlock detection happens at
             // channel block points and in goo_scheduler_wait, not here.)
