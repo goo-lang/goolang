@@ -293,5 +293,15 @@ mkfifo "$FIFO_DIR/y.go" || { echo "  FAIL fifo-setup: mkfifo"; exit 1; }
 check fifo-source-skipped     0     ""            empty                sh -c "cd '$FIFO_DIR' && timeout 10 '$COMPILER' build ."
 rm -rf "$FIFO_DIR"
 
+# M4: ast_add_child must append in O(1) time so parsing large lists (e.g. 200,000 call arguments)
+# completes in linear time without timing out under a tight deadline.
+python3 -c '
+with open("'"$WORK"'/large_args.goo", "w") as f:
+    f.write("package main\n\nfunc f(a ...int) {}\n\nfunc main() {\n    f(")
+    f.write(", ".join(["1"] * 200000))
+    f.write(")\n}\n")
+'
+check large-arg-list          0     ""            empty                sh -c "timeout 5 '$COMPILER' --emit-ast-json '$WORK/large_args.goo' >/dev/null"
+
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]

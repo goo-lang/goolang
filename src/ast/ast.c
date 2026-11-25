@@ -123,12 +123,15 @@ static const char* ast_node_type_strings[] = {
 // (no -Werror gate).
 static ASTNode* ast_node_new(ASTNodeType type, Position pos) {
     ASTNode* node = xmalloc(sizeof(ASTNode));
-    if (!node) return NULL;
+    if (!node) {
+        return NULL;
+    }
     
     node->type = type;
     node->pos = pos;
     node->node_type = NULL;
     node->next = NULL;
+    node->tail = NULL;
     
     return node;
 }
@@ -752,16 +755,26 @@ ASTNode* ast_type_clone(const ASTNode* node) {
 
 // Specific node constructors
 void ast_add_child(ASTNode* parent, ASTNode* child) {
-    if (!parent || !child) return;
+    if (!parent || !child) {
+        return;
+    }
     
+    // Determine the tail of the child chain.
+    ASTNode* child_tail = (child->tail != NULL) ? child->tail : child;
+    while (child_tail->next != NULL) {
+        child_tail = child_tail->next;
+    }
+
     if (!parent->next) {
         parent->next = child;
+        parent->tail = child_tail;
     } else {
-        ASTNode* current = parent->next;
-        while (current->next) {
+        ASTNode* current = (parent->tail != NULL) ? parent->tail : parent->next;
+        while (current->next != NULL) {
             current = current->next;
         }
         current->next = child;
+        parent->tail = child_tail;
     }
 }
 

@@ -28,6 +28,7 @@ ProgramNode* ast_program_new(Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->package_name = NULL;
     node->imports = NULL;
     node->decls = NULL;
@@ -43,6 +44,7 @@ PackageDeclNode* ast_package_decl_new(const char* name, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     
     return node;
@@ -56,6 +58,7 @@ ImportSpecNode* ast_import_spec_new(const char* path, const char* alias, Positio
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->path = str_dup(path);
     node->alias = str_dup(alias);
     
@@ -70,6 +73,7 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->params = NULL;
     node->return_type = NULL;
@@ -94,6 +98,7 @@ FuncLitNode* ast_func_lit_new(Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->params = NULL;
     node->return_type = NULL;
     node->body = NULL;
@@ -111,6 +116,7 @@ ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->type_params = NULL;
     node->requirements = NULL;
@@ -126,6 +132,7 @@ VarDeclNode* ast_var_decl_new(Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->names = NULL;
     node->name_count = 0;
     node->type = NULL;
@@ -148,6 +155,7 @@ IdentifierNode* ast_identifier_new(const char* name, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     
     return node;
@@ -161,6 +169,7 @@ LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->literal_type = type;
     node->value = str_dup(value);
     // Non-string literals never contain embedded NULs, so strlen is the true
@@ -178,6 +187,7 @@ LiteralNode* ast_string_literal_new(const char* data, size_t length, Position po
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->literal_type = TOKEN_STRING;
     node->length = length;
 
@@ -200,6 +210,7 @@ BinaryExprNode* ast_binary_expr_new(ASTNode* left, TokenType op, ASTNode* right,
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->left = left;
     node->operator = op;
     node->right = right;
@@ -215,6 +226,7 @@ UnaryExprNode* ast_unary_expr_new(TokenType op, ASTNode* operand, Position pos) 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->operator = op;
     node->operand = operand;
     
@@ -229,6 +241,7 @@ PostfixExprNode* ast_postfix_expr_new(ASTNode* operand, TokenType op, Position p
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->operand = operand;
     node->operator = op;
     
@@ -243,6 +256,7 @@ BlockStmtNode* ast_block_stmt_new(Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->statements = NULL;
     
     return node;
@@ -256,6 +270,7 @@ IfLetStmtNode* ast_if_let_stmt_new(const char* var_name, ASTNode* nullable_expr,
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     
     // Copy variable name
     if (var_name) {
@@ -282,6 +297,7 @@ GoStmtNode* ast_go_stmt_new(ASTNode* call, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->call = call;
     
     return node;
@@ -295,6 +311,7 @@ SelectStmtNode* ast_select_stmt_new(Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->cases = NULL;
     
     return node;
@@ -308,6 +325,7 @@ SelectCaseNode* ast_select_case_new(ASTNode* comm, ASTNode* body, Position pos) 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->comm = comm;
     node->body = body;
     // gofmt-syntax-b Task 4: default to "no binding" — the plain-comm and
@@ -328,6 +346,7 @@ SwitchStmtNode* ast_switch_stmt_new(ASTNode* tag, ASTNode* cases, Position pos) 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->tag = tag;
     node->cases = cases;
 
@@ -342,6 +361,7 @@ CaseClauseNode* ast_case_clause_new(ASTNode* exprs, ASTNode* body, Position pos)
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->exprs = exprs;
     node->body = body;
 
@@ -356,6 +376,7 @@ TypeSwitchNode* ast_type_switch_new(ASTNode* bind_name, ASTNode* expr, ASTNode* 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->bind_name = bind_name;
     node->expr = expr;
     node->cases = cases;
@@ -371,6 +392,7 @@ TypeCaseNode* ast_type_case_new(ASTNode* types, ASTNode* body, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->types = types;
     node->body = body;
 
@@ -385,6 +407,7 @@ DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->call = call;
     
     return node;
@@ -400,6 +423,7 @@ ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos) 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->value_type = value_type;
     node->error_type = NULL; // Default to standard error type
     
@@ -414,6 +438,7 @@ NullableTypeNode* ast_nullable_type_new(ASTNode* base_type, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->base_type = base_type;
     
     return node;
@@ -427,6 +452,7 @@ TryExprNode* ast_try_expr_new(ASTNode* expr, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->expr = expr;
     
     return node;
@@ -440,6 +466,7 @@ CatchExprNode* ast_catch_expr_new(ASTNode* expr, const char* error_var, ASTNode*
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->expr = expr;
     node->error_var = str_dup(error_var);
     node->catch_body = catch_body;
@@ -455,6 +482,7 @@ ComptimeBlockNode* ast_comptime_block_new(ASTNode* body, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->body = body;
     
     return node;
@@ -468,6 +496,7 @@ ChanTypeNode* ast_chan_type_new(ASTNode* element_type, ChannelPattern pattern, P
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->element_type = element_type;
     node->pattern = pattern;
     node->endpoint = NULL;
@@ -483,6 +512,7 @@ ReferenceTypeNode* ast_reference_type_new(ASTNode* element_type, int is_mutable,
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->element_type = element_type;
     node->is_mutable = is_mutable;
     
@@ -497,6 +527,7 @@ UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->body = body;
     
     return node;
@@ -509,6 +540,7 @@ ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->body = body;
     return node;
 }
@@ -521,6 +553,7 @@ LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos)
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->stmt = stmt;
     return node;
@@ -533,6 +566,7 @@ BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->label = str_dup(label);
     return node;
 }
@@ -544,6 +578,7 @@ ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position p
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->label = str_dup(label);
     return node;
 }
@@ -556,6 +591,7 @@ GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->label = str_dup(label);
     return node;
 }
@@ -574,6 +610,7 @@ ASTNode* ast_break_stmt_new(Position pos) {
     node->pos = pos;
     node->node_type = NULL;
     node->next = NULL;
+    node->tail = NULL;
     return node;
 }
 
@@ -584,6 +621,7 @@ ASTNode* ast_continue_stmt_new(Position pos) {
     node->pos = pos;
     node->node_type = NULL;
     node->next = NULL;
+    node->tail = NULL;
     return node;
 }
 
@@ -594,6 +632,7 @@ ASTNode* ast_fallthrough_stmt_new(Position pos) {
     node->pos = pos;
     node->node_type = NULL;
     node->next = NULL;
+    node->tail = NULL;
     return node;
 }
 
@@ -605,6 +644,7 @@ AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->assembly_code = str_dup(assembly_code);
     node->outputs = NULL;
     node->inputs = NULL;
@@ -622,6 +662,7 @@ UnsafePtrTypeNode* ast_unsafe_ptr_type_new(ASTNode* element_type, Position pos) 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->element_type = element_type;
     
     return node;
@@ -635,6 +676,7 @@ PtrArithmeticNode* ast_ptr_arithmetic_new(ASTNode* pointer, TokenType operation,
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->pointer = pointer;
     node->operation = operation;
     node->offset = offset;
@@ -650,6 +692,7 @@ PtrDerefNode* ast_ptr_deref_new(ASTNode* pointer, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->pointer = pointer;
     
     return node;
@@ -663,6 +706,7 @@ AddrOfNode* ast_addr_of_new(ASTNode* operand, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->operand = operand;
     
     return node;
@@ -676,6 +720,7 @@ PortIONode* ast_port_io_new(ASTNode* port, ASTNode* value, int is_input, int siz
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->port = port;
     node->value = value;
     node->is_input = is_input;
@@ -692,6 +737,7 @@ MMIOAccessNode* ast_mmio_access_new(ASTNode* address, ASTNode* value, int is_vol
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->address = address;
     node->value = value;
     node->is_volatile = is_volatile;
@@ -708,6 +754,7 @@ ExternDeclNode* ast_extern_decl_new(const char* name, const char* abi, ASTNode* 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->abi = str_dup(abi);
     node->library = str_dup(library);
@@ -725,6 +772,7 @@ AttributeNode* ast_attribute_new(const char* name, ASTNode* args, Position pos) 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->args = args;
     
@@ -739,6 +787,7 @@ VolatileExprNode* ast_volatile_expr_new(ASTNode* expr, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->expr = expr;
     
     return node;
@@ -752,6 +801,7 @@ ParallelForNode* ast_parallel_for_new(ASTNode* init, ASTNode* condition, ASTNode
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->init = init;
     node->condition = condition;
     node->increment = increment;
@@ -770,6 +820,7 @@ ParallelReduceNode* ast_parallel_reduce_new(ASTNode* array, ASTNode* init_value,
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->array = array;
     node->init_value = init_value;
     node->reduction_func = reduction_func;
@@ -786,6 +837,7 @@ BarrierCallNode* ast_barrier_call_new(const char* barrier_name, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->barrier_name = str_dup(barrier_name);
     
     return node;
@@ -799,6 +851,7 @@ AtomicExprNode* ast_atomic_expr_new(ASTNode* expr, const char* operation, ASTNod
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->expr = expr;
     node->operation = str_dup(operation);
     node->operand = operand;
@@ -814,6 +867,7 @@ ThreadLocalDeclNode* ast_thread_local_decl_new(const char* name, ASTNode* type, 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->type = type;
     node->init_value = init_value;
@@ -829,6 +883,7 @@ MatchExprNode* ast_match_expr_new(ASTNode* expr, ASTNode* cases, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->expr = expr;
     node->cases = cases;
     
@@ -843,6 +898,7 @@ MatchCaseNode* ast_match_case_new(ASTNode* pattern, ASTNode* guard, ASTNode* bod
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->pattern = pattern;
     node->guard = guard;
     node->body = body;
@@ -858,6 +914,7 @@ PatternNode* ast_pattern_new(PatternType pattern_type, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->pattern_type = pattern_type;
     
     // Initialize the union to safe defaults
@@ -874,6 +931,7 @@ GuardConditionNode* ast_guard_condition_new(ASTNode* condition, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->condition = condition;
     
     return node;
@@ -887,6 +945,7 @@ KernelDeclNode* ast_kernel_decl_new(const char* name, ASTNode* params, ASTNode* 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->params = params;
     node->return_type = return_type;
@@ -907,6 +966,7 @@ KernelLaunchNode* ast_kernel_launch_new(ASTNode* kernel_func, ASTNode* grid_dim,
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->kernel_func = kernel_func;
     node->grid_dim = grid_dim;
     node->block_dim = block_dim;
@@ -925,6 +985,7 @@ GPUMemoryAllocNode* ast_gpu_memory_alloc_new(ASTNode* size, ASTNode* element_typ
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->size = size;
     node->element_type = element_type;
     node->memory_type = memory_type;
@@ -942,6 +1003,7 @@ GPUMemoryCopyNode* ast_gpu_memory_copy_new(ASTNode* dest, ASTNode* src, ASTNode*
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->dest = dest;
     node->src = src;
     node->size = size;
@@ -960,6 +1022,7 @@ GPUSyncNode* ast_gpu_sync_new(int sync_type, ASTNode* stream, ASTNode* event, Po
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->sync_type = sync_type;
     node->stream = stream;
     node->event = event;
@@ -975,6 +1038,7 @@ GPUIntrinsicNode* ast_gpu_intrinsic_new(const char* intrinsic_name, ASTNode* arg
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->intrinsic_name = str_dup(intrinsic_name);
     node->args = args;
     node->context = context;
@@ -992,6 +1056,7 @@ WasmExportNode* ast_wasm_export_new(const char* export_name, ASTNode* item, cons
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->export_name = str_dup(export_name);
     node->item = item;
     node->export_type = str_dup(export_type);
@@ -1007,6 +1072,7 @@ WasmImportNode* ast_wasm_import_new(const char* module_name, const char* import_
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->module_name = str_dup(module_name);
     node->import_name = str_dup(import_name);
     node->local_name = str_dup(local_name);
@@ -1024,6 +1090,7 @@ WasmMemoryNode* ast_wasm_memory_new(ASTNode* min_pages, ASTNode* max_pages, int 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->min_pages = min_pages;
     node->max_pages = max_pages;
     node->is_shared = is_shared;
@@ -1041,6 +1108,7 @@ WasmTableNode* ast_wasm_table_new(WasmValueType element_type, ASTNode* min_size,
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->element_type = element_type;
     node->min_size = min_size;
     node->max_size = max_size;
@@ -1058,6 +1126,7 @@ WasmGlobalNode* ast_wasm_global_new(const char* name, WasmValueType value_type, 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->value_type = value_type;
     node->is_mutable = is_mutable;
@@ -1076,6 +1145,7 @@ WasmTypeNode* ast_wasm_type_new(const char* name, ASTNode* params, ASTNode* resu
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->name = str_dup(name);
     node->params = params;
     node->results = results;
@@ -1091,6 +1161,7 @@ WasmStartNode* ast_wasm_start_new(ASTNode* function, Position pos) {
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->function = function;
     
     return node;
@@ -1104,6 +1175,7 @@ WasmElemNode* ast_wasm_elem_new(ASTNode* table_index, ASTNode* offset, ASTNode* 
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->table_index = table_index;
     node->offset = offset;
     node->elements = elements;
@@ -1119,6 +1191,7 @@ WasmDataNode* ast_wasm_data_new(ASTNode* memory_index, ASTNode* offset, ASTNode*
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->memory_index = memory_index;
     node->offset = offset;
     node->data = data;
@@ -1134,6 +1207,7 @@ JSInteropNode* ast_js_interop_new(JSInteropType interop_type, const char* object
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->interop_type = interop_type;
     node->object_name = str_dup(object_name);
     node->property_name = str_dup(property_name);
@@ -1151,6 +1225,7 @@ DOMAccessNode* ast_dom_access_new(const char* api_name, const char* method_name,
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->api_name = str_dup(api_name);
     node->method_name = str_dup(method_name);
     node->args = args;
@@ -1168,6 +1243,7 @@ EnumTypeNode* ast_enum_type_new(ASTNode* variants, Position pos) {
     n->base.pos = pos;
     n->base.node_type = NULL;
     n->base.next = NULL;
+    n->base.tail = NULL;
     n->variants = variants;
     return n;
 }
@@ -1179,6 +1255,7 @@ InterfaceTypeNode* ast_interface_type_new(ASTNode* methods, Position pos) {
     n->base.pos = pos;
     n->base.node_type = NULL;
     n->base.next = NULL;
+    n->base.tail = NULL;
     n->methods = methods;
     return n;
 }
@@ -1190,6 +1267,7 @@ EnumVariantNode* ast_enum_variant_new(const char* name, ASTNode* fields, Positio
     n->base.pos = pos;
     n->base.node_type = NULL;
     n->base.next = NULL;
+    n->base.tail = NULL;
     n->name = name ? xstrdup(name) : NULL;
     n->fields = fields;
     return n;

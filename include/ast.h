@@ -296,6 +296,7 @@ struct ASTNode {
     Position pos;
     Type* node_type;        // Type information (filled during type checking)
     struct ASTNode* next;   // For linked lists of nodes
+    struct ASTNode* tail;   // Tail pointer for O(1) appending in ast_add_child
 };
 
 // Program (root node)

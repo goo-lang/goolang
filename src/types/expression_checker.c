@@ -5182,6 +5182,7 @@ static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position po
         s->base.pos = pos;
         s->base.node_type = NULL;
         s->base.next = NULL;
+        s->base.tail = NULL;
         s->expr = base;
         s->selector = xstrdup(r->path[i]);
         base = (ASTNode*)s;
