@@ -18,10 +18,15 @@
 #include "ast.h"
 #include "types.h"
 #include "program_dump.h"
+#include "diagnostic.h"
 
 // Name the synthesized `goo test` entry file carries through every phase
 // (parse diagnostics, --emit-ast, the program dump).
 static const char kTestMainName[] = "_testmain.goo";
+
+// Driver-level messages (a missing file, a bad flag, out of memory) have no
+// source position, so diag_emit prints them in the `goo: error:` form.
+static const Position kNoPos = {0};
 #include "codegen.h"
 // #include "errors/error.h"  // TODO: Update to use new error API
 #include "runtime.h"
@@ -177,6 +182,7 @@ int main(int argc, char* argv[]) {
     }
     free(options);
 
+    diag_free_sources();
     // error_cleanup(); // TODO: Update to use new error API
 
     return exit_code;
@@ -249,13 +255,13 @@ static char* make_temp_output_path(void) {
     const char template_tail[] = "/goo-run-XXXXXX";
     char* path = malloc(strlen(tmpdir) + sizeof(template_tail));
     if (!path) {
-        fputs("Error: Out of memory\n", stderr);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "Out of memory");
         return NULL;
     }
     sprintf(path, "%s%s", tmpdir, template_tail);
     int fd = mkstemp(path);
     if (fd < 0) {
-        fprintf(stderr, "Error: cannot create temporary file %s: %s\n",
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "cannot create temporary file %s: %s",
                 path, strerror(errno));
         free(path);
         return NULL;
@@ -267,7 +273,7 @@ static char* make_temp_output_path(void) {
 static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     CompilerOptions* options = xcalloc(1, sizeof(CompilerOptions));
     if (!options) {
-        fputs("Error: Out of memory\n", stderr);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "Out of memory");
         return NULL;
     }
     
@@ -343,7 +349,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                     // inside execvp. Refuse it here, where the message can
                     // name the option.
                     if (arg[0] == '\0') {
-                        fputs("Error: --linker needs a value\n", stderr);
+                        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "--linker needs a value");
                         free(options);
                         return NULL;
                     }
@@ -355,7 +361,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                     // unreadable file — and which the echoed link command
                     // cannot show, because joining on spaces hides it.
                     if (arg[0] == '\0') {
-                        fputs("Error: --link-flag needs a value\n", stderr);
+                        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "--link-flag needs a value");
                         free(options);
                         return NULL;
                     }
@@ -376,7 +382,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             case 'O':
                 options->opt_level = atoi(arg);
                 if (options->opt_level < 0 || options->opt_level > 3) {
-                    fprintf(stderr, "Error: Invalid optimization level: %s\n", arg);
+                    diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "Invalid optimization level: %s", arg);
                     free(options);
                     return NULL;
                 }
@@ -419,7 +425,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     // directory, matching `go test`; every other mode still requires one.
     if (optind >= argc) {
         if (mode != GOO_MODE_TEST) {
-            fputs("Error: No input file specified\n", stderr);
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "No input file specified");
             print_usage(stderr, argv[0]);
             free(options);
             return NULL;
@@ -440,7 +446,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             PackageSource ps;
             if (resolve_package_dir_path(options->input_file,
                                          mode == GOO_MODE_TEST, &ps) != 0) {
-                fprintf(stderr, "Error: no buildable source files in directory '%s'\n",
+                diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "no buildable source files in directory '%s'",
                         options->input_file);
                 free(options->output_file);
                 free(options);
@@ -463,7 +469,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     switch (mode) {
         case GOO_MODE_TEST:
             if (options->emit_llvm_ir || options->emit_qasm3) {
-                fputs("Error: --emit-llvm/--emit-qasm3 cannot be combined with 'goo test'\n", stderr);
+                diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "--emit-llvm/--emit-qasm3 cannot be combined with 'goo test'");
                 free(options->output_file);
                 free(options);
                 return NULL;
@@ -479,7 +485,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             break;
         case GOO_MODE_RUN:
             if (options->emit_llvm_ir || options->emit_qasm3) {
-                fputs("Error: --emit-llvm/--emit-qasm3 cannot be combined with 'goo run'\n", stderr);
+                diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "--emit-llvm/--emit-qasm3 cannot be combined with 'goo run'");
                 free(options->output_file);
                 free(options);
                 return NULL;
@@ -493,7 +499,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
             break;
         case GOO_MODE_BUILD:
             if (optind + 1 < argc) {
-                fprintf(stderr, "Error: unexpected argument '%s' after input file\n",
+                diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "unexpected argument '%s' after input file",
                         argv[optind + 1]);
                 free(options->output_file);
                 free(options);
@@ -541,8 +547,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 struct stat ost;
                 if (options->output_file &&
                     stat(options->output_file, &ost) == 0 && S_ISDIR(ost.st_mode)) {
-                    fprintf(stderr,
-                            "Error: build output \"%s\" already exists and is a directory\n",
+                    diag_emit(DIAG_ERROR, kNoPos, NULL, NULL,
+                            "build output \"%s\" already exists and is a directory",
                             options->output_file);
                     free(options->output_file);
                     if (options->input_is_dir) {
@@ -583,7 +589,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
 static char* read_file(const char* filename) {
     FILE* file = fopen(filename, "r");
     if (!file) {
-        fprintf(stderr, "Error: Cannot open file: %s\n", filename);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "Cannot open file: %s", filename);
         return NULL;
     }
     
@@ -596,7 +602,7 @@ static char* read_file(const char* filename) {
     char* buffer = malloc(size + 1);
     if (!buffer) {
         fclose(file);
-        fprintf(stderr, "Error: Out of memory reading file: %s\n", filename);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "Out of memory reading file: %s", filename);
         return NULL;
     }
     
@@ -898,18 +904,18 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
         if (alias && !existing->alias) existing->alias = str_dup(alias);
         if (existing->state == PKG_DONE) return 0;        // diamond: already placed
         if (existing->state == PKG_IN_PROGRESS) {
-            fprintf(stderr,
-                    "Error: import cycle detected involving package \"%s\"\n",
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL,
+                    "import cycle detected involving package \"%s\"",
                     import_path);
             return -1;
         }
     }
 
     PkgEntry* e = pkg_graph_add(g, import_path);
-    if (!e) { fputs("Error: out of memory resolving imports\n", stderr); return -1; }
+    if (!e) { diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory resolving imports"); return -1; }
     if (alias) {
         e->alias = str_dup(alias);
-        if (!e->alias) { fputs("Error: out of memory resolving imports\n", stderr); return -1; }
+        if (!e->alias) { diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory resolving imports"); return -1; }
     }
     e->state = PKG_IN_PROGRESS;
 
@@ -925,8 +931,8 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
             const char* slash = strchr(seg, '/');
             size_t len = slash ? (size_t)(slash - seg) : strlen(seg);
             if (len == 2 && seg[0] == '.' && seg[1] == '.') {
-                fprintf(stderr,
-                        "Error: invalid import path \"%s\" (\"..\" segments are not allowed)\n",
+                diag_emit(DIAG_ERROR, kNoPos, NULL, NULL,
+                        "invalid import path \"%s\" (\"..\" segments are not allowed)",
                         import_path);
                 return -1;
             }
@@ -936,7 +942,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
 
     PackageSource ps;
     if (resolve_import(import_path, g->source_dir, &ps) != 0) {
-        fprintf(stderr, "Error: cannot resolve import \"%s\"\n", import_path);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "cannot resolve import \"%s\"", import_path);
         return -1;
     }
     e->name = str_dup(ps.name);
@@ -956,7 +962,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
     e->file_names = calloc(ps.file_count, sizeof(char*));
     if (!e->asts || !e->file_names) {
         package_source_free(&ps);
-        fputs("Error: out of memory resolving imports\n", stderr);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory resolving imports");
         return -1;
     }
 
@@ -968,21 +974,22 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
         e->file_names[fi] = str_dup(ps.files[fi]);
         if (!e->file_names[fi]) {
             package_source_free(&ps);
-            fputs("Error: out of memory resolving imports\n", stderr);
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory resolving imports");
             return -1;
         }
 
         char* buf = read_file(ps.files[fi]);
         if (!buf) {
-            fprintf(stderr, "Error: cannot read source file \"%s\" of package \"%s\"\n",
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "cannot read source file \"%s\" of package \"%s\"",
                     ps.files[fi], import_path);
             package_source_free(&ps);
             return -1;
         }
+        diag_register_source(e->file_names[fi], buf, strlen(buf));
         if (pkg_graph_keep_source(g, buf) != 0) {
             free(buf);
             package_source_free(&ps);
-            fputs("Error: out of memory resolving imports\n", stderr);
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory resolving imports");
             return -1;
         }
 
@@ -992,7 +999,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
         // single-file path used).
         ast_root = NULL;
         if (parse_input(buf, e->file_names[fi]) != 0 || !ast_root) {
-            fprintf(stderr, "Error: failed to parse package \"%s\"\n", import_path);
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "failed to parse package \"%s\"", import_path);
             package_source_free(&ps);
             return -1;
         }
@@ -1014,7 +1021,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
 
     e->state = PKG_DONE;
     if (pkg_graph_append_ordered(g, e) != 0) {
-        fputs("Error: out of memory resolving imports\n", stderr);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory resolving imports");
         return -1;
     }
     return 0;
@@ -1061,7 +1068,7 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
         const char* short_name = e->alias ? e->alias : e->name;
         Package* p = type_checker_add_package(checker, e->import_path, short_name);
         if (!p) {
-            fprintf(stderr, "Error: out of memory registering package \"%s\"\n",
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory registering package \"%s\"",
                     e->import_path);
             return false;
         }
@@ -1110,7 +1117,7 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
         scope_pop(checker);
         checker->current_package = NULL;
         if (!ok) {
-            fprintf(stderr, "Error: failed to compile package \"%s\"\n",
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "failed to compile package \"%s\"",
                     e->import_path);
             return false;
         }
@@ -1190,7 +1197,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     ASTNode** asts    = calloc(nfiles, sizeof(ASTNode*));
     if (!sources || !lexers || !asts) {
         free(sources); free(lexers); free(asts);
-        fputs("Error: out of memory reading input files\n", stderr);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory reading input files");
         return false;
     }
 
@@ -1212,6 +1219,12 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 
         sources[fi] = read_file(fname);
         if (!sources[fi]) { ENTRY_CLEANUP(); return false; }
+
+        // Keyed by the same pointer string the lexer stamps into Positions,
+        // so a type error in ANY file of the package finds its own text.
+        // The bridge (lexer_bridge.c) does not register, because probes compile
+        // that file by name, and the in-memory _testmain has no source to show.
+        diag_register_source(fname, sources[fi], strlen(sources[fi]));
 
         if (options->verbose) printf("Phase 1: Lexical analysis (%s)...\n", fname);
 
@@ -1240,12 +1253,11 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         // it, so the next file's parse cannot clobber a pointer we own.
         ast_root = NULL;
         if (parse_input(sources[fi], fname) != 0) {
-            fputs("Error: Parse failed\n", stderr);
             ENTRY_CLEANUP();
             return false;
         }
         if (!ast_root) {
-            fputs("Error: No AST generated\n", stderr);
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "No AST generated");
             ENTRY_CLEANUP();
             return false;
         }
@@ -1303,7 +1315,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         const char** test_names = calloc(nfiles, sizeof(char*));
         if (!test_asts || !test_names) {
             free(test_asts); free(test_names);
-            fputs("Error: out of memory preparing test discovery\n", stderr);
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory preparing test discovery");
             ENTRY_CLEANUP();
             return false;
         }
@@ -1360,7 +1372,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
                 if (!f->name || f->receiver || strcmp(f->name, "main") != 0) continue;
                 char* renamed = str_dup("main.program");
                 if (!renamed) {
-                    fputs("Error: out of memory preparing the test entry point\n", stderr);
+                    diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory preparing the test entry point");
                     ENTRY_CLEANUP();
                     return false;
                 }
@@ -1381,7 +1393,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
                                                        &tests);
         test_list_free(&tests);
         if (!testmain_src) {
-            fputs("Error: out of memory generating _testmain.goo\n", stderr);
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory generating _testmain.goo");
             ENTRY_CLEANUP();
             return false;
         }
@@ -1406,7 +1418,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         if (grown_asts) asts = grown_asts;
         if (!grown_asts) {
             free(testmain_src);
-            fputs("Error: out of memory generating _testmain.goo\n", stderr);
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "out of memory generating _testmain.goo");
             ENTRY_CLEANUP();
             return false;
         }
@@ -1426,8 +1438,8 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         if (parse_input(testmain_src, kTestMainName) != 0 || !ast_root) {
             // Generated source that will not parse is a compiler bug, not a
             // user error, so point at the flag that shows the text.
-            fprintf(stderr, "Error: failed to parse the synthesized _testmain.goo "
-                            "(re-run with --emit-testmain to see it)\n");
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "failed to parse the synthesized _testmain.goo "
+                            "(re-run with --emit-testmain to see it)");
             nfiles++;   // the slot is owned now; let ENTRY_CLEANUP free it
             ENTRY_CLEANUP();
             return false;
@@ -1723,8 +1735,8 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     codegen_free(codegen);
 #else
     // Fallback: interpreter mode
-    fputs("Warning: LLVM not available, cannot generate native code\n", stderr);
-    fputs("Consider installing LLVM to enable code generation\n", stderr);
+    diag_emit(DIAG_WARNING, kNoPos, NULL, "Install LLVM to enable code generation",
+              "LLVM not available, cannot generate native code");
     
     // For now, just validate the program
     if (options->verbose) {
@@ -1756,7 +1768,7 @@ static int run_program(const char* path, char** args, int arg_count, bool verbos
     // binary); the forwarded args follow.
     char** child_argv = malloc(((size_t)arg_count + 2) * sizeof(char*));
     if (!child_argv) {
-        fputs("Error: Out of memory\n", stderr);
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "Out of memory");
         return 127;
     }
     child_argv[0] = (char*)path;
@@ -1767,20 +1779,20 @@ static int run_program(const char* path, char** args, int arg_count, bool verbos
 
     pid_t pid = fork();
     if (pid < 0) {
-        fprintf(stderr, "Error: cannot fork to run %s: %s\n", path, strerror(errno));
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "cannot fork to run %s: %s", path, strerror(errno));
         free(child_argv);
         return 127;
     }
     if (pid == 0) {
         execv(path, child_argv);
-        fprintf(stderr, "Error: cannot execute %s: %s\n", path, strerror(errno));
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "cannot execute %s: %s", path, strerror(errno));
         _exit(127);
     }
     free(child_argv);
 
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) {
-        fprintf(stderr, "Error: waitpid failed for %s: %s\n", path, strerror(errno));
+        diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "waitpid failed for %s: %s", path, strerror(errno));
         return 127;
     }
 

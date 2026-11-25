@@ -1,0 +1,6 @@
+package main
+
+func main() {
+	_ = "héllo"; var n int = "x"
+	_ = n
+}

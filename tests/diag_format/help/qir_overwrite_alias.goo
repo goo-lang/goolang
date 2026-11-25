@@ -1,0 +1,9 @@
+package main
+
+import Q "qir"
+
+func main() {
+	q := Q.Alloc()
+	q = Q.Alloc()
+	Q.FreeZero(q)
+}

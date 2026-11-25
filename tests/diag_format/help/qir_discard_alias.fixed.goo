@@ -1,0 +1,12 @@
+package main
+
+import Q "qir"
+
+func mk() Q.Qubit {
+	return Q.Alloc()
+}
+
+func main() {
+	q := mk()
+	Q.FreeZero(q)
+}

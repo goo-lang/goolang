@@ -1,0 +1,3 @@
+multibyte_line.goo:4:16: error: Cannot assign string to int64
+    4 | 	_ = "héllo"; var n int = "x"
+      | 	             ^

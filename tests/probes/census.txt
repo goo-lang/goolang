@@ -170,6 +170,7 @@ script ast-free-leak-probe
 script compile-commands-current-probe
 script dead-package-code-probe
 script deadlock-poll-probe
+script diag-format-probe
 script diagnostics-drift-probe
 script doc-claims-probe
 script exit-code-probe
@@ -198,5 +199,6 @@ script repro-build-probe
 script spin-bootstrap-probe
 script spin-deadlock-model-probe
 script string-literal-header-probe
+script superset-probe
 script warning-count-probe
 script workflow-targets-probe

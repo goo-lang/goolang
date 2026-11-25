@@ -1,6 +1,9 @@
 #include "parser/parser_errors.h"
 #include "lexer.h"
 #include "token.h"
+#include "diagnostic.h"
+#include "parser/parser_actions.h"
+#include "parser.tab.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -232,16 +235,10 @@ const char* token_type_to_string(int token_type) {
 
 // Bison-invoked error hook (declared in include/parser.h and, for
 // parser.y's own translation unit, re-declared extern in its prologue).
-// Formerly defined in parser.y's epilogue; moved here as its natural home
-// alongside the rest of the parser's error-handling machinery.
+// The location is the rejected token's own, read from yylloc: bison keeps
+// the lookahead's location there, while current_lexer->pos can lie past it
+// because the bridge reads ahead.
 void yyerror(const char* msg) {
-    if (current_lexer) {
-        fprintf(stderr, "Parse error at %s:%d:%d: %s\n",
-                current_lexer->filename ? current_lexer->filename : "<stdin>",
-                current_lexer->pos.line,
-                current_lexer->pos.column,
-                msg);
-    } else {
-        fprintf(stderr, "Parse error: %s\n", msg);
-    }
+    Position pos = pos_from_loc(yylloc.first_line, yylloc.first_column);
+    diag_emit(DIAG_ERROR, pos, NULL, NULL, "%s", msg);
 }

@@ -100,16 +100,17 @@ ASTNode* desugar_var_group(ASTNode* spec_chain);
 // F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` /
 // `a,b = v1,v2`).
 ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
-                             ASTNode* v1, ASTNode* v2, int is_short_decl);
+                             ASTNode* v1, ASTNode* v2, int is_short_decl, Position pos);
 
 // `a, b = f()` — tuple assignment to two existing lvalues from a SINGLE
 // multi-return call. Builds a MultiAssignNode with two targets and one value
 // (chain length 1, count 2); the type checker and codegen detect the
 // values<targets shape and destructure the call's result struct fields.
-ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call);
+ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call, Position pos);
 
-// Build a compound-assignment statement (`x += e`, `x &= e`, ...).
-ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
+// Build a compound-assignment statement (`x += e`, `x &= e`, ...). `pos` is
+// the rule's own start (POS(@$)), never the lookahead token on the next line.
+ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs, Position pos);
 
 // Build a StructLiteralNode from an owned type-name string (or NULL for an
 // elided composite literal `{...}` whose type is inferred from context) and

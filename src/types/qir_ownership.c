@@ -4,6 +4,7 @@
 
 #include "qir_ownership.h"
 #include "ownership_checker.h"
+#include "diagnostic.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -336,6 +337,22 @@ static int qir_consume_qubit_rhs(QirWalkContext* ctx, ASTNode* rhs,
     return 1;
 }
 
+// Both overwrite sites (`q = ...` and the multi-assign form) report the same
+// error. The help names the user's own qubit, which is in scope at the site.
+static void qir_error_overwrite_live(QirWalkContext* ctx, Position pos,
+                                     const QirBinding* b) {
+    char help[256];
+    // The help writes `<alias>.FreeZero`, so it needs the name the file
+    // imports qir under. No help beats code that does not compile.
+    const char* alias = type_package_alias(ctx->checker, "qir");
+    const char* shown = (alias && type_help_format(help, sizeof help,
+        "%s.FreeZero(%s)\nplace this before the assignment to %s",
+        alias, b->name, b->name)) ? help : NULL;
+    type_error_help(ctx->checker, pos, shown,
+        "cannot overwrite live linear qubit '%s' (declared at line %d) without consuming it first",
+        b->name, b->decl_pos.line);
+}
+
 // Check a call expression for QIR obligations (consumer calls, unitary borrow
 // calls, multi-qubit distinctness, and discarded Qubit results).
 static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_is_bound) {
@@ -384,7 +401,24 @@ static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_i
     if (!callee_returns_qubit && !result_is_bound) {
         // OK: void or non-qubit return.
     } else if (callee_returns_qubit && !result_is_bound) {
-        type_error(ctx->checker, expr->pos,
+        // NULL help when the call text cannot be copied: no help beats a
+        // placeholder.
+        const char* shown = NULL;
+        char call_text[160];
+        char help[256];
+        // `q := ...` fails when a `q` is in the same scope. This pass runs
+        // after the scopes are popped, so the proof that `q` is free is that
+        // no `q` occurs anywhere in the file. `<alias>.FreeZero` fails when
+        // the file imports qir under another name. No help in either case.
+        const char* alias = type_package_alias(ctx->checker, "qir");
+        if (alias && !diag_source_has_word(expr->pos.filename, "q") &&
+            type_call_help_text(expr, call_text, sizeof call_text) &&
+            type_help_format(help, sizeof help,
+                "q := %s\nthen consume q, for example: %s.FreeZero(q)",
+                call_text, alias)) {
+            shown = help;
+        }
+        type_error_help(ctx->checker, expr->pos, shown,
             "call returns a linear 'qir.Qubit' which cannot be discarded");
     }
 
@@ -777,9 +811,7 @@ static void qir_handle_expr_stmt(QirWalkContext* ctx, ASTNode* expr) {
                     return;
                 }
                 if (lhs_b->state == QIR_STATE_LIVE) {
-                    type_error(ctx->checker, expr->pos,
-                        "cannot overwrite live linear qubit '%s' (declared at line %d) without consuming it first",
-                        lhs_b->name, lhs_b->decl_pos.line);
+                    qir_error_overwrite_live(ctx, expr->pos, lhs_b);
                     int dummy_has = 0;
                     uint64_t dummy_id = 0;
                     qir_consume_qubit_rhs(ctx, bin->right, &dummy_has, &dummy_id);
@@ -904,9 +936,7 @@ static void qir_walk_stmt(QirWalkContext* ctx, ASTNode* stmt) {
                         } else {
                             QirBinding* tb = qir_find_binding(&ctx->table, tname);
                             if (tb && tb->state == QIR_STATE_LIVE) {
-                                type_error(ctx->checker, stmt->pos,
-                                    "cannot overwrite live linear qubit '%s' (declared at line %d) without consuming it first",
-                                    tb->name, tb->decl_pos.line);
+                                qir_error_overwrite_live(ctx, stmt->pos, tb);
                             } else if (tb) {
                                 tb->state = QIR_STATE_LIVE;
                                 tb->decl_pos = stmt->pos;

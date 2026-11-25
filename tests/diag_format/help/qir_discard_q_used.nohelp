@@ -1,0 +1,2 @@
+cannot be discarded
+a q is already in scope: "q := mk()" would fail, so no help

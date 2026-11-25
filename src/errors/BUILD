@@ -15,6 +15,22 @@ goo_cc_library(
     ],
 )
 
+# Makefile ERROR_SRCS: the one printer for user-facing compiler messages.
+goo_cc_library(
+    name = "diagnostic",
+    srcs = ["diagnostic.c"],
+    visibility = [
+        "//src/codegen:__pkg__",
+        "//src/compiler:__pkg__",
+        "//src/parser:__pkg__",
+        "//src/types:__pkg__",
+        "//tests/unit/error:__pkg__",
+    ],
+    deps = [
+        "//include:diagnostic_h",
+    ],
+)
+
 # The src-scanning probe gates (task 14) read these as FILES: alloc_doors
 # greps every .c and .h for a raw strdup, doc_claims counts /proc/self/exe
 # sites, and two others compile a named handful with a shell C compiler.

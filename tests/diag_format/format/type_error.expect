@@ -1,0 +1,3 @@
+type_error.goo:4:2: error: Cannot assign int64 to string
+    4 | 	var s string = 5
+      | 	^

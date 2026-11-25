@@ -17,6 +17,8 @@ goo_cc_library(
     srcs = ["codegen_context.c"],
     deps = [
         "//include:codegen_h",
+        "//include:diagnostic_h",
+        "//src/errors:diagnostic",
         "@llvm//:llvm_c",
     ],
 )
@@ -79,6 +81,7 @@ goo_cc_library(
         "//include:block_escape_h",
         "//include:codegen_h",
         "//include:comptime_h",
+        "//include:diagnostic_h",
         "//include:embedding_h",
         "//include:local_escape_h",
         "//include:param_escape_h",
@@ -88,6 +91,7 @@ goo_cc_library(
         "//src/ast",
         "//src/comptime",
         "//src/errors",
+        "//src/errors:diagnostic",
         "//src/parser",
         "//src/types:frontend",
         "@llvm//:llvm_c",

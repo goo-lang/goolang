@@ -73,6 +73,14 @@ cc_library(
 )
 
 cc_library(
+    name = "diagnostic_h",
+    hdrs = ["diagnostic.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [":token_h"],
+)
+
+cc_library(
     name = "error_h",
     hdrs = ["errors/error.h"],
     includes = ["."],

@@ -91,7 +91,7 @@ AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/ast/js
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/returns_fresh.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c $(SRCDIR)/types/qir_ownership.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/codegen_context.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c $(SRCDIR)/codegen/qasm3_codegen.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c $(SRCDIR)/runtime/qir_sim.c
-ERROR_SRCS = $(SRCDIR)/errors/error.c
+ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/diagnostic.c
 # Only import_resolver.c from package/ is part of the compiler. The rest of
 # the directory (IPFS/registry/p2p modules) is compiled by nothing and has
 # pre-existing build breakage (e.g. gateway_intelligence.c's stale
@@ -133,7 +133,7 @@ GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR
 # on error.c and nothing depends on it, so dropping it from the shipped set is a
 # one-way cut. Its 222 branches were padding the denominator of every coverage
 # number this project takes. Kept in ERROR_SRCS for the standalone test targets.
-GOO_ERROR_SRCS = $(SRCDIR)/errors/error.c
+GOO_ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/diagnostic.c
 GOO_COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c
 GOO_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(GOO_TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(GOO_ERROR_SRCS) $(PACKAGE_SRCS) $(GOO_COMPTIME_SRCS)
 GOO_OBJS = $(GOO_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
@@ -201,6 +201,7 @@ TEST_RUNNER = $(BINDIR)/test_runner
 # post-v1 list). lsp_enhanced.c moved to attic/src/ide/ (see attic/README.md).
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
+.PHONY: diagnostic-test
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-uaf-probe arc-uaf-selftest arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe goo-assert-probe assert-corpus string-literal-header-probe
 
@@ -1975,6 +1976,18 @@ goo-test-probe: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/goo_test_probe.sh
 .PHONY: goo-test-probe
 
+# The compiler diagnostic format: header grammar, snippet line, caret column,
+# and paste-ready (or absent) help lines, over the fixtures in
+# tests/diag_format. The self-test feeds the checker mutated
+# stderr and bad help fixtures and needs each refused for its own reason.
+diag-format-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/diag_format_probe.sh
+.PHONY: diag-format-probe
+
+diag-format-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/diag_format_probe.sh --self-test
+.PHONY: diag-format-selftest
+
 # fix/const-array-length: a genuinely non-constant array length (a plain
 # runtime variable, not a const) must be a clean type error — NOT a silent
 # fallback to the placeholder length, and not a crash. See
@@ -3439,6 +3452,7 @@ VERIFY_ALL_DEPS := \
     block-escape-test \
     local-escape-test \
     release-decision-test \
+    diagnostic-test \
     release-decision-teeth \
     escape-teeth \
     escape-arm-coverage-selftest \
@@ -3484,12 +3498,16 @@ VERIFY_ALL_DEPS := \
     far-transport-test \
     far-transport-asan \
     far-shim-probe \
+    superset-probe \
+    superset-selftest \
     far-halo-probe \
     far-stencil-r2-probe \
     far-collective-probe \
     far-jacobi-probe \
     nil-deref-probe \
     goo-test-probe \
+    diag-format-selftest \
+    diag-format-probe \
     proof-cache-shell-probe \
     json-writer-test \
     program-dump-selftest \
@@ -4849,6 +4867,21 @@ far-shim-probe: $(COMPILER) $(RUNTIME_LIB)
 	fi
 .PHONY: far-shim-probe
 
+# Grow-only "all valid Go is valid Goo" ratchet over the pinned go1.27.4 test
+# corpus (third_party/go-test-corpus/). Three levels: parse, compile, behaviour.
+# Check mode fails when a program listed in tests/superset/pass-L*.txt stops
+# passing. `scripts/superset_probe.sh --update` records new passes. The script
+# cds to the repository root itself, because the compiler links only from there.
+superset-probe: $(COMPILER) $(RUNTIME_LIB)
+	./scripts/superset_probe.sh
+.PHONY: superset-probe
+
+# Teeth for superset-probe: a control is green, a broken ratchet entry is red
+# at the right level, and an empty corpus or a dead compiler is red.
+superset-selftest: $(COMPILER) $(RUNTIME_LIB)
+	./scripts/superset_probe.sh --self-test
+.PHONY: superset-selftest
+
 # M2-B1: 2-rank NNG halo exchange, bit-identical to the in-fixture serial
 # reference (near mode pins Run against the same reference first).
 far-halo-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -5236,6 +5269,15 @@ release-decision-test: release_decision_test
 	@echo "Running T4 release-decision tests..."
 	./release_decision_test
 
+# Diagnostic printer: the one place a user-facing compiler message gets its
+# `file:line:col: severity: message` shape, snippet and caret.
+diagnostic_test: $(TEST_UNIT_DIR)/error/diagnostic_test.c $(TEST_UNIT_DIR)/goo_check.h $(SRCDIR)/errors/diagnostic.c
+	$(CC) $(CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS)
+
+diagnostic-test: diagnostic_test
+	@echo "Running diagnostic printer tests..."
+	./diagnostic_test
+
 # T4 teeth. scripts/release_decision_teeth.sh deletes one condition at a time
 # and asserts that a row goes RED. verify-core runs it, so it must NEVER write
 # to the tracked tree: a killed run that left src/types/release_decision.c
@@ -5520,7 +5562,7 @@ FUZZ_SEEDS   = $(FUZZ_DIR)/seeds
 FUZZ_ARTIFACTS = $(FUZZ_DIR)/artifacts
 FUZZ_SRCS    = tests/fuzz/fuzz_parse.c $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(ERROR_SRCS)
 FUZZ_CFLAGS  = -std=c23 -g -O1 -I. -Iinclude -D_GNU_SOURCE \
-               -include include/xalloc.h -DLLVM_AVAILABLE=0 \
+               -include include/xalloc.h -include include/goo_assert.h -DLLVM_AVAILABLE=0 \
                -fsanitize=fuzzer,address,undefined
 # Leak detection OFF by default. NOT a way to look away: ast_node_free has a
 # documented gap (src/ast/ast.c:189) that makes the FIRST seed leak, so with
