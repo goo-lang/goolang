@@ -306,7 +306,7 @@ static Type* shim_qir_exported_type(TypeChecker* checker, const char* type_name)
     if (!qir_pkg || !qir_pkg->exports) {
         return NULL;
     }
-    Variable* tv = scope_lookup_variable(qir_pkg->exports, type_name);
+    const Variable* tv = scope_lookup_variable(qir_pkg->exports, type_name);
     return tv ? tv->type : NULL;
 }
 

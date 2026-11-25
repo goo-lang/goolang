@@ -289,7 +289,7 @@ struct CodeGenerator {
     // platform default. Borrowed from CompilerOptions exactly as link_libs
     // is -- codegen does not own or free these strings.
     const char* linker;
-    const char** link_flags;
+    char* const* link_flags;
     size_t link_flag_count;
 
     // Phase 7 M1 (Quantum QIR): when `emit_qir != 0` (`--emit-qir`), suppresses
@@ -681,7 +681,7 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
 LLVMValueRef codegen_lookup_global_function(CodeGenerator* codegen, TypeChecker* checker,
                                             const char* name);
 #endif
-ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+ValueInfo* codegen_generate_literal(CodeGenerator* codegen, const TypeChecker* checker, ASTNode* expr);
 // Build a *constant* goo_string { i8* data, i64 len } value from `len` raw bytes
 // (embedded NULs preserved). Builder-free, so it is valid at global scope — used
 // by both string-literal codegen and folded const-string tables. The bytes are
@@ -1073,7 +1073,7 @@ LLVMValueRef codegen_check_nullable_null(CodeGenerator* codegen, LLVMValueRef nu
 
 // Nullable codegen — used across expression_codegen.c, function_codegen.c,
 // and call_codegen.c (default-nil locals/globals, reassignment, ?T arg wrap).
-ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, TypeChecker* checker, Type* expected_type);
+ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, const TypeChecker* checker, Type* expected_type);
 LLVMValueRef codegen_create_nullable_null(CodeGenerator* codegen, LLVMTypeRef nullable_type, Type* base_type);
 LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMTypeRef nullable_type,
                                                LLVMValueRef value, Type* value_type);
