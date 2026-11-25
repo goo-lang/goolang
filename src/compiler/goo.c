@@ -975,13 +975,13 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
         }
 
         char* buf = read_file(ps.files[fi]);
-        if (buf) diag_register_source(e->file_names[fi], buf, strlen(buf));
         if (!buf) {
             fprintf(stderr, "Error: cannot read source file \"%s\" of package \"%s\"\n",
                     ps.files[fi], import_path);
             package_source_free(&ps);
             return -1;
         }
+        diag_register_source(e->file_names[fi], buf, strlen(buf));
         if (pkg_graph_keep_source(g, buf) != 0) {
             free(buf);
             package_source_free(&ps);
