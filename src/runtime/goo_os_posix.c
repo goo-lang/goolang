@@ -8,9 +8,10 @@
 // the seam this file implements, and tests/sim/sim_os.c for the simulator's
 // implementation of the same header.
 // clock_gettime and nanosleep need POSIX visibility. No explicit
-// _POSIX_C_SOURCE define here (unlike platform.c:1): the Makefile's global
-// -D_GNU_SOURCE already implies it, and adding a redundant one on top would
-// warn (as it already does, harmlessly, in platform.c).
+// _POSIX_C_SOURCE define here: the Makefile's global -D_GNU_SOURCE already
+// implies it, and runtime.h (included first) defines _XOPEN_SOURCE 700
+// under a guard for a build without it. platform.c keeps its own guarded
+// _POSIX_C_SOURCE define, which no longer warns.
 #include "runtime.h"
 #include "goo_os.h"
 #include "platform.h"
@@ -81,12 +82,19 @@ int goo_mutex_try_lock(goo_mutex_t* mutex) {
     return 0;  // Failed to acquire
 }
 
-// A condvar call must succeed in every build. GOO_ASSERT compiles away under
-// GOO_ASSERT_OFF and GOO_COVERAGE, which left rc unused (gcc 16 warns, and
-// the verify-tooling branch builds with -Werror) and the pthread_cond_*
-// result unchecked. GOO_ASSERT stays, for its file and line message and for
-// the assertion-density baseline; this check does not depend on the modes.
-#define GOO_OS_REQUIRE_ZERO(rc) ((rc) != 0 ? goo_assert_fail("OS CALL", #rc " == 0", __FILE__, __LINE__, __func__) : (void)0)
+// A condvar call must succeed. This check replaces a GOO_ASSERT(rc == 0),
+// which compiles away under GOO_ASSERT_OFF: that left a pthread_cond_*
+// failure unchecked and rc unused (a warning, and the build uses -Werror).
+// The kill switch turns off beliefs about the program, not error returns
+// from the OS, so it does not reach this check. GOO_COVERAGE keeps
+// goo_assert.h's carve-out: a check that never fails in a test run must not
+// count as an uncovered branch, so that build only reads rc.
+#if defined(GOO_COVERAGE)
+#  define GOO_OS_REQUIRE_ZERO(rc) ((void)(rc))
+#else
+#  define GOO_OS_REQUIRE_ZERO(rc) \
+     ((rc) != 0 ? goo_assert_fail("OS CALL", #rc " == 0", __FILE__, __LINE__, __func__) : (void)0)
+#endif
 
 // ---------------------------------------------------------------------------
 // Condvar implementation (new: replaces pthread_cond_* in channels.c/sync.c)
@@ -96,7 +104,7 @@ goo_cond_t* goo_cond_new(void) {
     GOO_ASSERT(cond != NULL);
 #ifdef GOO_PLATFORM_UNIX
     int rc = pthread_cond_init(&cond->cond, NULL);
-    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
+    GOO_OS_REQUIRE_ZERO(rc);
 #endif
     return cond;
 }
@@ -104,7 +112,7 @@ void goo_cond_free(goo_cond_t* cond) {
     GOO_ASSERT(cond != NULL);
 #ifdef GOO_PLATFORM_UNIX
     int rc = pthread_cond_destroy(&cond->cond);
-    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
+    GOO_OS_REQUIRE_ZERO(rc);
 #endif
     goo_free(cond);
 }
@@ -113,21 +121,21 @@ void goo_cond_wait(goo_cond_t* cond, goo_mutex_t* mutex) {
     GOO_ASSERT(mutex != NULL);
 #ifdef GOO_PLATFORM_UNIX
     int rc = pthread_cond_wait(&cond->cond, &mutex->mutex);
-    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
+    GOO_OS_REQUIRE_ZERO(rc);
 #endif
 }
 void goo_cond_signal(goo_cond_t* cond) {
     GOO_ASSERT(cond != NULL);
 #ifdef GOO_PLATFORM_UNIX
     int rc = pthread_cond_signal(&cond->cond);
-    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
+    GOO_OS_REQUIRE_ZERO(rc);
 #endif
 }
 void goo_cond_broadcast(goo_cond_t* cond) {
     GOO_ASSERT(cond != NULL);
 #ifdef GOO_PLATFORM_UNIX
     int rc = pthread_cond_broadcast(&cond->cond);
-    GOO_ASSERT(rc == 0); GOO_OS_REQUIRE_ZERO(rc);
+    GOO_OS_REQUIRE_ZERO(rc);
 #endif
 }
 

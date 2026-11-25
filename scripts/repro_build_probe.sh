@@ -11,6 +11,7 @@
 # (`$(COMPILER): $(GOO_OBJS) $(COMPILER_SRCS)`), so building one proves nothing
 # about the other. The archive is also where `ar` nondeterminism hid.
 set -u
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 PROBE="repro-build-probe"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

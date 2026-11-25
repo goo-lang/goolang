@@ -14,5 +14,15 @@ cc_library(
     name = "goo_check",
     hdrs = ["goo_check.h"],
     includes = ["."],
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//tests/unit/ast:__pkg__",
+        "//tests/unit/runtime:__pkg__",
+        "//tests/unit/types:__pkg__",
+    ],
 )
+
+# goo_check_probe (task 14) reads this as a FILE, through -I with a shell C
+# compiler, not as a cc_library dep -- the cc_library above serves the unit
+# suites, which link against it instead. ast/ast_free_leak_test.c is exported
+# from //tests/unit/ast, because that directory is its own package.
+exports_files(["goo_check.h"])

@@ -1,0 +1,2 @@
+package main
+func main(){ s := "x"; b := []byte{1,2,3}; _ = copy(s, b) }

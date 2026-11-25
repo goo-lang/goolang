@@ -1,0 +1,2 @@
+package main
+func main(){ const N=3; var arr [N]int; i:=5; arr[i]=9; _=arr }

@@ -69,9 +69,13 @@ static const ShimParamKind PARAMS_ERROR[]                = { SHIM_PARAM_ERROR };
 // errors.Is(err, target): both operands are errors.
 static const ShimParamKind PARAMS_ERROR_ERROR[]          = { SHIM_PARAM_ERROR, SHIM_PARAM_ERROR };
 static const ShimParamKind PARAMS_INT64_FLOAT64[]        = { SHIM_PARAM_INT64, SHIM_PARAM_FLOAT64 };
-// fmt.Fprintf(w, format, ...): the writer, then the format string. The reverse
-// order of PARAMS_STRING_INT64, which os.ReadByte uses.
-static const ShimParamKind PARAMS_INT64_STRING[]         = { SHIM_PARAM_INT64, SHIM_PARAM_STRING };
+// qir (Phase 7 M1): linear Qubit and classical Result handle parameter lists.
+static const ShimParamKind PARAMS_QUBIT[]                = { SHIM_PARAM_QUBIT };
+static const ShimParamKind PARAMS_QUBIT_QUBIT[]          = { SHIM_PARAM_QUBIT, SHIM_PARAM_QUBIT };
+static const ShimParamKind PARAMS_QUBIT_QUBIT_QUBIT[]    = { SHIM_PARAM_QUBIT, SHIM_PARAM_QUBIT, SHIM_PARAM_QUBIT };
+static const ShimParamKind PARAMS_FLOAT64_QUBIT[]        = { SHIM_PARAM_FLOAT64, SHIM_PARAM_QUBIT };
+static const ShimParamKind PARAMS_QUBIT_QRESULT[]        = { SHIM_PARAM_QUBIT, SHIM_PARAM_QRESULT };
+static const ShimParamKind PARAMS_QRESULT[]              = { SHIM_PARAM_QRESULT };
 
 #define NPARAMS(arr) (sizeof(arr) / sizeof((arr)[0]))
 
@@ -209,6 +213,33 @@ static const ShimSignature SHIM_TABLE[] = {
     { "far", "SendF64", SHIM_RET_VOID,        PARAMS_INT64_FLOAT64, NPARAMS(PARAMS_INT64_FLOAT64), 0, 0, 0 },
     { "far", "RecvF64", SHIM_RET_F64_RESULT,  PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0, 0, 0 },
     { "far", "Close",   SHIM_RET_VOID,        PARAMS_INT64,         NPARAMS(PARAMS_INT64), 0, 0, 0 },
+    // qir (Phase 7 M1): Quantum Intermediate Representation (QIR 1.0 Adaptive Profile)
+    // intrinsics. Every row is NON-RETAINING (1): Qubit and Result handles are
+    // non-ARC opaque hardware/simulator tokens, and scalar args (int64, float64)
+    // carry no heap pointer.
+    { "qir", "Alloc",        SHIM_RET_QUBIT,   NULL,                     0,                             0, 1, 0 },
+    { "qir", "QubitAt",      SHIM_RET_QUBIT,   PARAMS_INT64,             NPARAMS(PARAMS_INT64),         0, 1, 0 },
+    { "qir", "ResultAt",     SHIM_RET_QRESULT, PARAMS_INT64,             NPARAMS(PARAMS_INT64),         0, 1, 0 },
+    { "qir", "FreeZero",     SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "MeasureReset", SHIM_RET_BOOL,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "H",            SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "X",            SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "Y",            SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "Z",            SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "S",            SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "SAdj",         SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "T",            SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "TAdj",         SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "Rx",           SHIM_RET_VOID,    PARAMS_FLOAT64_QUBIT,     NPARAMS(PARAMS_FLOAT64_QUBIT), 0, 1, 0 },
+    { "qir", "Ry",           SHIM_RET_VOID,    PARAMS_FLOAT64_QUBIT,     NPARAMS(PARAMS_FLOAT64_QUBIT), 0, 1, 0 },
+    { "qir", "Rz",           SHIM_RET_VOID,    PARAMS_FLOAT64_QUBIT,     NPARAMS(PARAMS_FLOAT64_QUBIT), 0, 1, 0 },
+    { "qir", "CX",           SHIM_RET_VOID,    PARAMS_QUBIT_QUBIT,       NPARAMS(PARAMS_QUBIT_QUBIT),   0, 1, 0 },
+    { "qir", "CZ",           SHIM_RET_VOID,    PARAMS_QUBIT_QUBIT,       NPARAMS(PARAMS_QUBIT_QUBIT),   0, 1, 0 },
+    { "qir", "Swap",         SHIM_RET_VOID,    PARAMS_QUBIT_QUBIT,       NPARAMS(PARAMS_QUBIT_QUBIT),   0, 1, 0 },
+    { "qir", "CCX",          SHIM_RET_VOID,    PARAMS_QUBIT_QUBIT_QUBIT, NPARAMS(PARAMS_QUBIT_QUBIT_QUBIT), 0, 1, 0 },
+    { "qir", "Mz",           SHIM_RET_VOID,    PARAMS_QUBIT_QRESULT,     NPARAMS(PARAMS_QUBIT_QRESULT), 0, 1, 0 },
+    { "qir", "Reset",        SHIM_RET_VOID,    PARAMS_QUBIT,             NPARAMS(PARAMS_QUBIT),         0, 1, 0 },
+    { "qir", "ReadResult",   SHIM_RET_BOOL,    PARAMS_QRESULT,           NPARAMS(PARAMS_QRESULT),       0, 1, 0 },
 };
 #define SHIM_TABLE_COUNT (sizeof(SHIM_TABLE) / sizeof(SHIM_TABLE[0]))
 
@@ -270,6 +301,15 @@ static Type* shim_any_type(void) {
     return result;
 }
 
+static Type* shim_qir_exported_type(TypeChecker* checker, const char* type_name) {
+    Package* qir_pkg = type_checker_find_package(checker, "qir");
+    if (!qir_pkg || !qir_pkg->exports) {
+        return NULL;
+    }
+    const Variable* tv = scope_lookup_variable(qir_pkg->exports, type_name);
+    return tv ? tv->type : NULL;
+}
+
 static Type* shim_param_type(TypeChecker* checker, ShimParamKind kind) {
     switch (kind) {
         case SHIM_PARAM_STRING:       return type_checker_get_builtin(checker, TYPE_STRING);
@@ -277,6 +317,8 @@ static Type* shim_param_type(TypeChecker* checker, ShimParamKind kind) {
         case SHIM_PARAM_FLOAT64:      return type_checker_get_builtin(checker, TYPE_FLOAT64);
         case SHIM_PARAM_STRING_SLICE: return type_slice(type_checker_get_builtin(checker, TYPE_STRING));
         case SHIM_PARAM_ERROR:        return type_checker_error_type(checker);
+        case SHIM_PARAM_QUBIT:        return shim_qir_exported_type(checker, "Qubit");
+        case SHIM_PARAM_QRESULT:      return shim_qir_exported_type(checker, "Result");
     }
     return NULL;
 }
@@ -290,6 +332,8 @@ static Type* shim_ret_type(TypeChecker* checker, ShimRetKind kind) {
         case SHIM_RET_BOOL:         return type_checker_get_builtin(checker, TYPE_BOOL);
         case SHIM_RET_STRING_SLICE: return type_slice(type_checker_get_builtin(checker, TYPE_STRING));
         case SHIM_RET_ERROR:        return type_checker_error_type(checker);
+        case SHIM_RET_QUBIT:        return shim_qir_exported_type(checker, "Qubit");
+        case SHIM_RET_QRESULT:      return shim_qir_exported_type(checker, "Result");
         case SHIM_RET_ATOI_RESULT: {
             // strconv.Atoi(string) -> !int: success=int64 ("int"), error=string
             // — identical to the pre-existing checker stub this replaces

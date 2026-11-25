@@ -1,0 +1,4 @@
+package main
+import ("fmt"
+"pkgcheck")
+func main() { var v int32 = 84; fmt.Println(pkgcheck.Half(v)) }

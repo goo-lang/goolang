@@ -1,0 +1,2 @@
+package main
+func main(){ s := "ABC"; s[1] = 90; _ = s }

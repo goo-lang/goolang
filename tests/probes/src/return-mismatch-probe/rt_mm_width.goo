@@ -1,0 +1,4 @@
+package main
+func big() uint32 { return 9 }
+func f() int { return big() }
+func main() {}

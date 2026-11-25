@@ -30,6 +30,7 @@ examples/*.out
 /contracts_test
 /proof_generation_test
 /param_escape_test
+/json_writer_test
 /block_escape_test
 /obj_header_test
 /arena_routing_test

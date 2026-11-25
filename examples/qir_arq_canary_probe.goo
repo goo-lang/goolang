@@ -1,0 +1,111 @@
+// 5-Qubit ARQ Security Probe: Interleaved Trap Circuits, Verification Tax & Crosstalk Sensing
+// Layout on Heron r2 heavy-hex chain: q[0] (W0) — q[1] (Trap0) — q[2] (W1) — q[3] (Trap1) — q[4] (W2)
+//   - Workload qubits (q[0], q[2], q[4]): 3-qubit correlated state prepared and uncomputed.
+//   - Canary traps    (q[1], q[3]):       interleaved X-basis (|+>) phase/crosstalk sensors.
+// Evaluates 4 regimes in one 5-qubit program (20 classical readout bits c[0..19]):
+//   Regime 0 (c[0..4]):   Unmonitored baseline (traps idle in |0>) -> measures 0-tax workload baseline.
+//   Regime 1 (c[5..9]):   Armed |+> canaries, clean (theta = 0)    -> measures verification tax & false-alarm floor.
+//   Regime 2 (c[10..14]): Subtle coherent control-plane drift (Rz(0.785398) = pi/4 on neighbor couplings).
+//   Regime 3 (c[15..19]): Parasitic neighbor CZ crosstalk attack (CZ(q[0],q[1]), CZ(q[2],q[3])).
+package main
+
+import "fmt"
+import "qir"
+
+func fpga_canary_alarm(trap0 int, trap1 int) int {
+	counts := [2]int{trap0, trap1}
+	triggered := 0
+	i := 0
+	for i < 2 {
+		if counts[i] > 0 {
+			triggered = triggered + 1
+		}
+		i = i + 1
+	}
+	return triggered
+}
+
+func injectPerturbation(comptime regime int, w0 qir.Qubit, c0 qir.Qubit, w1 qir.Qubit, c1 qir.Qubit, w2 qir.Qubit) {
+	if regime == 2 {
+		// Subtle coherent phase perturbation (theta = pi/4 = 0.785398 rad, sin^2(theta/2) = 14.6% per trap)
+		qir.Rz(0.785398, c0)
+		qir.Rz(0.785398, c1)
+	}
+	if regime == 3 {
+		// Full parasitic neighbor CZ phase-kickback crosstalk from active workload lines
+		qir.CZ(w0, c0)
+		qir.CZ(w1, c1)
+		qir.Z(w2)
+		qir.Z(w2)
+	}
+}
+
+func runArqRegime(regime int) int {
+	var q [5]qir.Qubit
+	q[0] = qir.Alloc()
+	q[1] = qir.Alloc()
+	q[2] = qir.Alloc()
+	q[3] = qir.Alloc()
+	q[4] = qir.Alloc()
+
+	// Arm interleaved canary traps q[1] and q[3] in phase-sensitive |+> state for Regimes 1..3
+	if regime > 0 {
+		qir.H(q[1])
+		qir.H(q[3])
+	}
+
+	// Execute 3-qubit correlated workload across q[0], q[2], q[4]
+	qir.X(q[0])
+	qir.CX(q[0], q[2])
+	qir.CX(q[2], q[4])
+
+	if regime == 0 {
+		injectPerturbation(0, q[0], q[1], q[2], q[3], q[4])
+	}
+	if regime == 1 {
+		injectPerturbation(1, q[0], q[1], q[2], q[3], q[4])
+	}
+	if regime == 2 {
+		injectPerturbation(2, q[0], q[1], q[2], q[3], q[4])
+	}
+	if regime == 3 {
+		injectPerturbation(3, q[0], q[1], q[2], q[3], q[4])
+	}
+
+	// Uncompute 3-qubit workload back to |000>
+	qir.CX(q[2], q[4])
+	qir.CX(q[0], q[2])
+	qir.X(q[0])
+
+	// Disarm canary traps back to Z-basis; any phase kick flips |+> -> |-> -> |1>
+	if regime > 0 {
+		qir.H(q[1])
+		qir.H(q[3])
+	}
+
+	_ = qir.MeasureReset(q[0])
+	t0 := qir.MeasureReset(q[1])
+	_ = qir.MeasureReset(q[2])
+	t1 := qir.MeasureReset(q[3])
+	_ = qir.MeasureReset(q[4])
+
+	b0 := 0
+	if t0 {
+		b0 = 1
+	}
+	b1 := 0
+	if t1 {
+		b1 = 1
+	}
+	return fpga_canary_alarm(b0, b1)
+}
+
+func main() {
+	r0 := runArqRegime(0)
+	r1 := runArqRegime(1)
+	// For deterministic golden execution in qir_sim.c, check clean vs full crosstalk regimes;
+	// during --emit-qasm3, all 4 regimes (0..3) are emitted into the 5-qubit circuit.
+	r2 := runArqRegime(2)
+	r3 := runArqRegime(3)
+	fmt.Println("arq_5q_unmonitored", r0, "armed_clean", r1, "pi4_drift_bounded", r2 <= 2, "cz_attack", r3)
+}

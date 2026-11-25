@@ -10,7 +10,6 @@
 // External lexer interface
 extern int yylex(void);
 extern void yyerror(const char* msg);
-extern Lexer* current_lexer;
 
 // ast_root, g_func_signature_params/result (globals) and every semantic-
 // action helper below except make_embedded_field/make_grouped_field (kept
@@ -1996,7 +1995,7 @@ unary_expr:
 
 postfix_expr:
     primary_expr NOT {
-        PostfixExprNode* postfix = ast_postfix_expr_new($1, NOT, POS(@$));
+        PostfixExprNode* postfix = ast_postfix_expr_new($1, bison_token_to_token_type(NOT), POS(@$));
         $$ = (ASTNode*)postfix;
     }
     | primary_expr INCREMENT {

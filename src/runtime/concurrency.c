@@ -1,5 +1,12 @@
+// Guarded: a build with -D_GNU_SOURCE already makes <features.h> define
+// this, and a newer glibc defines a different value (gcc warns on a redefinition).
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700  // For ucontext functions
+#endif
+
 #include "runtime.h"
 #include "platform.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -245,8 +252,10 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     //
     // The current implementation works on all Unix-like systems and provides
     // the necessary goroutine functionality for the Goo language runtime.
+#ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     if (getcontext(&goroutine->context) == -1) {
         goo_panic("Failed to get goroutine context");
     }
@@ -256,7 +265,9 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     goroutine->context.uc_link = NULL;  // overridden by scheduler_main_loop before each swap
     
     makecontext(&goroutine->context, goroutine_wrapper, 0);
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 #endif
     
     // Add to scheduler
@@ -275,12 +286,16 @@ void goo_yield(void) {
     goo_os_tls()->requeue = current;   // scheduler re-enqueues AFTER the swap saves our context
 
 #ifdef GOO_PLATFORM_UNIX
+#ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     if (swapcontext(&current->context, &goo_os_tls()->sched_ctx) == -1) {
         goo_panic("Failed to yield goroutine");
     }
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 #endif
 }
 
@@ -292,12 +307,24 @@ goo_goroutine_t* goo_current_goroutine(void) {
 // Returns 1 if it was on the list, 0 if it was not — the caller asserts on 0,
 // because a registered goroutine is always on the list it registered with.
 static int waiter_list_remove(goo_goroutine_t** head, goo_goroutine_t* g) {
-    for (goo_goroutine_t** p = head; *p; p = &(*p)->next_waiter) {
+    // MISRA 14.2 (2026-09-03): a `for` loop's own third clause must be the
+    // only place its control expression's operands change. This traversal
+    // rewrites *p (the list link) inside the body, so it is a `while`, not a
+    // `for` -- MISRA 14.2 does not apply to `while`. Same traversal, same
+    // mutation, unchanged behavior.
+    goo_goroutine_t** p = head;
+    while (*p) {
         if (*p == g) {
             *p = g->next_waiter;
             g->next_waiter = NULL;
             return 1;
         }
+        // Every OTHER node on the list is registered: block_begin sets the bit
+        // before it links, and the wake path and block_end clear the bit in the
+        // same scheduler_mutex section that unlinks. block_end clears g's bit
+        // before this call, which is why only the non-g nodes are checked.
+        GOO_ASSERT((*p)->counted_blocked);
+        p = &(*p)->next_waiter;
     }
     return 0;
 }
@@ -382,11 +409,19 @@ void goo_sched_block_begin(goo_goroutine_t** waiters) {
 // hold: that waiter is itself live and uncounted. The window can only PREVENT
 // an abort. The other order gives back the defect at a smaller scale.
 void goo_sched_wake_waiters(goo_goroutine_t** waiters) {
-    if (!g_scheduler || !waiters) return;
+    if (!g_scheduler || !waiters) {
+        return;
+    }
 
     goo_mutex_lock(g_scheduler->scheduler_mutex);
     int n = 0;
-    for (goo_goroutine_t* w = *waiters; w; ) {
+    // MISRA 14.2 (2026-09-03): the third clause is empty and the body
+    // advances `w` itself (it must read next_waiter before clearing it, so
+    // the advance cannot move into a for-clause) -- a `while` says the same
+    // thing without a `for` whose control variable moves outside its own
+    // third clause.
+    goo_goroutine_t* w = *waiters;
+    while (w) {
         goo_goroutine_t* next = w->next_waiter;
         // The list holds registered goroutines only. This is the local form of
         // "the list length equals the count of registered goroutines": the
@@ -422,7 +457,19 @@ static uint64_t goo_test_wake_delay_ns(void) {
     long v = atomic_load_explicit(&cached, memory_order_relaxed);
     if (v < 0) {
         const char* s = getenv("GOO_TEST_WAKE_DELAY_NS");
-        long parsed = (s && *s) ? strtol(s, NULL, 10) : 0;
+        long parsed = 0;
+        if (s && *s) {
+            // MISRA 22.8/22.9 (2026-09-03): errno must be zeroed before, and
+            // tested after, an errno-setting Standard Library call. strtol
+            // sets errno on overflow (ERANGE); treat an out-of-range or
+            // unparsable value the same as "unset" -- this is a test-only
+            // delay knob, so there is nothing else a bad value could mean.
+            errno = 0;
+            parsed = strtol(s, NULL, 10);
+            if (errno != 0) {
+                parsed = 0;
+            }
+        }
         v = (parsed > 0) ? parsed : 0;
         atomic_store_explicit(&cached, v, memory_order_relaxed);
     }
@@ -454,7 +501,9 @@ void goo_sched_block_end(goo_goroutine_t** waiters) {
     }
     if (!g_scheduler) return;
     goo_goroutine_t* self = goo_current_goroutine();
-    if (!self) return;                            // main is not counted
+    if (!self) {
+        return;                                   // main is not counted
+    }
 
     goo_mutex_lock(g_scheduler->scheduler_mutex);
     if (self->counted_blocked) {
@@ -495,10 +544,14 @@ void goo_goroutine_exit(void) {
 
     // Return control to this worker's scheduler context.
 #ifdef GOO_PLATFORM_UNIX
+#ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     setcontext(&goo_os_tls()->sched_ctx);
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 #endif
 }
 
@@ -530,15 +583,19 @@ static void* scheduler_main_loop(void* arg) {
             goo_mutex_unlock(g_scheduler->scheduler_mutex);
 
 #ifdef GOO_PLATFORM_UNIX
+#ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
             // Return to THIS worker's scheduler context when the goroutine
             // exits or yields.
             goroutine->context.uc_link = &goo_os_tls()->sched_ctx;
             if (swapcontext(&goo_os_tls()->sched_ctx, &goroutine->context) == -1) {
                 goo_panic("Failed to switch to goroutine");
             }
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 #endif
 
             // Back on this worker's own stack. Reap ONLY via goo_os_tls()->reap, which the

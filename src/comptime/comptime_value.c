@@ -554,12 +554,12 @@ bool comptime_value_to_bool(const ComptimeValue* value) {
 ASTNode* comptime_value_to_ast(const ComptimeValue* value) {
     if (!value) return NULL;
     
-    Position pos = {0, 0, 0};
+    Position pos = {0, 0, 0, NULL};
     
     switch (value->type) {
         case COMPTIME_VALUE_INT: {
             char buffer[32];
-            snprintf(buffer, sizeof(buffer), "%lld", value->int_value);
+            snprintf(buffer, sizeof(buffer), "%lld", (long long)value->int_value);
             return (ASTNode*)ast_literal_new(TOKEN_INT, buffer, pos);
         }
             

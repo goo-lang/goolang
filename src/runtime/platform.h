@@ -4,18 +4,7 @@
 #include <stdint.h>
 
 // Platform detection
-#if defined(__APPLE__) && defined(__MACH__)
-    #define GOO_PLATFORM_MACOS 1
-    #define GOO_PLATFORM_UNIX 1
-#elif defined(__linux__)
-    #define GOO_PLATFORM_LINUX 1
-    #define GOO_PLATFORM_UNIX 1
-#elif defined(_WIN32) || defined(_WIN64)
-    #define GOO_PLATFORM_WINDOWS 1
-#else
-    #define GOO_PLATFORM_UNKNOWN 1
-    #define GOO_PLATFORM_UNIX 1  // Assume Unix-like
-#endif
+#include "platform_detect.h"
 
 // Architecture detection
 #if defined(__x86_64__) || defined(_M_X64)

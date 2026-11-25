@@ -1,0 +1,3 @@
+package main
+import "fmt"
+func main(){ x := int64(3); var y float64 = x; s := []float64{1, 2.5}; fmt.Println(y, s[0], s[1]) }

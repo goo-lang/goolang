@@ -1,0 +1,3 @@
+package main
+func f() byte { return 300 }
+func main() {}

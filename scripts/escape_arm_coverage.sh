@@ -242,7 +242,7 @@ PY
 # name.
 build() {
     make param_core_teeth_test block_core_teeth_test local_core_teeth_test \
-         CORE_ESCAPE_SRC="$ENGINE" > "$1" 2>&1
+         CORE_ESCAPE_SRC="$ENGINE" WERROR= > "$1" 2>&1
     return $?
 }
 

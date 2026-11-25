@@ -1,0 +1,5 @@
+package main
+type Shape interface { Area() int }
+type Pt struct { x int }
+func main() { var b Shape = Pt{x: 1}
+ _ = b }

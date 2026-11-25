@@ -83,10 +83,23 @@ This project uses a Makefile for building:
   real unit suites (param/block/local escape, release decision, obj header,
   arena routing, AST free-leak) are standalone targets, all in `verify-core`.
 - `make clean` - Clean build artifacts
+- `WERROR` - CFLAGS carries `-Werror` through `WERROR ?= -Werror`, so a C
+  warning stops the build. CFLAGS also carries `-Wpedantic`. CI and
+  `verify-core` use the default. A different compiler version may warn where
+  CI's does not (a newer gcc adds warnings; clang 18, the CI clang, is older
+  and warns more, for example `-Wnewline-eof`): build with `make WERROR=` to
+  drop the flag. Three gates build with `WERROR=` inside them because they
+  count or tolerate warnings: `warning-count-probe`, the mutation-teeth
+  scripts (`release_decision_teeth.sh`, `escape_teeth.sh`,
+  `escape_arm_coverage.sh`) and the gcc analyser lane
+  (`analyzer_lanes_probe.sh`). `FUZZ_CFLAGS` is its own flag set and does not
+  use CFLAGS, so it has no `-Werror`.
 - `make test-golden` / `make test-golden-o2` - Golden fixture suites (-O0/-O2).
   Parallel since P5.8: `GOLDEN_JOBS=<n>` overrides the default of nproc.
 - `make verify-core` - Full probe net, no CompCert required. Authoritative
   ccomp-free gate; safe for pre-push on any machine.
+- `make verify-nightly` - `verify` minus the CompCert pilot: `verify-core` plus
+  the podman reproducible-build gates. Run daily by `.github/workflows/nightly.yml`.
 - `make verify` - `verify-core` plus the CompCert bootstrap pilot
   (`v2-bootstrap-pilot`) plus the podman reproducible-build gates
   (`repro-build-probe`, `podman-image-probe`); requires an opam CompCert
@@ -106,6 +119,22 @@ that rule and link into no binary: `types/proof_smt.c`,
 `scripts/proof_cache_shell_probe.sh`) and `errors/ergonomic_errors.c`
 (`scripts/ast_free_leak_probe.sh`). Both probes are in `verify-core`. Do not
 remove those seven without moving the probes first.
+
+**Program dump (Phase 0 front-end migration).** `bin/goo --emit-ast-json
+<file>` emits the parsed program as JSON (parse stage, no type ids).
+`bin/goo --emit-program <file>` emits the same tree after type checking,
+with type ids and a release plan (typed stage). Format:
+docs/superpowers/specs/2026-09-04-program-dump-format.md. Gated in
+`verify-core` by `program-dump-probe` (every golden fixture, both stages,
+determinism plus structure) and `program-dump-selftest` (teeth: a per-run
+nonce must break the determinism check, a dropped `pos` and a dropped
+typed-stage `type` id must both be refused). `scripts/frontend_diff.sh`
+diffs two producers of the dump over the same fixtures — the gate every
+later front-end swap is measured by — and is itself gated by
+`frontend-diff-selftest` until a second producer exists. The type
+checker's diagnostic strings live in `catalogue/diagnostics.tsv`, kept
+equal to the source by `diagnostics-drift-probe`, because the Haskell
+front end matches reject fixtures on verbatim stderr text.
 
 ## `goo test`
 

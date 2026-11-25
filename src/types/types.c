@@ -289,8 +289,8 @@ Type* type_function(Type** param_types, size_t param_count, Type* return_type) {
 
         // Create name like "func(int, int) int" (param type names comma-
         // joined; " " + return-type name suffix only when non-void) — same
-        // exact-size-then-strcpy/strcat idiom as type_application's "Vec<int>"
-        // above. Every TYPE_FUNCTION used to get the literal name "func", so
+        // exact-size-then-strcpy/strcat idiom the removed type_application
+        // used for "Vec<int>". Every TYPE_FUNCTION used to get the literal name "func", so
         // type_to_string (which just returns type->name) rendered every
         // signature identically — a func(int,int)int assigned to a
         // func(int)int var reported "Cannot assign func to func" instead of
@@ -549,48 +549,6 @@ Type* type_constructor(const char* name, size_t arity, const char* kind_signatur
         type->size = 0;  // Type constructors are compile-time only
         type->align = 0;
         type->name = str_dup(name);
-    }
-    return type;
-}
-
-Type* type_application(Type* constructor, Type** arguments, size_t arg_count) {
-    if (!constructor || !arguments || arg_count == 0) return NULL;
-    
-    Type* type = type_new(TYPE_APPLICATION);
-    if (type) {
-        type->data.application.constructor = constructor;
-        type->data.application.arguments = malloc(sizeof(Type*) * arg_count);
-        if (type->data.application.arguments) {
-            memcpy(type->data.application.arguments, arguments, sizeof(Type*) * arg_count);
-            type->data.application.arg_count = arg_count;
-        }
-        
-        // Size and alignment depend on the fully applied type
-        // This will be resolved during type checking
-        type->size = 0;
-        type->align = 0;
-        
-        // Create name like "Vec<int>"
-        if (constructor->name && arg_count > 0) {
-            size_t name_size = strlen(constructor->name) + 3;  // For "<>"
-            for (size_t i = 0; i < arg_count; i++) {
-                if (arguments[i]->name) {
-                    name_size += strlen(arguments[i]->name) + 2;  // For ", "
-                }
-            }
-            
-            char* name = malloc(name_size);
-            if (name) {
-                strcpy(name, constructor->name);
-                strcat(name, "<");
-                for (size_t i = 0; i < arg_count; i++) {
-                    if (i > 0) strcat(name, ", ");
-                    strcat(name, arguments[i]->name ? arguments[i]->name : "?");
-                }
-                strcat(name, ">");
-                type->name = name;
-            }
-        }
     }
     return type;
 }

@@ -17,7 +17,11 @@
 set -u
 
 PROBE="doc-claims-probe"
-ROOT="${DOC_CLAIMS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+# A Bazel sh_test starts in the runfiles root, and $0 there is a symlink
+# under tests/probes/ -- one level too deep for the old dirname-based ROOT.
+# git rev-parse names the real toplevel under make and by hand; it fails in
+# the sandbox (no .git), where pwd is already the runfiles root.
+ROOT="${DOC_CLAIMS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 fails=0
 note() { echo "    $*"; }
 
@@ -68,7 +72,7 @@ if [ "${1:-}" = "--self-test" ]; then
 	inject "an unclassified goostd package" \
 		'mkdir -p goostd/newpkg && printf "package newpkg\nfunc F() int { return 1 }\n" > goostd/newpkg/newpkg.go'
 	inject "the shim list changes" \
-		'sed -i "s/\"testing\"};/\"testing\", \"json\"};/" src/compiler/goo.c'
+		'sed -i "s/\"qir\"};/\"qir\", \"json\"};/" src/compiler/goo.c'
 	inject "a third /proc/self/exe site" \
 		'printf "// /proc/self/exe\n" >> src/package/import_resolver.c && cp src/package/import_resolver.c src/compiler/third.c'
 	inject "make install regresses to a bare cp" \
@@ -101,7 +105,11 @@ else
 		if printf '%s' "$PKGS" | tr ' ' '\n' | grep -q "^${name}:"; then
 			shipped=$((shipped+1)); continue
 		fi
-		if grep -rqil 'fixture' "$d" --include='*.go' --include='*.goo' 2>/dev/null; then
+		# -R, not -r: under Bazel "$d" is a real directory of SYMLINKED
+		# files (a sh_test's data arrives as a runfiles tree), and plain
+		# -r does not follow a symlink found while recursing, so every
+		# package read as unclassified until this was measured and fixed.
+		if grep -Rqil 'fixture' "$d" --include='*.go' --include='*.goo' 2>/dev/null; then
 			fixture=$((fixture+1)); continue
 		fi
 		bad "goostd/$name is neither in GOOSTD_PKG_DIRS nor self-declared a fixture"
@@ -111,31 +119,33 @@ else
 	[ "$unclassified" -eq 0 ] && note "goostd: $shipped shipped, $fixture fixtures, 0 unclassified"
 fi
 
-# --- 2. The shim package set, which ADR 0006 states as eight names. These
+# --- 2. The shim package set, which ADR 0006 states as nine names. These
 # short-circuit before the resolver, so a fetched package can never shadow
 # them -- a fact sub-project B's design depends on.
-EXPECTED_SHIMS='"fmt", "os", "math", "errors", "sync", "time", "far", "testing"'
+EXPECTED_SHIMS='"fmt", "os", "math", "errors", "sync", "time", "far", "testing", "qir"'
 # EXACT comparison, not `grep -qF`. The first version of this check used a
-# substring match, and its own self-test caught the hole: adding a ninth shim
-# leaves the eight-name string present as a substring, so an ADDITION -- the
+# substring match, and its own self-test caught the hole: adding an extra shim
+# leaves the prefix string present as a substring, so an ADDITION -- the
 # likeliest change of all -- passed silently.
 ACTUAL_SHIMS="$(sed -n 's/.*static const char\* const shim\[\] = {\(.*\)};.*/\1/p' "$ROOT/src/compiler/goo.c" | head -1)"
 if [ "$ACTUAL_SHIMS" != "$EXPECTED_SHIMS" ]; then
-	bad "the shim list in goo.c no longer matches the eight names ADR 0006 states"
+	bad "the shim list in goo.c no longer matches the nine names ADR 0006 states"
 	note "expected: $EXPECTED_SHIMS"
 	note "found   : ${ACTUAL_SHIMS:-<no shim[] initialiser found>}"
 else
-	note "shim set: the documented eight, exactly"
+	note "shim set: the documented nine, exactly"
 fi
 
 # --- 3. /proc/self/exe lives in exactly two files. ADR 0006 names extracting
 # one goo_exe_dir() helper as the PREREQUISITE for any non-Linux platform,
 # because the platform ladder would otherwise be written twice. A third copy
 # makes that prerequisite quietly bigger than the ADR says.
-sites=$(grep -rl '/proc/self/exe' "$ROOT/src" --include='*.c' 2>/dev/null | wc -l)
+# -R, same reason as the fixture scan above: $ROOT/src is a directory of
+# symlinks under Bazel, and -r does not follow one found while recursing.
+sites=$(grep -Rl '/proc/self/exe' "$ROOT/src" --include='*.c' 2>/dev/null | wc -l)
 if [ "$sites" -ne 2 ]; then
 	bad "/proc/self/exe appears in $sites files; ADR 0006 documents 2"
-	note "$(grep -rl '/proc/self/exe' "$ROOT/src" --include='*.c' 2>/dev/null | tr '\n' ' ')"
+	note "$(grep -Rl '/proc/self/exe' "$ROOT/src" --include='*.c' 2>/dev/null | tr '\n' ' ')"
 else
 	note "/proc/self/exe: 2 sites, as documented"
 fi

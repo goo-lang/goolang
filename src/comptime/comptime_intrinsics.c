@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdint.h>
+#include <limits.h>
 
 
 // Comptime intrinsics (@emit, @typeof, @sizeof, @generate, @for,
@@ -311,9 +313,24 @@ ComptimeResult* comptime_intrinsic_struct_fields(ComptimeContext* ctx, ComptimeV
 // conversion, that it is not %n, and that its type class matches the argument.
 // %% is a literal, not a conversion. (The zero- and multi-argument paths copy the
 // format verbatim and never reach snprintf, so they need no check.)
+//
+// The check is also exact about the va_arg TYPE (CWE-686). `*` makes snprintf
+// read a second variadic argument that the call does not pass, so it is
+// rejected. int_value is an int64_t, so an integer conversion carries the
+// length modifier that names the type the call casts to: none -> int,
+// l -> long, ll -> long long, j -> intmax_t. Any other modifier (h, hh, z, t,
+// L, q, I) is rejected, and so is any modifier on %s (%ls reads a wchar_t*).
+// The specifier must read: flags, width digits, optional .precision, optional
+// length modifier, conversion character, in that order.
 typedef enum { FMT_ARG_INT, FMT_ARG_STR } FmtArgClass;
+typedef enum { FMT_LEN_NONE, FMT_LEN_L, FMT_LEN_LL, FMT_LEN_J } FmtLen;
 
-static bool comptime_format_one_arg_safe(const char* fmt, FmtArgClass cls) {
+typedef struct {
+    FmtLen len;
+    char conv;
+} FmtSpec;
+
+static bool comptime_format_one_arg_safe(const char* fmt, FmtArgClass cls, FmtSpec* spec) {
     size_t conversions = 0;
     for (size_t i = 0; fmt[i]; i++) {
         if (fmt[i] != '%') {
@@ -323,24 +340,94 @@ static bool comptime_format_one_arg_safe(const char* fmt, FmtArgClass cls) {
         if (fmt[i] == '%') { // literal %%
             continue;
         }
-        // Skip flags, width, precision, and length modifiers to the conversion char.
-        while (fmt[i] && strchr("-+ #0'123456789.hljztLqI*", fmt[i])) {
+        while (fmt[i] && strchr("-+ #0'", fmt[i])) { // flags (may repeat)
+            i++;
+        }
+        while (fmt[i] >= '0' && fmt[i] <= '9') { // width
+            i++;
+        }
+        if (fmt[i] == '.') { // precision
+            i++;
+            while (fmt[i] >= '0' && fmt[i] <= '9') {
+                i++;
+            }
+        }
+        FmtLen len = FMT_LEN_NONE;
+        if (fmt[i] == 'l' && fmt[i + 1] == 'l') {
+            len = FMT_LEN_LL;
+            i += 2;
+        } else if (fmt[i] == 'l') {
+            len = FMT_LEN_L;
+            i++;
+        } else if (fmt[i] == 'j') {
+            len = FMT_LEN_J;
             i++;
         }
         char c = fmt[i];
-        if (c == '\0' || c == 'n') { // truncated specifier, or the %n write primitive
+        if (c == '\0') { // truncated specifier
             return false;
         }
         if (++conversions > 1) { // more specifiers than the single argument
             return false;
         }
-        bool matches = (cls == FMT_ARG_INT) ? (strchr("diouxXc", c) != NULL)
-                                            : (c == 's');
-        if (!matches) {
+        if (cls == FMT_ARG_INT) {
+            if (strchr("diuoxX", c) == NULL) {
+                // %c takes an int only; with a modifier it reads a wint_t.
+                if (!(c == 'c' && len == FMT_LEN_NONE)) {
+                    return false;
+                }
+            }
+        } else if (c != 's' || len != FMT_LEN_NONE) {
             return false;
         }
+        spec->len = len;
+        spec->conv = c;
     }
     return true;
+}
+
+// Run the validated one-integer format. The argument is cast to exactly the
+// type the length modifier names, so snprintf reads what it expects. Returns
+// false when the value does not fit the type (int, or 0..255 for %c).
+static bool comptime_format_int(char* out, size_t out_size, const char* fmt, FmtSpec spec, int64_t v) {
+    bool is_unsigned = strchr("uoxX", spec.conv) != NULL;
+    switch (spec.len) {
+    case FMT_LEN_NONE:
+        if (v < INT_MIN || v > INT_MAX) {
+            return false;
+        }
+        if (spec.conv == 'c' && (v < 0 || v > 255)) {
+            return false;
+        }
+        if (is_unsigned) {
+            snprintf(out, out_size, fmt, (unsigned int)(int)v);
+        } else {
+            snprintf(out, out_size, fmt, (int)v);
+        }
+        return true;
+    case FMT_LEN_L:
+        if (is_unsigned) {
+            snprintf(out, out_size, fmt, (unsigned long)v);
+        } else {
+            snprintf(out, out_size, fmt, (long)v);
+        }
+        return true;
+    case FMT_LEN_LL:
+        if (is_unsigned) {
+            snprintf(out, out_size, fmt, (unsigned long long)v);
+        } else {
+            snprintf(out, out_size, fmt, (long long)v);
+        }
+        return true;
+    case FMT_LEN_J:
+        if (is_unsigned) {
+            snprintf(out, out_size, fmt, (uintmax_t)v);
+        } else {
+            snprintf(out, out_size, fmt, (intmax_t)v);
+        }
+        return true;
+    }
+    return false;
 }
 
 ComptimeResult* comptime_intrinsic_format(ComptimeContext* ctx, ComptimeValue* format_str, ComptimeValue** args, size_t arg_count) {
@@ -361,14 +448,19 @@ ComptimeResult* comptime_intrinsic_format(ComptimeContext* ctx, ComptimeValue* f
         strcpy(result, fmt);
     } else if (arg_count == 1) {
         FmtArgClass cls = (args[0]->type == COMPTIME_VALUE_INT) ? FMT_ARG_INT : FMT_ARG_STR;
-        if (!comptime_format_one_arg_safe(fmt, cls)) {
+        FmtSpec spec = {FMT_LEN_NONE, 's'};
+        if (!comptime_format_one_arg_safe(fmt, cls, &spec)) {
             free(result);
             return comptime_result_new(NULL, comptime_error_new(
                 "@format: unsafe or unsupported format string (expected a single %-specifier matching the argument type; %n and extra specifiers are rejected)",
                 (Position){0}), NULL);
         }
         if (args[0]->type == COMPTIME_VALUE_INT) {
-            snprintf(result, result_size, fmt, args[0]->int_value);
+            if (!comptime_format_int(result, result_size, fmt, spec, args[0]->int_value)) {
+                free(result);
+                return comptime_result_new(NULL, comptime_error_new(
+                    "@format: integer argument out of range for the conversion", (Position){0}), NULL);
+            }
         } else if (args[0]->type == COMPTIME_VALUE_STRING) {
             snprintf(result, result_size, fmt, args[0]->string_value);
         } else {

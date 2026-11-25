@@ -1,0 +1,5 @@
+package main
+type Stringer interface { String() string }
+type Pt struct { x int }
+func Show[T Stringer](v T) string { return v.String() }
+func main() { _ = Show(Pt{x: 1}) }

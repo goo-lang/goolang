@@ -1,0 +1,13 @@
+package main
+
+func fpga_bad_loop(x int) int {
+	acc := x
+	for {
+		acc = acc + 1
+	}
+	return acc
+}
+
+func main() {
+	_ = fpga_bad_loop(1)
+}

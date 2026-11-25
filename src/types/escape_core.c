@@ -417,7 +417,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     for (ASTNode* a = call->args; a; a = a->next) argc++;
 
     TaintSet* arg_taints = NULL;
-    if (argc > 0) arg_taints = calloc(argc, sizeof(TaintSet));
+    if (argc > 0) arg_taints = xcalloc(argc, sizeof(TaintSet));
     size_t i = 0;
     for (ASTNode* a = call->args; a; a = a->next, i++) {
         arg_taints[i] = escape_expr_taint(ctx, a);
@@ -512,7 +512,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
             retains = true;
             why = ESCAPE_REASON_CALL_VARIADIC;   // a spread: no summary reaches it
         } else if (is_append && i == 0) {
-            retains = false;  // append does not store the slice; it returns it
+            retains = (ctx->hooks->expr_source_slot != NULL);  // append does not store the slice; in block_escape realloc requires heap
         } else if (callee) {
             retains = (i < callee_count) ? callee_escapes[i] : true;
             // Past the summary's parameter count -- a variadic user function.
@@ -780,6 +780,14 @@ TaintSet escape_expr_taint(EscapeCtx* ctx, ASTNode* expr) {
         case AST_SLICE_EXPR: { // slice literal (SliceLitNode)
             SliceLitNode* sl = (SliceLitNode*)expr;
             TaintSet t = escape_taint_new(n);
+            size_t idx = source_slot(ctx, expr);
+            if (idx != ESCAPE_NO_SLOT) {
+                // A slot past the set, or a set whose calloc failed, would lose
+                // this taint source, and a lost source can free an escaping
+                // value. Stop instead of dropping it.
+                GOO_ASSERT(t.bits != NULL && idx < t.n);
+                t.bits[idx] = true;
+            }
             for (ASTNode* e = sl->elements; e; e = e->next) {
                 TaintSet et = escape_expr_taint(ctx, e);
                 escape_taint_union_into(&t, &et);

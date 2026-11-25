@@ -60,9 +60,12 @@ commit resolves both, with the reason:
   `review`. No sanitizer reports a write to a read-only stream, so the main
   table becomes `review`.
 
-Cobra's `misra2012.def` labels rule 18.6 findings with the caption
-`M12_R18_5`, a naming bug in Cobra's file. The harness counts 18.6 by that
-caption and the spec records the bug for an upstream report.
+Cobra's `misra2012.def` has a caption mix-up for rules 18.5 and 18.6.
+Rule 18.6 findings are in set `M12_R18_6`. The set `M12_R18_5` carries rule
+18.6's caption text (`misra2012.def` lines 630-643). The harness counts by set
+name, not by caption text. Measured 2026-11-08 (see
+`docs/misra/cobra-calibration.md`, "Defects found"). The spec records the bug
+for an upstream report.
 
 ## 4. The instrument
 
@@ -166,3 +169,29 @@ cannot parse is a finding to record, not a reason to stop. The `-N` hang.
 The 18.6 caption bug. The doubtful 1.3 block, which is why it is out. A
 hand check is one person's reading: the ten classifications are written
 down so a second reader can disagree.
+
+## 10. Result
+
+Measured 2026-11-08 with Cobra 5.4 built from commit
+`eebff89637542b0bfdc76739fbad4f6a365c51ae`, over the 68 git-tracked `src/*.c`
+files at repo commit `a42a39d6`. The full tables, the hand checks, the second
+instrument and the defects found are in
+[docs/misra/cobra-calibration.md](../../misra/cobra-calibration.md). The control
+files are in `tests/misra/cobra/`. No gate exists; task 13 decides.
+
+| Rule | Violating control | Compliant twin | Count on `src/` | Incorrect-report rate |
+|---|---|---|---|---|
+| 2.1 | fail | pass | 29 | 10/10 |
+| 2.6 | fail | pass | 1 | 1/1 |
+| 3.2 | pass | pass | 0 | n/a (no reports) |
+| 5.3 | fail | pass | 0 | n/a (no reports) |
+| 17.4 | fail | pass | 0 | n/a (no reports) |
+| 18.1 | fail | pass | 87 | 10/10 |
+| 18.2 | fail | pass | 1 | 1/1 |
+| 18.3 | fail | pass | 0 | n/a (no reports) |
+| 18.6 | fail | pass | 2 | 2/2 |
+
+Rule 1.3 is out by section 2. One rule of nine (3.2) passes both controls,
+and it has no reports on `src/`. The four known incorrect reports all
+reproduce (13.5, 13.6, 2.1, 18.6). Each number: instrument Cobra 5.4,
+commit `eebff896`, date 2026-11-08.

@@ -1,0 +1,1 @@
+linear qubit array 'q' requires a compile-time constant integer index

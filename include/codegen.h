@@ -283,6 +283,23 @@ struct CodeGenerator {
     // free these strings, only the driver does.
     const char** link_libs;
     size_t link_lib_count;
+
+    // The program that links a compiled Goo program, and extra flags for it
+    // (driver-set from --linker/--link-flag). A NULL linker keeps the
+    // platform default. Borrowed from CompilerOptions exactly as link_libs
+    // is -- codegen does not own or free these strings.
+    const char* linker;
+    char* const* link_flags;
+    size_t link_flag_count;
+
+    // Phase 7 M1 (Quantum QIR): when `emit_qir != 0` (`--emit-qir`), suppresses
+    // the POSIX `goo_os_args_init` prologue on `main` and stamps `main` with
+    // the QIR 1.0 Adaptive Profile LLVM function attributes (`"entry_point"`,
+    // `"qir_profiles"="adaptive_profile"`, `"required_num_qubits"`,
+    // `"required_num_results"`). Tail-appended per the no-header-deps rule.
+    int emit_qir;
+    uint64_t qir_num_qubits;
+    uint64_t qir_num_results;
 };
 
 // Function information for code generation
@@ -664,7 +681,7 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
 LLVMValueRef codegen_lookup_global_function(CodeGenerator* codegen, TypeChecker* checker,
                                             const char* name);
 #endif
-ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+ValueInfo* codegen_generate_literal(CodeGenerator* codegen, const TypeChecker* checker, ASTNode* expr);
 // Build a *constant* goo_string { i8* data, i64 len } value from `len` raw bytes
 // (embedded NULs preserved). Builder-free, so it is valid at global scope — used
 // by both string-literal codegen and folded const-string tables. The bytes are
@@ -1056,7 +1073,7 @@ LLVMValueRef codegen_check_nullable_null(CodeGenerator* codegen, LLVMValueRef nu
 
 // Nullable codegen — used across expression_codegen.c, function_codegen.c,
 // and call_codegen.c (default-nil locals/globals, reassignment, ?T arg wrap).
-ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, TypeChecker* checker, Type* expected_type);
+ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, const TypeChecker* checker, Type* expected_type);
 LLVMValueRef codegen_create_nullable_null(CodeGenerator* codegen, LLVMTypeRef nullable_type, Type* base_type);
 LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMTypeRef nullable_type,
                                                LLVMValueRef value, Type* value_type);
@@ -1144,6 +1161,12 @@ void* codegen_generate_error_return_stub(CodeGenerator* codegen, void* return_va
 
 // Output generation
 int codegen_emit_llvm_ir(CodeGenerator* codegen, const char* filename);
+int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
+                       ASTNode* program, const char* filename);
+int codegen_emit_mlir(CodeGenerator* codegen, TypeChecker* checker,
+                      ASTNode* program, const char* filename);
+int codegen_emit_sv(CodeGenerator* codegen, TypeChecker* checker,
+                    ASTNode* program, const char* filename);
 int codegen_emit_object_file(CodeGenerator* codegen, const char* filename);
 int codegen_emit_executable(CodeGenerator* codegen, const char* filename);
 int codegen_optimize(CodeGenerator* codegen, int level);

@@ -1,0 +1,7 @@
+package main
+import "fmt"
+type Counter struct { n int }
+func (c Counter) get() int { return c.n }
+func (c Counter) addn(x int) int { return c.n + x }
+func add(a int, b int) int { return a + b }
+func main() { var c Counter = Counter{n: 7}; fmt.Println(add(1, 2)); fmt.Println(c.get()); fmt.Println(c.addn(3)) }

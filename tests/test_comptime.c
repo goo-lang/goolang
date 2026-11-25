@@ -502,6 +502,94 @@ void test_reflection_intrinsics(void) {
     printf("✓ Reflection intrinsics tests passed!\n");
 }
 
+// @format exactness (CWE-686): the validator must accept only a specifier whose
+// va_arg type the snprintf call supplies. `*` reads a second argument; `%d`
+// against an int64_t reads the wrong width; `%ls` reads a char* as wchar_t*.
+static int g_format_failures;
+
+static void format_expect_int(ComptimeContext* ctx, const char* fmt, int64_t v, const char* want) {
+    ComptimeValue* f = comptime_value_from_string(fmt);
+    ComptimeValue* a = comptime_value_from_int(v);
+    ComptimeValue* args[] = {a};
+    ComptimeResult* r = comptime_intrinsic_format(ctx, f, args, 1);
+    assert(r != NULL);
+    if (want) {
+        if (r->error != NULL || strcmp(r->value->string_value, want) != 0) {
+            fprintf(stderr, "FAIL: @format(\"%s\", %lld) want \"%s\" got %s\n", fmt, (long long)v, want,
+                    r->error ? "an error" : r->value->string_value);
+            g_format_failures++;
+        }
+    } else if (r->error == NULL) {
+        fprintf(stderr, "FAIL: @format(\"%s\", %lld) must be rejected\n", fmt, (long long)v);
+        g_format_failures++;
+    }
+    comptime_result_free(r);
+    comptime_value_free(f);
+    comptime_value_free(a);
+}
+
+static void format_expect_str(ComptimeContext* ctx, const char* fmt, const char* v, const char* want) {
+    ComptimeValue* f = comptime_value_from_string(fmt);
+    ComptimeValue* a = comptime_value_from_string(v);
+    ComptimeValue* args[] = {a};
+    ComptimeResult* r = comptime_intrinsic_format(ctx, f, args, 1);
+    assert(r != NULL);
+    if (want) {
+        if (r->error != NULL || strcmp(r->value->string_value, want) != 0) {
+            fprintf(stderr, "FAIL: @format(\"%s\", \"%s\") want \"%s\"\n", fmt, v, want);
+            g_format_failures++;
+        }
+    } else if (r->error == NULL) {
+        fprintf(stderr, "FAIL: @format(\"%s\", \"%s\") must be rejected\n", fmt, v);
+        g_format_failures++;
+    }
+    comptime_result_free(r);
+    comptime_value_free(f);
+    comptime_value_free(a);
+}
+
+static void test_format_exact_specifiers(void) {
+    ComptimeContext* ctx = comptime_context_new(NULL);
+    format_expect_int(ctx, "Value: %d", 123, "Value: 123");
+    format_expect_int(ctx, "%*d", 5, NULL);
+    format_expect_int(ctx, "%.*d", 5, NULL);
+    format_expect_str(ctx, "%.*s", "abc", NULL);
+    format_expect_str(ctx, "%ls", "abc", NULL);
+    format_expect_str(ctx, "%s", "abc", "abc");
+    format_expect_str(ctx, "%.2s", "abc", "ab");
+    format_expect_int(ctx, "%hd", 5, NULL);
+    format_expect_int(ctx, "%hhd", 5, NULL);
+    format_expect_int(ctx, "%zd", 5, NULL);
+    format_expect_int(ctx, "%d", 3000000000LL, NULL);
+    format_expect_int(ctx, "%d", -3000000000LL, NULL);
+    format_expect_int(ctx, "%d", -5, "-5");
+    format_expect_int(ctx, "%lld", 9000000000LL, "9000000000");
+    format_expect_int(ctx, "%ld", 9000000000LL, "9000000000");
+    format_expect_int(ctx, "%jd", 9000000000LL, "9000000000");
+    format_expect_int(ctx, "%llx", 255, "ff");
+    format_expect_int(ctx, "%5.3d", 7, "  007");
+    format_expect_int(ctx, "%-4d|", 7, "7   |");
+    format_expect_int(ctx, "%c", 65, "A");
+    format_expect_int(ctx, "%c", 300, NULL);
+    format_expect_int(ctx, "%c", -1, NULL);
+    format_expect_int(ctx, "%lc", 65, NULL);
+    format_expect_int(ctx, "%5.d%%", 3, "    3%");
+    format_expect_int(ctx, "%.5d", 3, "00003");
+    format_expect_int(ctx, "%d.5", 3, "3.5");
+    format_expect_int(ctx, "%.d5", 3, "35");
+    format_expect_int(ctx, "%n", 1, NULL);
+    format_expect_int(ctx, "%d%d", 1, NULL);
+    format_expect_int(ctx, "%", 1, NULL);
+    format_expect_int(ctx, "%s", 1, NULL);
+    format_expect_str(ctx, "%d", "x", NULL);
+    format_expect_int(ctx, "%-0d", 1, "1"); /* flags may repeat */
+    format_expect_int(ctx, "%d", 2147483647LL, "2147483647");
+    format_expect_int(ctx, "%d", -2147483648LL, "-2147483648");
+    comptime_context_free(ctx);
+    assert(g_format_failures == 0);
+    printf("✓ @format exact-specifier tests passed!\n");
+}
+
 int main(void) {
     printf("Running compile-time execution tests...\n\n");
     
@@ -515,6 +603,7 @@ int main(void) {
     test_advanced_code_generation();
     test_code_generation_pipeline();
     test_reflection_intrinsics();
+    test_format_exact_specifiers();
     
     printf("\n✅ All compile-time execution tests passed!\n");
     return 0;

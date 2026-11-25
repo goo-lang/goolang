@@ -29,10 +29,6 @@ ASTNode* ast_root = NULL;
 ASTNode* g_func_signature_params = NULL;
 ASTNode* g_func_signature_result = NULL;
 
-// Defined in src/parser/lexer_bridge.c; each consumer translation unit
-// declares its own extern (mirrors parser.y's own declaration for yyerror).
-extern Lexer* current_lexer;
-
 // Go grouped-name shorthand `(x, y int)` == `(x int, y int)`, applied to a
 // parsed parameter or result list. The func_param machinery has no comma-
 // shared-type rule, so a leading `x` (no type of its own) parses as an
@@ -356,7 +352,7 @@ ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits) {
     lit->is_keyed = 0;
     lit->field_names = NULL;
     if (lit->field_count > 0) {
-        lit->field_names = (char**)calloc(lit->field_count, sizeof(char*));
+        lit->field_names = (char**)xcalloc(lit->field_count, sizeof(char*));
         size_t i = 0;
         for (ASTNode* a = inits; a; a = a->next, i++) {
             lit->field_names[i] = (char*)a->node_type;
@@ -548,7 +544,7 @@ ASTNode* var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* typ
     VarDeclNode* var = ast_var_decl_new(get_current_position());
     IdentifierNode* i1 = (IdentifierNode*)name_ident1;
     IdentifierNode* i2 = (IdentifierNode*)name_ident2;
-    var->names = malloc(sizeof(char*) * 2);
+    var->names = xmalloc(sizeof(char*) * 2);
     var->names[0] = xstrdup(i1->name);
     var->names[1] = xstrdup(i2->name);
     var->name_count = 2;
@@ -563,7 +559,7 @@ ASTNode* var_decl_new_3(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* nam
     IdentifierNode* i1 = (IdentifierNode*)name_ident1;
     IdentifierNode* i2 = (IdentifierNode*)name_ident2;
     IdentifierNode* i3 = (IdentifierNode*)name_ident3;
-    var->names = malloc(sizeof(char*) * 3);
+    var->names = xmalloc(sizeof(char*) * 3);
     var->names[0] = xstrdup(i1->name);
     var->names[1] = xstrdup(i2->name);
     var->names[2] = xstrdup(i3->name);
@@ -594,7 +590,7 @@ ASTNode* short_var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNod
     VarDeclNode* var = ast_var_decl_new(get_current_position());
     IdentifierNode* i1 = (IdentifierNode*)name_ident1;
     IdentifierNode* i2 = (IdentifierNode*)name_ident2;
-    var->names = malloc(sizeof(char*) * 2);
+    var->names = xmalloc(sizeof(char*) * 2);
     var->names[0] = xstrdup(i1->name);
     var->names[1] = xstrdup(i2->name);
     var->name_count = 2;

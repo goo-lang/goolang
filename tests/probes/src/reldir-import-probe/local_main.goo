@@ -1,0 +1,4 @@
+package main
+import ("fmt"
+"onlylocal")
+func main() { fmt.Println(onlylocal.Value()) }

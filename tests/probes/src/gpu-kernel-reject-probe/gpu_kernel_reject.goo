@@ -1,0 +1,8 @@
+package main
+
+gpu_kernel add(n int) {
+	n = n + 1
+}
+
+func main() {
+}

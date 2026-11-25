@@ -1,0 +1,6 @@
+package main
+func main(){ ch := make_chan(int, 1); select { case ch <- "oops":
+_ = 1
+default:
+_ = 2
+ } }

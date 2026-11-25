@@ -152,6 +152,12 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->link_libs = NULL;
     codegen->link_lib_count = 0;
 
+    // Driver overwrites these from --linker/--link-flag right after
+    // codegen_new, the same way it does link_libs above.
+    codegen->linker = NULL;
+    codegen->link_flags = NULL;
+    codegen->link_flag_count = 0;
+
     // WebAssembly configuration
     codegen->wasm_configured = 0;
     codegen->is_wasm_target = 0;
@@ -172,6 +178,9 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // Function-generics Task 9: no override until codegen_generate_function_
     // instance installs one around a single instantiation's stamping.
     codegen->symbol_override = NULL;
+    codegen->emit_qir = 0;
+    codegen->qir_num_qubits = 0;
+    codegen->qir_num_results = 0;
 
     // Comptime value params Task 3: no active comptime instance until
     // codegen_generate_comptime_function_instance installs one around a
@@ -480,6 +489,25 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         return 0;
     }
 
+    // Phase 7 M1 (`--emit-qir`): stamp `main` with the QIR 1.0 Adaptive Profile
+    // entry-point attributes after every declaration's body has been emitted,
+    // so `qir_num_qubits` and `qir_num_results` reflect all static and dynamic
+    // qubit/result allocations across the module.
+    if (is_main_pass && codegen->emit_qir) {
+        LLVMValueRef main_fn = LLVMGetNamedFunction(codegen->module, "main");
+        if (main_fn) {
+            char qbuf[32];
+            char rbuf[32];
+            snprintf(qbuf, sizeof(qbuf), "%llu", (unsigned long long)codegen->qir_num_qubits);
+            snprintf(rbuf, sizeof(rbuf), "%llu", (unsigned long long)codegen->qir_num_results);
+            LLVMAddTargetDependentFunctionAttr(main_fn, "entry_point", "");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "qir_profiles", "adaptive_profile");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "output_labeling_schema", "schema_id");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "required_num_qubits", qbuf);
+            LLVMAddTargetDependentFunctionAttr(main_fn, "required_num_results", rbuf);
+        }
+    }
+
     return codegen->error_count == 0;
 }
 
@@ -540,19 +568,8 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
 }
 
 // Error reporting
-void codegen_error(CodeGenerator* codegen, Position pos, const char* format, ...) {
-    if (!codegen) return;
-    
-    fprintf(stderr, "Error at %s:%d:%d: ", pos.filename ? pos.filename : "<unknown>", pos.line, pos.column);
-    
-    va_list args;
-    va_start(args, format);
-    vfprintf(stderr, format, args);
-    va_end(args);
-    
-    fprintf(stderr, "\n");
-    codegen->error_count++;
-}
+// codegen_error moved to codegen_context.c. runtime_integration.c reached in
+// here for it, and that was one of two edges closing this package's cycle.
 
 void codegen_warning(CodeGenerator* codegen, Position pos, const char* format, ...) {
     if (!codegen) return;
@@ -1527,11 +1544,8 @@ LLVMValueRef codegen_create_entry_alloca(CodeGenerator* codegen, LLVMTypeRef typ
     return alloca;
 }
 
-LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name) {
-    if (!codegen || !codegen->current_function) return NULL;
-    
-    return LLVMAppendBasicBlockInContext(codegen->context, codegen->current_function, name);
-}
+// codegen_create_block moved to codegen_context.c. cfctx.c reached in here for
+// it, and that was the other edge.
 
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block) {
     if (!codegen || !block) return;
@@ -1630,8 +1644,20 @@ int codegen_emit_object_file(CodeGenerator* codegen, const char* filename) {
 #endif
 }
 
+// Write <dir><rel> into buf. False, with a warning, when the path does not
+// fit: a path cut short could name another file, so it is never used.
+static bool archive_path_in(char* buf, size_t size, const char* dir, const char* rel) {
+    int w = snprintf(buf, size, "%s%s", dir, rel);
+    if (w < 0 || (size_t)w >= size) {
+        fputs("goo: warning: the runtime archive path is too long; trying the next location (set GOO_RUNTIME to override)\n", stderr);
+        return false;
+    }
+    return true;
+}
+
 // Resolve the runtime archive path independent of cwd so the compiler works
 // when invoked from any directory. Order: $GOO_RUNTIME -> <exe-dir>/../lib ->
+// $GOOROOT/lib ->
 // cwd-relative fallback. Returns a pointer into a static buffer (single-threaded
 // codegen; not reentrant — acceptable here).
 static const char* goo_runtime_archive_path(void) {
@@ -1639,19 +1665,36 @@ static const char* goo_runtime_archive_path(void) {
     const char* env = getenv("GOO_RUNTIME");
     if (env && env[0] != '\0') { snprintf(buf, sizeof(buf), "%s", env); return buf; }
 #ifdef __linux__
+    // A path that does not fit is reported and falls back to the cwd-relative
+    // archive; it is never used cut short (a wrong path could name another file).
     char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0) {
+    if (n >= (ssize_t)sizeof(exe) - 1) {
+        fputs("goo: warning: the executable path is too long to locate lib/libgoo_runtime.a; trying the working directory (set GOO_RUNTIME to override)\n", stderr);
+    } else if (n > 0) {
         exe[n] = '\0';
         char* slash = strrchr(exe, '/');        // dir-of-exe
         if (slash) {
             *slash = '\0';
-            snprintf(buf, sizeof(buf), "%s/../lib/libgoo_runtime.a", exe);
-            struct stat st;
-            if (stat(buf, &st) == 0) return buf; // exists relative to the binary
+            if (archive_path_in(buf, sizeof(buf), exe, "/../lib/libgoo_runtime.a")) {
+                struct stat st;
+                if (stat(buf, &st) == 0) return buf; // exists relative to the binary
+            }
         }
     }
 #endif
+    // GOOROOT comes after the executable's own directory: the archive must
+    // match the compiler that is running, and GOOROOT can name an older
+    // checkout. It serves a compiler that was copied away from its lib/.
+    const char* root = getenv("GOOROOT");
+    if (root && root[0] != '\0') {
+        if (archive_path_in(buf, sizeof(buf), root, "/lib/libgoo_runtime.a")) {
+            struct stat st;
+            if (stat(buf, &st) == 0) {
+                return buf;
+            }
+        }
+    }
     snprintf(buf, sizeof(buf), "lib/libgoo_runtime.a");  // fallback (repo-root cwd)
     return buf;
 }
@@ -1808,6 +1851,13 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 #else
     const char* linker_name = "gcc"; // Linux and generic Unix
 #endif
+    // --linker overrides the platform default. An instrumented
+    // libgoo_runtime.a must be linked by the driver that owns the sanitizer
+    // runtimes, and the gcc above cannot link them at all on some hosts
+    // (.bazelrc records the measurement).
+    if (codegen->linker) {
+        linker_name = codegen->linker;
+    }
 
 #ifdef __APPLE__
     char* link_triple = codegen->target_triple;
@@ -1818,12 +1868,15 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     }
 #endif
 
-    // argv layout: <linker> [-target <triple> | -no-pie] -o <exe> <obj>
-    // <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed non-NULL slots
-    // covers the larger (__APPLE__) branch with room to spare on Linux;
-    // + one slot per user lib + the NULL terminator.
+    // argv layout: <linker> [-target <triple> | -no-pie] [<link-flag>]*
+    // -o <exe> <obj> <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed
+    // non-NULL slots covers the larger (__APPLE__) branch with room to spare
+    // on Linux; + one slot per user lib, + one per --link-flag, + the NULL
+    // terminator. Both counts must be added here: this sizes the execvp
+    // argv, so an omission is an overflow rather than a dropped flag.
     size_t fixed_slots = 9;
-    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count + 1;
+    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count
+                    + (size_t)codegen->link_flag_count + 1U;
     char** argv = malloc(max_argv * sizeof(char*));
     char** lib_flags = codegen->link_lib_count
         ? calloc((size_t)codegen->link_lib_count, sizeof(char*))
@@ -1849,6 +1902,12 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // -no-pie: see the ordering/relocation comment preserved below.
     argv[argn++] = "-no-pie";
 #endif
+    // User link flags precede -o, so a later flag beats the default set
+    // above (--link-flag=-pie against -no-pie, for one). These are borrowed
+    // strings, so unlike lib_flags below there is nothing here to free.
+    for (size_t i = 0; i < codegen->link_flag_count; i++) {
+        argv[argn++] = codegen->link_flags[i];
+    }
     argv[argn++] = "-o";
     argv[argn++] = (char*)filename;
     argv[argn++] = object_filename;
@@ -2125,12 +2184,13 @@ int codegen_declare_wasm_runtime_functions(CodeGenerator* codegen) {
     // i32 @llvm.wasm.memory.grow.i32(i32 %memory_index, i32 %delta)
     LLVMTypeRef grow_params[] = { i32_type, i32_type };
     LLVMTypeRef grow_type = LLVMFunctionType(i32_type, grow_params, 2, 0);
-    LLVMValueRef grow_func = LLVMAddFunction(codegen->module, "llvm.wasm.memory.grow.i32", grow_type);
+    // Declared for its side effect on the module; the handle is not needed here.
+    LLVMAddFunction(codegen->module, "llvm.wasm.memory.grow.i32", grow_type);
     
     // i32 @llvm.wasm.memory.size.i32(i32 %memory_index)
     LLVMTypeRef size_params[] = { i32_type };
     LLVMTypeRef size_type = LLVMFunctionType(i32_type, size_params, 1, 0);
-    LLVMValueRef size_func = LLVMAddFunction(codegen->module, "llvm.wasm.memory.size.i32", size_type);
+    LLVMAddFunction(codegen->module, "llvm.wasm.memory.size.i32", size_type);
     
     return 1;
 }
@@ -2145,7 +2205,6 @@ int codegen_configure_wasm_concurrency(CodeGenerator* codegen) {
     // for go statements in WASM vs native targets
     
     // Add JavaScript async/await helper imports
-    LLVMTypeRef void_type = LLVMVoidTypeInContext(codegen->context);
     LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
     
     // Import JavaScript Promise handling functions

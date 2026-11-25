@@ -1,0 +1,133 @@
+// Play 3 — 12-Qubit Constant-Depth Dynamic GHZ Stitch (`[12]qir.Qubit`)
+// Prepares four 3-qubit GHZ sub-blocks in parallel (CX depth 2), fuses the
+// three block boundaries in parallel (`CX(q[2],q[3])`, `CX(q[5],q[6])`,
+// `CX(q[8],q[9])` — total entangling CX depth 3 instead of 11 for a 12-qubit
+// static ladder), measures the 3 bridge qubits mid-circuit, and propagates the
+// prefix-XOR Pauli-X frame across all 9 stitched GHZ data qubits using flat
+// (non-nested) feed-forward conditionals (since X^2 = I).
+// Uncomputes the 9-qubit stitched GHZ state including final `H(q[0])` to verify
+// both Z-basis bit-flip and X^{\otimes 9} phase-parity coherence.
+package main
+
+import "fmt"
+import "qir"
+
+func main() {
+	var q [12]qir.Qubit
+	q[0] = qir.Alloc()
+	q[1] = qir.Alloc()
+	q[2] = qir.Alloc()
+	q[3] = qir.Alloc()
+	q[4] = qir.Alloc()
+	q[5] = qir.Alloc()
+	q[6] = qir.Alloc()
+	q[7] = qir.Alloc()
+	q[8] = qir.Alloc()
+	q[9] = qir.Alloc()
+	q[10] = qir.Alloc()
+	q[11] = qir.Alloc()
+
+	r0 := qir.ResultAt(0)
+	r1 := qir.ResultAt(1)
+	r2 := qir.ResultAt(2)
+
+	// Step 1: Prepare four 3-qubit GHZ blocks in parallel (CX depth = 2)
+	qir.H(q[0])
+	qir.CX(q[0], q[1])
+	qir.CX(q[1], q[2])
+
+	qir.H(q[3])
+	qir.CX(q[3], q[4])
+	qir.CX(q[4], q[5])
+
+	qir.H(q[6])
+	qir.CX(q[6], q[7])
+	qir.CX(q[7], q[8])
+
+	qir.H(q[9])
+	qir.CX(q[9], q[10])
+	qir.CX(q[10], q[11])
+
+	// Step 2: Parallel Bell-fusion bridges across block boundaries (CX depth = 1)
+	qir.CX(q[2], q[3])
+	qir.CX(q[5], q[6])
+	qir.CX(q[8], q[9])
+
+	qir.Mz(q[3], r0)
+	qir.Mz(q[6], r1)
+	qir.Mz(q[9], r2)
+	qir.FreeZero(q[3])
+	qir.FreeZero(q[6])
+	qir.FreeZero(q[9])
+
+	// Step 3: Flat prefix-XOR feed-forward Pauli-X frame stitch (X^2 = I)
+	if qir.ReadResult(r0) {
+		qir.X(q[4])
+		qir.X(q[5])
+		qir.X(q[7])
+		qir.X(q[8])
+		qir.X(q[10])
+		qir.X(q[11])
+	}
+	if qir.ReadResult(r1) {
+		qir.X(q[7])
+		qir.X(q[8])
+		qir.X(q[10])
+		qir.X(q[11])
+	}
+	if qir.ReadResult(r2) {
+		qir.X(q[10])
+		qir.X(q[11])
+	}
+
+	// Step 4: Uncompute the 9-qubit GHZ state (verifies Z-basis + X^{\otimes 9} phase coherence)
+	qir.CX(q[10], q[11])
+	qir.CX(q[8], q[10])
+	qir.CX(q[7], q[8])
+	qir.CX(q[5], q[7])
+	qir.CX(q[4], q[5])
+	qir.CX(q[2], q[4])
+	qir.CX(q[1], q[2])
+	qir.CX(q[0], q[1])
+	qir.H(q[0])
+
+	m0 := qir.MeasureReset(q[0])
+	m1 := qir.MeasureReset(q[1])
+	m2 := qir.MeasureReset(q[2])
+	m4 := qir.MeasureReset(q[4])
+	m5 := qir.MeasureReset(q[5])
+	m7 := qir.MeasureReset(q[7])
+	m8 := qir.MeasureReset(q[8])
+	m10 := qir.MeasureReset(q[10])
+	m11 := qir.MeasureReset(q[11])
+
+	errs := 0
+	if m0 {
+		errs = errs + 1
+	}
+	if m1 {
+		errs = errs + 1
+	}
+	if m2 {
+		errs = errs + 1
+	}
+	if m4 {
+		errs = errs + 1
+	}
+	if m5 {
+		errs = errs + 1
+	}
+	if m7 {
+		errs = errs + 1
+	}
+	if m8 {
+		errs = errs + 1
+	}
+	if m10 {
+		errs = errs + 1
+	}
+	if m11 {
+		errs = errs + 1
+	}
+	fmt.Println("dynamic_ghz_12q_errors", errs)
+}

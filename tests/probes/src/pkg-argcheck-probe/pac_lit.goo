@@ -1,0 +1,4 @@
+package main
+import ("fmt"
+"pkgcheck")
+func main() { var r int64 = pkgcheck.Half(84); if r == 42 { fmt.Println(42) } else { fmt.Println(0) } }

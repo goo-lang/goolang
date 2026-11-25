@@ -4,18 +4,21 @@
 # someone hand-edits or lets drift from the Makefile.
 #
 # THE ARTEFACT: build/compile_commands.json, produced by
-# tools/gen_compile_commands.sh from GOO_OBJS, the Makefile's list of
-# translation units linked into bin/goo. build/ is git-ignored
-# (.gitignore line 2), so this file is never committed -- this gate is what
-# keeps it CURRENT on every machine that runs verify-core, and what task 15
-# (cppcheck's --project=build/compile_commands.json) and task 16 (the gcc
-# strict lane) will both read.
+# tools/gen_compile_commands.sh from GOO_OBJS (the Makefile's list of
+# translation units linked into bin/goo through the object pattern rule)
+# PLUS COMPILER_SRCS (the .c files $(COMPILER)'s own recipe compiles
+# directly on its link line -- see that script's step 3b). build/ is
+# git-ignored (.gitignore line 2), so this file is never committed -- this
+# gate is what keeps it CURRENT on every machine that runs verify-core, and
+# what task 15 (cppcheck's --project=build/compile_commands.json) and task
+# 16 (the gcc strict lane) will both read.
 #
 # TWO INDEPENDENT CHECKS, because "the entry count matches" alone can pass
 # for the wrong reason -- a file counted twice while a different file is
 # missing entirely still gives the right total:
-#   1. entry count == object count (the Makefile's own $(words $(GOO_OBJS)),
-#      never hand-copied -- see read_object_count below).
+#   1. entry count == GOO_OBJS count + COMPILER_SRCS count (both the
+#      Makefile's own $(words ...), never hand-copied -- see
+#      read_object_count and read_link_sources_count below).
 #   2. every entry's "file" is unique -- each src/*.c is in the list ONE
 #      time, the task's own acceptance line, checked directly rather than
 #      inferred from the count.
@@ -69,6 +72,19 @@ read_object_count() {
 		| tail -1
 }
 
+# read_link_sources_count: $(words $(COMPILER_SRCS)) -- the .c files
+# $(COMPILER)'s recipe compiles directly on its link line (task 15 fix
+# round 1: src/compiler/goo.c and src/compiler/test_discovery.c today).
+# Same mechanism and same guards as read_object_count above; the two
+# together are the full expected entry count.
+read_link_sources_count() {
+	make --no-print-directory -f "$REPO_ROOT/Makefile" \
+		--eval='print-compiler-srcs-count: ; @echo GOO_MAKE_VAR=$(words $(COMPILER_SRCS))' \
+		print-compiler-srcs-count 2>/dev/null \
+		| sed -n 's/^GOO_MAKE_VAR=//p' \
+		| tail -1
+}
+
 # check_json: $1 = path to a compile_commands.json, $2 = expected object
 # count. Prints its reason(s) and returns 1 on any mismatch; prints nothing
 # and returns 0 when both checks hold. This is the one place both the real
@@ -94,7 +110,8 @@ unique_count = len(set(files))
 
 ok = True
 if got_count != want_count:
-    print(f"entry count {got_count} != object count {want_count}")
+    print(f"entry count {got_count} != expected count {want_count} "
+          "(GOO_OBJS + COMPILER_SRCS)")
     ok = False
 if unique_count != got_count:
     dupes = sorted({f for f in files if files.count(f) > 1})
@@ -116,10 +133,16 @@ if [ "${1:-}" = "--self-test" ]; then
 	bad_self=0
 
 	object_count="$(read_object_count)"
+	link_sources_count="$(read_link_sources_count)"
 	if ! [ "$object_count" -gt 0 ] 2>/dev/null; then
 		echo "$SELF: FAIL (could not read a positive GOO_OBJS count from the Makefile)"
 		exit 1
 	fi
+	if ! [ "$link_sources_count" -ge 0 ] 2>/dev/null; then
+		echo "$SELF: FAIL (could not read a COMPILER_SRCS count from the Makefile)"
+		exit 1
+	fi
+	expected_count="$((object_count + link_sources_count))"
 
 	base="$W/base.json"
 	if ! gen_out="$("$GEN" "$base" 2>&1)"; then
@@ -129,7 +152,7 @@ if [ "${1:-}" = "--self-test" ]; then
 	fi
 
 	# Control: the real, unmutated derivation must be green.
-	if check_out="$(check_json "$base" "$object_count")"; then
+	if check_out="$(check_json "$base" "$expected_count")"; then
 		echo "    ok: control (unmutated derivation) is GREEN"
 	else
 		echo "$SELF: FAIL (control already red -- the harness is broken, not the tree)"
@@ -147,7 +170,7 @@ data = json.load(open('$base'))
 data.pop()
 json.dump(data, open('$removed', 'w'))
 "
-	if check_out="$(check_json "$removed" "$object_count")"; then
+	if check_out="$(check_json "$removed" "$expected_count")"; then
 		echo "$SELF: FAIL (stayed GREEN after removing one entry)"
 		bad_self=1
 	else
@@ -166,7 +189,7 @@ assert len(data) >= 2, 'need at least two entries to duplicate one over another'
 data[0] = dict(data[1])
 json.dump(data, open('$dupe', 'w'))
 "
-	if check_out="$(check_json "$dupe" "$object_count")"; then
+	if check_out="$(check_json "$dupe" "$expected_count")"; then
 		echo "$SELF: FAIL (stayed GREEN after duplicating one entry over another -- count alone is not enough)"
 		bad_self=1
 	else
@@ -192,10 +215,16 @@ fi
 # The gate.
 # ---------------------------------------------------------------------------
 object_count="$(read_object_count)"
+link_sources_count="$(read_link_sources_count)"
 if ! [ "$object_count" -gt 0 ] 2>/dev/null; then
 	echo "$PROBE: FAIL (could not read a positive GOO_OBJS count from the Makefile)"
 	exit 1
 fi
+if ! [ "$link_sources_count" -ge 0 ] 2>/dev/null; then
+	echo "$PROBE: FAIL (could not read a COMPILER_SRCS count from the Makefile)"
+	exit 1
+fi
+expected_count="$((object_count + link_sources_count))"
 
 if ! gen_out="$("$GEN" "$OUT" 2>&1)"; then
 	echo "$PROBE: FAIL (tools/gen_compile_commands.sh failed)"
@@ -218,12 +247,12 @@ if ! diff -q "$OUT" "$scratch_out" >/dev/null 2>&1; then
 	exit 1
 fi
 
-if ! check_out="$(check_json "$OUT" "$object_count")"; then
+if ! check_out="$(check_json "$OUT" "$expected_count")"; then
 	echo "$PROBE: FAIL ($OUT)"
 	printf '%s\n' "$check_out" | sed 's/^/  /'
 	exit 1
 fi
 
 entry_count="$(python3 -c "import json; print(len(json.load(open('$OUT'))))")"
-echo "$PROBE: PASS ($OUT: $entry_count entries, GOO_OBJS: $object_count objects, self-consistent across two derivations)"
+echo "$PROBE: PASS ($OUT: $entry_count entries, GOO_OBJS: $object_count objects + COMPILER_SRCS: $link_sources_count link-line sources = $expected_count expected, self-consistent across two derivations)"
 exit 0
