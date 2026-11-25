@@ -38,7 +38,7 @@ static void expect_eq(const char* got, const char* want, const char* what) {
 }
 
 int main(void) {
-    goo_check_expect(12);
+    goo_check_expect(13);
 
     goo_check_row(1, "first_line_and_caret");
     diag_register_source("t.goo", SRC, strlen(SRC));
@@ -104,6 +104,23 @@ int main(void) {
                       "use try f()\nor f() catch e { ... }", "m"),
               "t.goo:4:10: error: m\n    4 |     x := f()\n      |          ^\n"
               "  help: use try f()\n        or f() catch e { ... }\n", "help");
+
+    goo_check_row(13, "source_call_text");
+    const char* csrc = "x := f(1, g(2))\ny := h(\")\", ')')\nz := k(1,\n2)\n"
+                       "w := qir.Alloc()\nv := 7\n";
+    diag_register_source("c.goo", csrc, strlen(csrc));
+    char cb[64];
+    goo_check(diag_source_call_text(at("c.goo", 1, 6), cb, sizeof cb) &&
+              strcmp(cb, "f(1, g(2))") == 0, "call with arguments");
+    goo_check(diag_source_call_text(at("c.goo", 2, 6), cb, sizeof cb) &&
+              strcmp(cb, "h(\")\", ')')") == 0, "string and rune hold ')'");
+    goo_check(!diag_source_call_text(at("c.goo", 3, 6), cb, sizeof cb),
+              "call that runs past a newline");
+    goo_check(diag_source_call_text(at("c.goo", 5, 6), cb, sizeof cb) &&
+              strcmp(cb, "qir.Alloc()") == 0, "qualified call");
+    goo_check(!diag_source_call_text(at("c.goo", 1, 6), cb, 5), "buffer too small");
+    goo_check(!diag_source_call_text(at("c.goo", 6, 6), cb, sizeof cb),
+              "not a call");
 
     diag_free_sources();
     return goo_check_done("diagnostic_test");

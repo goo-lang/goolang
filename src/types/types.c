@@ -1167,27 +1167,7 @@ bool type_help_format(char* buf, size_t cap, const char* format, ...) {
 
 bool type_call_help_text(const ASTNode* call, char* buf, size_t cap) {
     if (!call || call->type != AST_CALL_EXPR) { return false; }
-    const CallExprNode* c = (const CallExprNode*)call;
-    const ASTNode* fn = c->function;
-    if (!fn) { return false; }
-
-    const char* args = c->args ? "<same arguments>" : "";
-    const char* recv = "";
-    const char* dot = "";
-    const char* name = NULL;
-    if (fn->type == AST_IDENTIFIER) {
-        name = ((const IdentifierNode*)fn)->name;
-    } else if (fn->type == AST_SELECTOR_EXPR) {
-        const SelectorExprNode* sel = (const SelectorExprNode*)fn;
-        if (!sel->expr || sel->expr->type != AST_IDENTIFIER) { return false; }
-        recv = ((const IdentifierNode*)sel->expr)->name;
-        dot = ".";
-        name = sel->selector;
-    } else {
-        return false;
-    }
-    if (!name) { return false; }
-    return type_help_format(buf, cap, "%s%s%s(%s)", recv, dot, name, args);
+    return diag_source_call_text(call->pos, buf, cap);
 }
 
 void type_warning(TypeChecker* checker, Position pos, const char* format, ...) {

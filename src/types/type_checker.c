@@ -2588,6 +2588,15 @@ static void register_declared_names_after_failure(TypeChecker* checker,
     }
 }
 
+// True when the checker is inside a function or func literal body, where
+// `:=` is legal. Package scope has no function-boundary scope above it.
+static bool decl_is_in_function(const TypeChecker* checker) {
+    for (const Scope* sc = checker->current_scope; sc; sc = sc->parent) {
+        if (sc->is_function_boundary) { return true; }
+    }
+    return false;
+}
+
 int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_VAR_DECL) return 0;
 
@@ -2764,18 +2773,19 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     // would need its own unwrap that never got enforced.
     if (var_decl->name_count == 1 && var_decl->values &&
         final_type->kind == TYPE_ERROR_UNION) {
-        // The help binds the user's own name and call. `err` is new in this
-        // scope unless the user already declared it, and `:=` needs only ONE
-        // new name on the left, which the bound name provides.
-        const char* bound = var_decl->names[0];
+        // The help binds the user's own name and call text. It stays NULL when
+        // the call text cannot be copied, or at package level: no help beats
+        // a placeholder or code that does not compile. `:=` is illegal at
+        // package level, and the parser rejects `var x, err = f()` there.
+        const char* shown = NULL;
         char call_text[160];
-        if (!type_call_help_text(var_decl->values, call_text, sizeof call_text)) {
-            call_text[0] = '\0';
-        }
         char help[256];
-        const char* shown = type_help_format(help, sizeof help, "%s, err := %s",
-                                             bound, call_text[0] ? call_text : "<the call>")
-                                ? help : NULL;
+        if (decl_is_in_function(checker) &&
+            type_call_help_text(var_decl->values, call_text, sizeof call_text) &&
+            type_help_format(help, sizeof help, "%s, err := %s",
+                             var_decl->names[0], call_text)) {
+            shown = help;
+        }
         type_error_help(checker, var_decl->base.pos, shown,
                   "error union must be handled: use try, catch, or v, err := destructuring");
         // Poison rather than bind the raw union: a value the checker never

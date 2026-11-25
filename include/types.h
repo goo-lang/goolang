@@ -1348,10 +1348,8 @@ bool type_help_format(char* buf, size_t cap, const char* format, ...)
     __attribute__((format(printf, 3, 4)));
 void type_warning(TypeChecker* checker, Position pos, const char* format, ...);
 
-// Writes the user's own call as help text: `f()` for a call without
-// arguments, `f(<same arguments>)` otherwise. The callee must be a plain
-// name or `name.Sel`. Returns false, and writes nothing, for any other
-// callee, so the caller falls back to a generic form.
+// Copies the user's own call, as written in the source, into buf for a help
+// line. Returns false when it cannot, and the caller must then print no help.
 bool type_call_help_text(const ASTNode* call, char* buf, size_t cap);
 
 // Builtin types access

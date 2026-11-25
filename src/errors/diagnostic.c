@@ -1,4 +1,5 @@
 #include "diagnostic.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -103,6 +104,70 @@ static bool line_start(const SourceEntry* e, int line, size_t* start) {
     }
     *start = pos;
     return true;
+}
+
+static bool is_name_byte(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '.' ||
+           ((unsigned char)c >= 0x80U);
+}
+
+// Index of the byte after the closing quote of the literal that opens at
+// `i`, or SIZE_MAX when it runs to a newline or the end of the text.
+static size_t skip_literal(const SourceEntry* e, size_t i) {
+    char quote = e->text[i];
+    i++;
+    while (i < e->len && e->text[i] != '\n') {
+        if (e->text[i] == '\\' && quote != '`') {
+            i += 2U;
+        } else if (e->text[i] == quote) {
+            return i + 1U;
+        } else {
+            i++;
+        }
+    }
+    return SIZE_MAX;
+}
+
+bool diag_source_call_text(Position pos, char* buf, size_t cap) {
+    if (pos.filename == NULL || pos.line < 1 || pos.column < 1 || cap == 0U) {
+        return false;
+    }
+    const SourceEntry* e = find_source(pos.filename);
+    size_t i = 0U;
+    if (e == NULL || !line_start(e, pos.line, &i)) {
+        return false;
+    }
+    size_t start = i + (size_t)(pos.column - 1);
+    i = start;
+    while (i < e->len && is_name_byte(e->text[i])) {
+        i++;
+    }
+    if (i == start || i >= e->len || e->text[i] != '(') {
+        return false;
+    }
+    int depth = 0;
+    for (; i < e->len && e->text[i] != '\n'; i++) {
+        char c = e->text[i];
+        if (c == '"' || c == '\'' || c == '`') {
+            i = skip_literal(e, i);
+            if (i == SIZE_MAX) {
+                return false;
+            }
+            i--;
+        } else if (c == '(') {
+            depth++;
+        } else if (c == ')' && --depth == 0) {
+            size_t n = i + 1U - start;
+            if (n >= cap) {
+                return false;
+            }
+            memcpy(buf, e->text + start, n);
+            buf[n] = '\0';
+            return true;
+        }
+    }
+    return false;
 }
 
 static void print_snippet(FILE* out, const SourceEntry* e, Position pos) {

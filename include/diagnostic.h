@@ -11,6 +11,7 @@
 
 #include "token.h"
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 
@@ -30,6 +31,13 @@ void diag_vemit(DiagSeverity sev, Position pos, const char* code,
 void diag_register_source(const char* filename, const char* text, size_t len);
 
 void diag_free_sources(void);
+
+// Copies the call expression that starts at `pos` (line and column, the same
+// fields the snippet uses) from the registered source into buf, up to its
+// matching ')'. Returns false, and the caller must print no help, when the
+// file is not registered, the text at `pos` is not `name(` or `a.b(`, a
+// newline or the end of the text comes before the ')', or buf is too small.
+bool diag_source_call_text(Position pos, char* buf, size_t cap);
 
 // Test seam. NULL restores stderr.
 void diag_set_stream(FILE* out);

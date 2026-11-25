@@ -1,0 +1,1 @@
+package level: := is illegal and the parser rejects 'var x, err = f()', so no help

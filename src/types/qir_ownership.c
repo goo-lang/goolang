@@ -397,14 +397,17 @@ static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_i
     if (!callee_returns_qubit && !result_is_bound) {
         // OK: void or non-qubit return.
     } else if (callee_returns_qubit && !result_is_bound) {
+        // NULL help when the call text cannot be copied: no help beats a
+        // placeholder.
+        const char* shown = NULL;
         char call_text[160];
-        if (!type_call_help_text(expr, call_text, sizeof call_text)) {
-            call_text[0] = '\0';
-        }
         char help[256];
-        const char* shown = type_help_format(help, sizeof help,
-            "q := %s\nthen consume q, for example: qir.FreeZero(q)",
-            call_text[0] ? call_text : "<the call>") ? help : NULL;
+        if (type_call_help_text(expr, call_text, sizeof call_text) &&
+            type_help_format(help, sizeof help,
+                "q := %s\nthen consume q, for example: qir.FreeZero(q)",
+                call_text)) {
+            shown = help;
+        }
         type_error_help(ctx->checker, expr->pos, shown,
             "call returns a linear 'qir.Qubit' which cannot be discarded");
     }

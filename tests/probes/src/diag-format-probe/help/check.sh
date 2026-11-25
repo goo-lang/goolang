@@ -1,7 +1,9 @@
 #!/bin/sh
 # Help-line check (Task 5; Task 6 absorbs it into the diag-format gate).
 # For each NAME.goo: `goo build` must fail with a "  help: " line, and
-# NAME.fixed.goo (the help applied) must build with exit 0.
+# NAME.fixed.goo (the help applied) must build with exit 0. A NAME.nohelp
+# marker file inverts this: NAME.goo must fail with NO help line, and needs
+# no fixed file (no correct paste-ready fix exists there).
 # Usage: check.sh [path-to-goo]   (default: bin/goo from the repo root)
 here=$(cd "$(dirname "$0")" && pwd)
 goo=${1:-$here/../../../../../bin/goo}
@@ -14,6 +16,11 @@ for f in "$here"/*.goo; do
 	n=$((n + 1))
 	if "$goo" build -o "$tmp/bad" "$f" 2>"$tmp/err"; then
 		echo "FAIL $name: the error fixture compiled"; fail=1
+	elif [ -f "$here/$name.nohelp" ]; then
+		if grep -q '^  help: ' "$tmp/err"; then
+			echo "FAIL $name: help line where none is allowed"; fail=1
+		fi
+		continue
 	elif ! grep -q '^  help: ' "$tmp/err"; then
 		echo "FAIL $name: no help line in stderr"; fail=1
 	fi
