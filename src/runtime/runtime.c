@@ -1077,6 +1077,18 @@ void goo_panic_iface_notimpl(void* vtable, const char* target_name) {
     goo_panic(buf);
 }
 
+// make([]T, len, cap) range-check failures; codegen branches here (see
+// call_codegen.c). Go's makeslice wording.
+void goo_panic_makeslice_len(void) {
+    goo_panic("makeslice: len out of range");
+    __builtin_unreachable();
+}
+
+void goo_panic_makeslice_cap(void) {
+    goo_panic("makeslice: cap out of range");
+    __builtin_unreachable();
+}
+
 // Compare two int64 key slots per the map's key_kind. STRING: the slots hold
 // char* — strcmp. INLINE: the slots hold the key's bits — direct ==. STRUCT:
 // dispatch to the map's per-map comparator. IFACE: dispatch to the map's
@@ -1358,6 +1370,12 @@ void goo_map_clear_sv(GooMapSV* m) {
 // wrapped multiply would under-allocate and hand back a buffer the caller then
 // writes past.
 void* goo_slice_alloc(int64_t count, int64_t elem_size) {
+    // Defence in depth for callers that bypass codegen's make() checks: a
+    // negative count would otherwise skip the multiply and return a 1-byte
+    // block that the caller treats as count elements.
+    if (count < 0) {
+        goo_panic_makeslice_len();
+    }
     size_t bytes = 1;
     if (count > 0 && elem_size > 0) {
         if ((uint64_t)count > (uint64_t)SIZE_MAX / (uint64_t)elem_size) {

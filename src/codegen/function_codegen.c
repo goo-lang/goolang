@@ -2268,7 +2268,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, key_val, key_type);
 
                 // Call goo_map_get_sv_ok(map, key, &out, &found).
-                LLVMValueRef call_args[4] = { map_val->llvm_value, kp, out_slot, found_slot };
+                LLVMValueRef call_args[4] = { codegen_map_handle(codegen, map_val), kp, out_slot, found_slot };
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(ok_fn),
                                ok_fn, call_args, 4, "");
 
