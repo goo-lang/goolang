@@ -194,6 +194,8 @@ script proof-cache-shell-probe
 script pthread-return-probe
 script release-package-probe
 script repro-build-probe
+script runtime-seam-probe
+script sim-false-deadlock-probe
 script spin-bootstrap-probe
 script spin-deadlock-model-probe
 script string-literal-header-probe
