@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate catalogue/diagnostics.tsv from the checker's type_error call
-sites (src/types/*.c). type_error_union is a TYPE CONSTRUCTOR, not an
-emitter, and is deliberately not matched. The format string is the third
+sites (src/types/*.c; type_error and type_error_help). type_error_union is
+a TYPE CONSTRUCTOR, not an emitter, and is deliberately not matched. The format string is the third
 argument (types.h:1338: type_error(checker, pos, format, ...)). Adjacent
 string literals are joined the way the C compiler joins them.
 
@@ -11,7 +11,7 @@ The id is stable across edits: sha1 of (file basename, format) truncated to
 Sorted by file then format so the file is diff-friendly."""
 import glob, hashlib, re, sys
 
-CALL = re.compile(r'\btype_error\s*\(', re.M)
+CALL = re.compile(r'\btype_error(_help)?\s*\(', re.M)
 STR = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 def formats_in(src):
@@ -23,9 +23,11 @@ def formats_in(src):
     out = []
     for m in CALL.finditer(src):
         i = m.end()
-        # skip two arguments (checker, pos) by counting top-level commas
+        # skip the leading arguments by counting top-level commas: (checker,
+        # pos) for type_error, plus help for type_error_help
+        skip = 3 if m.group(1) else 2
         depth, args = 0, 0
-        while i < len(src) and args < 2:
+        while i < len(src) and args < skip:
             c = src[i]
             if c in '([': depth += 1
             elif c in ')]': depth -= 1

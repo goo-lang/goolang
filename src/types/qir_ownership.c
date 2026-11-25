@@ -336,6 +336,19 @@ static int qir_consume_qubit_rhs(QirWalkContext* ctx, ASTNode* rhs,
     return 1;
 }
 
+// Both overwrite sites (`q = ...` and the multi-assign form) report the same
+// error. The help names the user's own qubit, which is in scope at the site.
+static void qir_error_overwrite_live(QirWalkContext* ctx, Position pos,
+                                     const QirBinding* b) {
+    char help[256];
+    const char* shown = type_help_format(help, sizeof help,
+        "qir.FreeZero(%s)\nplace this before the assignment to %s",
+        b->name, b->name) ? help : NULL;
+    type_error_help(ctx->checker, pos, shown,
+        "cannot overwrite live linear qubit '%s' (declared at line %d) without consuming it first",
+        b->name, b->decl_pos.line);
+}
+
 // Check a call expression for QIR obligations (consumer calls, unitary borrow
 // calls, multi-qubit distinctness, and discarded Qubit results).
 static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_is_bound) {
@@ -384,7 +397,15 @@ static void qir_check_call_expr(QirWalkContext* ctx, ASTNode* expr, int result_i
     if (!callee_returns_qubit && !result_is_bound) {
         // OK: void or non-qubit return.
     } else if (callee_returns_qubit && !result_is_bound) {
-        type_error(ctx->checker, expr->pos,
+        char call_text[160];
+        if (!type_call_help_text(expr, call_text, sizeof call_text)) {
+            call_text[0] = '\0';
+        }
+        char help[256];
+        const char* shown = type_help_format(help, sizeof help,
+            "q := %s\nthen consume q, for example: qir.FreeZero(q)",
+            call_text[0] ? call_text : "<the call>") ? help : NULL;
+        type_error_help(ctx->checker, expr->pos, shown,
             "call returns a linear 'qir.Qubit' which cannot be discarded");
     }
 
@@ -777,9 +798,7 @@ static void qir_handle_expr_stmt(QirWalkContext* ctx, ASTNode* expr) {
                     return;
                 }
                 if (lhs_b->state == QIR_STATE_LIVE) {
-                    type_error(ctx->checker, expr->pos,
-                        "cannot overwrite live linear qubit '%s' (declared at line %d) without consuming it first",
-                        lhs_b->name, lhs_b->decl_pos.line);
+qir_error_overwrite_live(ctx, expr->pos, lhs_b);
                     int dummy_has = 0;
                     uint64_t dummy_id = 0;
                     qir_consume_qubit_rhs(ctx, bin->right, &dummy_has, &dummy_id);
@@ -904,9 +923,7 @@ static void qir_walk_stmt(QirWalkContext* ctx, ASTNode* stmt) {
                         } else {
                             QirBinding* tb = qir_find_binding(&ctx->table, tname);
                             if (tb && tb->state == QIR_STATE_LIVE) {
-                                type_error(ctx->checker, stmt->pos,
-                                    "cannot overwrite live linear qubit '%s' (declared at line %d) without consuming it first",
-                                    tb->name, tb->decl_pos.line);
+qir_error_overwrite_live(ctx, stmt->pos, tb);
                             } else if (tb) {
                                 tb->state = QIR_STATE_LIVE;
                                 tb->decl_pos = stmt->pos;

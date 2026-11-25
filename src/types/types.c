@@ -1145,6 +1145,51 @@ void type_error(TypeChecker* checker, Position pos, const char* format, ...) {
     checker->error_count++;
 }
 
+void type_error_help(TypeChecker* checker, Position pos, const char* help, const char* format, ...) {
+    if (!checker) { return; }
+
+    va_list args;
+    va_start(args, format);
+
+    diag_vemit(DIAG_ERROR, pos, NULL, help, format, args);
+
+    va_end(args);
+    checker->error_count++;
+}
+
+bool type_help_format(char* buf, size_t cap, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(buf, cap, format, args);
+    va_end(args);
+    return n > 0 && (size_t)n < cap;
+}
+
+bool type_call_help_text(const ASTNode* call, char* buf, size_t cap) {
+    if (!call || call->type != AST_CALL_EXPR) { return false; }
+    const CallExprNode* c = (const CallExprNode*)call;
+    const ASTNode* fn = c->function;
+    if (!fn) { return false; }
+
+    const char* args = c->args ? "<same arguments>" : "";
+    const char* recv = "";
+    const char* dot = "";
+    const char* name = NULL;
+    if (fn->type == AST_IDENTIFIER) {
+        name = ((const IdentifierNode*)fn)->name;
+    } else if (fn->type == AST_SELECTOR_EXPR) {
+        const SelectorExprNode* sel = (const SelectorExprNode*)fn;
+        if (!sel->expr || sel->expr->type != AST_IDENTIFIER) { return false; }
+        recv = ((const IdentifierNode*)sel->expr)->name;
+        dot = ".";
+        name = sel->selector;
+    } else {
+        return false;
+    }
+    if (!name) { return false; }
+    return type_help_format(buf, cap, "%s%s%s(%s)", recv, dot, name, args);
+}
+
 void type_warning(TypeChecker* checker, Position pos, const char* format, ...) {
     if (!checker) return;
     

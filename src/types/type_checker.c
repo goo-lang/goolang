@@ -2764,7 +2764,19 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     // would need its own unwrap that never got enforced.
     if (var_decl->name_count == 1 && var_decl->values &&
         final_type->kind == TYPE_ERROR_UNION) {
-        type_error(checker, var_decl->base.pos,
+        // The help binds the user's own name and call. `err` is new in this
+        // scope unless the user already declared it, and `:=` needs only ONE
+        // new name on the left, which the bound name provides.
+        const char* bound = var_decl->names[0];
+        char call_text[160];
+        if (!type_call_help_text(var_decl->values, call_text, sizeof call_text)) {
+            call_text[0] = '\0';
+        }
+        char help[256];
+        const char* shown = type_help_format(help, sizeof help, "%s, err := %s",
+                                             bound, call_text[0] ? call_text : "<the call>")
+                                ? help : NULL;
+        type_error_help(checker, var_decl->base.pos, shown,
                   "error union must be handled: use try, catch, or v, err := destructuring");
         // Poison rather than bind the raw union: a value the checker never
         // required anyone to unwrap must not silently flow into later
