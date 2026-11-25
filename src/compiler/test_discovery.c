@@ -7,6 +7,7 @@
 
 #include "test_discovery.h"
 #include "import_resolver.h"   // normalize_import_path
+#include "diagnostic.h"
 
 // Go's rule exactly (cmd/go/internal/load/test.go, isTest): the name begins
 // with "Test" and the character after "Test" is not a lowercase letter. So
@@ -118,16 +119,19 @@ int test_discovery_collect(ASTNode** programs, size_t program_count,
                 // Position.filename is stamped by parse_input, so it normally
                 // carries the name already; file_names is the fallback for a
                 // node minted without one.
-                fprintf(stderr,
-                        "Test error at %s:%d:%d: %s must have signature func(t *testing.T)\n",
-                        d->pos.filename ? d->pos.filename : fallback_name,
-                        d->pos.line, d->pos.column, f->name);
+                Position at = d->pos;
+                if (!at.filename) {
+                    at.filename = fallback_name;
+                }
+                diag_emit(DIAG_ERROR, at, NULL, NULL,
+                          "%s must have signature func(t *testing.T)", f->name);
                 test_list_free(out);
                 return 0;
             }
 
             if (!test_list_append(out, f->name)) {
-                fprintf(stderr, "Test error: out of memory collecting test names\n");
+                diag_emit(DIAG_ERROR, (Position){0}, NULL, NULL,
+                          "out of memory collecting test names");
                 test_list_free(out);
                 return 0;
             }

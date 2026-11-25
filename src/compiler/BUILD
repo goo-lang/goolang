@@ -8,8 +8,10 @@ goo_cc_library(
     srcs = ["test_discovery.c"],
     visibility = ["//visibility:private"],
     deps = [
+        "//include:diagnostic_h",
         "//include:import_resolver_h",
         "//include:test_discovery_h",
+        "//src/errors:diagnostic",
     ],
 )
 

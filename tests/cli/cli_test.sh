@@ -276,6 +276,8 @@ check type-error              1     ""            ": error: Cannot assign string
 check snippet-on-type-error   1     ""            " | 	var x int = \"not an int\"" "$COMPILER" "$WORK/type_err.goo" -o "$WORK/te_bin"
 check missing-input           1     ""            "Cannot open file"   "$COMPILER" "$WORK/does_not_exist.goo" -o "$WORK/mi_bin"
 check no-input-file           1     ""            "No input file"      "$COMPILER"
+check no-position-error-form  0     ""            empty                sh -c "'$COMPILER' '$WORK/does_not_exist.goo' -o '$WORK/mi_bin' 2>&1 >/dev/null | head -n 1 | grep -q '^goo: error: '"
+check no-position-no-input-form 0   ""            empty                sh -c "'$COMPILER' 2>&1 >/dev/null | head -n 1 | grep -q '^goo: error: '"
 check unknown-flag            1     ""            nonempty             "$COMPILER" --totally-bogus-flag "$WORK/ok.goo"
 check link-failure            1     ""            "-lgootest_bogus_xyz" "$COMPILER" "$WORK/ok.goo" -l gootest_bogus_xyz -o "$WORK/lf_bin"
 check build-extra-arg         1     ""            "unexpected argument" "$COMPILER" build "$WORK/ok.goo" stray_arg
