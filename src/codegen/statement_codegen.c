@@ -1434,7 +1434,7 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     {
         LLVMTypeRef end_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
         LLVMValueRef end_fn = LLVMGetNamedFunction(codegen->module, "goo_map_iter_end_sv");
-        if (!end_fn) end_fn = LLVMAddFunction(codegen->module, "goo_map_iter_end_sv", end_ty);
+        if (!end_fn) { end_fn = LLVMAddFunction(codegen->module, "goo_map_iter_end_sv", end_ty); }
         LLVMBuildCall2(codegen->builder, end_ty, end_fn, &map_ptr, 1, "");
         LLVMBuildBr(codegen->builder, rexit);
     }
@@ -3347,11 +3347,12 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
 // statement walk of type_check_collect_goto_labels: it follows statement
 // children only, so a func literal body, which owns its labels, is not entered.
 static int stmt_declares_label(ASTNode* stmt, const char* name) {
-    if (!stmt) return 0;
+    if (!stmt) { return 0; }
     switch (stmt->type) {
         case AST_BLOCK_STMT:
-            for (ASTNode* s = ((BlockStmtNode*)stmt)->statements; s; s = s->next)
-                if (stmt_declares_label(s, name)) return 1;
+            for (ASTNode* s = ((BlockStmtNode*)stmt)->statements; s; s = s->next) {
+                if (stmt_declares_label(s, name)) { return 1; }
+            }
             return 0;
         case AST_IF_STMT: {
             IfStmtNode* n = (IfStmtNode*)stmt;
@@ -3364,19 +3365,25 @@ static int stmt_declares_label(ASTNode* stmt, const char* name) {
         case AST_FOR_STMT:
             return stmt_declares_label(((ForStmtNode*)stmt)->body, name);
         case AST_SWITCH_STMT:
-            for (ASTNode* c = ((SwitchStmtNode*)stmt)->cases; c; c = c->next)
-                for (ASTNode* s = ((CaseClauseNode*)c)->body; s; s = s->next)
-                    if (stmt_declares_label(s, name)) return 1;
+            for (ASTNode* c = ((SwitchStmtNode*)stmt)->cases; c; c = c->next) {
+                for (ASTNode* s = ((CaseClauseNode*)c)->body; s; s = s->next) {
+                    if (stmt_declares_label(s, name)) { return 1; }
+                }
+            }
             return 0;
         case AST_TYPE_SWITCH:
-            for (ASTNode* c = ((TypeSwitchNode*)stmt)->cases; c; c = c->next)
-                for (ASTNode* s = ((TypeCaseNode*)c)->body; s; s = s->next)
-                    if (stmt_declares_label(s, name)) return 1;
+            for (ASTNode* c = ((TypeSwitchNode*)stmt)->cases; c; c = c->next) {
+                for (ASTNode* s = ((TypeCaseNode*)c)->body; s; s = s->next) {
+                    if (stmt_declares_label(s, name)) { return 1; }
+                }
+            }
             return 0;
         case AST_SELECT_STMT:
-            for (ASTNode* c = ((SelectStmtNode*)stmt)->cases; c; c = c->next)
-                for (ASTNode* s = ((SelectCaseNode*)c)->body; s; s = s->next)
-                    if (stmt_declares_label(s, name)) return 1;
+            for (ASTNode* c = ((SelectStmtNode*)stmt)->cases; c; c = c->next) {
+                for (ASTNode* s = ((SelectCaseNode*)c)->body; s; s = s->next) {
+                    if (stmt_declares_label(s, name)) { return 1; }
+                }
+            }
             return 0;
         case AST_UNSAFE_STMT:
             return stmt_declares_label(((UnsafeStmtNode*)stmt)->body, name);
@@ -3386,7 +3393,7 @@ static int stmt_declares_label(ASTNode* stmt, const char* name) {
             return stmt_declares_label(((ComptimeBlockNode*)stmt)->body, name);
         case AST_LABEL_STMT: {
             LabelStmtNode* l = (LabelStmtNode*)stmt;
-            if (l->name && strcmp(l->name, name) == 0) return 1;
+            if (l->name && strcmp(l->name, name) == 0) { return 1; }
             return stmt_declares_label(l->stmt, name);
         }
         default:
@@ -3400,17 +3407,18 @@ static int stmt_declares_label(ASTNode* stmt, const char* name) {
 // exit that ends an iterator the loop still uses would free the entry its
 // cursor holds, which is why `continue` and a goto inside the loop pass over it.
 void codegen_emit_map_iter_ends(CodeGenerator* codegen, int from_frame, const char* goto_label) {
-    if (from_frame < 0) from_frame = 0;
+    if (from_frame < 0) { from_frame = 0; }
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     for (int i = codegen->cfctx.loop_depth - 1; i >= from_frame; i--) {
         LLVMValueRef map_ptr = codegen->cfctx.loop_map_ptr[i];
-        if (!map_ptr) continue;
-        if (goto_label && stmt_declares_label((ASTNode*)codegen->cfctx.loop_map_body[i], goto_label))
+        if (!map_ptr) { continue; }
+        if (goto_label && stmt_declares_label((ASTNode*)codegen->cfctx.loop_map_body[i], goto_label)) {
             continue;
+        }
         LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
         LLVMValueRef end_fn = LLVMGetNamedFunction(codegen->module, "goo_map_iter_end_sv");
-        if (!end_fn) end_fn = LLVMAddFunction(codegen->module, "goo_map_iter_end_sv", fn_type);
+        if (!end_fn) { end_fn = LLVMAddFunction(codegen->module, "goo_map_iter_end_sv", fn_type); }
         LLVMBuildCall2(codegen->builder, fn_type, end_fn, &map_ptr, 1, "");
     }
 }

@@ -24,7 +24,7 @@ typedef struct {
 // shadows the builtin.
 static bool funcs_have_name(const FreshFuncs* funcs, const char* name) {
     for (size_t i = 0; i < funcs->count; i++) {
-        if (strcmp(funcs->items[i].name, name) == 0) return true;
+        if (strcmp(funcs->items[i].name, name) == 0) { return true; }
     }
     return false;
 }
@@ -92,12 +92,12 @@ static void scan_push_name(const char*** arr, size_t* len, size_t* cap, const ch
 }
 
 static void scan_declare(FreshScan* s, const char* name) {
-    if (!name || strcmp(name, "_") == 0) return;
+    if (!name || strcmp(name, "_") == 0) { return; }
     scan_push_name(&s->scope, &s->scope_len, &s->scope_cap, name);
 }
 
 static void scan_bind(FreshScan* s, const char* name, ASTNode* value) {
-    if (!name || strcmp(name, "_") == 0) return;
+    if (!name || strcmp(name, "_") == 0) { return; }
     if (s->binding_count >= s->binding_cap) {
         s->binding_cap = s->binding_cap ? s->binding_cap * 2 : 8;
         s->bindings = xrealloc(s->bindings, s->binding_cap * sizeof(*s->bindings));
@@ -107,7 +107,7 @@ static void scan_bind(FreshScan* s, const char* name, ASTNode* value) {
 
 static bool scan_in_scope(const FreshScan* s, const char* name) {
     for (size_t i = s->scope_len; i > 0; i--) {
-        if (strcmp(s->scope[i - 1], name) == 0) return true;
+        if (strcmp(s->scope[i - 1], name) == 0) { return true; }
     }
     return false;
 }
@@ -137,7 +137,7 @@ static bool fresh_is_assign_token(TokenType op) {
 // nothing. An expression kind not listed here marks the function unreadable:
 // it might hide exactly such a pointer.
 static void scan_expr(FreshScan* s, ASTNode* e) {
-    if (!e) return;
+    if (!e) { return; }
     switch (e->type) {
         case AST_IDENTIFIER:
         case AST_LITERAL:
@@ -175,7 +175,9 @@ static void scan_expr(FreshScan* s, ASTNode* e) {
         case AST_POSTFIX_EXPR: {
             // `x++` rebinds x to a value no AST node describes.
             ASTNode* op = ((PostfixExprNode*)e)->operand;
-            if (op && op->type == AST_IDENTIFIER) scan_bind(s, ((IdentifierNode*)op)->name, NULL);
+            if (op && op->type == AST_IDENTIFIER) {
+                scan_bind(s, ((IdentifierNode*)op)->name, NULL);
+            }
             scan_expr(s, op);
             return;
         }
@@ -198,7 +200,7 @@ static void scan_expr(FreshScan* s, ASTNode* e) {
         case AST_CALL_EXPR: {
             CallExprNode* call = (CallExprNode*)e;
             scan_expr(s, call->function);
-            for (ASTNode* a = call->args; a; a = a->next) scan_expr(s, a);
+            for (ASTNode* a = call->args; a; a = a->next) { scan_expr(s, a); }
             return;
         }
         case AST_FUNC_LIT: {
@@ -212,13 +214,15 @@ static void scan_expr(FreshScan* s, ASTNode* e) {
             return;
         }
         case AST_STRUCT_LITERAL:
-            for (ASTNode* v = ((StructLiteralNode*)e)->field_values; v; v = v->next) scan_expr(s, v);
+            for (ASTNode* v = ((StructLiteralNode*)e)->field_values; v; v = v->next) {
+                scan_expr(s, v);
+            }
             return;
         case AST_SLICE_EXPR:   // slice literal (SliceLitNode)
-            for (ASTNode* v = ((SliceLitNode*)e)->elements; v; v = v->next) scan_expr(s, v);
+            for (ASTNode* v = ((SliceLitNode*)e)->elements; v; v = v->next) { scan_expr(s, v); }
             return;
         case AST_ARRAY_LITERAL:
-            for (ASTNode* v = ((ArrayLitNode*)e)->elements; v; v = v->next) scan_expr(s, v);
+            for (ASTNode* v = ((ArrayLitNode*)e)->elements; v; v = v->next) { scan_expr(s, v); }
             return;
         case AST_KEYED_ELEMENT:
             scan_expr(s, ((KeyedElementNode*)e)->key);
@@ -226,8 +230,8 @@ static void scan_expr(FreshScan* s, ASTNode* e) {
             return;
         case AST_PAREN_EXPR: { // map literal (MapLitNode)
             MapLitNode* ml = (MapLitNode*)e;
-            for (ASTNode* k = ml->keys; k; k = k->next) scan_expr(s, k);
-            for (ASTNode* v = ml->values; v; v = v->next) scan_expr(s, v);
+            for (ASTNode* k = ml->keys; k; k = k->next) { scan_expr(s, k); }
+            for (ASTNode* v = ml->values; v; v = v->next) { scan_expr(s, v); }
             return;
         }
         case AST_SLICE_CONVERSION:
@@ -249,7 +253,7 @@ static void scan_expr(FreshScan* s, ASTNode* e) {
 // two sides are never one object. release_decision's seed_names makes the same
 // split.
 static ASTNode* multi_result_binding(ASTNode* values, size_t value_count) {
-    if (value_count != 1 || values->type != AST_CALL_EXPR) return NULL;
+    if (value_count != 1 || values->type != AST_CALL_EXPR) { return NULL; }
     ASTNode* fn = ((CallExprNode*)values)->function;
     return (fn && fn->type == AST_SELECTOR_EXPR) ? values : NULL;
 }
@@ -257,14 +261,14 @@ static ASTNode* multi_result_binding(ASTNode* values, size_t value_count) {
 static void scan_bind_names(FreshScan* s, char** names, size_t name_count, ASTNode* values,
                             bool declare) {
     size_t value_count = 0;
-    for (ASTNode* v = values; v; v = v->next) value_count++;
+    for (ASTNode* v = values; v; v = v->next) { value_count++; }
     ASTNode* v = values;
     for (size_t i = 0; i < name_count; i++) {
         ASTNode* bound = (value_count == name_count) ? v
                        : multi_result_binding(values, value_count);
-        if (declare) scan_declare(s, names[i]);
+        if (declare) { scan_declare(s, names[i]); }
         scan_bind(s, names[i], bound);
-        if (v) v = v->next;
+        if (v) { v = v->next; }
     }
 }
 
@@ -280,12 +284,12 @@ static void scan_scoped(FreshScan* s, ASTNode* stmt, bool has_results) {
 // An assignment expression, from a statement or from a select case's comm.
 // Returns true when `e` was one.
 static bool scan_assignment(FreshScan* s, ASTNode* e) {
-    if (!e || e->type != AST_BINARY_EXPR) return false;
+    if (!e || e->type != AST_BINARY_EXPR) { return false; }
     BinaryExprNode* b = (BinaryExprNode*)e;
-    if (!fresh_is_assign_token(b->operator)) return false;
+    if (!fresh_is_assign_token(b->operator)) { return false; }
     if (b->left && b->left->type == AST_IDENTIFIER) {
         const char* name = ((IdentifierNode*)b->left)->name;
-        if (b->operator == TOKEN_SHORT_ASSIGN) scan_declare(s, name);
+        if (b->operator == TOKEN_SHORT_ASSIGN) { scan_declare(s, name); }
         // A compound operator stores `lhs op rhs`, which has no AST node.
         bool plain = b->operator == TOKEN_ASSIGN || b->operator == TOKEN_SHORT_ASSIGN;
         scan_bind(s, name, plain ? b->right : NULL);
@@ -304,7 +308,7 @@ static void scan_stmts(FreshScan* s, ASTNode* stmt, bool has_results) {
 
             case AST_EXPR_STMT: {
                 ASTNode* e = ((ExprStmtNode*)stmt)->expr;
-                if (!scan_assignment(s, e)) scan_expr(s, e);
+                if (!scan_assignment(s, e)) { scan_expr(s, e); }
                 break;
             }
 
@@ -351,7 +355,7 @@ static void scan_stmts(FreshScan* s, ASTNode* stmt, bool has_results) {
             case AST_RETURN_STMT: {
                 ReturnStmtNode* n = (ReturnStmtNode*)stmt;
                 if (!n->values) {
-                    if (has_results) s->bare_return = true;
+                    if (has_results) { s->bare_return = true; }
                     break;
                 }
                 for (ASTNode* v = n->values; v; v = v->next) {
@@ -381,14 +385,14 @@ static void scan_stmts(FreshScan* s, ASTNode* stmt, bool has_results) {
 
             case AST_VAR_DECL: {
                 VarDeclNode* n = (VarDeclNode*)stmt;
-                for (ASTNode* v = n->values; v; v = v->next) scan_expr(s, v);
+                for (ASTNode* v = n->values; v; v = v->next) { scan_expr(s, v); }
                 scan_bind_names(s, n->names, n->name_count, n->values, true);
                 break;
             }
 
             case AST_CONST_DECL: {
                 ConstDeclNode* n = (ConstDeclNode*)stmt;
-                for (ASTNode* v = n->values; v; v = v->next) scan_expr(s, v);
+                for (ASTNode* v = n->values; v; v = v->next) { scan_expr(s, v); }
                 // A constant holds no allocation, so it proves nothing.
                 for (size_t i = 0; i < n->name_count; i++) {
                     scan_declare(s, n->names[i]);
@@ -406,12 +410,12 @@ static void scan_stmts(FreshScan* s, ASTNode* stmt, bool has_results) {
                 for (ASTNode* t = n->targets; t; t = t->next) {
                     if (t->type == AST_IDENTIFIER) {
                         const char* name = ((IdentifierNode*)t)->name;
-                        if (n->is_short_decl) scan_declare(s, name);
+                        if (n->is_short_decl) { scan_declare(s, name); }
                         // A mismatch is a multi-result call: see scan_bind_names.
                         scan_bind(s, name, (tcount == vcount) ? v
                                            : multi_result_binding(n->values, vcount));
                     }
-                    if (v) v = v->next;
+                    if (v) { v = v->next; }
                 }
                 break;
             }
@@ -422,7 +426,7 @@ static void scan_stmts(FreshScan* s, ASTNode* stmt, bool has_results) {
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_CASE_CLAUSE) { s->unreadable = true; continue; }
                     CaseClauseNode* cc = (CaseClauseNode*)c;
-                    for (ASTNode* e = cc->exprs; e; e = e->next) scan_expr(s, e);
+                    for (ASTNode* e = cc->exprs; e; e = e->next) { scan_expr(s, e); }
                     scan_scoped(s, cc->body, has_results);
                 }
                 break;
@@ -450,10 +454,10 @@ static void scan_stmts(FreshScan* s, ASTNode* stmt, bool has_results) {
                     if (c->type != AST_SELECT_CASE) { s->unreadable = true; continue; }
                     SelectCaseNode* sc = (SelectCaseNode*)c;
                     size_t mark = s->scope_len;
-                    if (!scan_assignment(s, sc->comm)) scan_expr(s, sc->comm);
+                    if (!scan_assignment(s, sc->comm)) { scan_expr(s, sc->comm); }
                     // A received value came from someone else.
                     if (sc->bind_name) {
-                        if (sc->is_declare == 1) scan_declare(s, sc->bind_name);
+                        if (sc->is_declare == 1) { scan_declare(s, sc->bind_name); }
                         scan_bind(s, sc->bind_name, NULL);
                     }
                     scan_stmts(s, sc->body, has_results);
@@ -514,7 +518,7 @@ typedef struct {
 
 static bool name_in(const char* const* arr, size_t n, const char* name) {
     for (size_t i = 0; i < n; i++) {
-        if (arr[i] && strcmp(arr[i], name) == 0) return true;
+        if (arr[i] && strcmp(arr[i], name) == 0) { return true; }
     }
     return false;
 }
@@ -525,22 +529,22 @@ static bool is_param_or_result(const FreshFunc* f, const char* name) {
     // Every parameter name, the receiver included: the parser splices it in as
     // the head of `params`.
     for (const ASTNode* p = f->decl->params; p; p = p->next) {
-        if (p->type != AST_VAR_DECL) continue;
+        if (p->type != AST_VAR_DECL) { continue; }
         const VarDeclNode* vd = (const VarDeclNode*)p;
-        if (name_in((const char* const*)vd->names, vd->name_count, name)) return true;
+        if (name_in((const char* const*)vd->names, vd->name_count, name)) { return true; }
     }
     // Named results. A synthetic `_N` is the parser's name for an UNNAMED
     // result and `_` is a discard; neither is a variable, so neither counts,
     // the same filter param_escape's collect_result_names applies.
     const ASTNode* rt = f->decl->return_type;
-    if (!rt || rt->type != AST_STRUCT_TYPE) return false;
+    if (!rt || rt->type != AST_STRUCT_TYPE) { return false; }
     for (const ASTNode* fld = ((const StructTypeNode*)rt)->fields; fld; fld = fld->next) {
-        if (fld->type != AST_VAR_DECL) continue;
+        if (fld->type != AST_VAR_DECL) { continue; }
         const VarDeclNode* vd = (const VarDeclNode*)fld;
         for (size_t i = 0; vd->names && i < vd->name_count; i++) {
             const char* nm = vd->names[i];
-            if (!nm || strcmp(nm, "_") == 0 || is_synthetic_result_name(nm)) continue;
-            if (strcmp(nm, name) == 0) return true;
+            if (!nm || strcmp(nm, "_") == 0 || is_synthetic_result_name(nm)) { continue; }
+            if (strcmp(nm, name) == 0) { return true; }
         }
     }
     return false;
@@ -549,9 +553,9 @@ static bool is_param_or_result(const FreshFunc* f, const char* name) {
 // Any name that is not a package-level one inside F: a callee spelled this way
 // is a closure or a method value, not the function the registry knows.
 static bool names_a_variable(const FreshClassify* c, const char* name) {
-    if (is_param_or_result(c->f, name)) return true;
+    if (is_param_or_result(c->f, name)) { return true; }
     for (size_t i = 0; i < c->scan->binding_count; i++) {
-        if (strcmp(c->scan->bindings[i].name, name) == 0) return true;
+        if (strcmp(c->scan->bindings[i].name, name) == 0) { return true; }
     }
     return false;
 }
@@ -576,22 +580,24 @@ static bool is_fresh_composite(const ASTNode* e) {
 // if a named Goo callee turns out to be.
 static void classify_value(FreshClassify* c, ASTNode* v) {
     if (!v) { c->facts->borrowed = true; return; }
-    if (is_fresh_composite(v)) return;
+    if (is_fresh_composite(v)) { return; }
     // A literal is not an allocation, but no release of it can free anything:
     // a string literal's header is GOO_RC_IMMORTAL, nil is NULL, and a scalar
     // has no release slot. release_decision's value_is_release_safe accepts it
     // for the same reason, and a `return ""` error path must not make every
     // other path of the function leak.
-    if (v->type == AST_LITERAL) return;
+    if (v->type == AST_LITERAL) { return; }
     if (v->type == AST_UNARY_EXPR) {
         UnaryExprNode* u = (UnaryExprNode*)v;
-        if (u->operator == TOKEN_BIT_AND && u->operand && is_fresh_composite(u->operand)) return;
+        if (u->operator == TOKEN_BIT_AND && u->operand && is_fresh_composite(u->operand)) {
+            return;
+        }
         c->facts->borrowed = true;
         return;
     }
     // goo_string_concat copies both operands into new memory. An integer `+`
     // lands here too, and codegen keeps no release slot for an integer.
-    if (v->type == AST_BINARY_EXPR && ((BinaryExprNode*)v)->operator == TOKEN_PLUS) return;
+    if (v->type == AST_BINARY_EXPR && ((BinaryExprNode*)v)->operator == TOKEN_PLUS) { return; }
     if (v->type != AST_CALL_EXPR) { c->facts->borrowed = true; return; }
 
     ASTNode* fn = ((CallExprNode*)v)->function;
@@ -599,7 +605,7 @@ static void classify_value(FreshClassify* c, ASTNode* v) {
         const char* name = ((IdentifierNode*)fn)->name;
         if (names_a_variable(c, name)) { c->facts->borrowed = true; return; }
         bool builtin_alloc = strcmp(name, "new") == 0 || strcmp(name, "make") == 0;
-        if (builtin_alloc && !funcs_have_name(c->funcs, name)) return;
+        if (builtin_alloc && !funcs_have_name(c->funcs, name)) { return; }
         facts_add_callee(c->facts, name);
         return;
     }
@@ -638,21 +644,21 @@ static void classify_local(FreshClassify* c, const FreshReturn* r) {
     bool any = false;
     for (size_t i = 0; i < c->scan->binding_count; i++) {
         const FreshBinding* b = &c->scan->bindings[i];
-        if (strcmp(b->name, name) != 0) continue;
+        if (strcmp(b->name, name) != 0) { continue; }
         any = true;
         // classify_value answers borrowed for NULL and for an identifier: the
         // other name may still hold the value, so it is an alias, not an owner.
         classify_value(c, b->value);
     }
-    if (!any) c->facts->borrowed = true;
+    if (!any) { c->facts->borrowed = true; }
 }
 
 // The number of result slots. Several results come as an AST_STRUCT_TYPE of
 // VarDecl fields, and so does one NAMED result. An anonymous struct result
 // type has the same shape and can count as several, which only refuses more.
 static size_t result_slot_count(const FuncDeclNode* decl) {
-    if (!decl->return_type) return 0;
-    if (decl->return_type->type != AST_STRUCT_TYPE) return 1;
+    if (!decl->return_type) { return 0; }
+    if (decl->return_type->type != AST_STRUCT_TYPE) { return 1; }
     size_t n = 0;
     for (ASTNode* fld = ((StructTypeNode*)decl->return_type)->fields; fld; fld = fld->next) {
         n += (fld->type == AST_VAR_DECL) ? ((VarDeclNode*)fld)->name_count : 1;
@@ -682,8 +688,8 @@ static void collect_fresh_facts(const FreshFuncs* funcs, const FreshFunc* f,
     FreshClassify c = { .f = f, .funcs = funcs, .locals = locals, .scan = &scan, .facts = facts };
     for (size_t i = 0; i < scan.return_count && !facts->borrowed; i++) {
         const FreshReturn* r = &scan.returns[i];
-        if (r->value->type == AST_IDENTIFIER) classify_local(&c, r);
-        else classify_value(&c, r->value);
+        if (r->value->type == AST_IDENTIFIER) { classify_local(&c, r);
+        } else { classify_value(&c, r->value); }
     }
     scan_free(&scan);
 }
@@ -697,14 +703,14 @@ static const LocalEscapeSummary** pair_local_summaries(const FreshFuncs* reg,
     const LocalEscapeSummary** out = xcalloc(reg->count, sizeof(*out));   // count > 0: collect_funcs refuses 0
     size_t li = 0;
     for (size_t fi = 0; le && fi < reg->count; fi++) {
-        if (!reg->items[fi].decl->body) continue;
-        if (li >= le->count) break;
+        if (!reg->items[fi].decl->body) { continue; }
+        if (li >= le->count) { break; }
         const LocalEscapeSummary* ls = &le->summaries[li++];
         // Once one pair disagrees, every later pair may be shifted, and a
         // shifted pair can still match by name when two methods share one.
         // Leave this entry and all later ones NULL: those functions prove
         // nothing about their locals.
-        if (!ls->function_name || strcmp(ls->function_name, reg->items[fi].name) != 0) break;
+        if (!ls->function_name || strcmp(ls->function_name, reg->items[fi].name) != 0) { break; }
         out[fi] = ls;
     }
     return out;
@@ -721,12 +727,12 @@ static void compute_over(const FreshFuncs* reg, ParamEscapeResult* result,
 
     // may_borrow only rises, so this stops after at most reg->count + 1 passes.
     bool* may_borrow = xcalloc(reg->count, sizeof(bool));
-    for (size_t fi = 0; fi < reg->count; fi++) may_borrow[fi] = facts[fi].borrowed;
+    for (size_t fi = 0; fi < reg->count; fi++) { may_borrow[fi] = facts[fi].borrowed; }
     bool changed = true;
     while (changed) {
         changed = false;
         for (size_t fi = 0; fi < reg->count; fi++) {
-            if (may_borrow[fi]) continue;
+            if (may_borrow[fi]) { continue; }
             for (size_t k = 0; k < facts[fi].callee_count; k++) {
                 const char* callee = facts[fi].callees[k];
                 // A bare call never calls a method, so only a function with no
@@ -735,10 +741,10 @@ static void compute_over(const FreshFuncs* reg, ParamEscapeResult* result,
                 // variable, or a name this registry never saw.
                 bool found = false, borrowed = false;
                 for (size_t gj = 0; gj < reg->count; gj++) {
-                    if (reg->items[gj].decl->receiver) continue;
-                    if (strcmp(reg->items[gj].name, callee) != 0) continue;
+                    if (reg->items[gj].decl->receiver) { continue; }
+                    if (strcmp(reg->items[gj].name, callee) != 0) { continue; }
                     found = true;
-                    if (may_borrow[gj]) borrowed = true;
+                    if (may_borrow[gj]) { borrowed = true; }
                 }
                 if (!found || borrowed) {
                     may_borrow[fi] = true;
@@ -754,7 +760,7 @@ static void compute_over(const FreshFuncs* reg, ParamEscapeResult* result,
     }
 
     free(may_borrow);
-    for (size_t fi = 0; fi < reg->count; fi++) free(facts[fi].callees);
+    for (size_t fi = 0; fi < reg->count; fi++) { free(facts[fi].callees); }
     free(facts);
     free(locals);
 }
@@ -765,15 +771,15 @@ static void compute_over(const FreshFuncs* reg, ParamEscapeResult* result,
 static bool collect_funcs(ASTNode* program, const ParamEscapeResult* pe, FreshFuncs* out) {
     out->items = NULL;
     out->count = 0;
-    if (!program || program->type != AST_PROGRAM || pe->count == 0) return false;
+    if (!program || program->type != AST_PROGRAM || pe->count == 0) { return false; }
     out->items = xcalloc(pe->count, sizeof(*out->items));
     for (ASTNode* d = ((ProgramNode*)program)->decls; d; d = d->next) {
-        if (d->type != AST_FUNC_DECL) continue;
+        if (d->type != AST_FUNC_DECL) { continue; }
         const FuncDeclNode* fd = (const FuncDeclNode*)d;
-        if (!fd->name) continue;
-        if (out->count >= pe->count) return false;
+        if (!fd->name) { continue; }
+        if (out->count >= pe->count) { return false; }
         const char* sname = pe->summaries[out->count].function_name;
-        if (!sname || strcmp(sname, fd->name) != 0) return false;
+        if (!sname || strcmp(sname, fd->name) != 0) { return false; }
         out->items[out->count++] = (FreshFunc){ .name = fd->name, .decl = fd };
     }
     return out->count == pe->count;
@@ -782,8 +788,8 @@ static bool collect_funcs(ASTNode* program, const ParamEscapeResult* pe, FreshFu
 void returns_fresh_compute(ASTNode* program, ParamEscapeResult* pe,
                            const LocalEscapeResult* le) {
     // Every exit below leaves returns_fresh false, which only leaks.
-    if (!pe || pe->fail_closed || !le) return;
+    if (!pe || pe->fail_closed || !le) { return; }
     FreshFuncs funcs;
-    if (collect_funcs(program, pe, &funcs)) compute_over(&funcs, pe, le);
+    if (collect_funcs(program, pe, &funcs)) { compute_over(&funcs, pe, le); }
     free(funcs.items);
 }

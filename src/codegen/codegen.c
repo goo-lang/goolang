@@ -390,7 +390,7 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     codegen->local_escape = local_escape_analyze(program, pe); // does NOT retain pe
     codegen->local_escape_program = program;
     // Kept, not freed: the pointer-receiver rule reads it during emission.
-    if (codegen->param_escape) param_escape_result_free(codegen->param_escape);
+    if (codegen->param_escape) { param_escape_result_free(codegen->param_escape); }
     codegen->param_escape = pe;
 
     // T4: the release plan, from the SAME `program`, for the same reason the two
@@ -904,7 +904,7 @@ LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr)
 // goo_string_new_with_length (length-exact, so embedded NULs survive, which
 // goo_string_new's strlen would cut).
 LLVMValueRef codegen_string_from_bytes(CodeGenerator* codegen, LLVMValueRef ptr, LLVMValueRef len) {
-    if (!codegen || !ptr || !len) return NULL;
+    if (!codegen || !ptr || !len) { return NULL; }
     LLVMContextRef ctx = codegen->context;
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_new_with_length");
     if (!fn) {
@@ -1378,7 +1378,7 @@ LLVMValueRef codegen_map_handle(CodeGenerator* codegen, ValueInfo* map_val) {
         return map_val ? map_val->llvm_value : NULL;
     }
     LLVMTypeRef mt = codegen_type_to_llvm(codegen, map_val->goo_type);
-    if (!mt) return map_val->llvm_value;
+    if (!mt) { return map_val->llvm_value; }
     return LLVMBuildLoad2(codegen->builder, mt, map_val->llvm_value, "map_load");
 }
 
@@ -1473,9 +1473,9 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         // in an entry-block alloca, so a map write in a loop does not grow the
         // stack; the runtime copies it on insert and never keeps this pointer.
         LLVMTypeRef str_ty = codegen_type_to_llvm(codegen, kt);
-        if (!str_ty) return NULL;
+        if (!str_ty) { return NULL; }
         LLVMValueRef hdr = codegen_create_entry_alloca(codegen, str_ty, "kstr_hdr");
-        if (!hdr) return NULL;
+        if (!hdr) { return NULL; }
         LLVMBuildStore(codegen->builder, raw, hdr);
         return LLVMBuildPtrToInt(codegen->builder, hdr, i64, "kstr_slot");
     }
@@ -1545,7 +1545,7 @@ LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, 
     if (!codegen || !slot) return NULL;
     if (key_type && key_type->kind == TYPE_STRING) {
         LLVMTypeRef str_ty = codegen_type_to_llvm(codegen, key_type);
-        if (!str_ty) return NULL;
+        if (!str_ty) { return NULL; }
         LLVMValueRef hp = LLVMBuildIntToPtr(codegen->builder, slot,
                                             LLVMPointerType(str_ty, 0), "kstr_hdr");
         LLVMValueRef stored = LLVMBuildLoad2(codegen->builder, str_ty, hp, "kstr_stored");

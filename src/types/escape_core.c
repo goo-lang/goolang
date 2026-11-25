@@ -1026,7 +1026,7 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
                 if (!n->values) {
                     for (size_t i = 0; i < ctx->result_count; i++) {
                         LocalVar* lv = escape_env_find(ctx->env, ctx->result_names[i]);
-                        if (!lv) continue;
+                        if (!lv) { continue; }
                         TaintSet rt = escape_taint_copy(&lv->taint);
                         // A failed copy leaves bits NULL with n non-zero, which
                         // would mark nothing. Fail closed: mark every slot.
@@ -1034,14 +1034,16 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
                             escape_mark_all(ctx, ESCAPE_REASON_RETURN);
                             if (ctx->hooks->on_return) {
                                 TaintSet all = escape_taint_new(ctx->slot_count);
-                                for (size_t k = 0; all.bits && k < all.n; k++) all.bits[k] = true;
+                                for (size_t k = 0; all.bits && k < all.n; k++) {
+                                    all.bits[k] = true;
+                                }
                                 ctx->hooks->on_return(ctx, &all);
                                 escape_taint_free(&all);
                             }
                             continue;
                         }
                         escape_mark(ctx, &rt, ESCAPE_REASON_RETURN);
-                        if (ctx->hooks->on_return) ctx->hooks->on_return(ctx, &rt);
+                        if (ctx->hooks->on_return) { ctx->hooks->on_return(ctx, &rt); }
                         escape_taint_free(&rt);
                     }
                 }

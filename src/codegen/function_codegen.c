@@ -78,7 +78,7 @@ static const char* escape_root_local(ASTNode* lv) {
 static void escape_add(const char* name, bool forced) {
     if (!name) return;
     for (size_t i = 0; i < g_escape.count; i++) {
-        if (strcmp(g_escape.names[i], name) != 0) continue;
+        if (strcmp(g_escape.names[i], name) != 0) { continue; }
         g_escape.forced[i] = g_escape.forced[i] || forced;  // dedup
         return;
     }
@@ -101,17 +101,17 @@ static bool escape_method_keeps_receiver(Type* recv, const char* sel) {
     const CodeGenerator* cg = g_escape.codegen;
     const ParamEscapeResult* pe = cg ? cg->param_escape : NULL;
     const ASTNode* prog = cg ? cg->local_escape_program : NULL;
-    if (!pe || !prog || prog->type != AST_PROGRAM) return true;
+    if (!pe || !prog || prog->type != AST_PROGRAM) { return true; }
     const char* pkg = ((const ProgramNode*)prog)->package_name;
     const Package* owner = type_receiver_owner_package(recv);
     // A NULL owner means the type is declared in main.
     const char* owner_pkg = owner ? owner->name : "main";
-    if (!pkg || !owner_pkg || strcmp(pkg, owner_pkg) != 0) return true;
+    if (!pkg || !owner_pkg || strcmp(pkg, owner_pkg) != 0) { return true; }
     bool found = false;
     for (size_t i = 0; i < pe->count; i++) {
         const ParamEscapeSummary* ps = &pe->summaries[i];
-        if (!ps->function_name || strcmp(ps->function_name, sel) != 0) continue;
-        if (ps->param_count == 0 || ps->escapes[0] || ps->return_escapes) return true;
+        if (!ps->function_name || strcmp(ps->function_name, sel) != 0) { continue; }
+        if (ps->param_count == 0 || ps->escapes[0] || ps->return_escapes) { return true; }
         found = true;
     }
     return !found;
@@ -129,10 +129,11 @@ static bool escape_method_keeps_receiver(Type* recv, const char* sel) {
 // method call.
 static void escape_note_receiver(SelectorExprNode* sel, bool called) {
     const char* root = escape_root_local(sel->expr);
-    if (!root || !g_escape.checker) return;
+    if (!root || !g_escape.checker) { return; }
     Type* recv = sel->expr->node_type;
-    if (recv && g_escape.codegen)
+    if (recv && g_escape.codegen) {
         recv = (Type*)codegen_resolve_type(g_escape.codegen, recv);
+    }
     if (!recv) {
         // A package-qualified call (`fmt.Println`) has no local root type.
         // Anything else without a type is unknown, so fail closed.
@@ -146,25 +147,25 @@ static void escape_note_receiver(SelectorExprNode* sel, bool called) {
         return;
     }
     const char* tn = type_receiver_name(recv);
-    if (!tn) return;  // no method set: a field read or a builtin type
+    if (!tn) { return; }  // no method set: a field read or a builtin type
     char* mangled = type_method_mangled_name(tn, sel->selector);
     Variable* mv = mangled
         ? type_checker_lookup_method(g_escape.checker, recv, sel->selector, mangled)
         : NULL;
     free(mangled);
     if (mv && mv->type && mv->type->kind == TYPE_FUNCTION) {
-        if (mv->type->data.function.param_count == 0) return;
+        if (mv->type->data.function.param_count == 0) { return; }
         Type* rp = mv->type->data.function.param_types[0];
-        if (!rp || rp->kind != TYPE_POINTER) return;  // a value receiver copies
+        if (!rp || rp->kind != TYPE_POINTER) { return; }  // a value receiver copies
         if (!called) { escape_add(root, false); return; }
-        if (escape_method_keeps_receiver(recv, sel->selector)) escape_add(root, true);
+        if (escape_method_keeps_receiver(recv, sel->selector)) { escape_add(root, true); }
         return;
     }
     // Not a direct method. A method promoted through an embedded field may
     // take the address of that field, and no summary describes it.
-    if (recv->kind != TYPE_STRUCT) return;
+    if (recv->kind != TYPE_STRUCT) { return; }
     EmbedResult er = embedding_resolve(g_escape.checker, recv, sel->selector);
-    if (er.kind == EMBED_METHOD && !er.via_interface) escape_add(root, called);
+    if (er.kind == EMBED_METHOD && !er.via_interface) { escape_add(root, called); }
 }
 
 // Recursively visit a node and its `next`-chained siblings, recording any `&`
@@ -376,9 +377,10 @@ static void escape_prepass_compute(CodeGenerator* codegen, TypeChecker* checker,
 }
 
 static bool escape_is_root(const char* name) {
-    if (g_escape.all_roots) return true;
-    for (size_t i = 0; i < g_escape.count; i++)
-        if (strcmp(g_escape.names[i], name) == 0) return true;
+    if (g_escape.all_roots) { return true; }
+    for (size_t i = 0; i < g_escape.count; i++) {
+        if (strcmp(g_escape.names[i], name) == 0) { return true; }
+    }
     return false;
 }
 
@@ -389,28 +391,31 @@ static bool escape_is_root(const char* name) {
 static bool escape_is_signature_name(const FuncDeclNode* fd, const char* name) {
     for (ASTNode* p = fd->params; p; p = p->next) {
         if (p->type == AST_IDENTIFIER) {
-            if (strcmp(((IdentifierNode*)p)->name, name) == 0) return true;
+            if (strcmp(((IdentifierNode*)p)->name, name) == 0) { return true; }
             continue;
         }
-        if (p->type != AST_VAR_DECL) continue;
+        if (p->type != AST_VAR_DECL) { continue; }
         VarDeclNode* vd = (VarDeclNode*)p;
-        for (size_t i = 0; i < vd->name_count; i++)
-            if (vd->names[i] && strcmp(vd->names[i], name) == 0) return true;
+        for (size_t i = 0; i < vd->name_count; i++) {
+            if (vd->names[i] && strcmp(vd->names[i], name) == 0) { return true; }
+        }
     }
-    if (!fd->return_type || fd->return_type->type != AST_STRUCT_TYPE) return false;
+    if (!fd->return_type || fd->return_type->type != AST_STRUCT_TYPE) { return false; }
     for (ASTNode* f = ((StructTypeNode*)fd->return_type)->fields; f; f = f->next) {
-        if (f->type != AST_VAR_DECL) continue;
+        if (f->type != AST_VAR_DECL) { continue; }
         VarDeclNode* vd = (VarDeclNode*)f;
-        for (size_t i = 0; i < vd->name_count; i++)
-            if (vd->names[i] && strcmp(vd->names[i], name) == 0) return true;
+        for (size_t i = 0; i < vd->name_count; i++) {
+            if (vd->names[i] && strcmp(vd->names[i], name) == 0) { return true; }
+        }
     }
     return false;
 }
 
 static bool program_declares(const ASTNode* program, const FuncDeclNode* fd) {
-    if (!program || program->type != AST_PROGRAM) return false;
-    for (const ASTNode* d = ((const ProgramNode*)program)->decls; d; d = d->next)
-        if (d == (const ASTNode*)fd) return true;
+    if (!program || program->type != AST_PROGRAM) { return false; }
+    for (const ASTNode* d = ((const ProgramNode*)program)->decls; d; d = d->next) {
+        if (d == (const ASTNode*)fd) { return true; }
+    }
     return false;
 }
 
@@ -420,21 +425,21 @@ static bool program_declares(const ASTNode* program, const FuncDeclNode* fd) {
 static bool escape_local_may_escape(const CodeGenerator* codegen, const FuncDeclNode* fd,
                                     const char* name) {
     const LocalEscapeResult* le = codegen->local_escape;
-    if (!le || !fd->name) return true;
+    if (!le || !fd->name) { return true; }
     // A monomorphised template from an imported package is emitted under this
     // program's analysis. A same-named function here must not lend it a verdict.
-    if (!program_declares(codegen->local_escape_program, fd)) return true;
+    if (!program_declares(codegen->local_escape_program, fd)) { return true; }
     bool found = false;
     for (size_t i = 0; i < le->count; i++) {
         const LocalEscapeSummary* s = &le->summaries[i];
-        if (!s->function_name || strcmp(s->function_name, fd->name) != 0) continue;
+        if (!s->function_name || strcmp(s->function_name, fd->name) != 0) { continue; }
         bool local_found = false;
         for (size_t j = 0; j < s->local_count; j++) {
-            if (!s->local_names[j] || strcmp(s->local_names[j], name) != 0) continue;
-            if (s->reasons[j] != ESCAPE_REASON_NONE) return true;
+            if (!s->local_names[j] || strcmp(s->local_names[j], name) != 0) { continue; }
+            if (s->reasons[j] != ESCAPE_REASON_NONE) { return true; }
             local_found = true;
         }
-        if (!local_found) return true;
+        if (!local_found) { return true; }
         found = true;
     }
     return !found;
@@ -442,16 +447,17 @@ static bool escape_local_may_escape(const CodeGenerator* codegen, const FuncDecl
 
 // Should the local `name` of the function now being emitted live on the heap?
 static bool escape_is_forced(const char* name) {
-    for (size_t i = 0; i < g_escape.count; i++)
-        if (g_escape.forced[i] && strcmp(g_escape.names[i], name) == 0) return true;
+    for (size_t i = 0; i < g_escape.count; i++) {
+        if (g_escape.forced[i] && strcmp(g_escape.names[i], name) == 0) { return true; }
+    }
     return false;
 }
 
 static bool escape_is_promoted(const CodeGenerator* codegen, const char* name) {
-    if (!name || !escape_is_root(name)) return false;
-    if (g_escape.has_go || escape_is_forced(name)) return true;
+    if (!name || !escape_is_root(name)) { return false; }
+    if (g_escape.has_go || escape_is_forced(name)) { return true; }
     const FuncDeclNode* fd = g_escape.decl;
-    if (!fd || escape_is_signature_name(fd, name)) return true;
+    if (!fd || escape_is_signature_name(fd, name)) { return true; }
     return escape_local_may_escape(codegen, fd, name);
 }
 
@@ -700,8 +706,9 @@ static void codegen_setup_defer_stack_mode(CodeGenerator* codegen, FunctionInfo*
 // slot (codegen_arc_note_local), so a promoted slot also gets no release.
 static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTypeRef type,
                                                  const char* name, int force_promote) {
-    if (!force_promote && !escape_is_promoted(codegen, name))
+    if (!force_promote && !escape_is_promoted(codegen, name)) {
         return codegen_create_entry_alloca(codegen, type, name);
+    }
 
     // DECL-SITE allocation, for BOTH kinds of promotion. The slot is minted
     // at the declaration (the current insert position), NOT hoisted to the
@@ -1342,7 +1349,7 @@ static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
 // method-scoping rationale.
 static int func_decl_has_comptime_param(FuncDeclNode* fd) {
     for (ASTNode* p = fd->params; p; p = p->next) {
-        if (p->type != AST_VAR_DECL) continue;
+        if (p->type != AST_VAR_DECL) { continue; }
         if (((VarDeclNode*)p)->is_comptime_param) return 1;
     }
     return 0;
@@ -1725,7 +1732,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         // (monomorphize.c) before this function's body is walked.
         size_t comptime_idx = 0;
         for (ASTNode* p = func_decl->params; p; p = p->next) {
-            if (p->type != AST_VAR_DECL) continue;
+            if (p->type != AST_VAR_DECL) { continue; }
             VarDeclNode* pd = (VarDeclNode*)p;
             Type* pt = pd->type ? type_from_ast(checker, pd->type)
                                 : type_checker_get_builtin(checker, TYPE_INT32);
@@ -1883,7 +1890,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         char** names = cap ? calloc(cap, sizeof(char*)) : NULL;
         size_t nnamed = 0;
         for (ASTNode* f = st->fields; f; f = f->next) {
-            if (f->type != AST_VAR_DECL) continue;
+            if (f->type != AST_VAR_DECL) { continue; }
             VarDeclNode* fd = (VarDeclNode*)f;
             if (fd->name_count == 0 || !fd->names) continue;
             if (is_synthetic_result_name(fd->names[0])) continue;

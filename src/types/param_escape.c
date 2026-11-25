@@ -242,24 +242,24 @@ static const EscapeHooks PARAM_HOOKS = {
 // `_` is a discard, so neither is a variable a bare `return` can read.
 static size_t collect_result_names(const FuncDeclNode* decl, char*** out) {
     *out = NULL;
-    if (!decl || !decl->return_type || decl->return_type->type != AST_STRUCT_TYPE) return 0;
+    if (!decl || !decl->return_type || decl->return_type->type != AST_STRUCT_TYPE) { return 0; }
     StructTypeNode* st = (StructTypeNode*)decl->return_type;
     size_t cap = 0;
     for (ASTNode* fld = st->fields; fld; fld = fld->next) {
-        if (fld->type == AST_VAR_DECL) cap += ((VarDeclNode*)fld)->name_count;
+        if (fld->type == AST_VAR_DECL) { cap += ((VarDeclNode*)fld)->name_count; }
     }
-    if (cap == 0) return 0;
+    if (cap == 0) { return 0; }
     char** names = calloc(cap, sizeof(char*));
     // Fail closed is not available here: without the names, a bare return is
     // blind. Abort rather than under-mark.
     GOO_ASSERT(names != NULL);
     size_t n = 0;
     for (ASTNode* fld = st->fields; fld; fld = fld->next) {
-        if (fld->type != AST_VAR_DECL) continue;
+        if (fld->type != AST_VAR_DECL) { continue; }
         VarDeclNode* vd = (VarDeclNode*)fld;
         for (size_t i = 0; vd->names && i < vd->name_count; i++) {
             const char* nm = vd->names[i];
-            if (!nm || strcmp(nm, "_") == 0 || is_synthetic_result_name(nm)) continue;
+            if (!nm || strcmp(nm, "_") == 0 || is_synthetic_result_name(nm)) { continue; }
             names[n++] = (char*)nm;
         }
     }
@@ -364,7 +364,7 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
         changed = false;
         iterations++;
         bool fail_closed = iterations > cap;
-        if (fail_closed) hit_cap = true;
+        if (fail_closed) { hit_cap = true; }
 
         for (size_t fi = 0; fi < reg.count; fi++) {
             FuncInfo* f = &reg.items[fi];
@@ -478,14 +478,14 @@ bool param_escape_param_escapes(const ParamEscapeResult* result, const char* fn,
 
 // Every summary a bare call `fn()` could mean must pass `want_owned`'s test.
 static bool every_bare_callee(const ParamEscapeResult* result, const char* fn, bool want_owned) {
-    if (!result || !fn) return false;
+    if (!result || !fn) { return false; }
     bool found = false;
     for (size_t i = 0; i < result->count; i++) {
         const ParamEscapeSummary* s = &result->summaries[i];
-        if (s->is_method) continue;
-        if (!s->function_name || strcmp(s->function_name, fn) != 0) continue;
-        if (!s->returns_fresh) return false;
-        if (want_owned && s->return_escapes) return false;
+        if (s->is_method) { continue; }
+        if (!s->function_name || strcmp(s->function_name, fn) != 0) { continue; }
+        if (!s->returns_fresh) { return false; }
+        if (want_owned && s->return_escapes) { return false; }
         found = true;
     }
     return found;

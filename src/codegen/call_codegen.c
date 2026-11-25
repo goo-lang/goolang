@@ -1209,7 +1209,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef len_neg = LLVMBuildICmp(codegen->builder, LLVMIntSLT,
                                                      len64, zero64, "make_len_neg");
                 if (!make_emit_panic_branch(codegen, len_neg, "goo_panic_makeslice_len",
-                                            "make.len_bad", "make.len_ok", expr->pos)) return NULL;
+                                            "make.len_bad", "make.len_ok", expr->pos)) {
+                    return NULL;
+                }
                 LLVMValueRef cap_neg = LLVMBuildICmp(codegen->builder, LLVMIntSLT,
                                                      cap64, zero64, "make_cap_neg");
                 LLVMValueRef len_gt_cap = LLVMBuildICmp(codegen->builder, LLVMIntSGT,
@@ -1217,7 +1219,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef cap_bad = LLVMBuildOr(codegen->builder, cap_neg, len_gt_cap,
                                                    "make_cap_bad");
                 if (!make_emit_panic_branch(codegen, cap_bad, "goo_panic_makeslice_cap",
-                                            "make.cap_bad", "make.cap_ok", expr->pos)) return NULL;
+                                            "make.cap_bad", "make.cap_ok", expr->pos)) {
+                    return NULL;
+                }
                 // Allocate CAP elements (not len) so writes within capacity
                 // after a future reslice stay in bounds.
                 LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);

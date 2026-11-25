@@ -1097,12 +1097,12 @@ void goo_panic_makeslice_cap(void) {
 // IFACE: dispatch to the map's per-map comparator (goo_iface_key_eq, set at
 // map-creation time).
 static int goo_strkey_eq(const GooStrKey* a, const GooStrKey* b) {
-    if (a == b) return 1;
-    if (!a || !b) return 0;
-    if (a->len != b->len) return 0;
+    if (a == b) { return 1; }
+    if (!a || !b) { return 0; }
+    if (a->len != b->len) { return 0; }
     // memcmp with a NULL pointer is undefined even for n == 0, and an empty
     // string's data pointer is NULL (goo_string_new_with_length).
-    if (a->len == 0) return 1;
+    if (a->len == 0) { return 1; }
     return memcmp(a->ptr, b->ptr, (size_t)a->len) == 0;
 }
 
@@ -1115,7 +1115,7 @@ static GooStrKey* goo_strkey_copy(const GooStrKey* k) {
     int64_t len = (k && k->len > 0) ? k->len : 0;
     GooStrKey* copy = goo_alloc(sizeof(GooStrKey) + (size_t)len + 1);
     char* bytes = (char*)(copy + 1);
-    if (len > 0) memcpy(bytes, k->ptr, (size_t)len);
+    if (len > 0) { memcpy(bytes, k->ptr, (size_t)len); }
     bytes[len] = '\0';
     copy->ptr = len > 0 ? bytes : NULL;
     copy->len = len;
@@ -1278,7 +1278,7 @@ int64_t goo_map_get_sv(GooMapSV* m, int64_t k) {
     if (!m) return 0;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (!e->dead && goo_map_key_eq(m, e->key, k)) return e->value;
+        if (!e->dead && goo_map_key_eq(m, e->key, k)) { return e->value; }
         e = e->next;
     }
     return 0;  // zero-value default (no comma-ok presence signal yet)
@@ -1287,7 +1287,7 @@ int64_t goo_map_get_sv(GooMapSV* m, int64_t k) {
 void goo_map_get_sv_ok(GooMapSV* m, int64_t k, int64_t* out, int* found) {
     *out = 0;
     *found = 0;
-    if (!m) return;
+    if (!m) { return; }
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
         if (!e->dead && goo_map_key_eq(m, e->key, k)) {
@@ -1306,7 +1306,7 @@ int64_t goo_map_len_sv(GooMapSV* m) {
     int64_t n = 0;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (!e->dead) n++;
+        if (!e->dead) { n++; }
         e = e->next;
     }
     return n;
@@ -1319,10 +1319,10 @@ int64_t goo_map_len_sv(GooMapSV* m) {
 // Returns 1 with *key_out/*val_out filled and *cursor advanced to the next
 // entry; returns 0 (outs untouched) once the list is exhausted.
 int goo_map_iter_next_sv(GooMapEntrySV** cursor, int64_t* key_out, int64_t* val_out) {
-    if (!cursor) return 0;
+    if (!cursor) { return 0; }
     // Skip entries deleted while an iterator was live (see GooMapEntrySV.dead).
-    while (*cursor && (*cursor)->dead) *cursor = (*cursor)->next;
-    if (!*cursor) return 0;
+    while (*cursor && (*cursor)->dead) { *cursor = (*cursor)->next; }
+    if (!*cursor) { return 0; }
     if (key_out) *key_out = (*cursor)->key;
     if (val_out) *val_out = (*cursor)->value;
     *cursor = (*cursor)->next;
@@ -1341,7 +1341,7 @@ int goo_map_iter_next_sv(GooMapEntrySV** cursor, int64_t* key_out, int64_t* val_
 // another is already a Go data race, and no lock guards the map, so an atomic
 // here would not make that program correct.
 GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m) {
-    if (!m) return NULL;
+    if (!m) { return NULL; }
     m->active_iters++;
     return (GooMapEntrySV*)m->head;
 }
@@ -1355,14 +1355,14 @@ GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m) {
 // the leak is bounded by what the loop deleted, and it is never a use-after-free.
 // NULL map (a nil-map range) is a no-op, matching goo_map_iter_init_sv.
 void goo_map_iter_end_sv(GooMapSV* m) {
-    if (!m || m->active_iters <= 0) return;
-    if (--m->active_iters > 0) return;
+    if (!m || m->active_iters <= 0) { return; }
+    if (--m->active_iters > 0) { return; }
     GooMapEntrySV* prev = NULL;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
         GooMapEntrySV* next = e->next;
         if (e->dead) {
-            if (prev) prev->next = next; else m->head = next;
+            if (prev) { prev->next = next; } else { m->head = next; }
             goo_map_entry_release_key(m, e);
             goo_free(e);
         } else {
@@ -1379,7 +1379,7 @@ void goo_map_iter_end_sv(GooMapSV* m) {
 // (goo_map_entry_release_key). Other kinds store the caller's slot verbatim and
 // release it only if goo_map_set_sv_owning made the entry.
 void goo_map_delete_sv(GooMapSV* m, int64_t k) {
-    if (!m) return;
+    if (!m) { return; }
     GooMapEntrySV* prev = NULL;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
@@ -1428,7 +1428,7 @@ void goo_map_dtor(void* obj) {
 }
 
 static void goo_map_free_entries(GooMapSV* m) {
-    if (!m) return;
+    if (!m) { return; }
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
         GooMapEntrySV* next = e->next;
@@ -1440,10 +1440,10 @@ static void goo_map_free_entries(GooMapSV* m) {
 }
 
 void goo_map_clear_sv(GooMapSV* m) {
-    if (!m) return;
+    if (!m) { return; }
     if (m->active_iters > 0) {
         // Same deferral as goo_map_delete_sv: a cursor may point anywhere.
-        for (GooMapEntrySV* e = (GooMapEntrySV*)m->head; e; e = e->next) e->dead = true;
+        for (GooMapEntrySV* e = (GooMapEntrySV*)m->head; e; e = e->next) { e->dead = true; }
         return;
     }
     goo_map_free_entries(m);
