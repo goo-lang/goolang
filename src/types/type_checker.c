@@ -2660,6 +2660,11 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
             register_declared_names_after_failure(checker, var_decl, declared_type);
             return 0;
         }
+        if (inferred_type->kind == TYPE_VOID) {
+            type_error(checker, var_decl->values->pos, "used as value");
+            register_declared_names_after_failure(checker, var_decl, declared_type);
+            return 0;
+        }
         // Fix 2 (comptime-param functions are not first-class values): a
         // comptime-parameterized function captured into a variable — typed
         // (`var f func(int,int) int = fill`) OR inferred (`f := fill`) —
@@ -2992,6 +2997,10 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
     // Type check the value
     Type* value_type = type_check_expression(checker, const_decl->values);
     if (!value_type) {
+        return 0;
+    }
+    if (value_type->kind == TYPE_VOID) {
+        type_error(checker, const_decl->values->pos, "used as value");
         return 0;
     }
     
@@ -4369,6 +4378,10 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 return 0;
             }
         } else if (expected) {
+            if (expected->kind != TYPE_VOID && return_type->kind == TYPE_VOID) {
+                type_error(checker, ret_stmt->values->pos, "used as value");
+                return 0;
+            }
             // Non-error-union enclosing return type. Reject a returned value
             // whose type is incompatible with the declared return type here,
             // before it reaches codegen and crashes the LLVM verifier with a
