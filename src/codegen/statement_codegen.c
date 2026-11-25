@@ -522,6 +522,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // enclosing-loop arena (shallower depth) is left alive.
             codegen_emit_arena_frees(codegen, codegen->cfctx.loop_depth);
             codegen_emit_loop_scope_releases(codegen, codegen->cfctx.loop_depth);
+            codegen_emit_map_iter_ends(codegen, codegen->cfctx.loop_depth - 1, NULL);
             LLVMBuildBr(codegen->builder, codegen->cfctx.loop_break_bb[codegen->cfctx.loop_depth - 1]);
             // Subsequent statements in this block are unreachable; start a fresh
             // block so later codegen has a valid (dead) insertion point.
@@ -560,6 +561,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // target+1 for an arbitrary enclosing frame.
             codegen_emit_arena_frees(codegen, target + 1);
             codegen_emit_loop_scope_releases(codegen, target + 1);
+            codegen_emit_map_iter_ends(codegen, target, NULL);
             LLVMBuildBr(codegen->builder, codegen->cfctx.loop_break_bb[target]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
             return 1;
@@ -578,6 +580,9 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             }
             codegen_emit_arena_frees(codegen, target + 1);
             codegen_emit_loop_scope_releases(codegen, target + 1);
+            // `continue L` keeps loop L, and so its iterator, alive. A plain
+            // `continue` above ends nothing for the same reason.
+            codegen_emit_map_iter_ends(codegen, target + 1, NULL);
             LLVMBuildBr(codegen->builder, codegen->cfctx.loop_continue_bb[target]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
@@ -634,6 +639,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // store. Pinned by the release_decision row for a goto function --
             // if that walk ever learns labels, this arm needs the real fix.
             codegen_emit_loop_scope_releases(codegen, codegen->cfctx.loop_depth);
+            codegen_emit_map_iter_ends(codegen, 0, got->label);
             LLVMBasicBlockRef target = cfctx_get_or_create_goto_block(codegen, got->label);
             if (!target) {
                 codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
@@ -1369,6 +1375,10 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     LLVMBasicBlockRef rbody = codegen_create_block(codegen, "maprange.body");
     LLVMBasicBlockRef rpost = codegen_create_block(codegen, "maprange.post");
     LLVMBasicBlockRef rexit = codegen_create_block(codegen, "maprange.exit");
+    // Exhaustion ends the iterator here. break/return/goto end it themselves
+    // before they branch (codegen_emit_map_iter_ends), and break lands on
+    // rexit, so ending in rexit would end the iterator twice.
+    LLVMBasicBlockRef rend = codegen_create_block(codegen, "maprange.end");
 
     LLVMBuildBr(codegen->builder, rcond);
 
@@ -1381,7 +1391,7 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
                                            iter_fn, iter_args, 3, "map_has_next");
     LLVMValueRef cond_v = LLVMBuildICmp(codegen->builder, LLVMIntNE, has_next,
                                         LLVMConstInt(i32, 0, 0), "maprange_cond");
-    LLVMBuildCondBr(codegen->builder, cond_v, rbody, rexit);
+    LLVMBuildCondBr(codegen->builder, cond_v, rbody, rend);
 
     // body: bind key (unpack the i64 slot to the declared key type via
     // codegen_map_slot_to_key — string keys rebuild the goo string aggregate
@@ -1405,6 +1415,8 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
         scope_pop(checker);
         return 0;
     }
+    codegen->cfctx.loop_map_ptr[codegen->cfctx.loop_depth - 1] = map_ptr;
+    codegen->cfctx.loop_map_body[codegen->cfctx.loop_depth - 1] = for_stmt->body;
     int body_ok = 1;
     if (for_stmt->body) {
         body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
@@ -1417,6 +1429,15 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     // cursor in place during the cond call. Just loop back.
     codegen_set_insert_point(codegen, rpost);
     LLVMBuildBr(codegen->builder, rcond);
+
+    codegen_set_insert_point(codegen, rend);
+    {
+        LLVMTypeRef end_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
+        LLVMValueRef end_fn = LLVMGetNamedFunction(codegen->module, "goo_map_iter_end_sv");
+        if (!end_fn) { end_fn = LLVMAddFunction(codegen->module, "goo_map_iter_end_sv", end_ty); }
+        LLVMBuildCall2(codegen->builder, end_ty, end_fn, &map_ptr, 1, "");
+        LLVMBuildBr(codegen->builder, rexit);
+    }
 
     codegen_set_insert_point(codegen, rexit);
     scope_pop(checker);
@@ -3314,8 +3335,92 @@ void codegen_arc_note_local(CodeGenerator* codegen, ValueInfo* info) {
 // Everything that must happen at a function exit, in the order it must happen.
 // The 8 exit paths call THIS, so the defer-before-release ordering cannot drift.
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
+    // A return leaves every enclosing map range. Before the defers, so a
+    // deferred call that deletes from the map frees at once, as it would
+    // outside any loop.
+    codegen_emit_map_iter_ends(codegen, 0, NULL);
     emit_deferred_calls_only(codegen, checker);
     emit_scope_releases(codegen, 0);   // 0 == every site, loop-scoped included
+}
+
+// Does `stmt` (or a statement nested in it) declare label `name`? Mirrors the
+// statement walk of type_check_collect_goto_labels: it follows statement
+// children only, so a func literal body, which owns its labels, is not entered.
+static int stmt_declares_label(const ASTNode* stmt, const char* name) {
+    if (!stmt) { return 0; }
+    switch (stmt->type) {
+        case AST_BLOCK_STMT:
+            for (const ASTNode* s = ((const BlockStmtNode*)stmt)->statements; s; s = s->next) {
+                if (stmt_declares_label(s, name)) { return 1; }
+            }
+            return 0;
+        case AST_IF_STMT: {
+            const IfStmtNode* n = (const IfStmtNode*)stmt;
+            return stmt_declares_label(n->then_stmt, name) || stmt_declares_label(n->else_stmt, name);
+        }
+        case AST_IF_LET_STMT: {
+            const IfLetStmtNode* n = (const IfLetStmtNode*)stmt;
+            return stmt_declares_label(n->then_stmt, name) || stmt_declares_label(n->else_stmt, name);
+        }
+        case AST_FOR_STMT:
+            return stmt_declares_label(((const ForStmtNode*)stmt)->body, name);
+        case AST_SWITCH_STMT:
+            for (const ASTNode* c = ((const SwitchStmtNode*)stmt)->cases; c; c = c->next) {
+                for (const ASTNode* s = ((const CaseClauseNode*)c)->body; s; s = s->next) {
+                    if (stmt_declares_label(s, name)) { return 1; }
+                }
+            }
+            return 0;
+        case AST_TYPE_SWITCH:
+            for (const ASTNode* c = ((const TypeSwitchNode*)stmt)->cases; c; c = c->next) {
+                for (const ASTNode* s = ((const TypeCaseNode*)c)->body; s; s = s->next) {
+                    if (stmt_declares_label(s, name)) { return 1; }
+                }
+            }
+            return 0;
+        case AST_SELECT_STMT:
+            for (const ASTNode* c = ((const SelectStmtNode*)stmt)->cases; c; c = c->next) {
+                for (const ASTNode* s = ((const SelectCaseNode*)c)->body; s; s = s->next) {
+                    if (stmt_declares_label(s, name)) { return 1; }
+                }
+            }
+            return 0;
+        case AST_UNSAFE_STMT:
+            return stmt_declares_label(((const UnsafeStmtNode*)stmt)->body, name);
+        case AST_ARENA_BLOCK:
+            return stmt_declares_label(((const ArenaBlockNode*)stmt)->body, name);
+        case AST_COMPTIME_BLOCK:
+            return stmt_declares_label(((const ComptimeBlockNode*)stmt)->body, name);
+        case AST_LABEL_STMT: {
+            const LabelStmtNode* l = (const LabelStmtNode*)stmt;
+            if (l->name && strcmp(l->name, name) == 0) { return 1; }
+            return stmt_declares_label(l->stmt, name);
+        }
+        default:
+            return 0;
+    }
+}
+
+// End the iterator of each map-range frame in [from_frame, loop_depth), innermost
+// first. See codegen.h. Every exit that leaves a map range must come through
+// here exactly once, or the map keeps its deleted entries (a leak) -- and an
+// exit that ends an iterator the loop still uses would free the entry its
+// cursor holds, which is why `continue` and a goto inside the loop pass over it.
+void codegen_emit_map_iter_ends(CodeGenerator* codegen, int from_frame, const char* goto_label) {
+    if (from_frame < 0) { from_frame = 0; }
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    for (int i = codegen->cfctx.loop_depth - 1; i >= from_frame; i--) {
+        LLVMValueRef map_ptr = codegen->cfctx.loop_map_ptr[i];
+        if (!map_ptr) { continue; }
+        if (goto_label && stmt_declares_label(codegen->cfctx.loop_map_body[i], goto_label)) {
+            continue;
+        }
+        LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
+        LLVMValueRef end_fn = LLVMGetNamedFunction(codegen->module, "goo_map_iter_end_sv");
+        if (!end_fn) { end_fn = LLVMAddFunction(codegen->module, "goo_map_iter_end_sv", fn_type); }
+        LLVMBuildCall2(codegen->builder, fn_type, end_fn, &map_ptr, 1, "");
+    }
 }
 
 // Release the loop-scoped locals of the loop being LEFT, at an iteration

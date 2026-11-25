@@ -1,0 +1,24 @@
+package main
+
+import "fmt"
+
+type Box struct{ s string }
+
+func pick(p *Box) (r *Box) {
+	r = p
+	return
+}
+
+func use() *Box {
+	b := &Box{s: "alive"}
+	r := pick(b)
+	if r.s == "" {
+		return nil
+	}
+	return b
+}
+
+func main() {
+	b := use()
+	fmt.Println(b.s)
+}

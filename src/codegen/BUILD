@@ -83,6 +83,7 @@ goo_cc_library(
         "//include:comptime_h",
         "//include:diagnostic_h",
         "//include:embedding_h",
+        "//include:local_escape_h",
         "//include:param_escape_h",
         "//include:release_decision_h",
         "//include:runtime_h",

@@ -1,0 +1,10 @@
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]int{}
+	m["x\x00y"] = 1
+	m["x\x00z"] = 2
+	fmt.Println(len(m), m["x\x00y"], m["x\x00z"])
+}

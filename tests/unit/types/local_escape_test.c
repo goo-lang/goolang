@@ -890,6 +890,43 @@ static TestRow rows[] = {
         "f", { { .name = "xs", .expected_escapes = true,
                  .expected_reasons = ESCAPE_REASON_CALL_VARIADIC, .check_reasons = true } }, 1
     },
+    {
+        // A LOCAL CALLEE IS NOT THE TOP-LEVEL FUNCTION OF THE SAME NAME. The
+        // call `id(x)` calls the closure, which returns its argument. The
+        // top-level `id` keeps nothing and returns nothing derived from `s`,
+        // and its summary used to answer for the closure, so `x` read as not
+        // escaping and ARC freed the value that `f` returns.
+        51, "a call through a LOCAL named like a top-level function -> opaque",
+        "package main\n"
+        "func id(s *int) int {\n"
+        "    return 0\n"
+        "}\n"
+        "func f() *int {\n"
+        "    id := func(s *int) *int { return s }\n"
+        "    x := new(int)\n"
+        "    return id(x)\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CALL_OPAQUE | ESCAPE_REASON_RETURN,
+                 .check_reasons = true } }, 1
+    },
+    {
+        // The same hole through a PARAMETER. local_escape's environment holds
+        // no parameters, so membership there cannot see that `id` is the
+        // parameter and not the top-level function.
+        52, "a call through a PARAMETER named like a top-level function -> opaque",
+        "package main\n"
+        "func id(s *int) int {\n"
+        "    return 0\n"
+        "}\n"
+        "func f(id func(*int) *int) *int {\n"
+        "    x := new(int)\n"
+        "    return id(x)\n"
+        "}\n",
+        "f", { { .name = "x", .expected_escapes = true,
+                 .expected_reasons = ESCAPE_REASON_CALL_OPAQUE | ESCAPE_REASON_RETURN,
+                 .check_reasons = true } }, 1
+    },
 };
 
 

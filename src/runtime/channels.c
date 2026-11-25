@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include "platform.h"
+#include <stdckdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -9,6 +10,17 @@ extern goo_scheduler_t* g_scheduler;
 
 // Channel creation
 goo_channel_t* goo_make_chan(size_t elem_size, size_t buffer_size) {
+    // The codegen passes a Go int as size_t, so a negative size arrives with
+    // the top bit set. Checking the top bit also catches a negative size for
+    // a one-byte element, where the product alone cannot overflow.
+    if (buffer_size > (SIZE_MAX >> 1)) {
+        goo_panic("makechan: size out of range");
+    }
+    size_t buffer_bytes = 0;
+    if (buffer_size > 0U && ckd_mul(&buffer_bytes, elem_size, buffer_size)) {
+        goo_panic("makechan: size out of range");
+    }
+
     goo_channel_t* ch = goo_alloc(sizeof(goo_channel_t));
     memset(ch, 0, sizeof(goo_channel_t));
     
@@ -25,7 +37,7 @@ goo_channel_t* goo_make_chan(size_t elem_size, size_t buffer_size) {
 #endif
     
     if (buffer_size > 0) {
-        ch->buffer = goo_alloc(elem_size * buffer_size);
+        ch->buffer = goo_alloc(buffer_bytes);
     }
     
     if (g_scheduler) {

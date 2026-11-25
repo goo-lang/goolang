@@ -1,0 +1,22 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+// A top-level `id` that keeps nothing and returns nothing derived from `s`.
+func id(s string) int { return len(s) }
+
+// The call `id(x)` calls the LOCAL closure, which returns its argument. The
+// top-level summary must not answer for it, or `x` reads as not escaping and
+// ARC frees the string that main prints.
+func pick() string {
+	id := func(s string) string { return s }
+	x := strings.ToUpper("abcdef")
+	return id(x)
+}
+
+func main() {
+	fmt.Println(pick())
+}

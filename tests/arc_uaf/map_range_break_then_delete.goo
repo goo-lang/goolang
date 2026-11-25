@@ -1,0 +1,20 @@
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
+	for range m {
+		break
+	}
+	delete(m, "a")
+	delete(m, "b")
+	delete(m, "c")
+	delete(m, "d")
+	fmt.Println(len(m))
+	n := 0
+	for range m {
+		n++
+	}
+	fmt.Println(n)
+}

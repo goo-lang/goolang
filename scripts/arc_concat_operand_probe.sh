@@ -133,18 +133,18 @@ else
     echo "  refusals:    valgrind clean — named, borrowed, view and literal operands kept"
 fi
 
-# EXACTLY ONE record may survive: the value `summary` RETURNS. It is nobody's
-# concat operand, so no rule in this change reaches it, and demanding zero here
-# would make the probe fail over work it never claimed. Asserting the COUNT is
-# what keeps that honest — a seventh record reappearing is a regression, and a
-# residue of two means an operand stopped being released.
-if [ "${recs_on:-9}" -ne 1 ]; then
-    echo "  FAIL: summary keeps $recs_on records, expected 1 — an operand release is not firing"
+# ZERO records may survive. The value `summary` returns is nobody's concat
+# operand, and it used to be the one allowed residue. Now returns_fresh proves
+# `summary` fresh (a string `+` result), so its caller `main` releases it. A
+# residue of 1 therefore means that caller release regressed, and a higher
+# count means that an operand release stopped firing.
+if [ "${recs_on:-9}" -ne 0 ]; then
+    echo "  FAIL: summary keeps $recs_on records, expected 0 — the caller release of the returned value or an operand release is not firing"
     grep -A4 "definitely lost in loss record" "$WORK/arc_co_on.vg" | head -20
     fail=1
 else
     echo "  reclaimed:   $lost_off -> $lost_on bytes, $recs_off -> $recs_on records"
-    echo "  residue:     the value summary returns, which is no operand of any concat"
+    echo "  residue:     none — the returned value is released by its caller"
 fi
 
 if ! diff -q "$WORK/arc_co_off.out" "$WORK/arc_co_on.out" > /dev/null 2>&1; then

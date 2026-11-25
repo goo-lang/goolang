@@ -1,0 +1,12 @@
+package main
+
+import "fmt"
+
+type T struct{ a int }
+
+func (t T) Val() int { return t.a }
+
+func main() {
+	var p *T
+	fmt.Println(p.Val())
+}

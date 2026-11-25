@@ -340,8 +340,9 @@ static TestRow rows[] = {
         //
         // `pass` returns a value derived from its argument, so condition 1
         // ALSO refuses `s` here -- this row would pass without condition 6 at
-        // all. It is kept because it pins the SHALLOWEST-TARGET rule, which is
-        // what stops the verdict depending on which rule happens to fire first.
+        // all. It is kept because it pins that the ONE value reaches EVERY
+        // target: local_escape unions a multi-assign's value taint into each
+        // target, so `keep` holds `s` and condition 6 would refuse it too.
         47, "multi-assign, one call feeding two targets -> refuse `s`",
         "package main\n"
         "func pass(a *int) (int, *int) {\n"
@@ -938,7 +939,9 @@ static TestRow rows[] = {
         // THE ROW THIS CHANGE EXISTS FOR. Two targets, ONE value. Before this,
         // both recorded NULL and condition 2 refused. strconv.Atoi is
         // non_retaining = 1, which is defined over the WHOLE result list, so
-        // no result aliases the argument and every result is owned.
+        // no result aliases the argument. Its results are an error union, so
+        // they are never one object either, and every result is owned. A GOO
+        // multi-value call stays refused: see row 76.
         37, "a tuple destructure from a non-retaining shim -> owned",
         "package main\n"
         "import \"strconv\"\n"
@@ -1066,6 +1069,154 @@ static TestRow rows[] = {
         "    return last\n"
         "}\n",
         "f", { { "last", RELEASE_NO_ESCAPES } }, 1
+    },
+    {
+        // FINDING C2, review C-1. A composite literal is owned, and has_alias
+        // pruned an owned value whole. But `Holder{p: x}` holds x, so the
+        // store release on `x = makeOwned()` freed the value h.p still read.
+        // A composite is now scanned like any other value.
+        73, "a struct literal that holds the local is an ALIAS -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "type Holder struct{ p *int }\n"
+        "func f() int {\n"
+        "    x := makeOwned()\n"
+        "    h := Holder{p: x}\n"
+        "    x = makeOwned()\n"
+        "    if *h.p > 0 && *x > 0 {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", { { "x", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        // FINDING C2, review C-3. A parameter spelled like a top-level
+        // function is a func VALUE, and a bare call reaches whatever it holds.
+        // makeOwned's summary says nothing about that.
+        74, "a bare call through a PARAMETER named like a function -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "func f(makeOwned func() *int) int {\n"
+        "    b := makeOwned()\n"
+        "    if *b > 0 {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", { { "b", RELEASE_NO_NOT_OWNED } }, 1
+    },
+    {
+        // The same through a LOCAL func variable that shadows the function.
+        75, "a bare call through a LOCAL named like a function -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "var G *int\n"
+        "func f() int {\n"
+        "    makeOwned := func() *int { return G }\n"
+        "    b := makeOwned()\n"
+        "    if *b > 0 {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", { { "b", RELEASE_NO_NOT_OWNED } }, 1
+    },
+    {
+        // FINDING C2, review C-2. Both results of `two` are ONE object, each
+        // fresh on its own. A caller that owned both would release it twice,
+        // so no result of a Goo multi-value call is owned.
+        76, "a tuple destructure from a Goo callee whose results share -> refuse both",
+        "package main\n"
+        "func two() (*int, *int) {\n"
+        "    b := new(int)\n"
+        "    return b, b\n"
+        "}\n"
+        "func f() int {\n"
+        "    x, y := two()\n"
+        "    if *x+*y > 0 {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n",
+        "f", { { "x", RELEASE_NO_NOT_OWNED }, { "y", RELEASE_NO_NOT_OWNED } }, 2
+    },
+    {
+        // FINDING C4. `y` is a VIEW of `s` declared in the SAME iteration, so
+        // the store `y := s` outlives nothing, and `keep = y` names `y` alone.
+        // A test on the names in each right-hand side never connects `keep` to
+        // `s`, and `s` was released while `keep` still held it. The value flow
+        // does connect them, which is why condition 6 reads local_escape's
+        // taint rather than the names. Row 40 is the direct form.
+        77, "a loop local reaching an OUTER local through an intermediate -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    keep := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        y := s\n"
+        "        keep = y\n"
+        "    }\n"
+        "    _ = keep\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
+    {
+        // A LOOP-HEADER HOLDER. `p` is recorded at the SAME depth as the body,
+        // but it lives across every iteration and the next condition reads
+        // it. A depth comparison alone sees two locals of one iteration and
+        // releases `s` under `p`.
+        78, "a loop local stored into the loop's HEADER local -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for p := makeOwned(); *p < n; n = n - 1 {\n"
+        "        s := makeOwned()\n"
+        "        p = s\n"
+        "    }\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
+    {
+        // A HOLDER NAME DECLARED TWICE. The first `keep` lives in an earlier
+        // loop, the second at function scope. One record holds both, so the
+        // depth of the FIRST declaration made `keep` look as short-lived as
+        // `s`, and `s` was released while the second `keep` held it. The
+        // holder role must use the SHALLOWEST declaration of the name.
+        79, "a holder whose name was first declared inside a loop -> refuse",
+        "package main\n"
+        OWNED_HELPER
+        "func f(n int) {\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        keep := makeOwned()\n"
+        "        _ = keep\n"
+        "    }\n"
+        "    keep := makeOwned()\n"
+        "    for i := 0; i < n; i++ {\n"
+        "        s := makeOwned()\n"
+        "        keep = s\n"
+        "    }\n"
+        "    _ = keep\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
+    },
+    {
+        // A QIR HANDLE IS NOT ARC MEMORY. qir.Alloc is non_retaining in the
+        // shim table, and call_result_is_owned refuses every qir.* result for
+        // that reason. returns_fresh must refuse it too, or a Goo wrapper
+        // launders the handle into an owned result one call later.
+        80, "a Goo function returning qir.Alloc() -> not owned",
+        "package main\n"
+        "import \"qir\"\n"
+        "func mk() qir.Qubit {\n"
+        "    return qir.Alloc()\n"
+        "}\n"
+        "func f() {\n"
+        "    q := mk()\n"
+        "    qir.H(q)\n"
+        "}\n",
+        "f", { { "q", RELEASE_NO_NOT_OWNED } }, 1
     },
 };
 
