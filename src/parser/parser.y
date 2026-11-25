@@ -10,7 +10,6 @@
 // External lexer interface
 extern int yylex(void);
 extern void yyerror(const char* msg);
-extern Lexer* current_lexer;
 
 // ast_root, g_func_signature_params/result (globals) and every semantic-
 // action helper below except make_embedded_field/make_grouped_field (kept

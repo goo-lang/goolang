@@ -1641,8 +1641,21 @@ int codegen_emit_object_file(CodeGenerator* codegen, const char* filename) {
 #endif
 }
 
+// Write <dir><rel> into buf. False, with a warning, when the path does not
+// fit: a path cut short could name another file, so it is never used.
+static bool archive_path_in(char* buf, size_t size, const char* dir, const char* rel) {
+    int w = snprintf(buf, size, "%s%s", dir, rel);
+    if (w < 0 || (size_t)w >= size) {
+        diag_emit(DIAG_WARNING, (Position){0}, NULL, NULL,
+                  "the runtime archive path is too long; trying the next location (set GOO_RUNTIME to override)");
+        return false;
+    }
+    return true;
+}
+
 // Resolve the runtime archive path independent of cwd so the compiler works
 // when invoked from any directory. Order: $GOO_RUNTIME -> <exe-dir>/../lib ->
+// $GOOROOT/lib ->
 // cwd-relative fallback. Returns a pointer into a static buffer (single-threaded
 // codegen; not reentrant — acceptable here).
 static const char* goo_runtime_archive_path(void) {
@@ -1662,17 +1675,25 @@ static const char* goo_runtime_archive_path(void) {
         char* slash = strrchr(exe, '/');        // dir-of-exe
         if (slash) {
             *slash = '\0';
-            int w = snprintf(buf, sizeof(buf), "%s/../lib/libgoo_runtime.a", exe);
-            if (w < 0 || (size_t)w >= sizeof(buf)) {
-                diag_emit(DIAG_WARNING, (Position){0}, NULL, NULL,
-                  "the runtime archive path is too long; trying the working directory (set GOO_RUNTIME to override)");
-            } else {
+            if (archive_path_in(buf, sizeof(buf), exe, "/../lib/libgoo_runtime.a")) {
                 struct stat st;
                 if (stat(buf, &st) == 0) return buf; // exists relative to the binary
             }
         }
     }
 #endif
+    // GOOROOT comes after the executable's own directory: the archive must
+    // match the compiler that is running, and GOOROOT can name an older
+    // checkout. It serves a compiler that was copied away from its lib/.
+    const char* root = getenv("GOOROOT");
+    if (root && root[0] != '\0') {
+        if (archive_path_in(buf, sizeof(buf), root, "/lib/libgoo_runtime.a")) {
+            struct stat st;
+            if (stat(buf, &st) == 0) {
+                return buf;
+            }
+        }
+    }
     snprintf(buf, sizeof(buf), "lib/libgoo_runtime.a");  // fallback (repo-root cwd)
     return buf;
 }
@@ -1854,7 +1875,7 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // argv, so an omission is an overflow rather than a dropped flag.
     size_t fixed_slots = 9;
     size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count
-                    + codegen->link_flag_count + 1;
+                    + (size_t)codegen->link_flag_count + 1U;
     char** argv = malloc(max_argv * sizeof(char*));
     char** lib_flags = codegen->link_lib_count
         ? calloc((size_t)codegen->link_lib_count, sizeof(char*))
@@ -1884,7 +1905,7 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // above (--link-flag=-pie against -no-pie, for one). These are borrowed
     // strings, so unlike lib_flags below there is nothing here to free.
     for (size_t i = 0; i < codegen->link_flag_count; i++) {
-        argv[argn++] = (char*)codegen->link_flags[i];
+        argv[argn++] = codegen->link_flags[i];
     }
     argv[argn++] = "-o";
     argv[argn++] = (char*)filename;

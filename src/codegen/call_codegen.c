@@ -1896,7 +1896,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     // an `import "io"` to have happened somewhere — Go asks for
                     // no such thing, and the checker's writer test is
                     // structural for the same reason.
-                    Type* wbase = (wtype && wtype->kind == TYPE_POINTER)
+                    const Type* wbase = (wtype && wtype->kind == TYPE_POINTER)
                                       ? wtype->data.pointer.pointee_type : wtype;
                     const char* wtn = wbase ? type_receiver_name(wbase) : NULL;
                     char* wmangled = wtn ? type_method_mangled_name(wtn, "Write") : NULL;
@@ -2390,19 +2390,19 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     return value_info_new(NULL, wrapped, q_type);
                 }
                 if (strcmp(sel->selector, "QubitAt") == 0 || strcmp(sel->selector, "ResultAt") == 0) {
-                    int is_qubit = (strcmp(sel->selector, "QubitAt") == 0);
+                    bool is_qubit = (strcmp(sel->selector, "QubitAt") == 0);
                     if (!call->args) {
                         return NULL;
                     }
                     uint64_t const_id = 0;
                     if (goo_fold_const_int_ctx(checker, call->args, &const_id)) {
                         if (is_qubit) {
-                            if (const_id + 1 > codegen->qir_num_qubits) {
-                                codegen->qir_num_qubits = const_id + 1;
+                            if (const_id + 1U > codegen->qir_num_qubits) {
+                                codegen->qir_num_qubits = const_id + 1U;
                             }
                         } else {
-                            if (const_id + 1 > codegen->qir_num_results) {
-                                codegen->qir_num_results = const_id + 1;
+                            if (const_id + 1U > codegen->qir_num_results) {
+                                codegen->qir_num_results = const_id + 1U;
                             }
                         }
                     }
@@ -2604,8 +2604,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     else if (strcmp(sel->selector, "Swap") == 0)  { qis_sym = "__quantum__qis__swap__body";  arity = 2; }
                     else if (strcmp(sel->selector, "Mz") == 0)    { qis_sym = "__quantum__qis__mz__body";    arity = 2; }
                     else if (strcmp(sel->selector, "CCX") == 0)   { qis_sym = "__quantum__qis__ccx__body";   arity = 3; }
+                    else { /* not a gate selector: qis_sym stays NULL and the arity guard below skips it */ }
 
-                    if (qis_sym && arity >= 1 && arity <= 3) {
+                    if (qis_sym && arity >= 1U && arity <= 3U) {
                         LLVMTypeRef param_tys[3] = { ptr_ty, ptr_ty, ptr_ty };
                         LLVMValueRef arg_vals[3];
                         ASTNode* cur = call->args;

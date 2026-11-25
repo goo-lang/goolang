@@ -3496,6 +3496,8 @@ VERIFY_ALL_DEPS := \
     far-transport-test \
     far-transport-asan \
     far-shim-probe \
+    superset-probe \
+    superset-selftest \
     far-halo-probe \
     far-stencil-r2-probe \
     far-collective-probe \
@@ -4862,6 +4864,21 @@ far-shim-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 .PHONY: far-shim-probe
+
+# Grow-only "all valid Go is valid Goo" ratchet over the pinned go1.27.4 test
+# corpus (third_party/go-test-corpus/). Three levels: parse, compile, behaviour.
+# Check mode fails when a program listed in tests/superset/pass-L*.txt stops
+# passing. `scripts/superset_probe.sh --update` records new passes. The script
+# cds to the repository root itself, because the compiler links only from there.
+superset-probe: $(COMPILER) $(RUNTIME_LIB)
+	./scripts/superset_probe.sh
+.PHONY: superset-probe
+
+# Teeth for superset-probe: a control is green, a broken ratchet entry is red
+# at the right level, and an empty corpus or a dead compiler is red.
+superset-selftest: $(COMPILER) $(RUNTIME_LIB)
+	./scripts/superset_probe.sh --self-test
+.PHONY: superset-selftest
 
 # M2-B1: 2-rank NNG halo exchange, bit-identical to the in-fixture serial
 # reference (near mode pins Run against the same reference first).

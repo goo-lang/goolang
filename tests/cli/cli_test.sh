@@ -312,5 +312,12 @@ check test-package-main       0     "~ok"         empty                sh -c "cd
 # ...and the program itself still builds and runs normally.
 check test-package-main-builds 0    "42"          empty                sh -c "cd '$WORK/mainpkg' && '$COMPILER' run ."
 
+# A copied or moved compiler has no lib/ beside it. It must find the runtime
+# archive through GOOROOT, from a working directory that is not the repo root.
+ROOT_ABS="$(pwd)"
+mkdir -p "$WORK/moved"
+cp "$COMPILER" "$WORK/moved/goo"
+check moved-compiler-gooroot  0     ""            empty                sh -c "cd '$WORK/moved' && env -u GOO_RUNTIME GOOROOT='$ROOT_ABS' ./goo '$ROOT_ABS/$WORK/ok.goo' -o moved_bin"
+
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]
