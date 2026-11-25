@@ -38,7 +38,7 @@ static void expect_eq(const char* got, const char* want, const char* what) {
 }
 
 int main(void) {
-    goo_check_expect(13);
+    goo_check_expect(14);
 
     goo_check_row(1, "first_line_and_caret");
     diag_register_source("t.goo", SRC, strlen(SRC));
@@ -121,6 +121,25 @@ int main(void) {
     goo_check(!diag_source_call_text(at("c.goo", 1, 6), cb, 5), "buffer too small");
     goo_check(!diag_source_call_text(at("c.goo", 6, 6), cb, sizeof cb),
               "not a call");
+
+    goo_check_row(14, "source_call_text_tail");
+    const char* tsrc = "x := t.m(1).n(2)\nx := f(1)[0]\nx := f(1) // c\n"
+                       "x := f(\"a\\\")\")\nx := f(`)`)\nx := f(1);\nx := f(1) y\n";
+    diag_register_source("t2.goo", tsrc, strlen(tsrc));
+    goo_check(!diag_source_call_text(at("t2.goo", 1, 6), cb, sizeof cb),
+              "chained call");
+    goo_check(!diag_source_call_text(at("t2.goo", 2, 6), cb, sizeof cb),
+              "index after call");
+    goo_check(diag_source_call_text(at("t2.goo", 3, 6), cb, sizeof cb) &&
+              strcmp(cb, "f(1)") == 0, "comment after call");
+    goo_check(diag_source_call_text(at("t2.goo", 4, 6), cb, sizeof cb) &&
+              strcmp(cb, "f(\"a\\\")\")") == 0, "escaped quote in string");
+    goo_check(diag_source_call_text(at("t2.goo", 5, 6), cb, sizeof cb) &&
+              strcmp(cb, "f(`)`)") == 0, "raw string holds )");
+    goo_check(diag_source_call_text(at("t2.goo", 6, 6), cb, sizeof cb) &&
+              strcmp(cb, "f(1)") == 0, "semicolon after call");
+    goo_check(!diag_source_call_text(at("t2.goo", 7, 6), cb, sizeof cb),
+              "unknown tail");
 
     diag_free_sources();
     return goo_check_done("diagnostic_test");

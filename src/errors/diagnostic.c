@@ -145,6 +145,25 @@ static bool copy_span(const SourceEntry* e, size_t start, size_t end,
     return true;
 }
 
+// True when the call that ends before `i` is the WHOLE expression: only
+// spaces and tabs, then a line end, `;`, `)`, `,`, `}` or a comment follow.
+// A `.`, `(` or `[` means a chained call or an index, so the copied text would
+// be a partial call. Anything else is unknown, and unknown gives no help.
+static bool call_ends_here(const SourceEntry* e, size_t i) {
+    while (i < e->len && (e->text[i] == ' ' || e->text[i] == '\t')) {
+        i++;
+    }
+    if (i >= e->len) {
+        return true;
+    }
+    const char c = e->text[i];
+    if (c == '\n' || c == '\r' || c == ';' || c == ')' || c == ',' || c == '}') {
+        return true;
+    }
+    return c == '/' && i + 1U < e->len &&
+           (e->text[i + 1U] == '/' || e->text[i + 1U] == '*');
+}
+
 bool diag_source_call_text(Position pos, char* buf, size_t cap) {
     if (pos.filename == NULL || pos.line < 1 || pos.column < 1 || cap == 0U) {
         return false;
@@ -181,7 +200,7 @@ bool diag_source_call_text(Position pos, char* buf, size_t cap) {
             }
             i++;
             if (depth == 0) {
-                return copy_span(e, start, i, buf, cap);
+                return call_ends_here(e, i) && copy_span(e, start, i, buf, cap);
             }
         }
     }
