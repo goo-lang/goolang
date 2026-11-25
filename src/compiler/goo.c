@@ -1250,7 +1250,6 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         // it, so the next file's parse cannot clobber a pointer we own.
         ast_root = NULL;
         if (parse_input(sources[fi], fname) != 0) {
-            fputs("Error: Parse failed\n", stderr);
             ENTRY_CLEANUP();
             return false;
         }

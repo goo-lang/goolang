@@ -40,6 +40,10 @@ package main
 func main() { if { {
 EOF
 
+# Parse error where the bridge has read ahead: the rejected token is the `}`
+# on line 5, column 1. The old text reported the lexer position instead.
+printf 'package main\n\nfunc main() {\n\tx := 1 +\n}\n' > "$WORK/parse_err_tok.goo"
+
 cat > "$WORK/type_err.goo" <<'EOF'
 package main
 
@@ -265,7 +269,9 @@ check compile-success         0     ""            empty                "$COMPILE
 check compiled-binary-runs    0     "ok"          empty                "$WORK/ok_bin"
 check run-success             0     "ok"          empty                "$COMPILER" run "$WORK/ok.goo"
 check run-exit-propagation    5     ""            empty                "$COMPILER" run "$WORK/exit5.goo"
-check parse-error             1     ""            "Parse error"        "$COMPILER" "$WORK/parse_err.goo" -o "$WORK/pe_bin"
+check parse-error             1     ""            ": error: syntax error" "$COMPILER" "$WORK/parse_err.goo" -o "$WORK/pe_bin"
+check parse-error-names-token 1     ""            ":5:1: error: syntax error, unexpected '}'" "$COMPILER" "$WORK/parse_err_tok.goo" -o "$WORK/pet_bin"
+check parse-error-no-trailer  0     ""            empty                sh -c "! '$COMPILER' '$WORK/parse_err_tok.goo' -o '$WORK/pet_bin' 2>&1 | grep -q 'Parse failed'"
 check type-error              1     ""            ": error: Cannot assign string to int64"        "$COMPILER" "$WORK/type_err.goo" -o "$WORK/te_bin"
 check snippet-on-type-error   1     ""            " | 	var x int = \"not an int\"" "$COMPILER" "$WORK/type_err.goo" -o "$WORK/te_bin"
 check missing-input           1     ""            "Cannot open file"   "$COMPILER" "$WORK/does_not_exist.goo" -o "$WORK/mi_bin"

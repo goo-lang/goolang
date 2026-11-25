@@ -51,7 +51,10 @@ goo_cc_library(
         "//include:lexer_h",
         "//include:parser_h",
         "//include:token_h",
+        "//include:diagnostic_h",
         "//src/errors",
+        "//src/errors:diagnostic",
+        "//src/parser/gen:parser_tab",
     ],
 )
 

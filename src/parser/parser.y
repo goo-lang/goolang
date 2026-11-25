@@ -128,53 +128,61 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 // this one is not pure.
 %locations
 
+// Name the unexpected and the expected tokens in a syntax error. The string
+// aliases on the %token lines below are what the message prints. An alias
+// for punctuation or a keyword carries its own single quotes ("'}'"), because
+// bison 3.8 strips only the outer double quotes. A descriptive alias such as
+// "identifier" has none. An alias does not change the LALR tables, so the
+// conflict baseline holds.
+%define parse.error detailed
+
 // Token declarations with types
-%token <string> IDENTIFIER
-%token <strlit> STRING_LITERAL
-%token <integer> INT_LITERAL
-%token <real> FLOAT_LITERAL
-%token <token> CHAR_LITERAL
+%token <string> IDENTIFIER "identifier"
+%token <strlit> STRING_LITERAL "string literal"
+%token <integer> INT_LITERAL "integer literal"
+%token <real> FLOAT_LITERAL "float literal"
+%token <token> CHAR_LITERAL "character literal"
 
 // Go Keywords
-%token BREAK CASE CHAN CONST CONTINUE DEFAULT DEFER ELSE FALLTHROUGH
-%token FOR FUNC GO GOTO IF IMPORT INTERFACE MAP PACKAGE RANGE RETURN
-%token SELECT STRUCT SWITCH TYPE VAR ENUM
-%token TRUE FALSE NIL
+%token BREAK "'break'" CASE "'case'" CHAN "'chan'" CONST "'const'" CONTINUE "'continue'" DEFAULT "'default'" DEFER "'defer'" ELSE "'else'" FALLTHROUGH "'fallthrough'"
+%token FOR "'for'" FUNC "'func'" GO "'go'" GOTO "'goto'" IF "'if'" IMPORT "'import'" INTERFACE "'interface'" MAP "'map'" PACKAGE "'package'" RANGE "'range'" RETURN "'return'"
+%token SELECT "'select'" STRUCT "'struct'" SWITCH "'switch'" TYPE "'type'" VAR "'var'" ENUM "'enum'"
+%token TRUE "'true'" FALSE "'false'" NIL "'nil'"
 
 // Goo Extension Keywords
-%token COMPTIME CONCEPT PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE ASM ARENA
-%token EXTERN FROM VOLATILE INLINE NO_STD
-%token PARALLEL REDUCE BARRIER ATOMIC THREAD_LOCAL
-%token OWNED BORROWED SHARED LET MATCH
+%token COMPTIME "'comptime'" CONCEPT "'concept'" PUB "'pub'" SUB "'sub'" REQ "'req'" REP "'rep'" PUSH "'push'" PULL "'pull'" TRY "'try'" CATCH "'catch'" UNSAFE "'unsafe'" ASM "'asm'" ARENA "'arena'"
+%token EXTERN "'extern'" FROM "'from'" VOLATILE "'volatile'" INLINE "'inline'" NO_STD "'no_std'"
+%token PARALLEL "'parallel'" REDUCE "'reduce'" BARRIER "'barrier'" ATOMIC "'atomic'" THREAD_LOCAL "'thread_local'"
+%token OWNED "'owned'" BORROWED "'borrowed'" SHARED "'shared'" LET "'let'" MATCH "'match'"
 // P5.10: the GPU (KERNEL DEVICE HOST GLOBAL SHARED_MEM CONSTANT LOCAL) and
 // WebAssembly (WASM EXPORT MEMORY TABLE START ELEM DATA) token declarations
 // were deleted along with their unreachable productions — lexer_bridge.c
 // never mapped any of them, so no token stream could contain them.
 
 // Operators and punctuation
-%token PLUS MINUS MULTIPLY DIVIDE MODULO
-%token ASSIGN SHORT_ASSIGN PLUS_ASSIGN MINUS_ASSIGN MUL_ASSIGN DIV_ASSIGN MOD_ASSIGN
-%token AND_ASSIGN OR_ASSIGN XOR_ASSIGN LSHIFT_ASSIGN RSHIFT_ASSIGN
-%token EQ NE LT LE GT GE
-%token AND OR NOT
-%token BIT_AND BIT_OR BIT_XOR BIT_NOT LSHIFT RSHIFT
-%token AND_NOT  // &^  (Go bit-clear / and-not)
-%token INCREMENT DECREMENT
-%token ARROW
+%token PLUS "'+'" MINUS "'-'" MULTIPLY "'*'" DIVIDE "'/'" MODULO "'%'"
+%token ASSIGN "'='" SHORT_ASSIGN "':='" PLUS_ASSIGN "'+='" MINUS_ASSIGN "'-='" MUL_ASSIGN "'*='" DIV_ASSIGN "'/='" MOD_ASSIGN "'%='"
+%token AND_ASSIGN "'&='" OR_ASSIGN "'|='" XOR_ASSIGN "'^='" LSHIFT_ASSIGN "'<<='" RSHIFT_ASSIGN "'>>='"
+%token EQ "'=='" NE "'!='" LT "'<'" LE "'<='" GT "'>'" GE "'>='"
+%token AND "'&&'" OR "'||'" NOT "logical not"
+%token BIT_AND "'&'" BIT_OR "'|'" BIT_XOR "'^'" BIT_NOT "'~'" LSHIFT "'<<'" RSHIFT "'>>'"
+%token AND_NOT "'&^'"  // &^  (Go bit-clear / and-not)
+%token INCREMENT "'++'" DECREMENT "'--'"
+%token ARROW "'<-'"
 
 // Goo Extension Operators
-%token BANG QUESTION TRY_OP CATCH_OP DEREF
-%token FAT_ARROW  // =>  (value-yielding catch fallback: `f() catch => -1`, P2.9)
+%token BANG "'!'" QUESTION "'?'" TRY_OP "try operator" CATCH_OP "catch operator" DEREF "'@'"
+%token FAT_ARROW "'=>'"  // =>  (value-yielding catch fallback: `f() catch => -1`, P2.9)
 
 // Delimiters
-%token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
+%token LPAREN "'('" RPAREN "')'" LBRACE "'{'" RBRACE "'}'" LBRACKET "'['" RBRACKET "']'"
 // LBRACE_BODY: context-sensitive variant emitted by the lexer bridge in place
 // of LBRACE when the bridge's frame stack says "this `{` closes a cond/match/
 // select context that's been pinned open by a preceding IF/FOR/MATCH/SELECT
 // at depth 0." struct_lit's grammar accepts only LBRACE, so the IDENT.LBRACE
 // shift/reduce ambiguity never arises at the cond/body boundary. See
 // docs/M10_GRAMMAR_DECISION.md + docs/M10_LEXER_LAYER_PROBE.md.
-%token LBRACE_BODY
+%token LBRACE_BODY "'{' before a block"
 // RBRACKET_SLICE: context-sensitive variant of RBRACKET emitted by the lexer
 // bridge to close an EMPTY `[]` that is immediately followed by a type-starting
 // token — i.e. the `[]` is a slice-TYPE prefix (`[]int`, `[]Foo{...}`), not a
@@ -183,13 +191,13 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 // (`LBRACKET RBRACKET_SLICE type`) in separate parser states, so the
 // reduce-vs-shift conflict at `LBRACKET RBRACKET .` (empty literal vs `[]T{...}`
 // prefix) never arises. See lexer_bridge.c `[]`-disambiguation. (P3-1)
-%token RBRACKET_SLICE
+%token RBRACKET_SLICE "']' of a slice type"
 // Grammar maintained under the conflict-baseline discipline.
-%token SEMICOLON COMMA DOT COLON ELLIPSIS
-%token NEWLINE
+%token SEMICOLON "';'" COMMA "','" DOT "'.'" COLON "':'" ELLIPSIS "'...'"
+%token NEWLINE "newline"
 
 // Special tokens
-%token END_OF_FILE
+%token END_OF_FILE "end of file"
 
 // Non-terminal types
 %type <node> program

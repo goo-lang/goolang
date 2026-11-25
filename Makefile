@@ -5529,7 +5529,7 @@ FUZZ_SEEDS   = $(FUZZ_DIR)/seeds
 FUZZ_ARTIFACTS = $(FUZZ_DIR)/artifacts
 FUZZ_SRCS    = tests/fuzz/fuzz_parse.c $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(ERROR_SRCS)
 FUZZ_CFLAGS  = -std=c23 -g -O1 -I. -Iinclude -D_GNU_SOURCE \
-               -include include/xalloc.h -DLLVM_AVAILABLE=0 \
+               -include include/xalloc.h -include include/goo_assert.h -DLLVM_AVAILABLE=0 \
                -fsanitize=fuzzer,address,undefined
 # Leak detection OFF by default. NOT a way to look away: ast_node_free has a
 # documented gap (src/ast/ast.c:189) that makes the FIRST seed leak, so with
