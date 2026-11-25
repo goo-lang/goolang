@@ -197,5 +197,6 @@ script repro-build-probe
 script spin-bootstrap-probe
 script spin-deadlock-model-probe
 script string-literal-header-probe
+script superset-probe
 script warning-count-probe
 script workflow-targets-probe
