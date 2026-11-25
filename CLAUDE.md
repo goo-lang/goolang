@@ -249,7 +249,8 @@ length while the block count holds.
   declining to answer, not a measured escape.**
   **216 locals are refused ONLY by a no-evidence mark** (all reading
   `RELEASE_NO_ESCAPES`), which is the upper bound on what precision here would
-  unlock, against 365 released today.
+  unlock, against 325 released today (365 before the 2026-11-24 ownership
+  fixes, docs/adr/0005-measurements/2026-11-24-arc-ownership.md).
   **The reachable fix is NARROWER than 578 suggests**: the dominant opaque
   callees are builtins and type conversions (`make`, `rune`, `uint64`, `int`),
   and most of their arguments are integers no release path would free. Decide
@@ -261,6 +262,21 @@ length while the block count holds.
   `./scripts/arc_reason_census.sh`, or read any one program with
   `GOO_ARC_DEBUG=1 ./bin/goo -o /dev/null prog.goo`, which prints a verdict
   AND its reason set for each local.
+- **An address-taken local whose address may escape is heap-promoted.** Both
+  must hold (function_codegen.c:13-30): the address is taken (an explicit
+  `&x`, or an implicit `&t` through a pointer-receiver call), AND it may
+  escape. "May escape" means `local_escape` marks the local, or the receiver's
+  `param_escape` summary says the receiver or result escapes, or the function
+  has a `go` statement, or no verdict applies (a parameter, a function
+  literal). A `go` statement alone, with no address taken, promotes nothing.
+  The slot is allocated at the declaration, so a loop gets one block for each
+  iteration, and no release path frees it (a fact about the code).
+  MEASURED 2026-11-24: the daemon (no `&`) has 0 block delta, 4,003 blocks on
+  both builds. One probe, an explicit `&x` stored in a global, 1,000 calls,
+  leaves 1,000 blocks (24,000 bytes), where `main` left a dangling slot. The
+  pointer-receiver and `go` triggers use the same allocation path and were NOT
+  measured separately.
+  docs/adr/0005-measurements/2026-11-24-addr-promotion.md.
 - **A multi-assign target gets no store release.** `a, b = x, y` stores
   without freeing what the slots held. A LEAK, never a use-after-free, and
   untested rather than proven absent.

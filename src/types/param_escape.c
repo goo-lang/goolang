@@ -14,6 +14,7 @@
 #include "param_escape.h"
 #include "escape_core.h"
 #include "nonretaining.h"
+#include "types.h"
 #include "token.h"
 #include <stdlib.h>
 #include <string.h>
@@ -235,6 +236,41 @@ static const EscapeHooks PARAM_HOOKS = {
 // values' taint — imprecise when names don't line up 1:1 with values, but
 // safe (never under-marks).
 
+// Borrowed pointers into the declaration's AST: the array is owned by the
+// caller, the strings are not. Returns the count, and NULL in *out when 0.
+// Synthetic `_N` names are the parser's placeholders for UNNAMED results, and
+// `_` is a discard, so neither is a variable a bare `return` can read.
+static size_t collect_result_names(const FuncDeclNode* decl, char*** out) {
+    *out = NULL;
+    if (!decl || !decl->return_type || decl->return_type->type != AST_STRUCT_TYPE) return 0;
+    StructTypeNode* st = (StructTypeNode*)decl->return_type;
+    size_t cap = 0;
+    for (ASTNode* fld = st->fields; fld; fld = fld->next) {
+        if (fld->type == AST_VAR_DECL) cap += ((VarDeclNode*)fld)->name_count;
+    }
+    if (cap == 0) return 0;
+    char** names = calloc(cap, sizeof(char*));
+    // Fail closed is not available here: without the names, a bare return is
+    // blind. Abort rather than under-mark.
+    GOO_ASSERT(names != NULL);
+    size_t n = 0;
+    for (ASTNode* fld = st->fields; fld; fld = fld->next) {
+        if (fld->type != AST_VAR_DECL) continue;
+        VarDeclNode* vd = (VarDeclNode*)fld;
+        for (size_t i = 0; vd->names && i < vd->name_count; i++) {
+            const char* nm = vd->names[i];
+            if (!nm || strcmp(nm, "_") == 0 || is_synthetic_result_name(nm)) continue;
+            names[n++] = (char*)nm;
+        }
+    }
+    if (n == 0) {
+        free(names);
+        return 0;
+    }
+    *out = names;
+    return n;
+}
+
 // Runs F's intraprocedural taint analysis to a LOCAL fixpoint (the taint map
 // only grows, so repeating the whole-body walk until it stops changing is
 // sound — this also handles for-loop back-edges, since a second pass
@@ -254,6 +290,17 @@ static void analyze_function_body(Registry* reg, FuncInfo* f, EscapeReasons* loc
         escape_taint_free(&seed);
     }
 
+    // Named results are locals that a bare `return` reads back. Seeding them
+    // with an empty taint keeps `r = p` a propagation into `r` instead of a
+    // global store, so the taint is still there for the bare return to report.
+    char** result_names = NULL;
+    size_t result_count = collect_result_names(f->decl, &result_names);
+    for (size_t i = 0; i < result_count; i++) {
+        TaintSet empty = escape_taint_new(f->param_count);
+        escape_env_add_or_union(&env, result_names[i], &empty);
+        escape_taint_free(&empty);
+    }
+
     ParamOwner own = {
         .reg = reg,
         .return_escapes = local_return_escapes,
@@ -264,6 +311,8 @@ static void analyze_function_body(Registry* reg, FuncInfo* f, EscapeReasons* loc
         .reasons = local_reasons,
         .hooks = &PARAM_HOOKS,
         .owner = &own,
+        .result_names = result_names,
+        .result_count = result_count,
     };
 
     // Defensive backstop, not the termination argument: the taint map is a
@@ -284,6 +333,7 @@ static void analyze_function_body(Registry* reg, FuncInfo* f, EscapeReasons* loc
         if (f->decl->body) escape_walk_stmt(&ctx, f->decl->body, &changed);
     }
 
+    free(result_names);
     escape_env_free(&env);
 }
 
@@ -309,10 +359,12 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
 
     bool changed = true;
     size_t iterations = 0;
+    bool hit_cap = false;
     while (changed) {
         changed = false;
         iterations++;
         bool fail_closed = iterations > cap;
+        if (fail_closed) hit_cap = true;
 
         for (size_t fi = 0; fi < reg.count; fi++) {
             FuncInfo* f = &reg.items[fi];
@@ -372,6 +424,7 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
         s->function_name = xstrdup(reg.items[i].name);
         s->param_count = reg.items[i].param_count;
         s->return_escapes = reg.items[i].return_escapes;
+        s->is_method = reg.items[i].decl->receiver != NULL;
         s->escapes = NULL;
         if (s->param_count > 0) {
             s->escapes = calloc(s->param_count, sizeof(bool));
@@ -386,6 +439,11 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
             return NULL;
         }
     }
+
+    // returns_fresh_compute (src/types/returns_fresh.c) reads this and leaves
+    // every returns_fresh false: the summaries above are then a fail-closed
+    // guess, and false only leaks.
+    result->fail_closed = hit_cap;
 
     registry_free(&reg);
     return result;
@@ -416,4 +474,27 @@ bool param_escape_param_escapes(const ParamEscapeResult* result, const char* fn,
     if (!s) return true;              // unknown function: conservative miss
     if (param_idx >= s->param_count) return true; // out of range: conservative miss
     return s->escapes[param_idx];
+}
+
+// Every summary a bare call `fn()` could mean must pass `want_owned`'s test.
+static bool every_bare_callee(const ParamEscapeResult* result, const char* fn, bool want_owned) {
+    if (!result || !fn) return false;
+    bool found = false;
+    for (size_t i = 0; i < result->count; i++) {
+        const ParamEscapeSummary* s = &result->summaries[i];
+        if (s->is_method) continue;
+        if (!s->function_name || strcmp(s->function_name, fn) != 0) continue;
+        if (!s->returns_fresh) return false;
+        if (want_owned && s->return_escapes) return false;
+        found = true;
+    }
+    return found;
+}
+
+bool param_escape_returns_fresh(const ParamEscapeResult* result, const char* fn) {
+    return every_bare_callee(result, fn, false);
+}
+
+bool param_escape_call_result_is_owned(const ParamEscapeResult* result, const char* fn) {
+    return every_bare_callee(result, fn, true);
 }

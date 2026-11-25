@@ -293,6 +293,18 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "returns_fresh_h",
+    hdrs = ["returns_fresh.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":ast_h",
+        ":local_escape_h",
+        ":param_escape_h",
+    ],
+)
+
 # ---------------------------------------------------------------------------
 # Back end. codegen.h and codegen_cfctx.h include EACH OTHER, so they are one
 # target and cannot be otherwise. value_scope.h joins them because it includes

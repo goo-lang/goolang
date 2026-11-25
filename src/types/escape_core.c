@@ -392,6 +392,37 @@ static void assign_to_lvalue(EscapeCtx* ctx, ASTNode* lhs, const TaintSet* rhs_t
 }
 
 
+static bool var_decl_list_has(const ASTNode* list, const char* name) {
+    for (const ASTNode* p = list; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) {
+            continue;
+        }
+        const VarDeclNode* vd = (const VarDeclNode*)p;
+        for (size_t i = 0; vd->names && i < vd->name_count; i++) {
+            if (vd->names[i] && strcmp(vd->names[i], name) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Is `name` a parameter (the receiver included) or a named result of `func`?
+// A NULL func answers false, which keeps the env-only test: every pass that
+// cannot name its function behaves exactly as before.
+static bool func_binds_name(const FuncDeclNode* func, const char* name) {
+    if (!func) {
+        return false;
+    }
+    if (var_decl_list_has(func->params, name)) {
+        return true;
+    }
+    if (func->return_type && func->return_type->type == AST_STRUCT_TYPE) {
+        return var_decl_list_has(((const StructTypeNode*)func->return_type)->fields, name);
+    }
+    return false;
+}
+
 // True when the callee is `base.Sel` and `base` is a LOCAL, not a package.
 //
 // goo_callee_is_non_retaining answers by package name and selector, so a local
@@ -455,17 +486,34 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     // in-progress Registry (it is COMPUTING these summaries and must see the
     // current iterate), the other two from a finished ParamEscapeResult. Same
     // (count, escapes[]) shape either way, so the hook returns that pair.
+    //
+    // A LOCAL CALLEE IS NOT THE TOP-LEVEL FUNCTION OF THE SAME NAME. `id(x)`
+    // where `id` is a local func value calls that value, so neither a summary
+    // looked up by the bare name, nor the builtin whitelist, nor the `append`
+    // rule describes it. All three are skipped, and the call takes the opaque
+    // arm below: every argument retained, every argument in the result.
+    //
+    // MEASURED: `id := func(s string) string { return s }; return id(x)`
+    // beside a top-level `func id(s string) int` read `x` as not escaping, and
+    // ARC freed the string the caller printed (valgrind: 3 invalid reads).
+    // Membership in ctx->env is the engine's definition of "a local of this
+    // unit", the same test selector_base_is_local uses. A PARAMETER or a NAMED
+    // RESULT is a local too, and local_escape's env does not hold them, so
+    // the enclosing function's own bindings are asked as well.
+    bool callee_is_local = callee_name
+                           && (escape_env_find(ctx->env, callee_name)
+                               || func_binds_name(ctx->func, callee_name));
     const bool* callee_escapes = NULL;
     size_t callee_count = 0;
     bool callee_return_escapes = false;
-    bool callee = callee_name && ctx->hooks->callee_retention
+    bool callee = callee_name && !callee_is_local && ctx->hooks->callee_retention
                   && ctx->hooks->callee_retention(ctx, callee_name,
                                                   &callee_escapes, &callee_count,
                                                   &callee_return_escapes);
     // 7a' non-retaining whitelist: only for calls that do NOT resolve to a user
     // function (callee == NULL) — a user body, even one shadowing a builtin
     // name, is analysed by its real summary above.
-    bool whitelisted = !callee
+    bool whitelisted = !callee && !callee_is_local
                        && !selector_base_is_local(ctx, call->function)
                        && goo_callee_is_non_retaining(call->function);
 
@@ -486,7 +534,7 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     //
     // Guarded the same way the whitelist is: a user function named `append`, or a
     // local shadowing the name, must not collect this rule.
-    bool is_append = !callee && !whitelisted && callee_name
+    bool is_append = !callee && !whitelisted && !callee_is_local && callee_name
                      && strcmp(callee_name, "append") == 0
                      && !selector_base_is_local(ctx, call->function);
 
@@ -970,6 +1018,32 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
                     // have no such notion and leave the hook NULL.
                     if (ctx->hooks->on_return) ctx->hooks->on_return(ctx, &t);
                     escape_taint_free(&t);
+                }
+                // A bare `return` in a function with named results returns
+                // those names. It has no `values`, so the loop above saw
+                // nothing and the flow from a parameter into the result was
+                // hidden from the caller's ARC (finding C3).
+                if (!n->values) {
+                    for (size_t i = 0; i < ctx->result_count; i++) {
+                        LocalVar* lv = escape_env_find(ctx->env, ctx->result_names[i]);
+                        if (!lv) continue;
+                        TaintSet rt = escape_taint_copy(&lv->taint);
+                        // A failed copy leaves bits NULL with n non-zero, which
+                        // would mark nothing. Fail closed: mark every slot.
+                        if (rt.n != 0 && !rt.bits) {
+                            escape_mark_all(ctx, ESCAPE_REASON_RETURN);
+                            if (ctx->hooks->on_return) {
+                                TaintSet all = escape_taint_new(ctx->slot_count);
+                                for (size_t k = 0; all.bits && k < all.n; k++) all.bits[k] = true;
+                                ctx->hooks->on_return(ctx, &all);
+                                escape_taint_free(&all);
+                            }
+                            continue;
+                        }
+                        escape_mark(ctx, &rt, ESCAPE_REASON_RETURN);
+                        if (ctx->hooks->on_return) ctx->hooks->on_return(ctx, &rt);
+                        escape_taint_free(&rt);
+                    }
                 }
                 break;
             }

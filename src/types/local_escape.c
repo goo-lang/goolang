@@ -28,6 +28,7 @@
 #include "escape_core.h"
 #include "nonretaining.h"
 #include "token.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -66,6 +67,7 @@
 
 typedef struct {
     ASTNode*  body;         // FuncDeclNode's ->body (borrowed)
+    const FuncDeclNode* decl; // the function itself (borrowed), for EscapeCtx.func
     char*     fn_name;      // owned
     char**    local_names;  // owned array of owned strings
     size_t    local_count;
@@ -94,7 +96,7 @@ static void unit_list_free(UnitList* list) {
 
 // Appends an empty unit for `body` and returns its index, or
 // BLOCK_ESCAPE_NO_UNIT on allocation failure.
-static size_t unit_list_push(UnitList* list, ASTNode* body, const char* fn_name) {
+static size_t unit_list_push(UnitList* list, const FuncDeclNode* decl, const char* fn_name) {
     if (list->count >= list->cap) {
         size_t new_cap = list->cap ? list->cap * 2 : 8;
         Unit* grown = realloc(list->items, new_cap * sizeof(Unit));
@@ -103,7 +105,8 @@ static size_t unit_list_push(UnitList* list, ASTNode* body, const char* fn_name)
         list->cap = new_cap;
     }
     Unit* u = &list->items[list->count];
-    u->body = body;
+    u->body = decl->body;
+    u->decl = decl;
     u->fn_name = fn_name ? xstrdup(fn_name) : NULL;
     if (fn_name && !u->fn_name) return BLOCK_ESCAPE_NO_UNIT;
     u->local_names = NULL;
@@ -260,6 +263,24 @@ static const EscapeHooks LOCAL_HOOKS = {
 // names/name_count/values triple. Identical to param_escape.c's
 // seed_names_from_values.
 
+// Copies each local's FINAL taint into `holds`, one row per local. See
+// LocalEscapeSummary.holds.
+//
+// FAIL CLOSED: a local with no environment entry, a row whose width does not
+// match, or a fixpoint that hit its backstop sets the whole row. A missing bit
+// reads as "does not hold", which is the answer that frees live memory.
+static void record_holds(LocalEnv* env, const Unit* u, bool* holds, bool gave_up) {
+    size_t n = u->local_count;
+    for (size_t h = 0; h < n; h++) {
+        bool* row = &holds[(h * n)];
+        LocalVar* lv = gave_up ? NULL : escape_env_find(env, u->local_names[h]);
+        bool readable = lv && lv->taint.n == n && lv->taint.bits;
+        for (size_t s = 0; s < n; s++) {
+            row[s] = readable ? lv->taint.bits[s] : true;
+        }
+    }
+}
+
 // Runs one unit's intraprocedural taint analysis to a LOCAL fixpoint (same
 // termination argument as param_escape.c's analyze_function_body: the
 // taint map only grows, so repeating the whole-body walk until nothing
@@ -267,7 +288,8 @@ static const EscapeHooks LOCAL_HOOKS = {
 // EMPTY here — unlike a function's params, an arena block has no
 // pre-existing "parameters" to seed; every local comes from a var/:=/etc.
 // encountered during the walk itself.
-static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReasons* reasons) {
+static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReasons* reasons,
+                         bool* holds) {
     // PASS A — discovery. Zero-width taint sets, so every sink marks nothing
     // and the walk exists only to drive seed_local, which registers each
     // declared name on the unit. This is why discovery cannot drift away from
@@ -282,6 +304,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReas
             .reasons = NULL,
             .hooks = &LOCAL_HOOKS,
             .owner = &own,
+            .func = u->decl,
         };
         bool ignored = false;
         escape_walk_stmt(&ctx, u->body, &ignored);
@@ -300,6 +323,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReas
         .reasons = reasons,
         .hooks = &LOCAL_HOOKS,
         .owner = &own,
+        .func = u->decl,
     };
 
     // Defensive backstop, not the termination argument (see param_escape.c's
@@ -319,6 +343,7 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReas
         escape_walk_stmt(&ctx, u->body, &changed);
     }
 
+    record_holds(&env, u, holds, pass > MAX_LOCAL_PASSES);
     escape_env_free(&env);
 }
 
@@ -336,7 +361,7 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
             if (d->type != AST_FUNC_DECL) continue;
             FuncDeclNode* fd = (FuncDeclNode*)d;
             if (!fd->name || !fd->body) continue;
-            if (unit_list_push(&units, fd->body, fd->name) == BLOCK_ESCAPE_NO_UNIT) {
+            if (unit_list_push(&units, fd, fd->name) == BLOCK_ESCAPE_NO_UNIT) {
                 unit_list_free(&units);
                 return NULL;
             }
@@ -358,6 +383,7 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
     for (size_t i = 0; i < units.count; i++) {
         Unit* u = &units.items[i];
         EscapeReasons* reasons = NULL;
+        bool* holds = NULL;
 
         // Pass A runs inside analyze_unit and fills u->local_names, so the
         // accumulator cannot be sized until after it. analyze_unit therefore
@@ -367,14 +393,22 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
             LocalOwner own = { .summaries = summaries, .local_names = NULL,
                                .local_count = 0, .unit = u };
             EscapeCtx ctx = { .env = &env, .slot_count = 0, .reasons = NULL,
-                              .hooks = &LOCAL_HOOKS, .owner = &own };
+                              .hooks = &LOCAL_HOOKS, .owner = &own,
+                              .func = u->decl };
             bool ignored = false;
             escape_walk_stmt(&ctx, u->body, &ignored);
             escape_env_free(&env);
         }
         if (u->local_count > 0) {
             reasons = calloc(u->local_count, sizeof(EscapeReasons));
-            if (!reasons) {
+            // The square can overflow before calloc sees it, and a short
+            // matrix would be read past its end. Treated as allocation failure.
+            if (u->local_count <= SIZE_MAX / u->local_count) {
+                holds = calloc(u->local_count * u->local_count, sizeof(bool));
+            }
+            if (!reasons || !holds) {
+                free(reasons);
+                free(holds);
                 local_escape_result_free(result);
                 unit_list_free(&units);
                 return NULL;
@@ -383,7 +417,7 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
 
         // analyze_unit re-runs pass A harmlessly (unit_add_local is idempotent
         // by name) and then runs the fixpoint.
-        analyze_unit(summaries, u, reasons);
+        analyze_unit(summaries, u, reasons, holds);
 
         LocalEscapeSummary* s = &result->summaries[result->count];
         s->function_name = u->fn_name;   // ownership MOVES out of the unit
@@ -393,6 +427,7 @@ LocalEscapeResult* local_escape_analyze(ASTNode* program,
         u->local_names = NULL;
         u->local_count = 0;
         s->reasons = reasons;
+        s->holds = holds;
         result->count++;
     }
 
@@ -408,9 +443,19 @@ void local_escape_result_free(LocalEscapeResult* result) {
         for (size_t j = 0; j < s->local_count; j++) free(s->local_names[j]);
         free(s->local_names);
         free(s->reasons);
+        free(s->holds);
     }
     free(result->summaries);
     free(result);
+}
+
+static size_t summary_local_index(const LocalEscapeSummary* s, const char* local) {
+    for (size_t j = 0; j < s->local_count; j++) {
+        if (s->local_names[j] && strcmp(s->local_names[j], local) == 0) {
+            return j;
+        }
+    }
+    return ESCAPE_NO_SLOT;
 }
 
 // Conservative on EVERY miss, per the soundness contract: an unknown function
@@ -429,16 +474,41 @@ bool local_escape_local_escapes(const LocalEscapeResult* result,
 // Every miss returns ESCAPE_REASON_ALL, which is what `true` was.
 EscapeReasons local_escape_local_reasons(const LocalEscapeResult* result,
                                          const char* fn, const char* local) {
-    if (!result || !fn || !local) return ESCAPE_REASON_ALL;
+    const LocalEscapeSummary* s = local_escape_find_summary(result, fn);
+    if (!s || !local) {
+        return ESCAPE_REASON_ALL;      // unknown function
+    }
+    size_t j = summary_local_index(s, local);
+    if (j == ESCAPE_NO_SLOT) {
+        return ESCAPE_REASON_ALL;      // known function, unknown local
+    }
+    return s->reasons[j];
+}
+
+const LocalEscapeSummary* local_escape_find_summary(const LocalEscapeResult* result,
+                                                    const char* fn) {
+    if (!result || !fn) {
+        return NULL;
+    }
     for (size_t i = 0; i < result->count; i++) {
         const LocalEscapeSummary* s = &result->summaries[i];
-        if (!s->function_name || strcmp(s->function_name, fn) != 0) continue;
-        for (size_t j = 0; j < s->local_count; j++) {
-            if (s->local_names[j] && strcmp(s->local_names[j], local) == 0) {
-                return s->reasons[j];
-            }
+        if (s->function_name && strcmp(s->function_name, fn) == 0) {
+            return s;
         }
-        return ESCAPE_REASON_ALL;  // known function, unknown local
     }
-    return ESCAPE_REASON_ALL;      // unknown function
+    return NULL;
+}
+
+// Every miss answers true -- see the header.
+bool local_escape_may_hold(const LocalEscapeSummary* summary,
+                           const char* holder, const char* source) {
+    if (!summary || !holder || !source || !summary->holds) {
+        return true;
+    }
+    size_t h = summary_local_index(summary, holder);
+    size_t s = summary_local_index(summary, source);
+    if (h == ESCAPE_NO_SLOT || s == ESCAPE_NO_SLOT) {
+        return true;
+    }
+    return summary->holds[(h * summary->local_count) + s];
 }

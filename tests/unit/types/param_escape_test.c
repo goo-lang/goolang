@@ -24,6 +24,8 @@
 #include "ast.h"
 #include "types.h"
 #include "param_escape.h"
+#include "local_escape.h"
+#include "returns_fresh.h"
 #include "../goo_check.h"
 #include <stdio.h>
 #include <string.h>
@@ -438,13 +440,249 @@ static TestRow rows[] = {
         "}\n",
         { { "id", 1, { true }, true, true } }, 1
     },
+    {
+        27, "a bare return returns the named results (C3)",
+        // `r = p; return` has no return VALUES, so the engine saw no flow from
+        // p to the result: return_escapes stayed false and the caller's ARC
+        // freed a live argument. `q` is never stored in a result, so it must
+        // stay non-escaping, which proves the named results are not simply
+        // marked wholesale. `keep` reaches its result through a local.
+        "package main\n"
+        "func pick(p *int, q *int) (r *int) {\n"
+        "    r = p\n"
+        "    return\n"
+        "}\n"
+        "func keep(p *int) (r *int) {\n"
+        "    x := p\n"
+        "    r = x\n"
+        "    return\n"
+        "}\n",
+        { { "pick", 2, { true, false }, true, true },
+          { "keep", 1, { true }, true, true } }, 2
+    },
 };
 
+// returns_fresh rows (finding C2). A table of their own, because they assert
+// nothing about escapes[] and the rows above assert nothing about ownership.
+#define MAX_FRESH_FUNCS 6
 
+typedef struct {
+    const char* fn_name;
+    bool        expected;
+    // The name belongs to more than one function, so param_escape_lookup's
+    // first match is not THE summary. Only the all-matches helper is checked.
+    bool        name_is_shared;
+    // param_escape_call_result_is_owned: returns_fresh AND not return_escapes.
+    bool        expected_owned;
+} FreshExpectation;
+
+typedef struct {
+    int              row;
+    const char*      description;
+    const char*      src;
+    FreshExpectation expect[MAX_FRESH_FUNCS];
+    int              expect_count;
+} FreshRow;
+
+static FreshRow fresh_rows[] = {
+    {
+        28, "returns_fresh needs a positive proof on every return path (C2)",
+        // return_escapes is false for all four of getS, mkReg and mk, because
+        // none of them returns a value derived from a PARAMETER. ARC read that
+        // as "the caller owns the result" and freed GS[0] and r.items[0].
+        //
+        // mk is the recursion row: its second path returns mk's own result, so
+        // a fixpoint that starts every function at "fresh is false" and only
+        // raises it can never prove mk. The pass computes the dual instead --
+        // "may return a borrowed value", which starts false and only rises.
+        //
+        // pick is Task 3.1's bare return of a named result that holds a param.
+        "package main\n"
+        "type Box struct{ v int }\n"
+        "type Reg struct{ items []*Box }\n"
+        "var GS []*Box\n"
+        "func getS() *Box {\n"
+        "    return GS[0]\n"
+        "}\n"
+        "func mkReg(r *Reg) *Box {\n"
+        "    b := &Box{v: 30}\n"
+        "    r.items = append(r.items, b)\n"
+        "    return b\n"
+        "}\n"
+        "func mk(n int) *Box {\n"
+        "    if n == 0 {\n"
+        "        return &Box{v: 7}\n"
+        "    }\n"
+        "    return mk(n - 1)\n"
+        "}\n"
+        "func pick(p *Box) (r *Box) {\n"
+        "    r = p\n"
+        "    return\n"
+        "}\n",
+        { { "getS", false, false, false }, { "mkReg", false, false, false },
+          { "mk", true, false, true },     { "pick", false, false, false } }, 4
+    },
+    {
+        29, "returns_fresh: the local rule, and the shapes it must refuse",
+        // viaLocal is the precision half: a local bound only to a fresh value
+        // and escaping only by return is fresh.
+        //
+        // orNil is precision too: a literal, nil included, frees nothing when
+        // released, so an error path that returns one must not make the
+        // function's other paths leak.
+        //
+        // The other three are the soundness half. Each holds a value the
+        // caller does not own on SOME path, and each is a way the local rule
+        // could be fooled: a write through the local's address, a same-named
+        // local in an inner scope that is not the one returned, and a rebind
+        // to a global.
+        "package main\n"
+        "type Box struct{ v int }\n"
+        "var G *Box\n"
+        "func viaLocal() *Box {\n"
+        "    b := &Box{v: 1}\n"
+        "    return b\n"
+        "}\n"
+        "func addrTaken() *Box {\n"
+        "    b := &Box{v: 1}\n"
+        "    p := &b\n"
+        "    *p = G\n"
+        "    return b\n"
+        "}\n"
+        "func shadowGlobal(c bool) *Box {\n"
+        "    if c {\n"
+        "        G := &Box{v: 2}\n"
+        "        _ = G\n"
+        "    }\n"
+        "    return G\n"
+        "}\n"
+        "func rebound(c bool) *Box {\n"
+        "    b := &Box{v: 3}\n"
+        "    if c {\n"
+        "        b = G\n"
+        "    }\n"
+        "    return b\n"
+        "}\n"
+        "func orNil(c bool) *Box {\n"
+        "    if c {\n"
+        "        return &Box{v: 4}\n"
+        "    }\n"
+        "    return nil\n"
+        "}\n",
+        { { "viaLocal", true, false, true },      { "addrTaken", false, false, false },
+          { "shadowGlobal", false, false, false }, { "rebound", false, false, false },
+          { "orNil", true, false, true } }, 5
+    },
+    {
+        30, "returns_fresh: a bare call never matches a method (C-3), and a multi-result function is never fresh (C-2)",
+        // A bare call `get()` calls a function or a func VARIABLE, never a
+        // method. Here the only `get` is a method, so a bare `get()` has no
+        // summary: the helper answers false, and viaGet, which returns get's
+        // result, is not fresh. At run time that call reaches a package-level
+        // func variable that returns a container element.
+        //
+        // dup has a method of the same name as well; the method is skipped, so
+        // the function's own answer stands.
+        //
+        // two returns one box in both results. Each result is fresh on its
+        // own, but a caller that owned both would free the box twice.
+        //
+        // wrap is fresh but holds its argument, so returns_fresh is true and
+        // the OWNERSHIP helper, which also needs !return_escapes, is false.
+        "package main\n"
+        "type Box struct{ v int }\n"
+        "type Holder struct{ p *Box }\n"
+        "type B struct{}\n"
+        "func (b *B) get() *Box {\n"
+        "    return &Box{v: 1}\n"
+        "}\n"
+        "func viaGet() *Box {\n"
+        "    return get()\n"
+        "}\n"
+        "func dup() *Box {\n"
+        "    return &Box{v: 3}\n"
+        "}\n"
+        "func (b *B) dup() *Box {\n"
+        "    return nil\n"
+        "}\n"
+        "func two() (*Box, *Box) {\n"
+        "    b := &Box{v: 5}\n"
+        "    return b, b\n"
+        "}\n"
+        "func wrap(b *Box) *Holder {\n"
+        "    return &Holder{p: b}\n"
+        "}\n"
+        "func only() *Box {\n"
+        "    return &Box{v: 2}\n"
+        "}\n",
+        { { "get", false, true, false }, { "viaGet", false, false, false },
+          { "dup", true, true, true },   { "two", false, false, false },
+          { "wrap", true, false, false }, { "only", true, false, true } }, 6
+    },
+};
+
+static void run_fresh_row(const FreshRow* row) {
+    goo_check_row(row->row, row->description);
+
+    char buf[256];
+    int parse_rc = parse_input(row->src, "test.goo");
+    snprintf(buf, sizeof(buf), "row %d: the fixture parses (rc=%d)", row->row, parse_rc);
+    goo_check(parse_rc == 0 && ast_root != NULL, buf);
+    if (parse_rc != 0 || !ast_root) {
+        if (ast_root) { ast_node_free(ast_root); ast_root = NULL; }
+        return;
+    }
+    TypeChecker* checker = type_checker_new();
+    if (checker) type_check_program(checker, ast_root);
+
+    ParamEscapeResult* result = param_escape_analyze(ast_root);
+    goo_check(result != NULL, "param_escape_analyze returned a result");
+    // returns_fresh is filled by its own pass, the way release_plan_analyze
+    // runs it.
+    LocalEscapeResult* locals = local_escape_analyze(ast_root, result);
+    goo_check(locals != NULL, "local_escape_analyze returned a result");
+    returns_fresh_compute(ast_root, result, locals);
+    for (int e = 0; result && e < row->expect_count; e++) {
+        const FreshExpectation* fe = &row->expect[e];
+        if (!fe->name_is_shared) {
+            const ParamEscapeSummary* summary = param_escape_lookup(result, fe->fn_name);
+            snprintf(buf, sizeof(buf), "row %d: summary for '%s' found", row->row, fe->fn_name);
+            goo_check(summary != NULL, buf);
+            if (summary) {
+                snprintf(buf, sizeof(buf), "row %d: '%s'.returns_fresh == %s (got %s)",
+                         row->row, fe->fn_name, fe->expected ? "true" : "false",
+                         summary->returns_fresh ? "true" : "false");
+                goo_check(summary->returns_fresh == fe->expected, buf);
+            }
+        }
+        bool via_helper = param_escape_returns_fresh(result, fe->fn_name);
+        snprintf(buf, sizeof(buf), "row %d: param_escape_returns_fresh('%s') == %s (got %s)",
+                 row->row, fe->fn_name, fe->expected ? "true" : "false",
+                 via_helper ? "true" : "false");
+        goo_check(via_helper == fe->expected, buf);
+        bool owned = param_escape_call_result_is_owned(result, fe->fn_name);
+        snprintf(buf, sizeof(buf), "row %d: param_escape_call_result_is_owned('%s') == %s (got %s)",
+                 row->row, fe->fn_name, fe->expected_owned ? "true" : "false",
+                 owned ? "true" : "false");
+        goo_check(owned == fe->expected_owned, buf);
+    }
+    if (result) {
+        goo_check(!param_escape_returns_fresh(result, "__no_such_function__"),
+                  "unknown function name is conservatively not fresh");
+        goo_check(!param_escape_call_result_is_owned(result, "__no_such_function__"),
+                  "unknown function name is conservatively not owned");
+        param_escape_result_free(result);
+    }
+    local_escape_result_free(locals);
+    if (checker) type_checker_free(checker);
+    ast_node_free(ast_root);
+    ast_root = NULL;
+}
 
 int main(void) {
     size_t n = sizeof(rows) / sizeof(rows[0]);
-    goo_check_expect((int)n);
+    size_t n_fresh = sizeof(fresh_rows) / sizeof(fresh_rows[0]);
+    goo_check_expect((int)(n + n_fresh));
 
     for (size_t r = 0; r < n; r++) {
         TestRow* row = &rows[r];
@@ -533,6 +771,8 @@ int main(void) {
         ast_root = NULL;
 
     }
+
+    for (size_t r = 0; r < n_fresh; r++) run_fresh_row(&fresh_rows[r]);
 
     return goo_check_done("param-escape-test");
 }

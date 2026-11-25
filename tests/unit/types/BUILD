@@ -27,12 +27,16 @@ goo_cc_test(
     srcs = ["param_escape_test.c"],
     deps = [
         "//include:ast_h",
+        "//include:local_escape_h",
         "//include:param_escape_h",
         "//include:parser_h",
+        "//include:returns_fresh_h",
         "//include:types_h",
         "//src/parser",
         "//src/types:frontend",
+        "//src/types:local_escape",
         "//src/types:param_escape",
+        "//src/types:returns_fresh",
         "//tests/unit:goo_check",
     ],
 )

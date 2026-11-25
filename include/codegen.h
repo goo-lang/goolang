@@ -37,6 +37,9 @@ struct BlockEscapeResult;
 // T4: release_decision.h owns the full definition; codegen.h needs only a
 // pointer-sized member.
 struct ReleasePlan;
+// C1: local_escape.h owns the full definition; a pointer-sized member only.
+struct LocalEscapeResult;
+struct ParamEscapeResult;
 
 // Allocation routing (arena-regions groundwork): every heap-allocation call
 // site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
@@ -300,6 +303,19 @@ struct CodeGenerator {
     int emit_qir;
     uint64_t qir_num_qubits;
     uint64_t qir_num_results;
+
+    // C1: per-local escape verdicts for `local_escape_program`, computed in
+    // codegen_generate_program. A local whose address is taken moves to the
+    // heap only when this says its value may outlive the function, so the
+    // stack stays the default. Computed even under GOO_ARC_RELEASE=0, because
+    // a dangling `&x` does not depend on ARC. NULL, or a function declared
+    // outside `local_escape_program`, promotes every address-taken local,
+    // which leaks and never dangles. Tail-appended, as above.
+    struct LocalEscapeResult* local_escape;
+    ASTNode* local_escape_program;
+    // C1: the callee summaries local_escape was computed from, kept for the
+    // pointer-receiver rule: does a method keep or return its receiver?
+    struct ParamEscapeResult* param_escape;
 };
 
 // Function information for code generation

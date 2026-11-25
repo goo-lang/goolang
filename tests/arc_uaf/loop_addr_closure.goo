@@ -1,0 +1,18 @@
+package main
+
+import "fmt"
+
+func main() {
+	fs := []func() int{}
+	done := make(chan int, 1)
+	for i := 0; i < 3; i++ {
+		n := i
+		p := &n
+		fs = append(fs, func() int { return *p })
+	}
+	go func() { done <- fs[2]() }()
+	for _, f := range fs {
+		fmt.Println(f())
+	}
+	fmt.Println(<-done)
+}
