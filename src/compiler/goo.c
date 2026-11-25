@@ -1234,7 +1234,6 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 
         if (options->verbose) printf("Phase 2: Parsing (%s)...\n", fname);
 
-        extern Lexer* current_lexer;
         current_lexer = lexers[fi];
 
         // ast_root is a bison global: snapshot into this file's slot and null
@@ -1519,7 +1518,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     codegen->link_libs = (const char**)options->link_libs;
     codegen->link_lib_count = (size_t)options->link_lib_count;
     codegen->linker = options->linker;
-    codegen->link_flags = (const char**)options->link_flags;
+    codegen->link_flags = options->link_flags;
     codegen->link_flag_count = (size_t)options->link_flag_count;
 
     // stdlib Phase 0 (Task 4): if main imports non-shim packages, resolve+parse

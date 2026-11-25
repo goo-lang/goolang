@@ -29,10 +29,6 @@ ASTNode* ast_root = NULL;
 ASTNode* g_func_signature_params = NULL;
 ASTNode* g_func_signature_result = NULL;
 
-// Defined in src/parser/lexer_bridge.c; each consumer translation unit
-// declares its own extern (mirrors parser.y's own declaration for yyerror).
-extern Lexer* current_lexer;
-
 // Go grouped-name shorthand `(x, y int)` == `(x int, y int)`, applied to a
 // parsed parameter or result list. The func_param machinery has no comma-
 // shared-type rule, so a leading `x` (no type of its own) parses as an

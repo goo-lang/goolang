@@ -36,7 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
+Type* type_checker_get_builtin(const TypeChecker* checker, TypeKind kind) {
     if (!checker || !checker->builtin_types || kind >= TYPE_COUNT) {
         return NULL;
     }
@@ -46,7 +46,7 @@ Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
 // v1 `error` = `?*int8` (a nullable pointer). Single source of truth so the
 // `error` keyword, the n,err destructure, and errors.New stay in lockstep —
 // Phase 6's real error struct / `.Error()` changes only this.
-Type* type_checker_error_type(TypeChecker* checker) {
+Type* type_checker_error_type(const TypeChecker* checker) {
     Type* t = type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
     // Phase 6 Task 3: tag the nullable so `.Error()` dispatch (type checker +
     // codegen) can recognize "this is the error type" without re-deriving its
