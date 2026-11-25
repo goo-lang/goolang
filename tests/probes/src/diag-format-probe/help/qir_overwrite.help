@@ -1,0 +1,2 @@
+  help: qir.FreeZero(q)
+        place this before the assignment to q

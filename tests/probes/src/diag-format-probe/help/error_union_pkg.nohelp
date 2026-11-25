@@ -1,1 +1,2 @@
+error union must be handled
 package level: := is illegal and the parser rejects 'var x, err = f()', so no help

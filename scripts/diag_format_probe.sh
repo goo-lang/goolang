@@ -14,9 +14,13 @@
 #            line and a multi-byte line. Each stderr is also checked against
 #            the header grammar, so a stale NAME.expect cannot bless an old
 #            format.
-#   help/    NAME.goo must fail WITH a "  help: " line and NAME.fixed.goo (the
-#            help applied) must build. A NAME.nohelp marker inverts the first
-#            half: NAME.goo must fail with NO help line.
+#   help/    NAME.goo must fail WITH a help block. NAME.help holds that block
+#            exactly as printed. NAME.fixed.goo (the help applied) must build
+#            and must contain each code line of the help: the first help line,
+#            and the text after "for example: " on a later line.
+#            NAME.nohelp inverts this: NAME.goo must fail with NO help line,
+#            and line 1 of NAME.nohelp is the error text it must print, so a
+#            fixture that fails for another reason is refused.
 #
 # Excluded on purpose: lexer errors have no snippet (lexer.c is compiled by
 # name in several probes) and the in-memory _testmain file has none.
@@ -84,6 +88,70 @@ run_format_dir() {
 	FORMAT_N=$n
 }
 
+# help_code_lines BLOCK_FILE: prints the paste-ready code of a help block, one
+# per line, without the "  help: " lead. By convention the first help line is
+# code. A later line is prose, except the text after "for example: ", which is
+# code too.
+help_code_lines() {
+	local n=0 line text
+	while IFS= read -r line; do
+		n=$((n + 1))
+		text=${line:8}
+		if [ "$n" -eq 1 ]; then
+			printf '%s\n' "$text"
+		else
+			case $text in *"for example: "*) printf '%s\n' "${text##*for example: }" ;; esac
+		fi
+	done < "$1"
+}
+
+# check_help_fixture NAME DIR TMP: the help of a failing fixture. The printed
+# block must equal NAME.help, and the code in it must appear, line for line,
+# in NAME.fixed.goo, which must build. So the proof file is the help applied.
+check_help_fixture() {
+	local name=$1 dir=$2 tmp=$3 code
+	sed -n '/^  help: /,$p' "$tmp/herr" > "$tmp/hblock"
+	if [ ! -s "$tmp/hblock" ]; then
+		fail no-help "$name: no help line in stderr"
+		return
+	fi
+	if [ ! -f "$dir/$name.help" ]; then
+		fail no-help-file "$name: no $name.help with the expected help"
+	elif ! cmp -s "$tmp/hblock" "$dir/$name.help"; then
+		fail help-differs "$name: printed help differs from $name.help:"
+		cat "$tmp/hblock"
+	fi
+	if [ ! -f "$dir/$name.fixed.goo" ]; then
+		fail no-fixed "$name: no .fixed.goo"
+		return
+	fi
+	sed 's/^[[:space:]]*//;s/[[:space:]]*$//' "$dir/$name.fixed.goo" > "$tmp/fixed.trim"
+	while IFS= read -r code; do
+		grep -Fxq -- "$code" "$tmp/fixed.trim" ||
+			fail help-not-in-fixed "$name: help code '$code' is not a line of $name.fixed.goo"
+	done < <(help_code_lines "$tmp/hblock")
+	if ! "$COMPILER" build -o "$tmp/ok" "$dir/$name.fixed.goo" 2>"$tmp/herr2"; then
+		fail fixed-build "$name: the fixed fixture does not build"
+		cat "$tmp/herr2"
+	fi
+}
+
+# check_nohelp_fixture NAME DIR TMP: NAME.nohelp line 1 is the error message
+# that the fixture must print. Any other failure is refused, so a fixture that
+# breaks for another reason cannot pass as "no help".
+check_nohelp_fixture() {
+	local name=$1 dir=$2 tmp=$3 want
+	want=$(head -n 1 "$dir/$name.nohelp")
+	if [ -z "$want" ]; then
+		fail nohelp-no-message "$name: $name.nohelp line 1 must hold the expected error text"
+	elif ! head -n 1 "$tmp/herr" | grep -Fq -- "$want"; then
+		fail nohelp-error "$name: first stderr line lacks '$want': $(head -n 1 "$tmp/herr")"
+	fi
+	if grep -q '^  help: ' "$tmp/herr"; then
+		fail help-forbidden "$name: help line where none is allowed"
+	fi
+}
+
 # run_help_dir DIR TMP
 run_help_dir() {
 	local dir=$1 tmp=$2 n=0 f name
@@ -97,17 +165,9 @@ run_help_dir() {
 			continue
 		fi
 		if [ -f "$dir/$name.nohelp" ]; then
-			if grep -q '^  help: ' "$tmp/herr"; then
-				fail help-forbidden "$name: help line where none is allowed"
-			fi
-			continue
-		fi
-		grep -q '^  help: ' "$tmp/herr" || fail no-help "$name: no help line in stderr"
-		if [ ! -f "$dir/$name.fixed.goo" ]; then
-			fail no-fixed "$name: no .fixed.goo"
-		elif ! "$COMPILER" build -o "$tmp/ok" "$dir/$name.fixed.goo" 2>"$tmp/herr2"; then
-			fail fixed-build "$name: the fixed fixture does not build"
-			cat "$tmp/herr2"
+			check_nohelp_fixture "$name" "$dir" "$tmp"
+		else
+			check_help_fixture "$name" "$dir" "$tmp"
 		fi
 	done
 	[ "$n" -gt 0 ] || fail no-fixtures "no help fixtures in $dir"
@@ -176,17 +236,63 @@ self_test() {
 	printf 'x.goo:4:2: error: Cannot assign int64 to string\n    4 | \tvar s string = 5\n      | \t^\n  help: extra\n' > "$t/extra.err"
 	one extra "$t/extra.err"; expect_red stderr "an extra trailing line"
 
-	# Help mutants, using the real compiler on a copy of a repo fixture.
+	# Help mutants, using the real compiler on copies of repo fixtures.
 	local h="$tmp/help" src="$FIXTURES/help"
 	mkdir -p "$h"
-	cp "$src/error_union.goo" "$h/bad.goo"
-	printf 'package main\nfunc main() { this is not goo\n' > "$h/bad.fixed.goo"
-	( FAILS=0; run_help_dir "$h" "$tmp" ) > "$CAPTURE"
-	expect_red fixed-build "a .fixed.goo that does not compile"
+	help_case() { ( FAILS=0; run_help_dir "$h" "$tmp" ) > "$CAPTURE"; }
+	reset_help() {
+		rm -rf "$h"; mkdir -p "$h"
+		cp "$src/error_union.goo" "$h/bad.goo"
+		cp "$src/error_union.fixed.goo" "$h/bad.fixed.goo"
+		cp "$src/error_union.help" "$h/bad.help"
+	}
 
-	rm -f "$h/bad.fixed.goo"; : > "$h/bad.nohelp"
-	( FAILS=0; run_help_dir "$h" "$tmp" ) > "$CAPTURE"
-	expect_red help-forbidden "a .nohelp fixture that prints help"
+	reset_help
+	help_case
+	if grep -q '^FAIL' "$CAPTURE"; then
+		echo "SELF-TEST FAIL: the unchanged help control was refused"; SELF_FAILED=1
+		cat "$CAPTURE"
+	else
+		echo "self-test: help control -> GREEN (ok)"
+	fi
+
+	reset_help
+	{ cat "$src/error_union.fixed.goo"; echo 'this is not goo'; } > "$h/bad.fixed.goo"
+	help_case; expect_red fixed-build "a .fixed.goo that has the help code but does not build"
+
+	reset_help
+	sed 's/x, err := f()/x, e := f()/; s/_ = err/_ = e/' "$src/error_union.fixed.goo" > "$h/bad.fixed.goo"
+	help_case; expect_red help-not-in-fixed "a .fixed.goo that builds but lacks the help code"
+
+	reset_help
+	printf '  help: x, err := g()\n' > "$h/bad.help"
+	help_case; expect_red help-differs "printed help differs from NAME.help"
+
+	reset_help
+	rm "$h/bad.help"
+	help_case; expect_red no-help-file "a help fixture without NAME.help"
+
+	reset_help
+	cp "$src/error_union_chain.goo" "$h/bad.goo"; rm -f "$h/bad.fixed.goo" "$h/bad.help"
+	printf 'error union must be handled\n' > "$h/bad.nohelp"
+	help_case
+	if grep -q '^FAIL' "$CAPTURE"; then
+		echo "SELF-TEST FAIL: the unchanged nohelp control was refused"; SELF_FAILED=1
+		cat "$CAPTURE"
+	else
+		echo "self-test: nohelp control -> GREEN (ok)"
+	fi
+
+	printf 'a message that is not printed\n' > "$h/bad.nohelp"
+	help_case; expect_red nohelp-error "a .nohelp fixture that fails with a different error"
+
+	: > "$h/bad.nohelp"
+	help_case; expect_red nohelp-no-message "a .nohelp fixture with no expected message"
+
+	reset_help
+	rm -f "$h/bad.fixed.goo" "$h/bad.help"
+	printf 'error union must be handled\n' > "$h/bad.nohelp"
+	help_case; expect_red help-forbidden "a .nohelp fixture that prints help"
 
 	rm -rf "$h"; mkdir -p "$h"
 	( FAILS=0; run_help_dir "$h" "$tmp" ) > "$CAPTURE"
