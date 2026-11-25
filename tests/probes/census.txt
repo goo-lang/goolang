@@ -162,6 +162,7 @@ script arc-concat-operand-probe
 script arc-map-key-local-probe
 script arc-multi-assign-probe
 script arc-reassign-probe
+script arc-uaf-probe
 script archive-determinism-probe
 script arena-rss-probe
 script assertion-density-probe
