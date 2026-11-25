@@ -63,7 +63,7 @@ int main(void) {
 
     goo_check_row(5, "utf8_pad");
     // pi is two bytes, so y sits at byte column 7.
-    diag_register_source("u.goo", "\xcf\x80 := y", 8);
+    diag_register_source("u.goo", "\xcf\x80 := y", 7);
     expect_eq(capture(DIAG_ERROR, at("u.goo", 1, 7), NULL, "m"),
               "u.goo:1:7: error: m\n    1 | \xcf\x80 := y\n      |      ^\n",
               "utf8");
