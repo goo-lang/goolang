@@ -1201,6 +1201,23 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "s", RELEASE_NO_BLOCK_ESCAPE } }, 1
     },
+    {
+        // A QIR HANDLE IS NOT ARC MEMORY. qir.Alloc is non_retaining in the
+        // shim table, and call_result_is_owned refuses every qir.* result for
+        // that reason. returns_fresh must refuse it too, or a Goo wrapper
+        // launders the handle into an owned result one call later.
+        80, "a Goo function returning qir.Alloc() -> not owned",
+        "package main\n"
+        "import \"qir\"\n"
+        "func mk() qir.Qubit {\n"
+        "    return qir.Alloc()\n"
+        "}\n"
+        "func f() {\n"
+        "    q := mk()\n"
+        "    qir.H(q)\n"
+        "}\n",
+        "f", { { "q", RELEASE_NO_NOT_OWNED } }, 1
+    },
 };
 
 // =============================================================================

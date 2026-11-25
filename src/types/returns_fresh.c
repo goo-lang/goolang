@@ -606,8 +606,12 @@ static void classify_value(FreshClassify* c, ASTNode* v) {
     if (fn && fn->type == AST_SELECTOR_EXPR) {
         SelectorExprNode* sel = (SelectorExprNode*)fn;
         // A base that is a variable makes this a method call, not a package one.
+        // qir.* results are opaque QIR handles with no ARC header, so a
+        // non_retaining qir entry proves nothing about ownership. Same refusal
+        // as call_result_is_owned in release_decision.c.
         if (sel->expr && sel->expr->type == AST_IDENTIFIER && sel->selector
             && !names_a_variable(c, ((IdentifierNode*)sel->expr)->name)
+            && strcmp(((IdentifierNode*)sel->expr)->name, "qir") != 0
             && shim_signature_is_non_retaining(((IdentifierNode*)sel->expr)->name,
                                                sel->selector) != 0) {
             return;
