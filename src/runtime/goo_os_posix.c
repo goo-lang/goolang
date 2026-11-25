@@ -93,7 +93,7 @@ int goo_mutex_try_lock(goo_mutex_t* mutex) {
 #  define GOO_OS_REQUIRE_ZERO(rc) ((void)(rc))
 #else
 #  define GOO_OS_REQUIRE_ZERO(rc) \
-     ((rc) != 0 ? (void)goo_assert_fail("OS CALL", #rc " == 0", __FILE__, __LINE__, __func__) : (void)0)
+     do { if ((rc) != 0) { goo_assert_fail("OS CALL", #rc " == 0", __FILE__, __LINE__, __func__); } } while (0)
 #endif
 
 // ---------------------------------------------------------------------------
