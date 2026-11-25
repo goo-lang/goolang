@@ -9,6 +9,7 @@ committed, only tarballs.
 |---|---|---|---|
 | NNG (nanomsg-next-gen) | v1.12.0 | nng-1.12.0.tar.gz | `50b7264bd8f0901f7ebdf3ec7c48f4e23dd689bbe7b2917d9d8fad58ffd09e5c` |
 | SPIN model checker | version-6.5.2, commit 4883fbb | spin-6.5.2.tar.gz | `e46a3bd308c4cd213cc466a8aaecfd5cedc02241190f3cb9a1d1b87e5f37080a` |
+| Go test corpus (`// run` programs of `test/` and `test/fixedbugs/`) | go1.27.4 | go-test-corpus/go1.27.4/ | no tarball: plain source copy, 794 `.go` and 45 `.out` files, about 6 MB on disk |
 
 NNG backs the `far` shim package (lanes M2-B1 far transport). MIT license.
 The build deliberately ignores any system/`/usr/local` nng install.
@@ -46,3 +47,8 @@ and timed with the shell's `time` builtin, same date: under one second
 wall-clock on a 32-core machine, `-j$(nproc)`. The result reports
 `Spin Version 6.5.2 -- 6 December 2019` for `spin -V`. This is the exact
 flag `scripts/spin_bootstrap.sh` uses.
+
+The Go test corpus is the input of `scripts/superset_probe.sh` (BSD 3-Clause,
+Go LICENSE kept in the folder). It is a plain copy and not a tarball, because the
+gate reads each file by path. `go-test-corpus/go1.27.4/README.md` gives the
+selection rule and the regenerate command.
