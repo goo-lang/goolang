@@ -310,7 +310,7 @@ int codegen_generate_nullable_assignment(CodeGenerator* codegen, TypeChecker* ch
 }
 
 // Generate code for null literal
-ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, TypeChecker* checker, Type* expected_type) {
+ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, const TypeChecker* checker, Type* expected_type) {
     if (!codegen) return NULL;
 
     // Go-compatible bare nil (P2.2 option A): pointer/slice/map/channel/

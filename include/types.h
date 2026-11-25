@@ -1117,16 +1117,16 @@ int type_check_package(TypeChecker* checker, Package* pkg,
 // from BOTH goo.c's seed_imported_stdlib_markers (main's own import) and
 // type_checker.c's seed_package_own_shim_imports (a vendored/local
 // package's own import) — see either call site's doc comment.
-void seed_sync_package_exports(TypeChecker* checker, Package* pkg);
+void seed_sync_package_exports(const TypeChecker* checker, Package* pkg);
 // `goo test`: testing.T plus Run/Summary. Bespoke like sync (a type with a
 // method set) and impossible in SHIM_TABLE (no func ParamKind for Run's callback).
-void seed_testing_package_exports(TypeChecker* checker, Package* pkg);
-void seed_time_package_exports(TypeChecker* checker, Package* pkg);
+void seed_testing_package_exports(const TypeChecker* checker, Package* pkg);
+void seed_time_package_exports(const TypeChecker* checker, Package* pkg);
 // os.File plus its Write method. Bespoke for the same reason as sync: a TYPE
 // with a method set, which stdlib_package_lookup cannot model. Write's
 // implementation is a codegen-emitted adapter, not a Goo function.
-void seed_os_package_exports(TypeChecker* checker, Package* pkg);
-void seed_qir_package_exports(TypeChecker* checker, Package* pkg);
+void seed_os_package_exports(const TypeChecker* checker, Package* pkg);
+void seed_qir_package_exports(const TypeChecker* checker, Package* pkg);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);
@@ -1341,14 +1341,14 @@ void type_warning(TypeChecker* checker, Position pos, const char* format, ...);
 // Builtin types access
 void type_checker_init_builtins(TypeChecker* checker);
 void type_checker_add_builtin_functions(TypeChecker* checker);
-Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind);
+Type* type_checker_get_builtin(const TypeChecker* checker, TypeKind kind);
 
 // The v1 representation of Go's `error` interface: a nullable pointer
 // (`?*int8`). Single source of truth — the type checker (`error` keyword,
 // the n,err destructure bind, errors.New) and codegen (destructure, errors.New)
 // all build the error type through this, so Phase 6 (real error struct /
 // `.Error()`) changes one place instead of five.
-Type* type_checker_error_type(TypeChecker* checker);
+Type* type_checker_error_type(const TypeChecker* checker);
 
 // Channel helper functions
 const char* channel_pattern_string(ChannelPattern pattern);

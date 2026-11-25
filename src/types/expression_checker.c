@@ -2561,7 +2561,7 @@ static int name_is_user_shadowed(TypeChecker* checker, const char* name) {
     return 0;
 }
 
-static Type* builtin_conversion_target(TypeChecker* checker, const char* name) {
+static Type* builtin_conversion_target(const TypeChecker* checker, const char* name) {
     if (!name) return NULL;
     if (strcmp(name, "int") == 0)     return type_checker_get_builtin(checker, TYPE_INT64);
     if (strcmp(name, "int8") == 0)    return type_checker_get_builtin(checker, TYPE_INT8);
