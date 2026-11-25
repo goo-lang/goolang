@@ -105,7 +105,7 @@ typedef struct LocalEscapeResult {
 // external and retaining — still SOUND, just maximally conservative, which
 // costs every local passed to any function. Pass real summaries or ARC
 // reclaims almost nothing.
-LocalEscapeResult* local_escape_analyze(ASTNode* program,
+LocalEscapeResult* local_escape_analyze(const ASTNode* program,
                                         const ParamEscapeResult* summaries);
 void local_escape_result_free(LocalEscapeResult* result);
 

@@ -86,7 +86,8 @@ typedef struct {
 static void scan_push_name(const char*** arr, size_t* len, size_t* cap, const char* name) {
     if (*len >= *cap) {
         *cap = *cap ? *cap * 2 : 8;
-        *arr = xrealloc(*arr, *cap * sizeof(**arr));
+        void* grown = *arr;
+        *arr = xrealloc(grown, *cap * sizeof(**arr));
     }
     (*arr)[(*len)++] = name;
 }
@@ -99,15 +100,15 @@ static void scan_declare(FreshScan* s, const char* name) {
 static void scan_bind(FreshScan* s, const char* name, ASTNode* value) {
     if (!name || strcmp(name, "_") == 0) { return; }
     if (s->binding_count >= s->binding_cap) {
-        s->binding_cap = s->binding_cap ? s->binding_cap * 2 : 8;
+        s->binding_cap = s->binding_cap ? s->binding_cap * 2U : 8U;
         s->bindings = xrealloc(s->bindings, s->binding_cap * sizeof(*s->bindings));
     }
     s->bindings[s->binding_count++] = (FreshBinding){ .name = name, .value = value };
 }
 
 static bool scan_in_scope(const FreshScan* s, const char* name) {
-    for (size_t i = s->scope_len; i > 0; i--) {
-        if (strcmp(s->scope[i - 1], name) == 0) { return true; }
+    for (size_t i = s->scope_len; i > 0U; i--) {
+        if (strcmp(s->scope[i - 1U], name) == 0) { return true; }
     }
     return false;
 }
@@ -206,7 +207,7 @@ static void scan_expr(FreshScan* s, ASTNode* e) {
         case AST_FUNC_LIT: {
             // A closure holds its captures by reference, which is an address
             // taken. The body is not walked: its returns are not F's.
-            FuncLitNode* lit = (FuncLitNode*)e;
+            const FuncLitNode* lit = (const FuncLitNode*)e;
             for (size_t i = 0; i < lit->captured_count; i++) {
                 scan_push_name(&s->addr_taken, &s->addr_count, &s->addr_cap,
                                lit->captured_names[i]);
@@ -253,15 +254,15 @@ static void scan_expr(FreshScan* s, ASTNode* e) {
 // two sides are never one object. release_decision's seed_names makes the same
 // split.
 static ASTNode* multi_result_binding(ASTNode* values, size_t value_count) {
-    if (value_count != 1 || values->type != AST_CALL_EXPR) { return NULL; }
-    ASTNode* fn = ((CallExprNode*)values)->function;
+    if (value_count != 1U || values->type != AST_CALL_EXPR) { return NULL; }
+    const ASTNode* fn = ((const CallExprNode*)values)->function;
     return (fn && fn->type == AST_SELECTOR_EXPR) ? values : NULL;
 }
 
 static void scan_bind_names(FreshScan* s, char** names, size_t name_count, ASTNode* values,
                             bool declare) {
     size_t value_count = 0;
-    for (ASTNode* v = values; v; v = v->next) { value_count++; }
+    for (const ASTNode* v = values; v; v = v->next) { value_count++; }
     ASTNode* v = values;
     for (size_t i = 0; i < name_count; i++) {
         ASTNode* bound = (value_count == name_count) ? v
@@ -361,7 +362,7 @@ static void scan_stmts(FreshScan* s, ASTNode* stmt, bool has_results) {
                 for (ASTNode* v = n->values; v; v = v->next) {
                     scan_expr(s, v);
                     if (s->return_count >= s->return_cap) {
-                        s->return_cap = s->return_cap ? s->return_cap * 2 : 4;
+                        s->return_cap = s->return_cap ? s->return_cap * 2U : 4U;
                         s->returns = xrealloc(s->returns, s->return_cap * sizeof(*s->returns));
                     }
                     bool local = v->type == AST_IDENTIFIER
@@ -578,7 +579,7 @@ static bool is_fresh_composite(const ASTNode* e) {
 
 // Classifies a value that is NOT a bare identifier: fresh, borrowed, or fresh
 // if a named Goo callee turns out to be.
-static void classify_value(FreshClassify* c, ASTNode* v) {
+static void classify_value(FreshClassify* c, const ASTNode* v) {
     if (!v) { c->facts->borrowed = true; return; }
     if (is_fresh_composite(v)) { return; }
     // A literal is not an allocation, but no release of it can free anything:
@@ -588,7 +589,7 @@ static void classify_value(FreshClassify* c, ASTNode* v) {
     // other path of the function leak.
     if (v->type == AST_LITERAL) { return; }
     if (v->type == AST_UNARY_EXPR) {
-        UnaryExprNode* u = (UnaryExprNode*)v;
+        const UnaryExprNode* u = (const UnaryExprNode*)v;
         if (u->operator == TOKEN_BIT_AND && u->operand && is_fresh_composite(u->operand)) {
             return;
         }
@@ -597,12 +598,12 @@ static void classify_value(FreshClassify* c, ASTNode* v) {
     }
     // goo_string_concat copies both operands into new memory. An integer `+`
     // lands here too, and codegen keeps no release slot for an integer.
-    if (v->type == AST_BINARY_EXPR && ((BinaryExprNode*)v)->operator == TOKEN_PLUS) { return; }
+    if (v->type == AST_BINARY_EXPR && ((const BinaryExprNode*)v)->operator == TOKEN_PLUS) { return; }
     if (v->type != AST_CALL_EXPR) { c->facts->borrowed = true; return; }
 
-    ASTNode* fn = ((CallExprNode*)v)->function;
+    const ASTNode* fn = ((const CallExprNode*)v)->function;
     if (fn && fn->type == AST_IDENTIFIER) {
-        const char* name = ((IdentifierNode*)fn)->name;
+        const char* name = ((const IdentifierNode*)fn)->name;
         if (names_a_variable(c, name)) { c->facts->borrowed = true; return; }
         bool builtin_alloc = strcmp(name, "new") == 0 || strcmp(name, "make") == 0;
         if (builtin_alloc && !funcs_have_name(c->funcs, name)) { return; }
@@ -610,15 +611,15 @@ static void classify_value(FreshClassify* c, ASTNode* v) {
         return;
     }
     if (fn && fn->type == AST_SELECTOR_EXPR) {
-        SelectorExprNode* sel = (SelectorExprNode*)fn;
+        const SelectorExprNode* sel = (const SelectorExprNode*)fn;
         // A base that is a variable makes this a method call, not a package one.
         // qir.* results are opaque QIR handles with no ARC header, so a
         // non_retaining qir entry proves nothing about ownership. Same refusal
         // as call_result_is_owned in release_decision.c.
         if (sel->expr && sel->expr->type == AST_IDENTIFIER && sel->selector
-            && !names_a_variable(c, ((IdentifierNode*)sel->expr)->name)
-            && strcmp(((IdentifierNode*)sel->expr)->name, "qir") != 0
-            && shim_signature_is_non_retaining(((IdentifierNode*)sel->expr)->name,
+            && !names_a_variable(c, ((const IdentifierNode*)sel->expr)->name)
+            && strcmp(((const IdentifierNode*)sel->expr)->name, "qir") != 0
+            && shim_signature_is_non_retaining(((const IdentifierNode*)sel->expr)->name,
                                                sel->selector) != 0) {
             return;
         }
@@ -631,15 +632,21 @@ static void classify_value(FreshClassify* c, ASTNode* v) {
 // saw it leave F by RETURN alone. Bindings are matched by NAME across every
 // scope, so a same-named local elsewhere in F can only make this stricter.
 static void classify_local(FreshClassify* c, const FreshReturn* r) {
-    const char* name = ((IdentifierNode*)r->value)->name;
+    const char* name = ((const IdentifierNode*)r->value)->name;
     if (!r->local_in_scope || is_param_or_result(c->f, name)) { c->facts->borrowed = true; return; }
     if (name_in(c->scan->addr_taken, c->scan->addr_count, name)) { c->facts->borrowed = true; return; }
 
-    EscapeReasons why = ESCAPE_REASON_ALL;
+    // A local that local_escape never saw has no verdict: it counts as escaping.
+    bool seen = false;
+    EscapeReasons why = 0U;
     for (size_t i = 0; c->locals && i < c->locals->local_count; i++) {
-        if (strcmp(c->locals->local_names[i], name) == 0) { why = c->locals->reasons[i]; break; }
+        if (strcmp(c->locals->local_names[i], name) == 0) {
+            why = c->locals->reasons[i];
+            seen = true;
+            break;
+        }
     }
-    if ((why & ~ESCAPE_REASON_RETURN) != 0) { c->facts->borrowed = true; return; }
+    if (!seen || (why & ~ESCAPE_REASON_RETURN) != 0U) { c->facts->borrowed = true; return; }
 
     bool any = false;
     for (size_t i = 0; i < c->scan->binding_count; i++) {
@@ -660,8 +667,8 @@ static size_t result_slot_count(const FuncDeclNode* decl) {
     if (!decl->return_type) { return 0; }
     if (decl->return_type->type != AST_STRUCT_TYPE) { return 1; }
     size_t n = 0;
-    for (ASTNode* fld = ((StructTypeNode*)decl->return_type)->fields; fld; fld = fld->next) {
-        n += (fld->type == AST_VAR_DECL) ? ((VarDeclNode*)fld)->name_count : 1;
+    for (const ASTNode* fld = ((const StructTypeNode*)decl->return_type)->fields; fld; fld = fld->next) {
+        n += (fld->type == AST_VAR_DECL) ? ((const VarDeclNode*)fld)->name_count : 1U;
     }
     return n;
 }
@@ -673,10 +680,11 @@ static void collect_fresh_facts(const FreshFuncs* funcs, const FreshFunc* f,
     // Each result can be fresh on its own while two of them are one object
     // (`return b, b`, or `return b, &Holder{p: b}`). A caller that owned both
     // would free the object twice, so no multi-result function is fresh.
-    if (result_slot_count(f->decl) > 1) { facts->borrowed = true; return; }
+    if (result_slot_count(f->decl) > 1U) { facts->borrowed = true; return; }
 
     FreshScan scan = {0};
-    scan_stmts(&scan, f->decl->body, f->decl->return_type != NULL);
+    ASTNode* body = f->decl->body;
+    scan_stmts(&scan, body, f->decl->return_type != NULL);
     if (scan.unreadable || scan.bare_return) {
         // A bare return gives the named results, which hold values from no
         // binding this walk records: their zero values, or a parameter.
@@ -718,20 +726,24 @@ static const LocalEscapeSummary** pair_local_summaries(const FreshFuncs* reg,
 
 static void compute_over(const FreshFuncs* reg, ParamEscapeResult* result,
                          const LocalEscapeResult* le) {
-
+    // collect_funcs refuses an empty program, so every array below has n > 0
+    // entries. n is read once: the arrays are sized from it, and the loops
+    // must use the same bound.
+    const size_t n = reg->count;
+    GOO_ASSERT(n > 0U);
     const LocalEscapeSummary** locals = pair_local_summaries(reg, le);
-    FreshFacts* facts = xcalloc(reg->count, sizeof(*facts));
-    for (size_t fi = 0; fi < reg->count; fi++) {
+    FreshFacts* facts = xcalloc(n, sizeof(*facts));
+    for (size_t fi = 0; fi < n; fi++) {
         collect_fresh_facts(reg, &reg->items[fi], locals[fi], &facts[fi]);
     }
 
-    // may_borrow only rises, so this stops after at most reg->count + 1 passes.
-    bool* may_borrow = xcalloc(reg->count, sizeof(bool));
-    for (size_t fi = 0; fi < reg->count; fi++) { may_borrow[fi] = facts[fi].borrowed; }
+    // may_borrow only rises, so this stops after at most n + 1 passes.
+    bool* may_borrow = xcalloc(n, sizeof(bool));
+    for (size_t fi = 0; fi < n; fi++) { may_borrow[fi] = facts[fi].borrowed; }
     bool changed = true;
     while (changed) {
         changed = false;
-        for (size_t fi = 0; fi < reg->count; fi++) {
+        for (size_t fi = 0; fi < n; fi++) {
             if (may_borrow[fi]) { continue; }
             for (size_t k = 0; k < facts[fi].callee_count; k++) {
                 const char* callee = facts[fi].callees[k];
@@ -740,7 +752,7 @@ static void compute_over(const FreshFuncs* reg, ParamEscapeResult* result,
                 // be fresh, and no match at all is an unknown callee: a func
                 // variable, or a name this registry never saw.
                 bool found = false, borrowed = false;
-                for (size_t gj = 0; gj < reg->count; gj++) {
+                for (size_t gj = 0; gj < n; gj++) {
                     if (reg->items[gj].decl->receiver) { continue; }
                     if (strcmp(reg->items[gj].name, callee) != 0) { continue; }
                     found = true;
@@ -755,12 +767,12 @@ static void compute_over(const FreshFuncs* reg, ParamEscapeResult* result,
         }
     }
 
-    for (size_t fi = 0; fi < reg->count && fi < result->count; fi++) {
+    for (size_t fi = 0; fi < n && fi < result->count; fi++) {
         result->summaries[fi].returns_fresh = !may_borrow[fi];
     }
 
     free(may_borrow);
-    for (size_t fi = 0; fi < reg->count; fi++) { free(facts[fi].callees); }
+    for (size_t fi = 0; fi < n; fi++) { free(facts[fi].callees); }
     free(facts);
     free(locals);
 }
@@ -771,9 +783,9 @@ static void compute_over(const FreshFuncs* reg, ParamEscapeResult* result,
 static bool collect_funcs(ASTNode* program, const ParamEscapeResult* pe, FreshFuncs* out) {
     out->items = NULL;
     out->count = 0;
-    if (!program || program->type != AST_PROGRAM || pe->count == 0) { return false; }
+    if (!program || program->type != AST_PROGRAM || pe->count == 0U) { return false; }
     out->items = xcalloc(pe->count, sizeof(*out->items));
-    for (ASTNode* d = ((ProgramNode*)program)->decls; d; d = d->next) {
+    for (const ASTNode* d = ((ProgramNode*)program)->decls; d; d = d->next) {
         if (d->type != AST_FUNC_DECL) { continue; }
         const FuncDeclNode* fd = (const FuncDeclNode*)d;
         if (!fd->name) { continue; }

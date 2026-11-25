@@ -82,7 +82,7 @@ static void escape_add(const char* name, bool forced) {
         g_escape.forced[i] = g_escape.forced[i] || forced;  // dedup
         return;
     }
-    if (g_escape.count >= ESCAPE_MAX_NAMES) {
+    if (g_escape.count >= (size_t)ESCAPE_MAX_NAMES) {
         // Dropping a root would leave it on the stack: fail closed instead.
         g_escape.all_roots = true;
         return;
@@ -97,7 +97,7 @@ static void escape_add(const char* name, bool forced) {
 // Its summaries are keyed by bare method name, so this unions every method
 // with that name. A method of another package has no summary here, and a miss
 // answers true.
-static bool escape_method_keeps_receiver(Type* recv, const char* sel) {
+static bool escape_method_keeps_receiver(const Type* recv, const char* sel) {
     const CodeGenerator* cg = g_escape.codegen;
     const ParamEscapeResult* pe = cg ? cg->param_escape : NULL;
     const ASTNode* prog = cg ? cg->local_escape_program : NULL;
@@ -111,7 +111,7 @@ static bool escape_method_keeps_receiver(Type* recv, const char* sel) {
     for (size_t i = 0; i < pe->count; i++) {
         const ParamEscapeSummary* ps = &pe->summaries[i];
         if (!ps->function_name || strcmp(ps->function_name, sel) != 0) { continue; }
-        if (ps->param_count == 0 || ps->escapes[0] || ps->return_escapes) { return true; }
+        if (ps->param_count == 0U || ps->escapes[0] || ps->return_escapes) { return true; }
         found = true;
     }
     return !found;
@@ -130,9 +130,10 @@ static bool escape_method_keeps_receiver(Type* recv, const char* sel) {
 static void escape_note_receiver(SelectorExprNode* sel, bool called) {
     const char* root = escape_root_local(sel->expr);
     if (!root || !g_escape.checker) { return; }
-    Type* recv = sel->expr->node_type;
+    Type* ast_recv = sel->expr->node_type;
+    const Type* recv = ast_recv;
     if (recv && g_escape.codegen) {
-        recv = (Type*)codegen_resolve_type(g_escape.codegen, recv);
+        recv = codegen_resolve_type(g_escape.codegen, recv);
     }
     if (!recv) {
         // A package-qualified call (`fmt.Println`) has no local root type.
@@ -154,8 +155,8 @@ static void escape_note_receiver(SelectorExprNode* sel, bool called) {
         : NULL;
     free(mangled);
     if (mv && mv->type && mv->type->kind == TYPE_FUNCTION) {
-        if (mv->type->data.function.param_count == 0) { return; }
-        Type* rp = mv->type->data.function.param_types[0];
+        if (mv->type->data.function.param_count == 0U) { return; }
+        const Type* rp = mv->type->data.function.param_types[0];
         if (!rp || rp->kind != TYPE_POINTER) { return; }  // a value receiver copies
         if (!called) { escape_add(root, false); return; }
         if (escape_method_keeps_receiver(recv, sel->selector)) { escape_add(root, true); }
@@ -164,7 +165,14 @@ static void escape_note_receiver(SelectorExprNode* sel, bool called) {
     // Not a direct method. A method promoted through an embedded field may
     // take the address of that field, and no summary describes it.
     if (recv->kind != TYPE_STRUCT) { return; }
-    EmbedResult er = embedding_resolve(g_escape.checker, recv, sel->selector);
+    // embedding_resolve takes a mutable Type*. A type that resolution replaced
+    // (a type parameter bound to a struct) has no mutable handle here, so fail
+    // closed: promote, which leaks and never dangles.
+    if (recv != ast_recv) {
+        escape_add(root, called);
+        return;
+    }
+    EmbedResult er = embedding_resolve(g_escape.checker, ast_recv, sel->selector);
     if (er.kind == EMBED_METHOD && !er.via_interface) { escape_add(root, called); }
 }
 
@@ -389,21 +397,21 @@ static bool escape_is_root(const char* name) {
 // for these. Worse, a body local with the same name would lend its verdict to
 // the parameter, so a signature name never reads local_escape at all.
 static bool escape_is_signature_name(const FuncDeclNode* fd, const char* name) {
-    for (ASTNode* p = fd->params; p; p = p->next) {
+    for (const ASTNode* p = fd->params; p; p = p->next) {
         if (p->type == AST_IDENTIFIER) {
-            if (strcmp(((IdentifierNode*)p)->name, name) == 0) { return true; }
+            if (strcmp(((const IdentifierNode*)p)->name, name) == 0) { return true; }
             continue;
         }
         if (p->type != AST_VAR_DECL) { continue; }
-        VarDeclNode* vd = (VarDeclNode*)p;
+        const VarDeclNode* vd = (const VarDeclNode*)p;
         for (size_t i = 0; i < vd->name_count; i++) {
             if (vd->names[i] && strcmp(vd->names[i], name) == 0) { return true; }
         }
     }
     if (!fd->return_type || fd->return_type->type != AST_STRUCT_TYPE) { return false; }
-    for (ASTNode* f = ((StructTypeNode*)fd->return_type)->fields; f; f = f->next) {
+    for (const ASTNode* f = ((const StructTypeNode*)fd->return_type)->fields; f; f = f->next) {
         if (f->type != AST_VAR_DECL) { continue; }
-        VarDeclNode* vd = (VarDeclNode*)f;
+        const VarDeclNode* vd = (const VarDeclNode*)f;
         for (size_t i = 0; i < vd->name_count; i++) {
             if (vd->names[i] && strcmp(vd->names[i], name) == 0) { return true; }
         }

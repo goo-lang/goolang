@@ -1030,7 +1030,7 @@ void escape_walk_stmt(EscapeCtx* ctx, ASTNode* stmt, bool* env_changed) {
                         TaintSet rt = escape_taint_copy(&lv->taint);
                         // A failed copy leaves bits NULL with n non-zero, which
                         // would mark nothing. Fail closed: mark every slot.
-                        if (rt.n != 0 && !rt.bits) {
+                        if (rt.n != 0U && !rt.bits) {
                             escape_mark_all(ctx, ESCAPE_REASON_RETURN);
                             if (ctx->hooks->on_return) {
                                 TaintSet all = escape_taint_new(ctx->slot_count);

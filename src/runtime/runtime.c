@@ -1081,12 +1081,10 @@ void goo_panic_iface_notimpl(void* vtable, const char* target_name) {
 // call_codegen.c). Go's makeslice wording.
 void goo_panic_makeslice_len(void) {
     goo_panic("makeslice: len out of range");
-    __builtin_unreachable();
 }
 
 void goo_panic_makeslice_cap(void) {
     goo_panic("makeslice: cap out of range");
-    __builtin_unreachable();
 }
 
 // Compare two int64 key slots per the map's key_kind. STRING: the slots hold
@@ -1103,7 +1101,7 @@ static int goo_strkey_eq(const GooStrKey* a, const GooStrKey* b) {
     // memcmp with a NULL pointer is undefined even for n == 0, and an empty
     // string's data pointer is NULL (goo_string_new_with_length).
     if (a->len == 0) { return 1; }
-    return memcmp(a->ptr, b->ptr, (size_t)a->len) == 0;
+    return memcmp((const unsigned char*)a->ptr, (const unsigned char*)b->ptr, (size_t)a->len) == 0;
 }
 
 // Heap copy of a string key: header and bytes in ONE allocation, so releasing
@@ -1112,13 +1110,22 @@ static int goo_strkey_eq(const GooStrKey* a, const GooStrKey* b) {
 // goroutine's temporary), and a bare pointer would then dangle or alias.
 // A trailing NUL is kept so the bytes stay usable as a C string.
 static GooStrKey* goo_strkey_copy(const GooStrKey* k) {
-    int64_t len = (k && k->len > 0) ? k->len : 0;
-    GooStrKey* copy = goo_alloc(sizeof(GooStrKey) + (size_t)len + 1);
+    size_t len = (k && k->len > 0) ? (size_t)k->len : 0U;
+    // len is at most INT64_MAX, so the sum cannot wrap. The check on the sum
+    // itself states that for the analysers, which otherwise reach goo_alloc's
+    // size 0 path and its one-byte sentinel.
+    size_t size = sizeof(*k) + len + 1U;   // sizeof does not evaluate k
+    if (size <= sizeof(*k)) {
+        goo_panic("map key too large");
+    }
+    GooStrKey* copy = goo_alloc(size);
     char* bytes = (char*)(copy + 1);
-    if (len > 0) { memcpy(bytes, k->ptr, (size_t)len); }
+    for (size_t i = 0; i < len; i++) {
+        bytes[i] = k->ptr[i];
+    }
     bytes[len] = '\0';
-    copy->ptr = len > 0 ? bytes : NULL;
-    copy->len = len;
+    copy->ptr = (len > 0U) ? bytes : NULL;
+    copy->len = (int64_t)len;
     return copy;
 }
 
@@ -1244,7 +1251,7 @@ void goo_map_set_sv_owning(GooMapSV* m, int64_t k, int64_t v) {
         // copies the bytes (goo_map_set_sv), so on a duplicate and on a new
         // entry alike the caller's data is now unreferenced and ours to free.
         const GooStrKey* caller = (const GooStrKey*)(intptr_t)k;
-        void* data = (void*)caller->ptr;
+        void* data = caller->ptr;
         goo_map_set_sv(m, k, v);
         goo_release(data);
         return;

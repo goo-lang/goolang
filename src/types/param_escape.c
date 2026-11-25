@@ -243,27 +243,27 @@ static const EscapeHooks PARAM_HOOKS = {
 static size_t collect_result_names(const FuncDeclNode* decl, char*** out) {
     *out = NULL;
     if (!decl || !decl->return_type || decl->return_type->type != AST_STRUCT_TYPE) { return 0; }
-    StructTypeNode* st = (StructTypeNode*)decl->return_type;
+    const StructTypeNode* st = (const StructTypeNode*)decl->return_type;
     size_t cap = 0;
-    for (ASTNode* fld = st->fields; fld; fld = fld->next) {
-        if (fld->type == AST_VAR_DECL) { cap += ((VarDeclNode*)fld)->name_count; }
+    for (const ASTNode* fld = st->fields; fld; fld = fld->next) {
+        if (fld->type == AST_VAR_DECL) { cap += ((const VarDeclNode*)fld)->name_count; }
     }
-    if (cap == 0) { return 0; }
+    if (cap == 0U) { return 0; }
     char** names = calloc(cap, sizeof(char*));
     // Fail closed is not available here: without the names, a bare return is
     // blind. Abort rather than under-mark.
     GOO_ASSERT(names != NULL);
     size_t n = 0;
-    for (ASTNode* fld = st->fields; fld; fld = fld->next) {
+    for (const ASTNode* fld = st->fields; fld; fld = fld->next) {
         if (fld->type != AST_VAR_DECL) { continue; }
-        VarDeclNode* vd = (VarDeclNode*)fld;
+        const VarDeclNode* vd = (const VarDeclNode*)fld;
         for (size_t i = 0; vd->names && i < vd->name_count; i++) {
-            const char* nm = vd->names[i];
+            char* nm = vd->names[i];
             if (!nm || strcmp(nm, "_") == 0 || is_synthetic_result_name(nm)) { continue; }
-            names[n++] = (char*)nm;
+            names[n++] = nm;
         }
     }
-    if (n == 0) {
+    if (n == 0U) {
         free(names);
         return 0;
     }

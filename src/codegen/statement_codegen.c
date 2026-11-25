@@ -3346,53 +3346,53 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
 // Does `stmt` (or a statement nested in it) declare label `name`? Mirrors the
 // statement walk of type_check_collect_goto_labels: it follows statement
 // children only, so a func literal body, which owns its labels, is not entered.
-static int stmt_declares_label(ASTNode* stmt, const char* name) {
+static int stmt_declares_label(const ASTNode* stmt, const char* name) {
     if (!stmt) { return 0; }
     switch (stmt->type) {
         case AST_BLOCK_STMT:
-            for (ASTNode* s = ((BlockStmtNode*)stmt)->statements; s; s = s->next) {
+            for (const ASTNode* s = ((const BlockStmtNode*)stmt)->statements; s; s = s->next) {
                 if (stmt_declares_label(s, name)) { return 1; }
             }
             return 0;
         case AST_IF_STMT: {
-            IfStmtNode* n = (IfStmtNode*)stmt;
+            const IfStmtNode* n = (const IfStmtNode*)stmt;
             return stmt_declares_label(n->then_stmt, name) || stmt_declares_label(n->else_stmt, name);
         }
         case AST_IF_LET_STMT: {
-            IfLetStmtNode* n = (IfLetStmtNode*)stmt;
+            const IfLetStmtNode* n = (const IfLetStmtNode*)stmt;
             return stmt_declares_label(n->then_stmt, name) || stmt_declares_label(n->else_stmt, name);
         }
         case AST_FOR_STMT:
-            return stmt_declares_label(((ForStmtNode*)stmt)->body, name);
+            return stmt_declares_label(((const ForStmtNode*)stmt)->body, name);
         case AST_SWITCH_STMT:
-            for (ASTNode* c = ((SwitchStmtNode*)stmt)->cases; c; c = c->next) {
-                for (ASTNode* s = ((CaseClauseNode*)c)->body; s; s = s->next) {
+            for (const ASTNode* c = ((const SwitchStmtNode*)stmt)->cases; c; c = c->next) {
+                for (const ASTNode* s = ((const CaseClauseNode*)c)->body; s; s = s->next) {
                     if (stmt_declares_label(s, name)) { return 1; }
                 }
             }
             return 0;
         case AST_TYPE_SWITCH:
-            for (ASTNode* c = ((TypeSwitchNode*)stmt)->cases; c; c = c->next) {
-                for (ASTNode* s = ((TypeCaseNode*)c)->body; s; s = s->next) {
+            for (const ASTNode* c = ((const TypeSwitchNode*)stmt)->cases; c; c = c->next) {
+                for (const ASTNode* s = ((const TypeCaseNode*)c)->body; s; s = s->next) {
                     if (stmt_declares_label(s, name)) { return 1; }
                 }
             }
             return 0;
         case AST_SELECT_STMT:
-            for (ASTNode* c = ((SelectStmtNode*)stmt)->cases; c; c = c->next) {
-                for (ASTNode* s = ((SelectCaseNode*)c)->body; s; s = s->next) {
+            for (const ASTNode* c = ((const SelectStmtNode*)stmt)->cases; c; c = c->next) {
+                for (const ASTNode* s = ((const SelectCaseNode*)c)->body; s; s = s->next) {
                     if (stmt_declares_label(s, name)) { return 1; }
                 }
             }
             return 0;
         case AST_UNSAFE_STMT:
-            return stmt_declares_label(((UnsafeStmtNode*)stmt)->body, name);
+            return stmt_declares_label(((const UnsafeStmtNode*)stmt)->body, name);
         case AST_ARENA_BLOCK:
-            return stmt_declares_label(((ArenaBlockNode*)stmt)->body, name);
+            return stmt_declares_label(((const ArenaBlockNode*)stmt)->body, name);
         case AST_COMPTIME_BLOCK:
-            return stmt_declares_label(((ComptimeBlockNode*)stmt)->body, name);
+            return stmt_declares_label(((const ComptimeBlockNode*)stmt)->body, name);
         case AST_LABEL_STMT: {
-            LabelStmtNode* l = (LabelStmtNode*)stmt;
+            const LabelStmtNode* l = (const LabelStmtNode*)stmt;
             if (l->name && strcmp(l->name, name) == 0) { return 1; }
             return stmt_declares_label(l->stmt, name);
         }
@@ -3413,7 +3413,7 @@ void codegen_emit_map_iter_ends(CodeGenerator* codegen, int from_frame, const ch
     for (int i = codegen->cfctx.loop_depth - 1; i >= from_frame; i--) {
         LLVMValueRef map_ptr = codegen->cfctx.loop_map_ptr[i];
         if (!map_ptr) { continue; }
-        if (goto_label && stmt_declares_label((ASTNode*)codegen->cfctx.loop_map_body[i], goto_label)) {
+        if (goto_label && stmt_declares_label(codegen->cfctx.loop_map_body[i], goto_label)) {
             continue;
         }
         LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);

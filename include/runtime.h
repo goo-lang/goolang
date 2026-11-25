@@ -406,7 +406,8 @@ typedef int (*GooKeyEqFn)(int64_t a, int64_t b);
 // directly. Lookups pass a stack GooStrKey. Inserts copy header and bytes into
 // one heap block that the entry owns; goo_map_iter_next_sv hands that stored
 // block back. Compared by `len`, then memcmp.
-typedef struct GooStrKey { const char* ptr; int64_t len; } GooStrKey;
+// ptr is not const: goo_map_set_sv_owning frees the bytes it points at.
+typedef struct GooStrKey { char* ptr; int64_t len; } GooStrKey;
 enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1, GOO_MAPKEY_STRUCT = 2, GOO_MAPKEY_IFACE = 3 };
 
 // Interface-typed map keys (Task 2): compare two boxed interface key slots.

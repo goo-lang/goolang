@@ -312,6 +312,10 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReas
     }
 
     if (u->local_count == 0) return;
+    // The caller sized reasons and holds from its own pass A. The pass above
+    // is the same walk and cannot find more locals; if it ever did, the
+    // fixpoint and record_holds would write through NULL.
+    GOO_ASSERT(reasons != NULL && holds != NULL);
 
     // PASS B — the real fixpoint, now that the bit width is known.
     LocalEnv env = {0};
@@ -351,15 +355,15 @@ static void analyze_unit(const ParamEscapeResult* summaries, Unit* u, EscapeReas
 // Public API
 // =============================================================================
 
-LocalEscapeResult* local_escape_analyze(ASTNode* program,
+LocalEscapeResult* local_escape_analyze(const ASTNode* program,
                                         const ParamEscapeResult* summaries) {
     UnitList units = {0};
 
     if (program && program->type == AST_PROGRAM) {
-        ProgramNode* prog = (ProgramNode*)program;
-        for (ASTNode* d = prog->decls; d; d = d->next) {
+        const ProgramNode* prog = (const ProgramNode*)program;
+        for (const ASTNode* d = prog->decls; d; d = d->next) {
             if (d->type != AST_FUNC_DECL) continue;
-            FuncDeclNode* fd = (FuncDeclNode*)d;
+            const FuncDeclNode* fd = (const FuncDeclNode*)d;
             if (!fd->name || !fd->body) continue;
             if (unit_list_push(&units, fd, fd->name) == BLOCK_ESCAPE_NO_UNIT) {
                 unit_list_free(&units);

@@ -17,7 +17,7 @@ goo_channel_t* goo_make_chan(size_t elem_size, size_t buffer_size) {
         goo_panic("makechan: size out of range");
     }
     size_t buffer_bytes = 0;
-    if (buffer_size > 0 && ckd_mul(&buffer_bytes, elem_size, buffer_size)) {
+    if (buffer_size > 0U && ckd_mul(&buffer_bytes, elem_size, buffer_size)) {
         goo_panic("makechan: size out of range");
     }
 

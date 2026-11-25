@@ -926,9 +926,9 @@ static bool is_new_call(ASTNode* expr) {
            strcmp(((IdentifierNode*)call->function)->name, "new") == 0;
 }
 
-static bool is_addr_of_composite(ASTNode* expr) {
+static bool is_addr_of_composite(const ASTNode* expr) {
     if (!expr || expr->type != AST_UNARY_EXPR) return false;
-    UnaryExprNode* u = (UnaryExprNode*)expr;
+    const UnaryExprNode* u = (const UnaryExprNode*)expr;
     return u->operator == TOKEN_BIT_AND && u->operand &&
            u->operand->type == AST_STRUCT_LITERAL;
 }
@@ -1239,7 +1239,7 @@ static bool is_composite_value(const ASTNode* v) {
         case AST_PAREN_EXPR:      // a map literal (MapLitNode)
             return true;
         default:
-            return is_addr_of_composite((ASTNode*)v);
+            return is_addr_of_composite(v);
     }
 }
 
