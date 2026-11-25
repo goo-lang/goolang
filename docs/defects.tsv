@@ -56,3 +56,4 @@ date	pr	phase_made	phase_found	instrument	gate_added	commit	summary	note
 2026-08-19	#305	code	test	none	none	e13cc1b	fix(repro): enforce the digest pin in podman-image-probe	
 2026-08-19	#305	code	test	none	podman-image-probe	5f22a17	fix(repro): close two gaps in the determinism gate wiring	
 2026-08-19	#305	code	test	none	none	949b5cd	fix(repro): check the ar symbol-table member's mtime too	
+2026-11-25	pending	code	test	findings-probe	none	f4b728a8	fix(findings): clear the analyser regressions outside the quantum files	Commits c07e92e1..92cf7970 made the regressions. git commit --no-verify and git push --no-verify skipped the gate. The three quantum files qasm3_codegen.c, qir_ownership.c and qir_sim.c were adopted into the baseline with their counts. The last group, constParameterPointer in tc_context.c, was cleared by making type_checker_lookup_method take a const Type* (include/types.h and tc_context.c).

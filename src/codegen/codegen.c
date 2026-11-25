@@ -1855,7 +1855,7 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // argv, so an omission is an overflow rather than a dropped flag.
     size_t fixed_slots = 9;
     size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count
-                    + codegen->link_flag_count + 1;
+                    + (size_t)codegen->link_flag_count + 1U;
     char** argv = malloc(max_argv * sizeof(char*));
     char** lib_flags = codegen->link_lib_count
         ? calloc((size_t)codegen->link_lib_count, sizeof(char*))
@@ -1885,7 +1885,7 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // above (--link-flag=-pie against -no-pie, for one). These are borrowed
     // strings, so unlike lib_flags below there is nothing here to free.
     for (size_t i = 0; i < codegen->link_flag_count; i++) {
-        argv[argn++] = (char*)codegen->link_flags[i];
+        argv[argn++] = codegen->link_flags[i];
     }
     argv[argn++] = "-o";
     argv[argn++] = (char*)filename;

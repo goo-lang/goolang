@@ -90,6 +90,7 @@ cc_library(
     ],
     includes = ["."],
     visibility = ["//visibility:public"],
+    deps = [":platform_detect_h"],
 )
 
 cc_library(

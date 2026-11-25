@@ -1050,7 +1050,9 @@ static bool call_result_is_owned(Collected* c, const ParamEscapeResult* pe, ASTN
         // `qir.Qubit` and `qir.Result` are non-ARC opaque QIR handles (no
         // GOO_OBJ_HEADER_SIZE prefix); never classify a `qir.*` call result as
         // an ARC-owned heap buffer.
-        if (strcmp(pkg, "qir") == 0) return false;
+        if (strcmp(pkg, "qir") == 0) {
+            return false;
+        }
         return shim_signature_is_non_retaining(pkg, sel->selector) != 0;
     }
 

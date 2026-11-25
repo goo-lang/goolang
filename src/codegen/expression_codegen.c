@@ -810,7 +810,7 @@ LLVMValueRef codegen_const_string_value(CodeGenerator* codegen, const char* byte
 }
 #endif
 
-ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+ValueInfo* codegen_generate_literal(CodeGenerator* codegen, const TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
     return NULL;

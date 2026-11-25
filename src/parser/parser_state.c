@@ -25,4 +25,6 @@
 // The lexer the current parse is reading from. lexer_bridge.c sets it in
 // parse_input and clears it when the parse ends; parser_actions.c and
 // parser_errors.c read it to attach a source position to a diagnostic.
+// include/lexer.h declares it, so MISRA 8.4 sees a declaration at the
+// definition.
 Lexer* current_lexer = NULL;

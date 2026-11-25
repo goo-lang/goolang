@@ -303,8 +303,10 @@ static Type* shim_any_type(void) {
 
 static Type* shim_qir_exported_type(TypeChecker* checker, const char* type_name) {
     Package* qir_pkg = type_checker_find_package(checker, "qir");
-    if (!qir_pkg || !qir_pkg->exports) return NULL;
-    Variable* tv = scope_lookup_variable(qir_pkg->exports, type_name);
+    if (!qir_pkg || !qir_pkg->exports) {
+        return NULL;
+    }
+    const Variable* tv = scope_lookup_variable(qir_pkg->exports, type_name);
     return tv ? tv->type : NULL;
 }
 
