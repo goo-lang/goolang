@@ -39,7 +39,8 @@ load("//tools:defs.bzl", "goo_cc_library")
 #   param_escape      -> escape_core
 #   block_escape      -> escape_core, param_escape
 #   local_escape      -> escape_core, param_escape
-#   release_decision  -> param_escape, local_escape
+#   returns_fresh     -> param_escape, local_escape
+#   release_decision  -> param_escape, local_escape, returns_fresh
 #
 # Acyclic, and none of it is visible in the Makefile, which links $(SRC_OBJS)
 # as one flat set. Phase 1 declared all five as leaves with no deps and put
@@ -81,6 +82,7 @@ goo_cc_library(
         "//include:nonretaining_h",
         "//include:param_escape_h",
         "//include:token_h",
+        "//include:types_h",
     ],
 )
 
@@ -113,15 +115,32 @@ goo_cc_library(
 )
 
 goo_cc_library(
+    name = "returns_fresh",
+    srcs = ["returns_fresh.c"],
+    visibility = ["//tests/unit/types:__pkg__"],
+    deps = [
+        ":local_escape",
+        ":param_escape",
+        ":shim_signatures",
+        "//include:returns_fresh_h",
+        "//include:shim_signatures_h",
+        "//include:token_h",
+        "//include:types_h",
+    ],
+)
+
+goo_cc_library(
     name = "release_decision",
     srcs = ["release_decision.c"],
     visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":local_escape",
         ":param_escape",
+        ":returns_fresh",
         "//include:local_escape_h",
         "//include:param_escape_h",
         "//include:release_decision_h",
+        "//include:returns_fresh_h",
         "//include:shim_signatures_h",
     ],
 )
@@ -154,8 +173,10 @@ goo_cc_library(
     visibility = ["//visibility:private"],
     deps = [
         "//include:comptime_h",
+        "//include:diagnostic_h",
         "//include:types_h",
         "//src/comptime",
+        "//src/errors:diagnostic",
     ],
 )
 
@@ -266,12 +287,14 @@ goo_cc_library(
         ":nonretaining",
         ":param_escape",
         ":release_decision",
+        ":returns_fresh",
         ":shim_signatures",
         ":tc_context",
         ":tc_fctx",
         ":terminating_stmt",
         ":types",
         "//include:comptime_h",
+        "//include:diagnostic_h",
         "//include:embedding_h",
         "//include:lane_ownership_h",
         "//include:ownership_checker_h",
@@ -281,6 +304,7 @@ goo_cc_library(
         "//src/ast",
         "//src/comptime",
         "//src/errors",
+        "//src/errors:diagnostic",
         "//src/package",
     ],
 )

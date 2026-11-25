@@ -73,6 +73,14 @@ cc_library(
 )
 
 cc_library(
+    name = "diagnostic_h",
+    hdrs = ["diagnostic.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [":token_h"],
+)
+
+cc_library(
     name = "error_h",
     hdrs = ["errors/error.h"],
     includes = ["."],
@@ -300,6 +308,18 @@ cc_library(
     deps = [
         ":ast_h",
         ":escape_core_h",
+    ],
+)
+
+cc_library(
+    name = "returns_fresh_h",
+    hdrs = ["returns_fresh.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":ast_h",
+        ":local_escape_h",
+        ":param_escape_h",
     ],
 )
 

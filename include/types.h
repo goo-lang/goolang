@@ -1336,7 +1336,31 @@ int goo_fold_const_string(ASTNode* expr, char** out, size_t* out_len);
 
 // Error reporting
 void type_error(TypeChecker* checker, Position pos, const char* format, ...);
+// Like type_error, plus a help line. `help` is code the reader can paste to
+// fix the error; build it from the user's own identifiers, never from a name
+// that is not in scope at the error site. NULL means no help line.
+void type_error_help(TypeChecker* checker, Position pos, const char* help, const char* format, ...)
+    __attribute__((format(printf, 4, 5)));
+
+// Formats help text into buf. Returns false when it does not fit, so the
+// caller prints no help rather than cut text.
+bool type_help_format(char* buf, size_t cap, const char* format, ...)
+    __attribute__((format(printf, 3, 4)));
 void type_warning(TypeChecker* checker, Position pos, const char* format, ...);
+
+// Copies the user's own call, as written in the source, into buf for a help
+// line. Returns false when it cannot, and the caller must then print no help.
+bool type_call_help_text(const ASTNode* call, char* buf, size_t cap);
+
+// True when `name` is declared in the innermost scope at the error site. A
+// help line that declares a name with `:=` must test this first: the pasted
+// line fails with "already declared in this scope" when it is true.
+bool type_name_in_current_scope(const TypeChecker* checker, const char* name);
+
+// The name the current file imports package `import_path` under, or NULL when
+// no visible binding is that package (an alias can be shadowed by a local).
+// A help line that writes `<pkg>.Func(...)` must use this name, not a guess.
+const char* type_package_alias(TypeChecker* checker, const char* import_path);
 
 // Builtin types access
 void type_checker_init_builtins(TypeChecker* checker);

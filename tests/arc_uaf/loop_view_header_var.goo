@@ -1,0 +1,18 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+// `p` is declared by the loop HEADER, so it lives across every iteration and
+// the next condition check reads it. `x` dies with each iteration, so a
+// release of `x` at iteration end leaves `p` pointing at freed memory.
+func main() {
+	n := 0
+	for p := ""; p != "BCDEF" || n < 3; n++ {
+		x := strings.ToUpper("abcdef")
+		p = x[1:]
+	}
+	fmt.Println(n)
+}

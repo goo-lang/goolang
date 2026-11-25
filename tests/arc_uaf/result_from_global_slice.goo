@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+type Box struct{ v int }
+
+var GS []*Box
+
+func getS() *Box {
+	return GS[0]
+}
+
+// peek binds the result and reads only a field of it, so b itself does not
+// escape. The only thing that keeps ARC from freeing GS[0] here is the answer
+// to "does getS return a value the caller owns".
+func peek() int {
+	b := getS()
+	if b.v == 2 {
+		return 2
+	}
+	return 0
+}
+
+func main() {
+	GS = append(GS, &Box{v: 2})
+	peek()
+	n := peek()
+	fmt.Println(n, GS[0].v)
+}

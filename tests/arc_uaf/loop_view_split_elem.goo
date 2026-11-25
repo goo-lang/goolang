@@ -1,0 +1,16 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+func main() {
+	outer := ""
+	for i := 0; i < 3; i++ {
+		parts := strings.Split("a,b,c", ",")
+		e := parts[1]
+		outer = e
+	}
+	fmt.Println(outer)
+}

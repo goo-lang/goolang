@@ -1,0 +1,2 @@
+error union must be handled
+the name is err: the help would print "err, err := f()", which does not compile, so no help

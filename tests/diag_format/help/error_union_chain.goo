@@ -1,0 +1,19 @@
+package main
+
+type R struct{}
+
+func (r R) n(a int) !int {
+	return a
+}
+
+type T struct{}
+
+func (t T) m(a int) R {
+	return R{}
+}
+
+func main() {
+	t := T{}
+	x := t.m(1).n(2)
+	_ = x
+}

@@ -108,23 +108,44 @@
 // the function and it therefore answers, correctly and uselessly, that nothing
 // escaped. `last = s` is that shape.
 //
-// THE RULE, and it is deliberately a MENTION test rather than a value-flow one:
-// a local declared at loop depth D is refused when its name appears anywhere in
-// the right-hand side of an assignment or declaration whose target lives longer
-// than depth D. A target lives longer when it is a local declared at a
-// shallower loop depth, or when it is not a plain identifier at all -- a field,
-// an index or any other store this module cannot resolve.
+// THE RULE, and it is a VALUE-FLOW test, not a MENTION test: a local declared
+// at break-scope depth D is refused when local_escape's final taint says that
+// some local declared at a depth shallower than D may hold its value. The taint
+// follows the value through views (`x[1:]`, `parts[i]`, a field) and through
+// any chain of locals.
 //
-// SOUND BY CONSTRUCTION, which a blacklist of sink shapes would not be. The
-// walk is TOTAL: a statement kind it does not recognise sets `unreadable` and
-// refuses the whole function, so enumerating the assignment forms it does
-// recognise enumerates every store a readable function can perform.
+// WHY NOT A MENTION TEST, which is what this was until finding C4. The old rule
+// refused a local only when its NAME appeared in the right-hand side of a store
+// into a longer-lived target. `y := x[1:]; outer = y` names only `y` in that
+// store, because `y` is declared in the same iteration as `x`. So `x` was
+// released at iteration end while `outer` still pointed into its buffer --
+// measured as invalid reads under valgrind (tests/arc_uaf/loop_view_*.goo).
+//
+// WHAT THE OTHER TARGETS COST. A store into a field, an index, a dereference,
+// a parameter, a named result or a global is a SINK in local_escape, so its
+// source already escapes the function and condition 1 refuses it first. Only a
+// store into a plain local needs this rule, and local_escape's taint covers
+// every such store, because that engine walks every statement or marks every
+// local escaping.
+//
+// FAIL CLOSED: an unknown function, an unknown holder or an unknown source
+// reads as "may hold" (local_escape_may_hold).
+//
+// TWO LOCALS OF ONE NAME ARE ONE RECORD, and that is NOT automatically safe.
+// For the TAINT it is: the two share one row, so each may hold what either
+// holds, which over-approximates. For the DEPTH it is not: a record that kept
+// only its first declaration's depth UNDER-states how long a later, shallower
+// declaration lives, and a holder declared first inside an earlier loop let a
+// view be released under it (tests/arc_uaf/loop_view_shadowed_holder.goo). So
+// the rule folds every declaration: a holder is compared by its SHALLOWEST
+// declaration, a source by its DEEPEST, and the record itself is a candidate
+// holder. A loop-header declaration lives across every iteration of its own
+// depth, so it counts as longer-lived at that depth too.
 //
 // THE PRECISION IT GIVES UP, named so the next reader does not rediscover it:
-// `n = n + len(s)` refuses `s`, even though `len` propagates nothing. A mention
-// is not a flow. Refining that needs the reverse of condition 2's binding table
-// -- does this expression PROPAGATE its operand, or merely READ it -- and the
-// loop-carried probe is what makes such a refinement safe to attempt.
+// the taint is flow-insensitive, so a holder that took the value on one path
+// only still refuses, and a name reused at two depths refuses wherever the
+// shallower local may hold the deeper one's value.
 //
 // =============================================================================
 // CONDITION 2 -- the binding-site table
@@ -134,15 +155,20 @@
 //   ----------------------------------------  -------------------------------
 //   new(T), &T{}                              YES, the site is an allocation
 //   a struct/slice/array/map literal          YES, a fresh allocation
-//   a call to a Goo function                  iff its ParamEscapeSummary
-//                                             .return_escapes is FALSE
+//   a call to a Goo function                  iff EVERY non-method summary
+//                                             with its name has returns_fresh
+//                                             and not return_escapes
 //   a call to a C shim                        iff shim_signature_is_non_retaining
+//   ONE result of a multi-value Goo call      NO -- two results can be one object
+//   ONE result of a multi-value shim call     as for the shim: an error union
 //   a slice, index or selector expression      NO -- a view into something else
 //   another local, or any identifier           NO -- an alias; one owner only
 //   anything not listed                        NO -- conservative
 //
-// `return_escapes` is documented as "does F return a value derived from one of
-// its own params?", which IS the borrowed-result relation. The shim column is
+// `returns_fresh` is a POSITIVE proof that every return path gives fresh
+// memory. It replaced `!return_escapes`, which says only that the result
+// derives from no PARAMETER -- a global, or a value the callee also stored in
+// a container, passed that test and was freed (finding C2). The shim column is
 // justified in src/types/shim_signatures.c against each runtime body, and that
 // audit is explicit that every whitelisted `strings` entry COPIES -- the table
 // even notes TrimSpace copies where Go's returns a slice of its argument.

@@ -1,0 +1,24 @@
+package main
+
+import "fmt"
+
+type Box struct{ v int }
+
+// Both results are the same box. Each result is fresh on its own, but a
+// caller that owned both would free the box twice.
+func two() (*Box, *Box) {
+	b := &Box{v: 5}
+	return b, b
+}
+
+func use() int {
+	x, y := two()
+	if x.v+y.v > 0 {
+		return 1
+	}
+	return 0
+}
+
+func main() {
+	fmt.Println(use(), use())
+}

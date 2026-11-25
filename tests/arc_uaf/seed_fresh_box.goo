@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+type Box struct {
+	v int
+}
+
+func newBox() *Box {
+	return &Box{v: 7}
+}
+
+func main() {
+	b := newBox()
+	fmt.Println(b.v)
+}

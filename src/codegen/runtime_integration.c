@@ -491,6 +491,10 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, ptr_type };
         add_runtime_function(codegen, "goo_panic_iface_notimpl", void_type, params, 2);
     }
+    // void goo_panic_makeslice_len(void) / goo_panic_makeslice_cap(void) —
+    // the make([]T, len, cap) range checks emitted in call_codegen.c.
+    add_runtime_function(codegen, "goo_panic_makeslice_len", void_type, NULL, 0);
+    add_runtime_function(codegen, "goo_panic_makeslice_cap", void_type, NULL, 0);
     // void goo_map_set_sv(GooMapSV*, int64_t k, int64_t v) — both key and
     // value are 8-byte slots now; codegen packs the declared K/V to i64 via
     // codegen_map_key_to_slot / codegen_map_value_to_slot before the call.

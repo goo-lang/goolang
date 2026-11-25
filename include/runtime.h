@@ -393,7 +393,7 @@ double goo_math_max(double x, double y);
 // future work; on a miss `get` returns 0.
 //
 // Map key kind: how goo_map_key_eq compares two int64 key slots. STRING = the
-// slot holds a char*, compared by strcmp; INLINE = the slot holds the key's
+// slot holds a GooStrKey*, compared by length then memcmp; INLINE = the slot holds the key's
 // bits (int/uint/bool/rune/byte/pointer), compared by ==; STRUCT = the slot
 // holds a pointer to a heap copy of the struct, compared via the per-map
 // key_eq comparator. IFACE = the slot holds a pointer to a heap-copied boxed
@@ -401,6 +401,16 @@ double goo_math_max(double x, double y);
 // below (also reached through the per-map key_eq comparator). New kinds
 // (float) append here later.
 typedef int (*GooKeyEqFn)(int64_t a, int64_t b);
+
+// A string map key. The key slot of a STRING map holds a pointer to one of
+// these, never a bare char*: a char* loses the length, so strcmp saw "x\0y"
+// and "x\0z" as one key, and a substring s[0:5] as equal to its parent s.
+// Layout matches goo_string_t, so codegen stores the string aggregate in
+// directly. Lookups pass a stack GooStrKey. Inserts copy header and bytes into
+// one heap block that the entry owns; goo_map_iter_next_sv hands that stored
+// block back. Compared by `len`, then memcmp.
+// ptr is not const: goo_map_set_sv_owning frees the bytes it points at.
+typedef struct GooStrKey { char* ptr; int64_t len; } GooStrKey;
 enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1, GOO_MAPKEY_STRUCT = 2, GOO_MAPKEY_IFACE = 3 };
 
 // Interface-typed map keys (Task 2): compare two boxed interface key slots.
@@ -445,11 +455,19 @@ void goo_panic_iface_conversion(const char* iface_name, void* vtable,
 // descriptor field 1); a NULL vtable (nil interface) renders as "<nil>".
 void goo_panic_iface_notimpl(void* vtable, const char* target_name) __attribute__((noreturn));
 
+// make([]T, len, cap) range-check failures (Go's makeslice wording). Emitted
+// by codegen for a negative len, a negative cap, or len > cap.
+void goo_panic_makeslice_len(void) __attribute__((noreturn));
+void goo_panic_makeslice_cap(void) __attribute__((noreturn));
+
 struct GooMapEntrySV;
 typedef struct GooMapSV {
     struct GooMapEntrySV* head;
     int32_t key_kind;
     GooKeyEqFn key_eq;   // per-map struct-key comparator; NULL for string/inline maps
+    // Range loops currently walking this map. While > 0, delete and clear mark
+    // entries dead and free nothing (goo_map_iter_end_sv frees them).
+    int32_t active_iters;
 } GooMapSV;
 GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq);
 void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v);
@@ -482,10 +500,8 @@ int64_t goo_map_len_sv(GooMapSV* m);
 // DETERMINISTIC. Documented deviation: Go deliberately randomizes map
 // iteration order; Goo does not (recorded in the decl-surface-breadth
 // spec). Entries deleted mid-iteration: unlinking a not-yet-visited entry
-// skips it (Go-consistent); deleting the CURRENT entry frees the node the
-// cursor points through — callers of the codegen'd loop cannot do that
-// today (no delete inside range bodies in generated code paths), recorded
-// as a limitation, not defended.
+// skips it (Go-consistent). Deleting ANY entry mid-iteration only marks it
+// dead (see goo_map_iter_end_sv), so the cursor never points at freed memory.
 //
 // GooMapEntrySV stays opaque here (only forward-declared above, as before):
 // `cursor` is typed `struct GooMapEntrySV**`, which is a legal, fully-typed
@@ -506,6 +522,9 @@ int goo_map_iter_next_sv(struct GooMapEntrySV** cursor, int64_t* key_out, int64_
 // keeps GooMapSV's field layout out of generated IR entirely (no
 // GEP-to-head at the range-loop site).
 struct GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m);
+// Ends the iterator that goo_map_iter_init_sv started; the last one frees the
+// entries that delete/clear marked dead meanwhile. Accepts a NULL map.
+void goo_map_iter_end_sv(GooMapSV* m);
 // Deletes the entry for key k, if present. Backs delete(m, k). Does not
 // free k: the map never owns key storage (see goo_map_set_sv above).
 void goo_map_delete_sv(GooMapSV* m, int64_t k);

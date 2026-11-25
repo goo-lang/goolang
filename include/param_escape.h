@@ -35,11 +35,32 @@ typedef struct ParamEscapeSummary {
     bool   return_escapes;  // does F return a value derived from one of its
                              // own params? (interprocedural fixpoint signal;
                              // also exposed for callers/tests that want it)
+
+    // Does the caller OWN every value F returns? Filled by
+    // returns_fresh_compute (include/returns_fresh.h), not by
+    // param_escape_analyze, which leaves it false. True only on a positive
+    // proof: every return path gives a fresh allocation, a literal, an
+    // owned-result shim call, a call to a function that is itself
+    // returns_fresh, or a local that holds only such values and escapes only
+    // by being returned.
+    //
+    // NOT the negation of return_escapes. A value from a global, or one that
+    // F also stored in a container, carries no parameter taint, so
+    // return_escapes reads false for it -- and ARC freed it (finding C2).
+    // Anything this analysis cannot prove reads false, and false only leaks.
+    bool   returns_fresh;
+
+    // F has a receiver. A bare call `name()` never calls a method, so the
+    // ownership lookup skips a method summary that shares the name.
+    bool   is_method;
 } ParamEscapeSummary;
 
 typedef struct ParamEscapeResult {
     ParamEscapeSummary* summaries;   // one per user-defined function/method
     size_t count;
+    // The fixpoint hit its cap and every summary is a fail-closed guess.
+    // returns_fresh_compute then proves nothing.
+    bool fail_closed;
 } ParamEscapeResult;
 
 // Analyze every AST_FUNC_DECL reachable from `program`'s top-level
@@ -54,5 +75,18 @@ void param_escape_result_free(ParamEscapeResult* result);
 // be silently treated as "does not escape" by any consumer.
 const ParamEscapeSummary* param_escape_lookup(const ParamEscapeResult* result, const char* fn);
 bool param_escape_param_escapes(const ParamEscapeResult* result, const char* fn, size_t param_idx);
+
+// Is every value that a bare call `fn()` returns fresh memory? Only a summary
+// with no receiver can match, because a bare call never calls a method. The
+// answer is true only when EVERY such summary with that name has returns_fresh.
+// A miss is false.
+bool param_escape_returns_fresh(const ParamEscapeResult* result, const char* fn);
+
+// Does the caller own the result of a bare call `fn()`? That is
+// param_escape_returns_fresh AND no matching summary has return_escapes: fresh
+// memory that holds an argument (`return &Holder{p: b}`) is owned, but it is
+// not free of the caller's locals, and release_decision's alias scan prunes an
+// owned call result whole. A miss is false.
+bool param_escape_call_result_is_owned(const ParamEscapeResult* result, const char* fn);
 
 #endif // PARAM_ESCAPE_H

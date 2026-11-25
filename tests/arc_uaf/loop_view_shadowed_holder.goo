@@ -1,0 +1,22 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+// `h` is declared twice: first inside an earlier loop, then at function
+// scope. The SECOND `h` holds a view of `x` across iterations, so the depth
+// of the first declaration must not decide whether `h` outlives `x`.
+func main() {
+	for i := 0; i < 1; i++ {
+		h := "q"
+		_ = h
+	}
+	h := ""
+	for i := 0; i < 3; i++ {
+		x := strings.ToUpper("abcdef")
+		h = x[1:]
+	}
+	fmt.Println(h)
+}

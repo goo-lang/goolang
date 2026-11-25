@@ -1,0 +1,25 @@
+package main
+
+import "fmt"
+
+type S struct{ m map[string]int }
+
+type I struct{ m map[int]int }
+
+func (s *S) Put(k string, v int) { s.m[k] = v }
+
+func main() {
+	s := &S{m: make(map[string]int)}
+	s.Put("a", 1)
+	s.m["b"] = 2
+	s.m["a"] += 10
+	v := S{m: map[string]int{"z": 5}}
+	fmt.Println(len(s.m), s.m["a"], s.m["b"], v.m["z"])
+	h := I{m: make(map[int]int)}
+	h.m[16] = 7
+	h.m[16] += 3
+	fmt.Println(len(h.m), h.m[16])
+	cv, ok := s.m["a"]
+	_, miss := s.m["q"]
+	fmt.Println(cv, ok, miss)
+}

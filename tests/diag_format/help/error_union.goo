@@ -1,0 +1,10 @@
+package main
+
+func f() !int {
+	return 42
+}
+
+func main() {
+	x := f()
+	_ = x
+}

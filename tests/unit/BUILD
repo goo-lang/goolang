@@ -16,6 +16,7 @@ cc_library(
     includes = ["."],
     visibility = [
         "//tests/unit/ast:__pkg__",
+        "//tests/unit/error:__pkg__",
         "//tests/unit/runtime:__pkg__",
         "//tests/unit/types:__pkg__",
     ],

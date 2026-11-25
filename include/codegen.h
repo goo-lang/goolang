@@ -37,6 +37,9 @@ struct BlockEscapeResult;
 // T4: release_decision.h owns the full definition; codegen.h needs only a
 // pointer-sized member.
 struct ReleasePlan;
+// C1: local_escape.h owns the full definition; a pointer-sized member only.
+struct LocalEscapeResult;
+struct ParamEscapeResult;
 
 // Allocation routing (arena-regions groundwork): every heap-allocation call
 // site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
@@ -300,6 +303,19 @@ struct CodeGenerator {
     int emit_qir;
     uint64_t qir_num_qubits;
     uint64_t qir_num_results;
+
+    // C1: per-local escape verdicts for `local_escape_program`, computed in
+    // codegen_generate_program. A local whose address is taken moves to the
+    // heap only when this says its value may outlive the function, so the
+    // stack stays the default. Computed even under GOO_ARC_RELEASE=0, because
+    // a dangling `&x` does not depend on ARC. NULL, or a function declared
+    // outside `local_escape_program`, promotes every address-taken local,
+    // which leaks and never dangles. Tail-appended, as above.
+    struct LocalEscapeResult* local_escape;
+    ASTNode* local_escape_program;
+    // C1: the callee summaries local_escape was computed from, kept for the
+    // pointer-receiver rule: does a method keep or return its receiver?
+    struct ParamEscapeResult* param_escape;
 };
 
 // Function information for code generation
@@ -619,6 +635,10 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 // Emit the current function's registered defers in LIFO order before a `ret`.
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker);
+// Ends the map iterators of the range-over-map frames [from_frame, loop_depth),
+// innermost first. A non-NULL goto_label skips the frames whose body declares
+// that label, because a goto inside the loop does not leave it.
+void codegen_emit_map_iter_ends(CodeGenerator* codegen, int from_frame, const char* goto_label);
 
 // T4: record `info`'s slot for release at function exit, if the release plan
 // approves it. Called from vscope_add, the single point every local binding
@@ -993,6 +1013,9 @@ int codegen_map_key_kind(Type* key_type);
 // reported via codegen_error at `pos`).
 int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
                                   ValueInfo* key_val, Type* key_type, Position pos);
+// The map pointer a runtime call needs. A struct field or index result comes
+// back as an lvalue ADDRESS, so load the pointer from it first (C6).
+LLVMValueRef codegen_map_handle(CodeGenerator* codegen, ValueInfo* map_val);
 LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
                                      ValueInfo* key_val, Type* key_type);
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type);
@@ -1044,6 +1067,8 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
 // goo_string_new. Shared by codegen_map_slot_to_key's STRING arm and the
 // map-range loop's key bind (statement_codegen.c).
 LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr);
+// Length-exact copy into a fresh goo string; keeps embedded NUL bytes.
+LLVMValueRef codegen_string_from_bytes(CodeGenerator* codegen, LLVMValueRef ptr, LLVMValueRef len);
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name);
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block);
 

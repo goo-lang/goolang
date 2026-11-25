@@ -60,6 +60,14 @@ typedef struct ControlFlowContext {
     int loop_is_loop[32];
     const char* pending_label;
 
+    // Map-range frames only (NULL for every other frame). loop_map_ptr[i] is
+    // the GooMapSV* whose iterator frame i holds, so a break/return/goto that
+    // leaves the frame can emit goo_map_iter_end_sv. loop_map_body[i] is the
+    // loop body, scanned by a `goto` to tell a jump out of the loop from a jump
+    // inside it. Both are set by the map-range lowering right after the push.
+    LLVMValueRef loop_map_ptr[32];
+    const void* loop_map_body[32];
+
     // gofmt-syntax-b Task 2 (P1.6): per-function label -> LLVMBasicBlockRef
     // table for `goto`. Reset per-function (cfctx_reset, called from
     // codegen_enter_function) — UNLIKE loop_label/loop_is_loop above, which

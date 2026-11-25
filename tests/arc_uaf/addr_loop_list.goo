@@ -1,0 +1,20 @@
+package main
+
+import "fmt"
+
+type N struct {
+	v    int
+	next *N
+}
+
+func main() {
+	var head *N
+	for i := 0; i < 3; i++ {
+		n := N{v: i}
+		n.next = head
+		head = &n
+	}
+	for p := head; p != nil; p = p.next {
+		fmt.Println(p.v)
+	}
+}

@@ -180,6 +180,28 @@ Gated by `goo-test-probe` (`scripts/goo_test_probe.sh`, two packages — one
 all-passing, one failing) in `make verify-core`, and by the `pkg_testing`
 conformance row.
 
+## Diagnostic format
+
+Every user-facing compiler error and warning prints
+`<file>:<line>:<col>: <severity>: <message>`, or `goo: <severity>: <message>`
+when no position exists. When the source is registered, a snippet follows:
+`%5d | <line>` and a caret line `      | <pad>^`. The column is a byte
+offset, and the caret pad copies the tabs of the source line. Parse errors
+print `syntax error, unexpected '<tok>'` at the rejected token. All of it goes
+through `diag_emit` (`src/errors/diagnostic.c`). Lexer errors and the
+in-memory `_testmain` file carry no snippet, on purpose.
+
+A `  help: ` line is optional, and it holds a PASTE-READY fix or it is absent.
+The text comes from the user's own call text. Where no correct fix exists (a
+chained call, a package-level statement) the compiler prints no help.
+
+Gated by `diag-format-probe` (`scripts/diag_format_probe.sh`) in `verify-core`.
+It checks the header grammar and the exact snippet and caret of the fixtures
+in `tests/diag_format/format/`, and it builds each
+`help/NAME.fixed.goo` to prove the help compiles. `diag-format-selftest`
+feeds it mutated stderr and bad help fixtures. The gate fails on zero
+fixtures.
+
 ## Stdlib model
 
 Two layers, both gated by `scripts/check_stdlib_coverage.sh` in verify-core:
@@ -249,7 +271,8 @@ length while the block count holds. The figures in this section are for a progra
   declining to answer, not a measured escape.**
   **216 locals are refused ONLY by a no-evidence mark** (all reading
   `RELEASE_NO_ESCAPES`), which is the upper bound on what precision here would
-  unlock, against 365 released today.
+  unlock, against 325 released today (365 before the 2026-11-24 ownership
+  fixes, docs/adr/0005-measurements/2026-11-24-arc-ownership.md).
   **The reachable fix is NARROWER than 578 suggests**: the dominant opaque
   callees are builtins and type conversions (`make`, `rune`, `uint64`, `int`),
   and most of their arguments are integers no release path would free. Decide
@@ -261,6 +284,21 @@ length while the block count holds. The figures in this section are for a progra
   `./scripts/arc_reason_census.sh`, or read any one program with
   `GOO_ARC_DEBUG=1 ./bin/goo -o /dev/null prog.goo`, which prints a verdict
   AND its reason set for each local.
+- **An address-taken local whose address may escape is heap-promoted.** Both
+  must hold (function_codegen.c:13-30): the address is taken (an explicit
+  `&x`, or an implicit `&t` through a pointer-receiver call), AND it may
+  escape. "May escape" means `local_escape` marks the local, or the receiver's
+  `param_escape` summary says the receiver or result escapes, or the function
+  has a `go` statement, or no verdict applies (a parameter, a function
+  literal). A `go` statement alone, with no address taken, promotes nothing.
+  The slot is allocated at the declaration, so a loop gets one block for each
+  iteration, and no release path frees it (a fact about the code).
+  MEASURED 2026-11-24: the daemon (no `&`) has 0 block delta, 4,003 blocks on
+  both builds. One probe, an explicit `&x` stored in a global, 1,000 calls,
+  leaves 1,000 blocks (24,000 bytes), where `main` left a dangling slot. The
+  pointer-receiver and `go` triggers use the same allocation path and were NOT
+  measured separately.
+  docs/adr/0005-measurements/2026-11-24-addr-promotion.md.
 - **A multi-assign target gets no store release.** `a, b = x, y` stores
   without freeing what the slots held. A LEAK, never a use-after-free, and
   untested rather than proven absent.

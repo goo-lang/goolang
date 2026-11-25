@@ -1,0 +1,4 @@
+pakage main
+
+func main() {
+}

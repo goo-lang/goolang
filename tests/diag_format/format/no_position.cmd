@@ -1,0 +1,1 @@
+-o @OUT@ no_such_file.goo
