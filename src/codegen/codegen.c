@@ -900,22 +900,51 @@ LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr)
                           mkstr_fn, args, 1, "kstr_wrap");
 }
 
-// Get-or-declare the libc `strcmp(const char*, const char*) -> int` extern,
-// mirroring codegen_string_from_cstr's LLVMGetNamedFunction-or-declare
-// pattern above. Used by codegen_get_or_emit_struct_key_eq for STRING struct
-// fields. The final link already pulls in libc (codegen_emit_executable
-// shells out to `clang ... -lm -lpthread`, which links libc by default), so
-// declaring the extern here (never defining it) resolves at link time like
-// any other libc call.
-static LLVMValueRef codegen_get_or_declare_strcmp(CodeGenerator* codegen) {
-    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "strcmp");
-    if (fn) return fn;
+// Copy `len` bytes at `ptr` into a fresh goo string via
+// goo_string_new_with_length (length-exact, so embedded NULs survive, which
+// goo_string_new's strlen would cut).
+LLVMValueRef codegen_string_from_bytes(CodeGenerator* codegen, LLVMValueRef ptr, LLVMValueRef len) {
+    if (!codegen || !ptr || !len) return NULL;
+    LLVMContextRef ctx = codegen->context;
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_new_with_length");
+    if (!fn) {
+        LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+        LLVMTypeRef string_type = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr_type, i64 }, 2, 0);
+        LLVMTypeRef params[] = { ptr_type, i64 };
+        fn = LLVMAddFunction(codegen->module, "goo_string_new_with_length",
+                             LLVMFunctionType(string_type, params, 2, 0));
+    }
+    LLVMValueRef args[2] = { ptr, len };
+    return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "kstr_copy");
+}
+
+// i1: do two goo string aggregates {ptr, len} hold the same bytes? Length
+// first, then memcmp. strcmp stopped at the first NUL and read to the end of a
+// substring's parent buffer, so the struct- and interface-key comparators
+// merged distinct keys (H2). The memcmp length is forced to 0 when the lengths
+// differ, so it never reads past a shorter operand.
+static LLVMValueRef codegen_emit_string_eq(CodeGenerator* codegen, LLVMValueRef va, LLVMValueRef vb) {
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
-    LLVMTypeRef params[2] = { i8p, i8p };
-    LLVMTypeRef fnty = LLVMFunctionType(i32, params, 2, 0);
-    return LLVMAddFunction(codegen->module, "strcmp", fnty);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "memcmp");
+    if (!fn) {
+        LLVMTypeRef params[3] = { i8p, i8p, i64 };
+        fn = LLVMAddFunction(codegen->module, "memcmp", LLVMFunctionType(i32, params, 3, 0));
+    }
+    LLVMBuilderRef b = codegen->builder;
+    LLVMValueRef pa = LLVMBuildExtractValue(b, va, 0, "seq.pa");
+    LLVMValueRef pb = LLVMBuildExtractValue(b, vb, 0, "seq.pb");
+    LLVMValueRef la = LLVMBuildExtractValue(b, va, 1, "seq.la");
+    LLVMValueRef lb = LLVMBuildExtractValue(b, vb, 1, "seq.lb");
+    LLVMValueRef len_eq = LLVMBuildICmp(b, LLVMIntEQ, la, lb, "seq.leneq");
+    LLVMValueRef n = LLVMBuildSelect(b, len_eq, la, LLVMConstInt(i64, 0, 0), "seq.n");
+    LLVMValueRef args[3] = { pa, pb, n };
+    LLVMValueRef r = LLVMBuildCall2(b, LLVMGlobalGetValueType(fn), fn, args, 3, "seq.memcmp");
+    LLVMValueRef bytes_eq = LLVMBuildICmp(b, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "seq.bytes");
+    return LLVMBuildAnd(b, len_eq, bytes_eq, "seq.eq");
 }
 
 // Single funnel point for every heap allocation the compiler emits: new(T),
@@ -1009,7 +1038,7 @@ LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, Alloc
 // order, so LLVM struct-field index == Goo field index — codegen_get_struct_
 // type builds them 1:1):
 //   - string             : extract field 0 (char*) from both loaded string
-//                           aggregates, `strcmp(...) == 0`.
+//                           aggregates, length then memcmp.
 //   - nested struct       : GEP the field's ADDRESS in both operands,
 //                           PtrToInt, and call THAT type's comparator
 //                           (recursive codegen_get_or_emit_struct_key_eq,
@@ -1099,13 +1128,7 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
                 LLVMBuildStructGEP2(codegen->builder, sty, pa, (unsigned)i, "fa.ptr"), "fa");
             LLVMValueRef fb = LLVMBuildLoad2(codegen->builder, fllty,
                 LLVMBuildStructGEP2(codegen->builder, sty, pb, (unsigned)i, "fb.ptr"), "fb");
-            LLVMValueRef ca = LLVMBuildExtractValue(codegen->builder, fa, 0, "ca");
-            LLVMValueRef cb = LLVMBuildExtractValue(codegen->builder, fb, 0, "cb");
-            LLVMValueRef strcmp_fn = codegen_get_or_declare_strcmp(codegen);
-            LLVMValueRef sargs[2] = { ca, cb };
-            LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(strcmp_fn),
-                                            strcmp_fn, sargs, 2, "strcmp.r");
-            eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "streq");
+            eq_bit = codegen_emit_string_eq(codegen, fa, fb);
         } else if (ft && ft->kind == TYPE_STRUCT) {
             LLVMValueRef nested_eq = codegen_get_or_emit_struct_key_eq(codegen, checker, ft);
             if (!nested_eq) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
@@ -1181,7 +1204,7 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
 //   - float32/float64: same shape, fcmp oeq (a NaN field is therefore never
 //     equal to itself, matching Go/IEEE-754 — not a bug).
 //   - string: inttoptr each word to the `{i8*,i64}` string aggregate, load,
-//     extractvalue the char* (field 0), strcmp == 0.
+//     compare length, then memcmp (codegen_emit_string_eq).
 //   - struct (all fields comparator-safe): delegates STRAIGHT to
 //     codegen_get_or_emit_struct_key_eq (#129) — its i32(i64,i64)-over-ptr-
 //     to-heap-copy signature already matches a struct concrete's boxing
@@ -1324,13 +1347,7 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
         LLVMValueRef pb = LLVMBuildIntToPtr(codegen->builder, b, strptr, "typeeq.pb");
         LLVMValueRef va = LLVMBuildLoad2(codegen->builder, strty, pa, "typeeq.va");
         LLVMValueRef vb = LLVMBuildLoad2(codegen->builder, strty, pb, "typeeq.vb");
-        LLVMValueRef ca = LLVMBuildExtractValue(codegen->builder, va, 0, "typeeq.ca");
-        LLVMValueRef cb = LLVMBuildExtractValue(codegen->builder, vb, 0, "typeeq.cb");
-        LLVMValueRef strcmp_fn = codegen_get_or_declare_strcmp(codegen);
-        LLVMValueRef sargs[2] = { ca, cb };
-        LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(strcmp_fn),
-                                        strcmp_fn, sargs, 2, "typeeq.strcmp");
-        eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "typeeq.streq");
+        eq_bit = codegen_emit_string_eq(codegen, va, vb);
     } else {
         // integer/bool/char/float32/float64: deref both words as T*.
         LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
@@ -1419,11 +1436,10 @@ int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
     return 1;
 }
 
-// Pack a key value into the i64 slot. STRING: extract the char* and PtrToInt
-// (NOT codegen_map_value_to_slot — that heap-boxes strings, which would break
-// strcmp identity: two equal-content string keys must PtrToInt to the SAME
-// comparable representation the runtime's key_kind==STRING arm strcmp's,
-// not two distinct box addresses). INLINE: reuse the value-slot packer (its
+// Pack a key value into the i64 slot. STRING: store the {ptr, len} aggregate
+// in a stack GooStrKey and PtrToInt its address (NOT codegen_map_value_to_slot
+// — that heap-boxes strings; the runtime compares by length and bytes, so the
+// address carries no identity). INLINE: reuse the value-slot packer (its
 // inline arm is exactly PtrToInt/ZExt/SExt/bitcast — safe to share because
 // map keys are restricted to inline-eligible types; Task 3's typecheck gate
 // enforces that).
@@ -1451,9 +1467,17 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
     }
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
     if (kt && kt->kind == TYPE_STRING) {
-        // string aggregate {i8*, i64}: take field 0 (the char*), int-ize it.
-        LLVMValueRef cptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "kstr_ptr");
-        return LLVMBuildPtrToInt(codegen->builder, cptr, i64, "kstr_slot");
+        // The slot is a pointer to a GooStrKey {ptr, len} (include/runtime.h),
+        // which has the string aggregate's own layout, so the whole aggregate
+        // is stored. Passing only the char* lost the length. The header lives
+        // in an entry-block alloca, so a map write in a loop does not grow the
+        // stack; the runtime copies it on insert and never keeps this pointer.
+        LLVMTypeRef str_ty = codegen_type_to_llvm(codegen, kt);
+        if (!str_ty) return NULL;
+        LLVMValueRef hdr = codegen_create_entry_alloca(codegen, str_ty, "kstr_hdr");
+        if (!hdr) return NULL;
+        LLVMBuildStore(codegen->builder, raw, hdr);
+        return LLVMBuildPtrToInt(codegen->builder, hdr, i64, "kstr_slot");
     }
     if (kt && kt->kind == TYPE_STRUCT) {
         // Heap-copy the struct key (mirrors codegen_map_value_to_slot's
@@ -1513,17 +1537,21 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
     return codegen_map_value_to_slot(codegen, raw, kt);
 }
 
-// Inverse for range key binding. STRING: slot holds a char* (the runtime
-// stores string keys as their raw pointer, per key_kind==STRING); rebuild the
-// goo string aggregate via codegen_string_from_cstr, mirroring exactly what
-// the range loop's key-bind step did before this change (statement_codegen.c:
-// goo_string_new(key_cstr)). INLINE: reuse the value unpacker.
+// Inverse for range key binding. STRING: the slot is the entry's stored
+// GooStrKey*; load its {ptr, len} and copy the bytes into a fresh string, so
+// the loop variable stays valid if the entry is deleted during the walk.
+// INLINE: reuse the value unpacker.
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type) {
     if (!codegen || !slot) return NULL;
     if (key_type && key_type->kind == TYPE_STRING) {
-        LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
-        LLVMValueRef cptr = LLVMBuildIntToPtr(codegen->builder, slot, i8p, "kstr_ptr");
-        return codegen_string_from_cstr(codegen, cptr);
+        LLVMTypeRef str_ty = codegen_type_to_llvm(codegen, key_type);
+        if (!str_ty) return NULL;
+        LLVMValueRef hp = LLVMBuildIntToPtr(codegen->builder, slot,
+                                            LLVMPointerType(str_ty, 0), "kstr_hdr");
+        LLVMValueRef stored = LLVMBuildLoad2(codegen->builder, str_ty, hp, "kstr_stored");
+        return codegen_string_from_bytes(codegen,
+            LLVMBuildExtractValue(codegen->builder, stored, 0, "kstr_ptr"),
+            LLVMBuildExtractValue(codegen->builder, stored, 1, "kstr_len"));
     }
     if (key_type && key_type->kind == TYPE_STRUCT) {
         LLVMTypeRef sty = codegen_type_to_llvm(codegen, key_type);

@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]int{}
+	s := "hello world"
+	m[s[0:5]] = 3
+	m[s] = 4
+	fmt.Println(len(m), m["hello"], m["hello world"])
+	for k := range m {
+		if k == "hello" {
+			fmt.Println("found", len(k))
+		}
+	}
+}

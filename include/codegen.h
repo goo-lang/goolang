@@ -635,6 +635,10 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 // Emit the current function's registered defers in LIFO order before a `ret`.
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker);
+// Ends the map iterators of the range-over-map frames [from_frame, loop_depth),
+// innermost first. A non-NULL goto_label skips the frames whose body declares
+// that label, because a goto inside the loop does not leave it.
+void codegen_emit_map_iter_ends(CodeGenerator* codegen, int from_frame, const char* goto_label);
 
 // T4: record `info`'s slot for release at function exit, if the release plan
 // approves it. Called from vscope_add, the single point every local binding
@@ -1063,6 +1067,8 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
 // goo_string_new. Shared by codegen_map_slot_to_key's STRING arm and the
 // map-range loop's key bind (statement_codegen.c).
 LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr);
+// Length-exact copy into a fresh goo string; keeps embedded NUL bytes.
+LLVMValueRef codegen_string_from_bytes(CodeGenerator* codegen, LLVMValueRef ptr, LLVMValueRef len);
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name);
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block);
 

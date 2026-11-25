@@ -21,6 +21,8 @@ int cfctx_push_loop(ControlFlowContext* cf, LLVMBasicBlockRef brk, LLVMBasicBloc
     cf->loop_continue_bb[cf->loop_depth] = cont;
     cf->loop_label[cf->loop_depth] = cf->pending_label;
     cf->loop_is_loop[cf->loop_depth] = 1;
+    cf->loop_map_ptr[cf->loop_depth] = NULL;
+    cf->loop_map_body[cf->loop_depth] = NULL;
     cf->pending_label = NULL;
     cf->loop_depth++;
     return 1;
@@ -34,6 +36,8 @@ int cfctx_push_break_scope(ControlFlowContext* cf, LLVMBasicBlockRef brk) {
     cf->loop_continue_bb[cf->loop_depth] = inherited_continue;
     cf->loop_label[cf->loop_depth] = cf->pending_label;
     cf->loop_is_loop[cf->loop_depth] = 0;
+    cf->loop_map_ptr[cf->loop_depth] = NULL;
+    cf->loop_map_body[cf->loop_depth] = NULL;
     cf->pending_label = NULL;
     cf->loop_depth++;
     return 1;
