@@ -3486,6 +3486,8 @@ VERIFY_ALL_DEPS := \
     far-stencil-r2-probe \
     far-collective-probe \
     far-jacobi-probe \
+    far-world-probe \
+    far-world-selftest \
     nil-deref-probe \
     goo-test-probe \
     proof-cache-shell-probe \
@@ -4894,6 +4896,27 @@ far-jacobi-probe: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/far-probe.sh build/far_jacobi 2
 	@echo "far-jacobi-probe: PASS (distributed convergence, twice, bit-identical)"
 .PHONY: far-jacobi-probe
+
+# Distributed Jacobi at world 1, 2, 4 and 8 over the SAME global problem
+# (n=32): the world size is a fixture argument, so a rank-count bug that
+# the 2-rank probes cannot see (edge ranks, middle ranks, world=1) shows
+# up here. The PASS line comes from the script and names the worlds.
+far-world-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_world examples/far_world_probe.goo
+	@./build/far_world near > build/far_world_near.txt
+	@if [ ! -s build/far_world_near.txt ] || grep -vqx "true" build/far_world_near.txt; then \
+	  echo "far-world-probe: FAIL (near mode diverged)"; exit 1; fi
+	@bash scripts/far_world_probe.sh build/far_world
+.PHONY: far-world-probe
+
+# Teeth for far-world-probe: a wrong value, a wrong round count and a
+# world disagreement must each turn the gate red, and the control green.
+far-world-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/far_world examples/far_world_probe.goo
+	@bash scripts/far_world_probe.sh --self-test build/far_world
+.PHONY: far-world-selftest
 
 # bin/test_runner was REMOVED on 2026-08-17. Its five unit-test files all
 # tested frameworks that never linked into bin/goo, and it never invoked the
