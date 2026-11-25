@@ -784,7 +784,7 @@ short_var_decl:
     // The COLON-free trailing `COMMA expression` after the first value is what
     // distinguishes this from the single-value destructure rule above.
     | identifier COMMA identifier SHORT_ASSIGN expression COMMA expression {
-        $$ = multi_assign_2_new($1, $3, $5, $7, 1);
+        $$ = multi_assign_2_new($1, $3, $5, $7, 1, POS(@$));
     }
     ;
 
@@ -1225,10 +1225,10 @@ simple_stmt:
     // LHS shares the `expression` reduction and tuple assignment below has no
     // reduce/reduce conflict. Wrapped in ExprStmt to match the prior AST shape.
     | expression ASSIGN expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ASSIGN), $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ASSIGN), $3, POS(@$));
         ExprStmtNode* es = (ExprStmtNode*)malloc(sizeof(ExprStmtNode));
         es->base.type = AST_EXPR_STMT;
-        es->base.pos = get_current_position();
+        es->base.pos = POS(@$);
         es->base.node_type = NULL;
         es->base.next = NULL;
         es->expr = (ASTNode*)binary;
@@ -1237,16 +1237,16 @@ simple_stmt:
     // Compound assignment: `x += e`, `x -= e`, ... The compound operator is kept
     // on the BinaryExpr and lowered to load-op-store in codegen (see
     // compound_assign_stmt). Pervasive in real Go source (e.g. bits.OnesCount).
-    | expression PLUS_ASSIGN expression   { $$ = compound_assign_stmt($1, TOKEN_PLUS_ASSIGN, $3); }
-    | expression MINUS_ASSIGN expression  { $$ = compound_assign_stmt($1, TOKEN_MINUS_ASSIGN, $3); }
-    | expression MUL_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_MUL_ASSIGN, $3); }
-    | expression DIV_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_DIV_ASSIGN, $3); }
-    | expression MOD_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_MOD_ASSIGN, $3); }
-    | expression AND_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_AND_ASSIGN, $3); }
-    | expression OR_ASSIGN expression     { $$ = compound_assign_stmt($1, TOKEN_OR_ASSIGN, $3); }
-    | expression XOR_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_XOR_ASSIGN, $3); }
-    | expression LSHIFT_ASSIGN expression { $$ = compound_assign_stmt($1, TOKEN_LSHIFT_ASSIGN, $3); }
-    | expression RSHIFT_ASSIGN expression { $$ = compound_assign_stmt($1, TOKEN_RSHIFT_ASSIGN, $3); }
+    | expression PLUS_ASSIGN expression   { $$ = compound_assign_stmt($1, TOKEN_PLUS_ASSIGN, $3, POS(@$)); }
+    | expression MINUS_ASSIGN expression  { $$ = compound_assign_stmt($1, TOKEN_MINUS_ASSIGN, $3, POS(@$)); }
+    | expression MUL_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_MUL_ASSIGN, $3, POS(@$)); }
+    | expression DIV_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_DIV_ASSIGN, $3, POS(@$)); }
+    | expression MOD_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_MOD_ASSIGN, $3, POS(@$)); }
+    | expression AND_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_AND_ASSIGN, $3, POS(@$)); }
+    | expression OR_ASSIGN expression     { $$ = compound_assign_stmt($1, TOKEN_OR_ASSIGN, $3, POS(@$)); }
+    | expression XOR_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_XOR_ASSIGN, $3, POS(@$)); }
+    | expression LSHIFT_ASSIGN expression { $$ = compound_assign_stmt($1, TOKEN_LSHIFT_ASSIGN, $3, POS(@$)); }
+    | expression RSHIFT_ASSIGN expression { $$ = compound_assign_stmt($1, TOKEN_RSHIFT_ASSIGN, $3, POS(@$)); }
     // F6: `a, b = v1, v2` — tuple assignment to two existing identifiers. Kept
     // as an `identifier`-prefixed rule (alongside the `expression`-prefixed rule
     // below) because short_var_decl uses `identifier COMMA identifier ...`; for a
@@ -1255,23 +1255,23 @@ simple_stmt:
     // selector LHS (`s[i]`) can only reduce as `expression`, so they fall through
     // to the rule below.
     | identifier COMMA identifier ASSIGN expression COMMA expression {
-        $$ = multi_assign_2_new($1, $3, $5, $7, 0);
+        $$ = multi_assign_2_new($1, $3, $5, $7, 0, POS(@$));
     }
     // `a, b = f()` — tuple assignment from a SINGLE multi-return call. The
     // absence of a trailing `COMMA expression` (present in the rule above)
     // distinguishes this destructuring form. Declared before the general
     // expression-LHS variant so a bare-identifier LHS reduces here.
     | identifier COMMA identifier ASSIGN expression {
-        $$ = multi_assign_call_new($1, $3, $5);
+        $$ = multi_assign_call_new($1, $3, $5, POS(@$));
     }
     // Tuple assignment to any lvalues: `s[i], s[j] = s[j], s[i]`, `p.a, p.b = …`.
     // Targets are full expressions (addressability checked in the typechecker).
     | expression COMMA expression ASSIGN expression COMMA expression {
-        $$ = multi_assign_2_new($1, $3, $5, $7, 0);
+        $$ = multi_assign_2_new($1, $3, $5, $7, 0, POS(@$));
     }
     // `p.a, s[i] = f()` — single-call destructure to general lvalue targets.
     | expression COMMA expression ASSIGN expression {
-        $$ = multi_assign_call_new($1, $3, $5);
+        $$ = multi_assign_call_new($1, $3, $5, POS(@$));
     }
     ;
 

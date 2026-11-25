@@ -1,0 +1,7 @@
+package main
+
+func main() {
+	s := "a"
+	s += 1
+	_ = s
+}

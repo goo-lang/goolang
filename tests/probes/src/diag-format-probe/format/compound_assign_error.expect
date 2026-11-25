@@ -1,0 +1,3 @@
+compound_assign_error.goo:5:2: error: Cannot assign int64 to string
+    5 | 	s += 1
+      | 	^
