@@ -117,7 +117,7 @@ goo_cc_library(
 goo_cc_library(
     name = "returns_fresh",
     srcs = ["returns_fresh.c"],
-    visibility = ["//visibility:public"],
+    visibility = ["//tests/unit/types:__pkg__"],
     deps = [
         ":local_escape",
         ":param_escape",
