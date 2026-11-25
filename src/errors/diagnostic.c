@@ -218,7 +218,12 @@ bool diag_source_has_word(const char* filename, const char* word) {
         return true;
     }
     for (size_t i = 0U; i + wl <= e->len; i++) {
-        if (memcmp(e->text + i, word, wl) != 0) {
+        // A byte loop, not memcmp: MISRA 21.14 flags memcmp on text.
+        size_t k = 0U;
+        while (k < wl && e->text[i + k] == word[k]) {
+            k++;
+        }
+        if (k != wl) {
             continue;
         }
         const bool before = i > 0U && is_name_byte(e->text[i - 1U]);
