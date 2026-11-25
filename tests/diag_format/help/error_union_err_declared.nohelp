@@ -1,0 +1,2 @@
+error union must be handled
+err is already declared in this scope: "x, err := f(1)" would fail, so no help

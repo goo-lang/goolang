@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "diagnostic.h"
 #include "block_escape.h"
 #include "release_decision.h"
 #include "param_escape.h"
@@ -574,14 +575,10 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
 void codegen_warning(CodeGenerator* codegen, Position pos, const char* format, ...) {
     if (!codegen) return;
     
-    fprintf(stderr, "Warning at %s:%d:%d: ", pos.filename ? pos.filename : "<unknown>", pos.line, pos.column);
-    
     va_list args;
     va_start(args, format);
-    vfprintf(stderr, format, args);
+    diag_vemit(DIAG_WARNING, pos, NULL, NULL, format, args);
     va_end(args);
-    
-    fprintf(stderr, "\n");
     codegen->warning_count++;
 }
 
@@ -1562,7 +1559,7 @@ int codegen_emit_llvm_ir(CodeGenerator* codegen __attribute__((unused)), const c
     
     char* error_message = NULL;
     if (LLVMPrintModuleToFile(codegen->module, filename, &error_message)) {
-        fprintf(stderr, "Error writing LLVM IR: %s\n", error_message);
+        diag_emit(DIAG_ERROR, (Position){0}, NULL, NULL, "Error writing LLVM IR: %s", error_message);
         LLVMDisposeMessage(error_message);
         return 0;
     }
@@ -1649,7 +1646,8 @@ int codegen_emit_object_file(CodeGenerator* codegen, const char* filename) {
 static bool archive_path_in(char* buf, size_t size, const char* dir, const char* rel) {
     int w = snprintf(buf, size, "%s%s", dir, rel);
     if (w < 0 || (size_t)w >= size) {
-        fputs("goo: warning: the runtime archive path is too long; trying the next location (set GOO_RUNTIME to override)\n", stderr);
+        diag_emit(DIAG_WARNING, (Position){0}, NULL, NULL,
+                  "the runtime archive path is too long; trying the next location (set GOO_RUNTIME to override)");
         return false;
     }
     return true;
@@ -1670,7 +1668,8 @@ static const char* goo_runtime_archive_path(void) {
     char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (n >= (ssize_t)sizeof(exe) - 1) {
-        fputs("goo: warning: the executable path is too long to locate lib/libgoo_runtime.a; trying the working directory (set GOO_RUNTIME to override)\n", stderr);
+        diag_emit(DIAG_WARNING, (Position){0}, NULL, NULL,
+                  "the executable path is too long to locate lib/libgoo_runtime.a; trying the working directory (set GOO_RUNTIME to override)");
     } else if (n > 0) {
         exe[n] = '\0';
         char* slash = strrchr(exe, '/');        // dir-of-exe
@@ -2119,7 +2118,7 @@ int codegen_verify_module(CodeGenerator* codegen __attribute__((unused))) {
     
     char* error_message = NULL;
     if (LLVMVerifyModule(codegen->module, LLVMReturnStatusAction, &error_message)) {
-        fprintf(stderr, "Module verification failed: %s\n", error_message);
+        diag_emit(DIAG_ERROR, (Position){0}, NULL, NULL, "Module verification failed: %s", error_message);
         LLVMDisposeMessage(error_message);
         return 0;
     }

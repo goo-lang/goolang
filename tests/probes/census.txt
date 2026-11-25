@@ -169,6 +169,7 @@ script ast-free-leak-probe
 script compile-commands-current-probe
 script dead-package-code-probe
 script deadlock-poll-probe
+script diag-format-probe
 script diagnostics-drift-probe
 script doc-claims-probe
 script exit-code-probe
