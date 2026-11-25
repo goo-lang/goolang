@@ -1165,6 +1165,30 @@ bool type_help_format(char* buf, size_t cap, const char* format, ...) {
     return n > 0 && (size_t)n < cap;
 }
 
+bool type_name_in_current_scope(const TypeChecker* checker, const char* name) {
+    if (!checker || !checker->current_scope || !name) { return false; }
+    for (const Variable* v = checker->current_scope->variables; v; v = v->next) {
+        if (v->name && strcmp(v->name, name) == 0) { return true; }
+    }
+    return false;
+}
+
+const char* type_package_alias(TypeChecker* checker, const char* import_path) {
+    if (!checker || !import_path) { return NULL; }
+    for (const Scope* sc = checker->current_scope; sc; sc = sc->parent) {
+        for (const Variable* v = sc->variables; v; v = v->next) {
+            if (!v->name || !v->package || !v->package->import_path ||
+                strcmp(v->package->import_path, import_path) != 0) {
+                continue;
+            }
+            // A nearer binding of the same name hides this alias.
+            const Variable* seen = type_checker_lookup_variable(checker, v->name);
+            if (seen == v) { return v->name; }
+        }
+    }
+    return NULL;
+}
+
 bool type_call_help_text(const ASTNode* call, char* buf, size_t cap) {
     if (!call || call->type != AST_CALL_EXPR) { return false; }
     return diag_source_call_text(call->pos, buf, cap);

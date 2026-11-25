@@ -39,6 +39,13 @@ void diag_free_sources(void);
 // newline or the end of the text comes before the ')', or buf is too small.
 bool diag_source_call_text(Position pos, char* buf, size_t cap);
 
+// True when `word` occurs in the registered text of `filename` as a whole
+// name (no name byte on either side), in code, a string or a comment. It also
+// returns true when the file is not registered, so the answer "the name is
+// unused" is never a guess. A help line that declares a new name uses this to
+// prove the name is free in every scope of the file.
+bool diag_source_has_word(const char* filename, const char* word);
+
 // Test seam. NULL restores stderr.
 void diag_set_stream(FILE* out);
 

@@ -38,7 +38,7 @@ static void expect_eq(const char* got, const char* want, const char* what) {
 }
 
 int main(void) {
-    goo_check_expect(14);
+    goo_check_expect(16);
 
     goo_check_row(1, "first_line_and_caret");
     diag_register_source("t.goo", SRC, strlen(SRC));
@@ -140,6 +140,25 @@ int main(void) {
               strcmp(cb, "f(1)") == 0, "semicolon after call");
     goo_check(!diag_source_call_text(at("t2.goo", 7, 6), cb, sizeof cb),
               "unknown tail");
+
+    goo_check_row(15, "source_call_text_column_past_end");
+    const char* esrc = "x := f(1)\ny := g(2)";
+    diag_register_source("e.goo", esrc, strlen(esrc));
+    goo_check(!diag_source_call_text(at("e.goo", 1, 40), cb, sizeof cb),
+              "column past the line end reads no later line");
+    goo_check(!diag_source_call_text(at("e.goo", 1, 10), cb, sizeof cb),
+              "column on the newline");
+    goo_check(!diag_source_call_text(at("e.goo", 2, 40), cb, sizeof cb),
+              "column past the end of the text");
+    goo_check(diag_source_call_text(at("e.goo", 2, 6), cb, sizeof cb) &&
+              strcmp(cb, "g(2)") == 0, "last line without a final newline");
+
+    goo_check_row(16, "source_has_word");
+    const char* wsrc = "qir.Alloc()\nx := q1 + _q\n";
+    diag_register_source("w.goo", wsrc, strlen(wsrc));
+    goo_check(!diag_source_has_word("w.goo", "q"), "q is only inside longer names");
+    goo_check(diag_source_has_word("w.goo", "q1"), "whole name found");
+    goo_check(diag_source_has_word("nowhere.goo", "q"), "unregistered file is unknown");
 
     diag_free_sources();
     return goo_check_done("diagnostic_test");

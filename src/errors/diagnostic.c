@@ -175,6 +175,10 @@ bool diag_source_call_text(Position pos, char* buf, size_t cap) {
     }
     const size_t column = (size_t)pos.column;
     const size_t start = i + column - 1U;
+    // A column past the line end would read the next line.
+    if (start >= e->len || e->text[start] == '\n') {
+        return false;
+    }
     i = start;
     while (i < e->len && is_name_byte(e->text[i])) {
         i++;
@@ -202,6 +206,25 @@ bool diag_source_call_text(Position pos, char* buf, size_t cap) {
             if (depth == 0) {
                 return call_ends_here(e, i) && copy_span(e, start, i, buf, cap);
             }
+        }
+    }
+    return false;
+}
+
+bool diag_source_has_word(const char* filename, const char* word) {
+    const SourceEntry* e = filename ? find_source(filename) : NULL;
+    const size_t wl = word ? strlen(word) : 0U;
+    if (e == NULL || wl == 0U) {
+        return true;
+    }
+    for (size_t i = 0U; i + wl <= e->len; i++) {
+        if (memcmp(e->text + i, word, wl) != 0) {
+            continue;
+        }
+        const bool before = i > 0U && is_name_byte(e->text[i - 1U]);
+        const bool after = i + wl < e->len && is_name_byte(e->text[i + wl]);
+        if (!before && !after) {
+            return true;
         }
     }
     return false;

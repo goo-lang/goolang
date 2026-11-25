@@ -1352,6 +1352,16 @@ void type_warning(TypeChecker* checker, Position pos, const char* format, ...);
 // line. Returns false when it cannot, and the caller must then print no help.
 bool type_call_help_text(const ASTNode* call, char* buf, size_t cap);
 
+// True when `name` is declared in the innermost scope at the error site. A
+// help line that declares a name with `:=` must test this first: the pasted
+// line fails with "already declared in this scope" when it is true.
+bool type_name_in_current_scope(const TypeChecker* checker, const char* name);
+
+// The name the current file imports package `import_path` under, or NULL when
+// no visible binding is that package (an alias can be shadowed by a local).
+// A help line that writes `<pkg>.Func(...)` must use this name, not a guess.
+const char* type_package_alias(TypeChecker* checker, const char* import_path);
+
 // Builtin types access
 void type_checker_init_builtins(TypeChecker* checker);
 void type_checker_add_builtin_functions(TypeChecker* checker);

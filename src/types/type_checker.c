@@ -2780,7 +2780,11 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         const char* shown = NULL;
         char call_text[160];
         char help[256];
+        // `err` as the user's name gives `err, err := ...`, and an `err`
+        // already in this scope fails with "already declared": no help.
         if (decl_is_in_function(checker) &&
+            strcmp(var_decl->names[0], "err") != 0 &&
+            !type_name_in_current_scope(checker, "err") &&
             type_call_help_text(var_decl->values, call_text, sizeof call_text) &&
             type_help_format(help, sizeof help, "%s, err := %s",
                              var_decl->names[0], call_text)) {
