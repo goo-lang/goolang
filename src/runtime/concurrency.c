@@ -581,6 +581,7 @@ static void* scheduler_main_loop(void* arg) {
             // (and cppcheck, which reported each repeated goo_os_tls()->reap
             // read as "always false") that the call can change the struct.
             goo_worker_tls_t* tls = goo_os_tls();
+            GOO_ASSERT(tls != NULL);
             tls->current = goroutine;
             tls->reap = NULL;                 // cleared each run; the goroutine sets it on exit
             tls->requeue = NULL;              // cleared each run; the goroutine sets it on yield
