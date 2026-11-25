@@ -1218,6 +1218,8 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 
         // Keyed by the same pointer string the lexer stamps into Positions,
         // so a type error in ANY file of the package finds its own text.
+        // The bridge (lexer_bridge.c) does not register, because probes compile
+        // that file by name, and the in-memory _testmain has no source to show.
         diag_register_source(fname, sources[fi], strlen(sources[fi]));
 
         if (options->verbose) printf("Phase 1: Lexical analysis (%s)...\n", fname);
