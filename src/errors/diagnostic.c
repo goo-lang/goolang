@@ -122,31 +122,35 @@ static void print_snippet(FILE* out, const SourceEntry* e, Position pos) {
     // A column outside the line clamps: 0 and below to the start, beyond the
     // end to just after the last byte.
     int remaining = pos.column - 1;
-    for (size_t i = start; i < end && remaining > 0; i++, remaining--) {
+    size_t i = start;
+    while (i < end && remaining > 0) {
         unsigned char c = (unsigned char)e->text[i];
-        if (c == '\t') {
+        if (c == 0x09U) {
             fputc('\t', out);
         } else if ((c & 0xC0U) != 0x80U) {
             fputc(' ', out);
+        } else {
+            // A UTF-8 continuation byte is part of the same character.
         }
+        i++;
+        remaining--;
     }
     fputs("^\n", out);
 }
 
 static void print_help(FILE* out, const char* help) {
     const char* lead = "  help: ";
-    const char* p = help;
-    while (*p != '\0') {
-        const char* nl = strchr(p, '\n');
-        size_t l = nl != NULL ? strlen(p) - strlen(nl) : strlen(p);
+    size_t i = 0U;
+    while (help[i] != '\0') {
+        size_t j = i;
+        while (help[j] != '\0' && help[j] != '\n') {
+            j++;
+        }
         fputs(lead, out);
-        fwrite(p, 1U, l, out);
+        fwrite(help + i, 1U, j - i, out);
         fputc('\n', out);
         lead = "        ";
-        p += l;
-        if (*p == '\n') {
-            p++;
-        }
+        i = help[j] == '\n' ? j + 1U : j;
     }
 }
 

@@ -18,7 +18,7 @@ typedef enum { DIAG_ERROR, DIAG_WARNING } DiagSeverity;
 
 // `code` is accepted and ignored. `help` may be NULL; a multi-line help text
 // is split on '\n'. Position.column is a 1-based BYTE offset.
-[[gnu::format(printf, 5, 6)]]
+__attribute__((format(printf, 5, 6)))
 void diag_emit(DiagSeverity sev, Position pos, const char* code,
                const char* help, const char* format, ...);
 
