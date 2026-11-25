@@ -197,7 +197,7 @@ chained call, a package-level statement) the compiler prints no help.
 
 Gated by `diag-format-probe` (`scripts/diag_format_probe.sh`) in `verify-core`.
 It checks the header grammar and the exact snippet and caret of the fixtures
-in `tests/probes/src/diag-format-probe/format/`, and it builds each
+in `tests/diag_format/format/`, and it builds each
 `help/NAME.fixed.goo` to prove the help compiles. `diag-format-selftest`
 feeds it mutated stderr and bad help fixtures. The gate fails on zero
 fixtures.

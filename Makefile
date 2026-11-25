@@ -1978,7 +1978,7 @@ goo-test-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # The compiler diagnostic format: header grammar, snippet line, caret column,
 # and paste-ready (or absent) help lines, over the fixtures in
-# tests/probes/src/diag-format-probe. The self-test feeds the checker mutated
+# tests/diag_format. The self-test feeds the checker mutated
 # stderr and bad help fixtures and needs each refused for its own reason.
 diag-format-probe: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/diag_format_probe.sh

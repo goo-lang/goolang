@@ -6,7 +6,7 @@
 #     %5d | <source line>
 #           | <pad>^
 #   [  help: <paste-ready fix>]
-# This gate holds two sets of fixtures under tests/probes/src/diag-format-probe:
+# This gate holds two sets of fixtures under tests/diag_format:
 #
 #   format/  NAME.goo (or NAME.cmd: the `goo build` arguments, "@OUT@" is the
 #            output path) plus NAME.expect, the exact stderr. Covers a parse
@@ -32,7 +32,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPILER="${COMPILER:-$ROOT/bin/goo}"
 case "$COMPILER" in /*) ;; *) COMPILER="$PWD/$COMPILER" ;; esac
-FIXTURES="$ROOT/tests/probes/src/diag-format-probe"
+FIXTURES="$ROOT/tests/diag_format"
 
 FAILS=0
 # fail TAG MESSAGE: the TAG is what the self-test matches, so each mutant must

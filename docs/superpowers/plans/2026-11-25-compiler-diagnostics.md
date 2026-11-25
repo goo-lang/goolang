@@ -124,7 +124,7 @@
 
 **Files:**
 - Modify: `src/types/types.c` and `include/types.h` (new `type_error_help`), `src/types/type_checker.c:2769` (error union), `src/types/qir_ownership.c` (catalogue rows c6d92077, e45648f5), `src/types/ownership_checker.c` (rows bd7b7685, b8860c84)
-- Create: fixtures under `tests/probes/src/diag-format-probe/help/`: for each help, `<name>.goo` (the error) and `<name>.fixed.goo` (the help applied)
+- Create: fixtures under `tests/diag_format/help/`: for each help, `<name>.goo` (the error) and `<name>.fixed.goo` (the help applied)
 
 **Interfaces:**
 - Produces: `[[gnu::format(printf, 4, 5)]] void type_error_help(TypeChecker* checker, Position pos, const char* help, const char* format, ...);` in `include/types.h`; counts the error like `type_error`.
@@ -140,7 +140,7 @@
 ### Task 6: The `diag-format-probe` gate
 
 **Files:**
-- Create: `scripts/diag_format_probe.sh`, fixtures under `tests/probes/src/diag-format-probe/` (parse error, type error, help case from Task 5, codegen error, no-position error, a tab line, a multi-byte line)
+- Create: `scripts/diag_format_probe.sh`, fixtures under `tests/diag_format/` (parse error, type error, help case from Task 5, codegen error, no-position error, a tab line, a multi-byte line)
 - Modify: `Makefile` (`diag-format-probe`, `diag-format-selftest`, both in `VERIFY_ALL_DEPS`), `tools/parity-gate-count.txt` (+2), `tests/probes/census.txt`, `CLAUDE.md` (one paragraph: the diagnostic format and its gate)
 
 **Interfaces:**

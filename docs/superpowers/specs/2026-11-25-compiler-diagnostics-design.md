@@ -227,7 +227,7 @@ dropped `qir.Qubit`, and a `?T` value used without a check.
 
 ### 7.6 Gate: `diag-format-probe`
 
-Fixtures under `tests/probes/src/diag-format-probe/` and a script with
+Fixtures under `tests/diag_format/` and a script with
 `--self-test`. It covers a parse error, a type error, a type error with help,
 a codegen error and a diagnostic with no position. It checks:
 
