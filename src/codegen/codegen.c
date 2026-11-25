@@ -1646,6 +1646,7 @@ int codegen_emit_object_file(CodeGenerator* codegen, const char* filename) {
 
 // Resolve the runtime archive path independent of cwd so the compiler works
 // when invoked from any directory. Order: $GOO_RUNTIME -> <exe-dir>/../lib ->
+// $GOOROOT/lib ->
 // cwd-relative fallback. Returns a pointer into a static buffer (single-threaded
 // codegen; not reentrant — acceptable here).
 static const char* goo_runtime_archive_path(void) {
@@ -1674,6 +1675,19 @@ static const char* goo_runtime_archive_path(void) {
         }
     }
 #endif
+    // GOOROOT comes after the executable's own directory: the archive must
+    // match the compiler that is running, and GOOROOT can name an older
+    // checkout. It serves a compiler that was copied away from its lib/.
+    const char* root = getenv("GOOROOT");
+    if (root && root[0] != '\0') {
+        int w = snprintf(buf, sizeof(buf), "%s/lib/libgoo_runtime.a", root);
+        if (w > 0 && (size_t)w < sizeof(buf)) {
+            struct stat st;
+            if (stat(buf, &st) == 0) {
+                return buf;
+            }
+        }
+    }
     snprintf(buf, sizeof(buf), "lib/libgoo_runtime.a");  // fallback (repo-root cwd)
     return buf;
 }
