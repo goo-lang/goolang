@@ -17,6 +17,8 @@ goo_cc_library(
     srcs = ["codegen_context.c"],
     deps = [
         "//include:codegen_h",
+        "//include:diagnostic_h",
+        "//src/errors:diagnostic",
         "@llvm//:llvm_c",
     ],
 )

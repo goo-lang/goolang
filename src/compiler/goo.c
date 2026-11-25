@@ -18,6 +18,7 @@
 #include "ast.h"
 #include "types.h"
 #include "program_dump.h"
+#include "diagnostic.h"
 
 // Name the synthesized `goo test` entry file carries through every phase
 // (parse diagnostics, --emit-ast, the program dump).
@@ -177,6 +178,7 @@ int main(int argc, char* argv[]) {
     }
     free(options);
 
+    diag_free_sources();
     // error_cleanup(); // TODO: Update to use new error API
 
     return exit_code;
@@ -973,6 +975,7 @@ static int walk_import(PkgGraph* g, const char* import_path, const char* alias) 
         }
 
         char* buf = read_file(ps.files[fi]);
+        if (buf) diag_register_source(e->file_names[fi], buf, strlen(buf));
         if (!buf) {
             fprintf(stderr, "Error: cannot read source file \"%s\" of package \"%s\"\n",
                     ps.files[fi], import_path);
@@ -1212,6 +1215,10 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 
         sources[fi] = read_file(fname);
         if (!sources[fi]) { ENTRY_CLEANUP(); return false; }
+
+        // Keyed by the same pointer string the lexer stamps into Positions,
+        // so a type error in ANY file of the package finds its own text.
+        diag_register_source(fname, sources[fi], strlen(sources[fi]));
 
         if (options->verbose) printf("Phase 1: Lexical analysis (%s)...\n", fname);
 

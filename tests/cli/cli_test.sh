@@ -236,6 +236,28 @@ check() {
   fi
 }
 
+# Diagnostic snippets (Review Focus 3 and 5). The type error sits in the SECOND
+# file of a package directory, so the snippet must come from that file's text
+# and not from the first one registered. A "./x.goo" spelling must render the
+# snippet too, because the registry keys on the exact filename string.
+mkdir -p "$WORK/twofile"
+cat > "$WORK/twofile/a.go" <<'EOF2'
+package main
+
+func main() {
+	helper()
+}
+EOF2
+cat > "$WORK/twofile/b.go" <<'EOF2'
+package main
+
+func helper() {
+	var second int = "in second file"
+	_ = second
+}
+EOF2
+cp "$WORK/type_err.goo" "$WORK/dotslash.goo"
+
 echo "=== cli_test: exit-code and stderr discipline (P5.4) ==="
 
 #     name                    exit  stdout        stderr-mode          command
@@ -244,7 +266,8 @@ check compiled-binary-runs    0     "ok"          empty                "$WORK/ok
 check run-success             0     "ok"          empty                "$COMPILER" run "$WORK/ok.goo"
 check run-exit-propagation    5     ""            empty                "$COMPILER" run "$WORK/exit5.goo"
 check parse-error             1     ""            "Parse error"        "$COMPILER" "$WORK/parse_err.goo" -o "$WORK/pe_bin"
-check type-error              1     ""            "Type error"         "$COMPILER" "$WORK/type_err.goo" -o "$WORK/te_bin"
+check type-error              1     ""            ": error: Cannot assign string to int64"        "$COMPILER" "$WORK/type_err.goo" -o "$WORK/te_bin"
+check snippet-on-type-error   1     ""            " | 	var x int = \"not an int\"" "$COMPILER" "$WORK/type_err.goo" -o "$WORK/te_bin"
 check missing-input           1     ""            "Cannot open file"   "$COMPILER" "$WORK/does_not_exist.goo" -o "$WORK/mi_bin"
 check no-input-file           1     ""            "No input file"      "$COMPILER"
 check unknown-flag            1     ""            nonempty             "$COMPILER" --totally-bogus-flag "$WORK/ok.goo"
@@ -252,6 +275,8 @@ check link-failure            1     ""            "-lgootest_bogus_xyz" "$COMPIL
 check build-extra-arg         1     ""            "unexpected argument" "$COMPILER" build "$WORK/ok.goo" stray_arg
 check run-emit-llvm-conflict  1     ""            "cannot be combined" "$COMPILER" run --emit-llvm "$WORK/ok.goo"
 check help-on-stdout          0     "~Usage:"     empty                "$COMPILER" help
+check snippet-second-file     1     ""            "var second int = \"in second file\"" sh -c "cd '$WORK/twofile' && '$COMPILER' build ."
+check snippet-dot-slash-name  1     ""            " | 	var x int = \"not an int\"" sh -c "cd '$WORK' && '$COMPILER' ./dotslash.goo -o dot_bin"
 # Directory entry package (`goo build .`). The output is named after the
 # DIRECTORY, which is Go's rule for `go build .`, so the binary is dirpkg.
 check dir-build                0     ""            empty                sh -c "cd '$WORK/dirpkg' && '$COMPILER' build ."

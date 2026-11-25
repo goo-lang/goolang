@@ -44,6 +44,7 @@ cc_binary(
         ":test_discovery",
         "//include:ast_h",
         "//include:codegen_h",
+        "//include:diagnostic_h",
         "//include:error_h",
         "//include:escape_core_h",
         "//include:import_resolver_h",
@@ -60,6 +61,7 @@ cc_binary(
         "//include:types_h",
         "//src/ast:json_writer",
         "//src/codegen",
+        "//src/errors:diagnostic",
         "//src/types:frontend",
     ],
 )

@@ -1,5 +1,6 @@
 #include "types.h"
 #include "comptime.h"
+#include "diagnostic.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1138,11 +1139,7 @@ void type_error(TypeChecker* checker, Position pos, const char* format, ...) {
     va_list args;
     va_start(args, format);
     
-    fprintf(stderr, "Type error at %s:%d:%d: ",
-            pos.filename ? pos.filename : "<unknown>",
-            pos.line, pos.column);
-    vfprintf(stderr, format, args);
-    fprintf(stderr, "\n");
+    diag_vemit(DIAG_ERROR, pos, NULL, NULL, format, args);
     
     va_end(args);
     checker->error_count++;
@@ -1154,11 +1151,7 @@ void type_warning(TypeChecker* checker, Position pos, const char* format, ...) {
     va_list args;
     va_start(args, format);
     
-    fprintf(stderr, "Type warning at %s:%d:%d: ",
-            pos.filename ? pos.filename : "<unknown>",
-            pos.line, pos.column);
-    vfprintf(stderr, format, args);
-    fprintf(stderr, "\n");
+    diag_vemit(DIAG_WARNING, pos, NULL, NULL, format, args);
     
     va_end(args);
     checker->warning_count++;

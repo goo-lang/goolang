@@ -154,8 +154,10 @@ goo_cc_library(
     visibility = ["//visibility:private"],
     deps = [
         "//include:comptime_h",
+        "//include:diagnostic_h",
         "//include:types_h",
         "//src/comptime",
+        "//src/errors:diagnostic",
     ],
 )
 
