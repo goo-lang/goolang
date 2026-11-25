@@ -251,7 +251,7 @@ peak RSS, where ADR 0002's opening measurement was 81x. valgrind: 0 errors.
 between two sittings, which made cross-session percentages non-comparable.
 Read the BLOCK COUNT first — `main` reads `os.Args` and the runtime copies
 `argv[0]` to the heap unfreed, so the byte total moves with the output path
-length while the block count holds.
+length while the block count holds. The figures in this section are for a program with NO goroutines: each scheduler worker now owns a heap `goo_thread_t` that no production path frees (`goo_scheduler_shutdown` is never called), so a program that uses goroutines holds N more blocks in use at exit, one per worker.
 
 ### What is NOT reclaimed
 

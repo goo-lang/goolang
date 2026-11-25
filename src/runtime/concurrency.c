@@ -14,7 +14,7 @@
 #include <stdatomic.h>
 
 #ifdef GOO_PLATFORM_UNIX
-    #include <pthread.h>
+    #include "goo_os.h"
     #include <unistd.h>
     #include <sys/mman.h>
     #include <ucontext.h>
@@ -39,22 +39,24 @@ goo_scheduler_t* g_scheduler = NULL;
 //
 // The worker decides a goroutine's disposition after the swap WITHOUT
 // dereferencing it, via two mutually-exclusive thread-locals: a goroutine that
-// EXITS sets t_reap to itself (it is never re-enqueued, so only this worker
-// references it → this worker frees it); a goroutine that YIELDS sets t_requeue
-// to itself and leaves t_reap NULL (the worker re-enqueues it below, AFTER the
+// EXITS sets goo_os_tls()->reap to itself (it is never re-enqueued, so only this worker
+// references it → this worker frees it); a goroutine that YIELDS sets goo_os_tls()->requeue
+// to itself and leaves goo_os_tls()->reap NULL (the worker re-enqueues it below, AFTER the
 // swap has saved its context — never before, or another worker could swap into
 // a half-saved context). Either way the worker must not touch goroutine->* after
-// the swap until the t_reap/t_requeue branches run. ucontext keeps the same OS
+// the swap until the goo_os_tls()->reap/goo_os_tls()->requeue branches run. ucontext keeps the same OS
 // thread across the switch, so the goroutine and its worker share these
 // thread-locals.
-static _Thread_local ucontext_t       t_sched_ctx;
-static _Thread_local goo_goroutine_t* t_current = NULL;
-static _Thread_local goo_goroutine_t* t_reap = NULL;
+//
 // M8d: a yielding goroutine hands itself here; the scheduler re-enqueues it
-// AFTER swapcontext has saved its context (mirrors t_reap). Re-enqueuing from
+// AFTER swapcontext has saved its context (mirrors goo_os_tls()->reap). Re-enqueuing from
 // inside goo_yield (before the swap) would publish the goroutine to other
-// workers before its context is written → race. Mutually exclusive with t_reap.
-static _Thread_local goo_goroutine_t* t_requeue = NULL;
+// workers before its context is written → race. Mutually exclusive with goo_os_tls()->reap.
+//
+// This worker-local state now lives behind the seam: goo_os_tls() (declared
+// in include/goo_os.h) returns this OS thread's own goo_worker_tls_t, with
+// fields sched_ctx, current, reap, requeue in place of the four
+// thread-locals this comment used to introduce.
 
 // Forward declarations
 static void* scheduler_main_loop(void* arg);
@@ -110,12 +112,12 @@ void goo_scheduler_init(int num_threads) {
     
 #ifdef GOO_PLATFORM_UNIX
     // Create OS threads for the scheduler
-    g_scheduler->os_threads = goo_alloc(sizeof(pthread_t) * num_threads);
-    
+    g_scheduler->os_threads = goo_alloc(sizeof(goo_thread_t*) * num_threads);
+
     for (int i = 0; i < num_threads; i++) {
-        pthread_create(&g_scheduler->os_threads[i], NULL, 
-                      scheduler_main_loop, 
-                      (void*)(intptr_t)i);
+        g_scheduler->os_threads[i] = goo_thread_create(scheduler_main_loop,
+                                                        (void*)(intptr_t)i);
+        GOO_ASSERT(g_scheduler->os_threads[i] != NULL);  // P10 rule 7: the return is checked
     }
 #endif
 }
@@ -130,7 +132,7 @@ void goo_scheduler_shutdown(void) {
 #ifdef GOO_PLATFORM_UNIX
     // Wait for all OS threads to finish
     for (int i = 0; i < g_scheduler->num_threads; i++) {
-        pthread_join(g_scheduler->os_threads[i], NULL);
+        goo_thread_join(g_scheduler->os_threads[i]);
     }
     goo_free(g_scheduler->os_threads);
 #endif
@@ -160,7 +162,7 @@ void goo_scheduler_wait(void) {
     //
     // WHAT THIS REPLACES, and why the old numbers are gone. Until 2026-09-02 a
     // goroutine counted as blocked from goo_sched_block_begin until it returned
-    // from pthread_cond_wait and ran goo_sched_block_end. That interval is
+    // from goo_cond_wait and ran goo_sched_block_end. That interval is
     // scheduler latency, which the OS does not bound, so the equality was
     // transiently true for LIVE programs and the threshold was a bet on how
     // long a wake takes: 3 polls first, then 100 after 3 proved too few under 4
@@ -275,20 +277,20 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
 }
 
 void goo_yield(void) {
-    goo_goroutine_t* current = t_current;
+    goo_goroutine_t* current = goo_os_tls()->current;
     if (!g_scheduler || !current) {
         return;
     }
 
     current->state = GOO_GOROUTINE_READY;
-    t_requeue = current;   // scheduler re-enqueues AFTER the swap saves our context
+    goo_os_tls()->requeue = current;   // scheduler re-enqueues AFTER the swap saves our context
 
 #ifdef GOO_PLATFORM_UNIX
 #ifdef __clang__ // gcc has no "clang diagnostic" pragma
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
-    if (swapcontext(&current->context, &t_sched_ctx) == -1) {
+    if (swapcontext(&current->context, &goo_os_tls()->sched_ctx) == -1) {
         goo_panic("Failed to yield goroutine");
     }
 #ifdef __clang__
@@ -298,7 +300,7 @@ void goo_yield(void) {
 }
 
 goo_goroutine_t* goo_current_goroutine(void) {
-    return t_current;
+    return goo_os_tls()->current;
 }
 
 // Remove one goroutine from a condvar's waiter list. Both mutexes are held.
@@ -388,12 +390,12 @@ void goo_sched_block_begin(goo_goroutine_t** waiters) {
     }
 }
 
-// 2026-09-02: called immediately BEFORE the pthread_cond_broadcast that wakes
+// 2026-09-02: called immediately BEFORE the goo_cond_broadcast that wakes
 // this condition variable, with the channel mutex held. It removes EVERY
 // goroutine on that condvar's waiter list from the blocked set, so the set the
 // waker empties is exactly the set the broadcast wakes.
 //
-// Why every wake is a broadcast. pthread_cond_signal gives the caller no way
+// Why every wake is a broadcast. goo_cond_signal gives the caller no way
 // to learn which waiter the OS woke, so a signal site cannot pair itself with
 // "clear the bit of the one waiter this wakes": clear X's bit, the OS wakes Y,
 // and Y runs while still counted. That is the defect this whole change fixes.
@@ -484,7 +486,7 @@ static uint64_t goo_test_wake_delay_ns(void) {
 //
 // It is NOT dead code, and a plain decrement here would drive the count below
 // zero (that is the model's DOUBLE_DEC mutant, which fails at N = 2 in 139
-// states). It is what stops a SPURIOUS return from pthread_cond_wait leaking a
+// states). It is what stops a SPURIOUS return from goo_cond_wait leaking a
 // set member. POSIX takes a thread off the condvar queue the moment the wait
 // returns, so no later broadcast can reach it; if its predicate has since
 // stopped holding, it leaves the `while` loop and would carry its bit forever,
@@ -522,7 +524,7 @@ void goo_sched_block_end(goo_goroutine_t** waiters) {
 }
 
 void goo_goroutine_exit(void) {
-    goo_goroutine_t* current = t_current;
+    goo_goroutine_t* current = goo_os_tls()->current;
     if (!g_scheduler || !current) {
         return;
     }
@@ -534,11 +536,11 @@ void goo_goroutine_exit(void) {
     goo_mutex_unlock(g_scheduler->scheduler_mutex);
 
     // Hand this goroutine to the worker for reaping. Do NOT free current->stack
-    // or current here: this code is executing ON current->stack. Setting t_reap
+    // or current here: this code is executing ON current->stack. Setting goo_os_tls()->reap
     // (this OS thread's thread-local) tells the worker — after swapcontext
     // returns onto its own stack — to free us. A yielding goroutine leaves
-    // t_reap NULL, so it is never freed from under another worker.
-    t_reap = current;
+    // goo_os_tls()->reap NULL, so it is never freed from under another worker.
+    goo_os_tls()->reap = current;
 
     // Return control to this worker's scheduler context.
 #ifdef GOO_PLATFORM_UNIX
@@ -546,7 +548,7 @@ void goo_goroutine_exit(void) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
-    setcontext(&t_sched_ctx);
+    setcontext(&goo_os_tls()->sched_ctx);
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
@@ -555,7 +557,7 @@ void goo_goroutine_exit(void) {
 
 // Goroutine wrapper function
 static void goroutine_wrapper(void) {
-    goo_goroutine_t* current = t_current;
+    goo_goroutine_t* current = goo_os_tls()->current;
     if (current && current->function) {
         current->function(current->arg);
     }
@@ -571,9 +573,18 @@ static void* scheduler_main_loop(void* arg) {
         goo_goroutine_t* goroutine = scheduler_get_next_goroutine();
         
         if (goroutine) {
-            t_current = goroutine;
-            t_reap = NULL;                 // cleared each run; the goroutine sets it on exit
-            t_requeue = NULL;              // cleared each run; the goroutine sets it on yield
+            // One read of the worker state, held across the swap. This loop
+            // never changes thread: only this worker swaps back into its own
+            // sched_ctx, so the pointer stays this worker's. A goroutine
+            // writes tls->reap or tls->requeue through its own goo_os_tls()
+            // call, and the swap's &tls->sched_ctx argument tells a reader
+            // (and cppcheck, which reported each repeated goo_os_tls()->reap
+            // read as "always false") that the call can change the struct.
+            goo_worker_tls_t* tls = goo_os_tls();
+            GOO_ASSERT(tls != NULL);
+            tls->current = goroutine;
+            tls->reap = NULL;                 // cleared each run; the goroutine sets it on exit
+            tls->requeue = NULL;              // cleared each run; the goroutine sets it on yield
             goroutine->state = GOO_GOROUTINE_RUNNING;
 
             goo_mutex_lock(g_scheduler->scheduler_mutex);
@@ -587,8 +598,8 @@ static void* scheduler_main_loop(void* arg) {
 #endif
             // Return to THIS worker's scheduler context when the goroutine
             // exits or yields.
-            goroutine->context.uc_link = &t_sched_ctx;
-            if (swapcontext(&t_sched_ctx, &goroutine->context) == -1) {
+            goroutine->context.uc_link = &tls->sched_ctx;
+            if (swapcontext(&tls->sched_ctx, &goroutine->context) == -1) {
                 goo_panic("Failed to switch to goroutine");
             }
 #ifdef __clang__
@@ -596,23 +607,23 @@ static void* scheduler_main_loop(void* arg) {
 #endif
 #endif
 
-            // Back on this worker's own stack. Reap ONLY via t_reap, which the
+            // Back on this worker's own stack. Reap ONLY via tls->reap, which the
             // goroutine set (to itself) iff it EXITED; a yielded goroutine set
-            // t_requeue instead (handled just below) and leaves t_reap NULL.
-            // A DONE goroutine is never re-enqueued, so t_reap is ours alone.
-            if (t_reap) {
-                goo_free(t_reap->stack);
-                goo_free(t_reap);
-                t_reap = NULL;
+            // tls->requeue instead (handled just below) and leaves tls->reap NULL.
+            // A DONE goroutine is never re-enqueued, so tls->reap is ours alone.
+            if (tls->reap) {
+                goo_free(tls->reap->stack);
+                goo_free(tls->reap);
+                tls->reap = NULL;
             }
             // A yielded goroutine is published to the ready queue ONLY here —
             // after swapcontext has fully saved its context — so no other worker
             // can swap into a half-saved context.
-            if (t_requeue) {
-                scheduler_add_goroutine(t_requeue);
-                t_requeue = NULL;
+            if (tls->requeue) {
+                scheduler_add_goroutine(tls->requeue);
+                tls->requeue = NULL;
             }
-            t_current = NULL;
+            tls->current = NULL;
         } else {
             // No goroutine ready; idle briefly. (Deadlock detection happens at
             // channel block points and in goo_scheduler_wait, not here.)

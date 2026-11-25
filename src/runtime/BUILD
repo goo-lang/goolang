@@ -50,6 +50,7 @@ RUNTIME_UNITS = [
 cc_library(
     name = "platform_h",
     hdrs = ["platform.h"],
+    deps = ["//include:goo_os_h"],
 )
 
 # The five files that genuinely call each other. runtime -> deadlock ->
@@ -75,9 +76,13 @@ cc_library(
 goo_cc_library(
     name = "core",
     visibility = ["//tests/unit/runtime:__pkg__"],
+    # goo_os_posix.c is the seam's production side (deterministic-simulation
+    # task 1): the mutex, condvar, thread and clock functions that moved out
+    # of sync.c and platform.c, which is why it joins the cycle with them.
     srcs = [
         "concurrency.c",
         "deadlock.c",
+        "goo_os_posix.c",
         "platform.c",
         "runtime.c",
         "sync.c",
@@ -89,6 +94,7 @@ goo_cc_library(
     ],
     deps = [
         ":platform_h",
+        "//include:goo_os_h",
         "//include:runtime_h",
     ],
 )
@@ -111,6 +117,7 @@ goo_cc_library(
     deps = [
         ":core",
         ":platform_h",
+        "//include:goo_os_h",
         "//include:runtime_h",
     ],
 )

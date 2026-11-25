@@ -205,6 +205,7 @@ CI builds with gcc-14, so the warning set there can be different. The gate in ta
 - The GrammaTech tools. None reads an artefact that the gates of this repo read today. DDisasm and GTIRB read the binaries that the linker makes. The one binary reader here is task 11, and diffoscope does that work. SEL is a mutation engine in Common Lisp. Mull is the lighter first candidate if broad mutation tests become a goal. Tbdisasm and Mnemosyne do not apply.
 - The 840 unchecked pthread returns themselves. Task 1 stops the count from an increase. The fix backlog in the MISRA README owns the decrease.
 - A Bazel `goo_script_probe` for each new probe. That is one commit after phase 4 task 14 merges.
+- Deterministic simulation of the scheduler. It has its own plan and spec (`docs/superpowers/specs/2026-09-03-deterministic-simulation-design.md`). The spike answered YES on 2026-11-08, and `sim-false-deadlock-probe` and `sim-false-deadlock-selftest` are in `VERIFY_ALL_DEPS`. The fault flags and the time APIs are later cuts.
 
 ## Risks
 

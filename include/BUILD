@@ -101,6 +101,16 @@ cc_library(
     deps = [":platform_detect_h"],
 )
 
+# The OS seam (deterministic-simulation task 1). Two implementations, never
+# linked together: src/runtime/goo_os_posix.c and tests/sim/sim_os.c.
+cc_library(
+    name = "goo_os_h",
+    hdrs = ["goo_os.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [":runtime_h"],
+)
+
 cc_library(
     name = "import_resolver_h",
     hdrs = ["import_resolver.h"],

@@ -1,0 +1,23 @@
+M1_pid_seed: exit=1
+sim_sched_test: T1 replay: FAIL
+sim_sched_test: T2 seeds differ: PASS (steps=103, 44 of 100 choices differ)
+sim_sched_test: T3 nesting: FAIL
+sim_sched_test: T4 real-thread call: PASS (SIGABRT in sim_current(), trace verdict=abort)
+sim_sched_test: T5 off is identical: FAIL
+sim_sched_test: T6 on is deterministic: FAIL
+sim_sched_test: T7 a preemption costs time: PASS (69 preemptions, sum d 76444233 ns, clock 76510233 ns)
+sim_sched_test: T8 preemption bounds: PASS (132 records, none on the real thread, d in [1024, 16777215] ns)
+sim_sched_test: T9 a sleeper under a spinner wakes: PASS
+sim_sched_test: 4 of 9 FAILED
+M2_seed_ignored: exit=1
+sim_sched_test: T1 replay: PASS (steps=23, trace bytes=467)
+sim_sched_test: T2 seeds differ: FAIL
+goo: ASSERT FAILED: g_nested_switched_away >= 1
+sim_sched_test: T3 nesting: FAIL
+sim_sched_test: T4 real-thread call: PASS (SIGABRT in sim_current(), trace verdict=abort)
+sim_sched_test: T5 off is identical: FAIL
+sim_sched_test: T6 on is deterministic: FAIL
+sim_sched_test: T7 a preemption costs time: FAIL
+sim_sched_test: T8 preemption bounds: FAIL
+sim_sched_test: T9 a sleeper under a spinner wakes: FAIL
+sim_sched_test: 7 of 9 FAILED

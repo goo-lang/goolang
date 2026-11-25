@@ -90,7 +90,7 @@ PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SR
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/ast/json_writer.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/returns_fresh.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c $(SRCDIR)/types/qir_ownership.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/codegen_context.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c $(SRCDIR)/codegen/qasm3_codegen.c
-RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c $(SRCDIR)/runtime/qir_sim.c
+RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/goo_os_posix.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c $(SRCDIR)/runtime/qir_sim.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/diagnostic.c
 # Only import_resolver.c from package/ is part of the compiler. The rest of
 # the directory (IPFS/registry/p2p modules) is compiled by nothing and has
@@ -144,7 +144,7 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # the runtime entrypoints. runtime.o's goo_init/goo_exit call into
 # deadlock.o, and concurrency.o calls channels/sync/platform — leaving
 # any of these out fails the link of even a hello-world executable.
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/testing.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o $(BUILDDIR)/runtime/qir_sim.o
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/goo_os_posix.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/testing.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o $(BUILDDIR)/runtime/qir_sim.o
 
 # M2-B1: vendored NNG (far transport). Pinned tarball, static lib, merged
 # into libgoo_runtime.a below so bin/goo-linked executables need no new
@@ -3345,6 +3345,10 @@ VERIFY_ALL_DEPS := \
     fanin-stress \
     false-deadlock-probe \
     false-deadlock-selftest \
+    sim-false-deadlock-probe \
+    sim-false-deadlock-selftest \
+    sim-sched-test \
+    sim-entry-test \
     deadlock-poll-probe \
     deadlock-poll-selftest \
     deadlock-probe \
@@ -3480,6 +3484,8 @@ VERIFY_ALL_DEPS := \
     pthread-return-probe \
     misra-r3-2-probe \
     warning-count-probe \
+    runtime-seam-probe \
+    runtime-seam-selftest \
     spin-bootstrap-probe \
     spin-deadlock-model-probe \
     string-literal-header-probe \
@@ -4806,7 +4812,10 @@ test-cli: $(COMPILER) $(RUNTIME_LIB)
 # needs directly (an archive built without ASan can't be reused). Beyond
 # runtime.c/platform.c, goo_init/goo_exit pull in deadlock.c, which pulls
 # in concurrency.c's g_scheduler, which pulls in sync.c's goo_mutex_* —
-# same transitive chain RUNTIME_OBJS's header comment describes.
+# same transitive chain RUNTIME_OBJS's header comment describes. sync.c's
+# goo_mutex_*/goo_cond_* and platform.c's thread/clock functions are now
+# seam calls defined in goo_os_posix.c (deterministic-simulation task 1),
+# so that file joins the same by-name compile list below.
 far-transport-test: $(RUNTIME_LIB)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -Iinclude -I$(NNG_BUILD)/include tests/runtime/far_transport_test.c $(RUNTIME_LIB) -o $(BINDIR)/far_transport_test -lm -lpthread
@@ -4829,7 +4838,7 @@ far-transport-test: $(RUNTIME_LIB)
 far-transport-asan: $(NNG_LIB)
 	@mkdir -p $(BINDIR)
 	clang $(CFLAGS) -g -fsanitize=address -Iinclude -I$(NNG_BUILD)/include \
-	  tests/runtime/far_transport_test.c src/runtime/far_transport.c src/runtime/runtime.c src/runtime/platform.c src/runtime/deadlock.c src/runtime/concurrency.c src/runtime/sync.c \
+	  tests/runtime/far_transport_test.c src/runtime/far_transport.c src/runtime/runtime.c src/runtime/platform.c src/runtime/goo_os_posix.c src/runtime/deadlock.c src/runtime/concurrency.c src/runtime/sync.c \
 	  $(NNG_LIB) -o $(BINDIR)/far_transport_asan -lm -lpthread
 	@ASAN_OPTIONS=detect_leaks=0 $(BINDIR)/far_transport_asan && echo "far-transport-asan: PASS"
 .PHONY: far-transport-test far-transport-asan
@@ -5230,6 +5239,11 @@ diagnostics-drift-selftest:
 # clang is pinned for the same reason the ASan target above pins it (this box's
 # gcc sanitizer runtime is unusable). Skips LOUDLY if clang is absent, in the
 # manner of arena-valgrind-probe — a silent skip reads as a pass in a log.
+#
+# goo_os_posix.c (deterministic-simulation task 1): platform.c and sync.c no
+# longer define goo_mutex_*/goo_cond_*/goo_thread_*/goo_platform_time_ns —
+# those moved to the seam's production implementation, so this narrow,
+# by-name compile needs the new file too, same as $(RUNTIME_OBJS) does.
 obj-header-tsan:
 	@mkdir -p $(BINDIR)
 	@if ! which clang > /dev/null 2>&1; then \
@@ -5239,8 +5253,8 @@ obj-header-tsan:
 	@echo "=== obj-header-tsan: ARC refcount race gate (ThreadSanitizer) ==="
 	@clang $(CFLAGS) -g -fsanitize=thread -Iinclude \
 	  $(TEST_UNIT_DIR)/runtime/obj_header_test.c src/runtime/runtime.c \
-	  src/runtime/platform.c src/runtime/deadlock.c src/runtime/concurrency.c \
-	  src/runtime/sync.c \
+	  src/runtime/platform.c src/runtime/goo_os_posix.c src/runtime/deadlock.c \
+	  src/runtime/concurrency.c src/runtime/sync.c \
 	  -o $(BINDIR)/obj_header_tsan -lm -lpthread
 	@if $(BINDIR)/obj_header_tsan > $(BINDIR)/obj_header_tsan.out 2>&1; then \
 	  echo "obj-header-tsan: PASS (no race reported)"; \
@@ -5676,6 +5690,92 @@ misra-r3-2-probe:
 warning-count-probe: $(NNG_LIB)
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(filter-out -Werror,$(CFLAGS))" bash scripts/warning_count_probe.sh
 	@CC_PROBE="$(CC)" CFLAGS_PROBE="$(filter-out -Werror,$(CFLAGS))" bash scripts/warning_count_probe.sh --self-test
+
+# The runtime-seam gate (task 3 of the 2026-09-03 deterministic-simulation
+# plan). src/runtime/concurrency.c, channels.c and sync.c reach the OS only
+# through include/goo_os.h -- a raw pthread_ call or a _Thread_local there
+# escapes tests/sim's simulator silently. Self-test is a separate target,
+# not folded into this one, so a red run distinguishes "the seam broke" from
+# "the probe's own mutations do not turn it red".
+.PHONY: runtime-seam-probe
+runtime-seam-probe:
+	@bash scripts/runtime_seam_probe.sh
+.PHONY: runtime-seam-selftest
+runtime-seam-selftest:
+	@bash scripts/runtime_seam_probe.sh --self-test
+
+# The simulator's scheduler, virtual clock and trace ring (task 4 of the
+# 2026-09-03 deterministic-simulation plan), built with the runtime's CFLAGS
+# and NO runtime archive: tests/sim/sim_sched.c depends on libc and ucontext
+# only. T3 in the test is the spec's section 9 step 2, the nesting
+# measurement that selects approach A over the fallback B. The trace
+# directory is cleared first, so a trace from an earlier run can never stand
+# in for one this run failed to write.
+SIM_BUILD_DIR = build/sim
+.PHONY: sim-sched-test
+sim-sched-test:
+	@mkdir -p $(SIM_BUILD_DIR)
+	$(CC) $(CFLAGS) tests/sim/sim_sched.c tests/sim/sim_sched_test.c -o $(SIM_BUILD_DIR)/sim_sched_test
+	@rm -rf $(SIM_BUILD_DIR)/sched_test_traces
+	@$(SIM_BUILD_DIR)/sim_sched_test $(SIM_BUILD_DIR)/sched_test_traces
+
+# The sim archive (task 5 of the 2026-09-03 deterministic-simulation plan):
+# the production runtime objects with tests/sim/sim_os.o in place of
+# goo_os_posix.o, plus the scheduler. A separate build product: the
+# production archive ($(RUNTIME_LIB)) and its object list do not change.
+# far_transport.o is left out because it needs NNG and no program under
+# test calls it; the link of every program below proves nothing needs it.
+SIM_OBJS = $(BUILDDIR)/sim/sim_sched.o $(BUILDDIR)/sim/sim_os.o $(BUILDDIR)/sim/sim_main.o
+SIM_RUNTIME_OBJS = $(filter-out $(BUILDDIR)/runtime/goo_os_posix.o $(BUILDDIR)/runtime/far_transport.o,$(RUNTIME_OBJS)) $(BUILDDIR)/sim/sim_sched.o $(BUILDDIR)/sim/sim_os.o
+SIM_RUNTIME_LIB = $(BUILDDIR)/libgoo_runtime_sim.a
+$(BUILDDIR)/sim/%.o: tests/sim/%.c | $(BUILDDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Itests/sim -c $< -o $@
+-include $(SIM_OBJS:.o=.d)
+$(SIM_RUNTIME_LIB): $(SIM_RUNTIME_OBJS) | $(BUILDDIR)
+	rm -f $@ && ar -Drcs $@ $^
+.PHONY: sim-runtime-lib
+sim-runtime-lib: $(SIM_RUNTIME_LIB)
+
+# A program under test: its own main renamed, so sim_main.o's main runs it
+# as coroutine 0. GOO_SIM_BUILD lets a concurrency program drop a check that
+# only the production build needs (false_deadlock_test's hook refusal). The concurrency programs build with the flags
+# scripts/false_deadlock_probe.sh builds them with; a program in tests/sim
+# includes sim.h and asserts, so it takes the runtime's CFLAGS.
+build/sim/%: tests/concurrency/%.c $(SIM_RUNTIME_LIB) $(BUILDDIR)/sim/sim_main.o
+	@mkdir -p build/sim
+	$(CC) -std=c23 -D_GNU_SOURCE -DGOO_SIM_BUILD -Iinclude -I. -Dmain=goo_sim_program_main $< $(BUILDDIR)/sim/sim_main.o $(SIM_RUNTIME_LIB) -lm -o $@
+build/sim/%: tests/sim/%.c $(SIM_RUNTIME_LIB) $(BUILDDIR)/sim/sim_main.o
+	@mkdir -p build/sim
+	$(CC) $(CFLAGS) -Itests/sim -Dmain=goo_sim_program_main $< $(BUILDDIR)/sim/sim_main.o $(SIM_RUNTIME_LIB) -lm -o $@
+
+# The process entry: main is coroutine 0, the exit path stays on a
+# coroutine, a non-zero status passes through, and stdout survives a
+# verdict. See tests/sim/sim_entry_test.sh for how each fact is read.
+.PHONY: sim-entry-test
+sim-entry-test: build/sim/sim_entry_test
+	@bash tests/sim/sim_entry_test.sh build/sim/sim_entry_test $(SIM_BUILD_DIR)/entry_test
+
+# The simulation gate (Task 8 of the 2026-09-03 deterministic-simulation
+# plan; the decision is the spec's section 12). The corrected runtime must
+# pass 256 seeds of false_deadlock_test with the wake hook unset, under the
+# default seeded-preemption model. The seed budget is the spec's section 9
+# gate budget. Teeth: the self-test builds the wake-site mutant and demands
+# runtime-deadlock-abort on one of seeds 1..256, with a byte-identical replay,
+# and proves the driver's own rules. --cc passes the Makefile's compiler to
+# the mutant build, because CI runs `make CC=gcc-14` and a bare gcc rejects
+# -std=c23 there. The sim archive is a prerequisite, not RUNTIME_LIB. The
+# probe recipe unsets every variable that changes the model, a limit or the
+# wake hook, so an ambient value cannot turn verify-core's PASS into a pass
+# under a weaker model (the self-test clears the same set itself).
+.PHONY: sim-false-deadlock-probe sim-false-deadlock-selftest
+sim-false-deadlock-probe: $(SIM_RUNTIME_LIB)
+	@env -u GOO_SIM_PREEMPT_PPM -u GOO_SIM_STEP_LIMIT -u GOO_SIM_TIME_LIMIT_NS \
+	    -u GOO_SIM_FAULT_SPURIOUS_WAKE -u GOO_SIM_FAULT_THREAD_CREATE_EAGAIN \
+	    -u GOO_TEST_WAKE_DELAY_NS \
+	    bash scripts/sim_probe.sh false_deadlock_test --seeds 256
+sim-false-deadlock-selftest: $(SIM_RUNTIME_LIB)
+	@bash scripts/sim_probe.sh --self-test --cc "$(CC)"
 
 # Vendored SPIN (task 4 of the 2026-09-02 verification tooling plan; Track
 # B's Promela gate over the runtime deadlock detector, tasks 5-7, is not yet

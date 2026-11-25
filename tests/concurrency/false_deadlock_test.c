@@ -26,8 +26,9 @@
 // THE HOOK. goo_sched_block_end sleeps GOO_TEST_WAKE_DELAY_NS nanoseconds
 // before it does anything else, when that variable is set and non-zero. That
 // is exactly the wake-to-unregister interval, made long enough to measure.
-// The test REFUSES to run without it: with no delay the window is microseconds
-// wide and a green result would mean nothing.
+// The production build REFUSES to run without it: with no delay the window is
+// microseconds wide and a green result would mean nothing. The simulator build
+// (GOO_SIM_BUILD) runs without it, because seeded preemption opens the window.
 //
 // RED (runtime before the fix, 100 ms delay): 100 polls of ~0.5 ms elapse
 // inside one window, so the program dies with
@@ -36,10 +37,10 @@
 // GREEN (runtime after the fix): exit 0 and the OK line below.
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "goo_os.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 // Each handover opens the window once. Four is enough to make a missed first
 // window (main may not be in the poll loop yet) irrelevant, and keeps the
@@ -52,9 +53,13 @@ static atomic_long g_sum;
 // Long enough that the receiver is always parked on not_empty before the
 // sender parks the value; far shorter than the wake delay, so it never
 // dominates the run.
+//
+// Through the seam, not nanosleep: in production goo_platform_sleep_ns is
+// the same nanosleep, and under tests/sim it is a sleep in VIRTUAL time.
+// A direct nanosleep slept in real time under the simulator and cost no
+// virtual time, so the sender never really waited for the receiver there.
 static void nap_ms(long ms) {
-    struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
+    goo_platform_sleep_ns((uint64_t)ms * 1000000u);
 }
 
 static void sender(void* arg) {
@@ -77,6 +82,13 @@ static void receiver(void* arg) {
 
 int main(void) {
     const char* delay = getenv("GOO_TEST_WAKE_DELAY_NS");
+    // The refusal stays in the PRODUCTION build: there an unset hook leaves
+    // the window microseconds wide, and false_deadlock_probe.sh's "never pass
+    // blind" mutant needs the refusal. The SIM build (the Makefile's
+    // build/sim/% rule sets GOO_SIM_BUILD) compiles it out: there seeded
+    // preemption opens the window, and an unset hook is the pass bar's
+    // condition (spec section 3).
+#ifndef GOO_SIM_BUILD
     if (!delay || !*delay || atoll(delay) <= 0) {
         fprintf(stderr,
                 "false_deadlock_test: GOO_TEST_WAKE_DELAY_NS must be set to a "
@@ -85,6 +97,8 @@ int main(void) {
                 "and a pass proves nothing.\n");
         return 1;
     }
+#endif
+    const char* delay_label = (delay && *delay) ? delay : "unset";
 
     goo_scheduler_init(4);
     g_ch = goo_make_chan(sizeof(int), 0);   // UNBUFFERED: the rendezvous path
@@ -101,6 +115,6 @@ int main(void) {
         return 1;
     }
     printf("false-deadlock-probe OK (%d rendezvous handovers, wake delay %s ns, "
-           "no abort)\n", HANDOVERS, delay);
+           "no abort)\n", HANDOVERS, delay_label);
     return 0;
 }

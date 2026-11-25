@@ -39,24 +39,19 @@
 void* goo_platform_alloc(size_t size);
 void goo_platform_free(void* ptr, size_t size);
 
-// Platform-specific thread functions (for future goroutine support)
-typedef struct goo_thread goo_thread_t;
-typedef void* (*goo_thread_func_t)(void* arg);
-
-goo_thread_t* goo_thread_create(goo_thread_func_t func, void* arg);
-void goo_thread_join(goo_thread_t* thread);
-void goo_thread_detach(goo_thread_t* thread);
-
-// Platform-specific time functions
-uint64_t goo_platform_time_ns(void);
-void goo_platform_sleep_ns(uint64_t ns);
-
-// P4.6 (packages-C, C1): wall-clock nanoseconds since the Unix epoch
-// (CLOCK_REALTIME), distinct from goo_platform_time_ns above (CLOCK_MONOTONIC
+// Thread, clock and sleep declarations (goo_thread_t, goo_thread_func_t,
+// goo_thread_create/join/detach, goo_platform_time_ns/wall_time_ns/
+// sleep_ns) moved to include/goo_os.h (deterministic-simulation task 1):
+// they are the seam now, implemented by src/runtime/goo_os_posix.c. Pulled
+// in here so existing includers of platform.h still see these names.
+//
+// P4.6 (packages-C, C1) on why goo_platform_wall_time_ns exists separately
+// from goo_platform_time_ns: wall-clock nanoseconds since the Unix epoch
+// (CLOCK_REALTIME) is distinct from goo_platform_time_ns's CLOCK_MONOTONIC
 // — correct for measuring elapsed intervals, but a silent lie for anything
 // claiming to be "UnixNano": a monotonic clock's epoch is arbitrary, usually
-// boot time, not 1970-01-01). time.Now().UnixNano() needs the real epoch, so
+// boot time, not 1970-01-01. time.Now().UnixNano() needs the real epoch, so
 // it gets its own primitive rather than reusing the monotonic one.
-uint64_t goo_platform_wall_time_ns(void);
+#include "goo_os.h"
 
 #endif // PLATFORM_H
