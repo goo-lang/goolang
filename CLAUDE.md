@@ -180,6 +180,28 @@ Gated by `goo-test-probe` (`scripts/goo_test_probe.sh`, two packages — one
 all-passing, one failing) in `make verify-core`, and by the `pkg_testing`
 conformance row.
 
+## Diagnostic format
+
+Every user-facing compiler error and warning prints
+`<file>:<line>:<col>: <severity>: <message>`, or `goo: <severity>: <message>`
+when no position exists. When the source is registered, a snippet follows:
+`%5d | <line>` and a caret line `      | <pad>^`. The column is a byte
+offset, and the caret pad copies the tabs of the source line. Parse errors
+print `syntax error, unexpected '<tok>'` at the rejected token. All of it goes
+through `diag_emit` (`src/errors/diagnostic.c`). Lexer errors and the
+in-memory `_testmain` file carry no snippet, on purpose.
+
+A `  help: ` line is optional, and it holds a PASTE-READY fix or it is absent.
+The text comes from the user's own call text. Where no correct fix exists (a
+chained call, a package-level statement) the compiler prints no help.
+
+Gated by `diag-format-probe` (`scripts/diag_format_probe.sh`) in `verify-core`.
+It checks the header grammar and the exact snippet and caret of the fixtures
+in `tests/probes/src/diag-format-probe/format/`, and it builds each
+`help/NAME.fixed.goo` to prove the help compiles. `diag-format-selftest`
+feeds it mutated stderr and bad help fixtures. The gate fails on zero
+fixtures.
+
 ## Stdlib model
 
 Two layers, both gated by `scripts/check_stdlib_coverage.sh` in verify-core:

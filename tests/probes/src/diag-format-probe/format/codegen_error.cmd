@@ -1,0 +1,1 @@
+-o /nonexistent-goo-diag-dir/out codegen_error.goo

@@ -1976,6 +1976,18 @@ goo-test-probe: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/goo_test_probe.sh
 .PHONY: goo-test-probe
 
+# The compiler diagnostic format: header grammar, snippet line, caret column,
+# and paste-ready (or absent) help lines, over the fixtures in
+# tests/probes/src/diag-format-probe. The self-test feeds the checker mutated
+# stderr and bad help fixtures and needs each refused for its own reason.
+diag-format-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/diag_format_probe.sh
+.PHONY: diag-format-probe
+
+diag-format-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/diag_format_probe.sh --self-test
+.PHONY: diag-format-selftest
+
 # fix/const-array-length: a genuinely non-constant array length (a plain
 # runtime variable, not a const) must be a clean type error — NOT a silent
 # fallback to the placeholder length, and not a crash. See
@@ -3490,6 +3502,8 @@ VERIFY_ALL_DEPS := \
     far-jacobi-probe \
     nil-deref-probe \
     goo-test-probe \
+    diag-format-selftest \
+    diag-format-probe \
     proof-cache-shell-probe \
     json-writer-test \
     program-dump-selftest \
