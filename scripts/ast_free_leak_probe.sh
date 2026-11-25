@@ -53,7 +53,7 @@ $PARSER_TAB_C src/parser/lexer_bridge.c
 src/parser/parser_errors.c src/parser/parser_actions.c
 src/parser/parser_state.c
 src/ast/ast_constructors.c
-src/errors/error.c src/errors/ergonomic_errors.c"
+src/errors/error.c src/errors/diagnostic.c src/errors/ergonomic_errors.c"
 
 # -I"$PARSER_TAB_DIR": lexer_bridge.c and parser_actions.c both spell
 # #include "parser.tab.h" and rely on the C preprocessor's own-directory
