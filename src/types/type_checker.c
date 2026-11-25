@@ -178,17 +178,6 @@ void type_checker_free(TypeChecker* checker) {
     free(checker);
 }
 
-// Linear search of the package registry by canonical import path.
-Package* type_checker_find_package(TypeChecker* checker, const char* import_path) {
-    if (!checker || !import_path) return NULL;
-    for (Package* pkg = checker->packages; pkg; pkg = pkg->next) {
-        if (pkg->import_path && strcmp(pkg->import_path, import_path) == 0) {
-            return pkg;
-        }
-    }
-    return NULL;
-}
-
 // See types.h doc comment. Single choke point: every shim-dispatch strcmp
 // site (checker AND codegen) resolves its package identity through here
 // instead of comparing the use-site identifier text directly, so `import f
@@ -854,7 +843,7 @@ int type_check_program_files(TypeChecker* checker, ASTNode** programs,
 // resolution (type_checker_lookup_method / type_receiver_owner_package)
 // treats it exactly like a real source-package exported struct: zero new
 // checker logic needed beyond this seeding.
-static Type* sync_make_opaque_struct(TypeChecker* checker, Package* pkg, const char* name) {
+static Type* sync_make_opaque_struct(const TypeChecker* checker, Package* pkg, const char* name) {
     Type* opaque_ptr = type_pointer(type_checker_get_builtin(checker, TYPE_INT8));
     if (!opaque_ptr) return NULL;
 
@@ -938,7 +927,7 @@ static void sync_export_method(Package* pkg, Type* recv_struct, const char* meth
 // Package* harmless rather than relying on that invariant — cheap
 // insurance against a duplicate Mutex/WaitGroup export if a future caller
 // ever seeds the same Package* twice.
-void seed_sync_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_sync_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "Mutex")) return;
 
     Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);
@@ -977,7 +966,7 @@ void seed_sync_package_exports(TypeChecker* checker, Package* pkg) {
 // named with the ordinary mangled package symbol, so every existing consumer —
 // the direct method-call path and the interface thunk builder alike — resolves
 // it with no special case. See codegen_get_or_emit_shim_method_adapter.
-void seed_os_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_os_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "File")) return;
 
     Type* file_t = sync_make_opaque_struct(checker, pkg, "File");
@@ -1024,7 +1013,7 @@ void seed_os_package_exports(TypeChecker* checker, Package* pkg) {
 // and `os.File`. All `qir.*` functions live in `src/types/shim_signatures.c`,
 // which looks up these exact `Type*` pointers out of `pkg->exports` to preserve
 // pointer identity across annotations and call signatures.
-void seed_qir_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_qir_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "Qubit")) {
         return;
     }
@@ -1058,7 +1047,7 @@ void seed_qir_package_exports(TypeChecker* checker, Package* pkg) {
 static void shim_export_func(Package* pkg, const char* name, Type** param_types,
                              size_t param_count, Type* return_type);
 
-void seed_testing_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_testing_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "T")) return;
 
     Type* void_t   = type_checker_get_builtin(checker, TYPE_VOID);
@@ -1107,7 +1096,7 @@ void seed_testing_package_exports(TypeChecker* checker, Package* pkg) {
 // clock primitives. owner_package is stamped directly here for the same
 // reason sync_make_opaque_struct stamps it: this Type never passes through
 // type_check_type_decl, the ordinary stamping site.
-static Type* time_make_time_struct(TypeChecker* checker, Package* pkg) {
+static Type* time_make_time_struct(const TypeChecker* checker, Package* pkg) {
     Type* nanos_t = type_checker_get_builtin(checker, TYPE_INT64);
     if (!nanos_t) return NULL;
 
@@ -1139,7 +1128,7 @@ static Type* time_make_time_struct(TypeChecker* checker, Package* pkg) {
 // expression_checker.c's numeric argument-compatibility gate), never name
 // identity, which is exactly the effect Go's untyped-constant rule gives
 // `50 * time.Millisecond`.
-static Type* time_make_duration_type(TypeChecker* checker, Package* pkg) {
+static Type* time_make_duration_type(const TypeChecker* checker, Package* pkg) {
     Type* builtin = type_checker_get_builtin(checker, TYPE_INT64);
     if (!builtin) return NULL;
     Type* result = type_copy(builtin);
@@ -1223,7 +1212,7 @@ static void time_export_method(Package* pkg, Type* recv_struct, const char* meth
 // time_export_method's doc comment. Non-static (declared in types.h) and
 // idempotence-guarded for the same reason seed_sync_package_exports is —
 // see that function's doc comment.
-void seed_time_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_time_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "Duration")) return;
 
     Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);

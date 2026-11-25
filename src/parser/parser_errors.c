@@ -5,11 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Defined in src/parser/lexer_bridge.c; each consumer translation unit
-// declares its own extern (see parser.y's own declaration, which
-// parser.tab.c's generated code uses).
-extern Lexer* current_lexer;
-
 // Global parser error state
 ParserErrorState* g_parser_error_state = NULL;
 
