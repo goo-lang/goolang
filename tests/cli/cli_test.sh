@@ -326,8 +326,11 @@ mkfifo "$FIFO_DIR/y.go" || { echo "  FAIL fifo-setup: mkfifo"; exit 1; }
 check fifo-source-skipped     0     ""            empty                sh -c "cd '$FIFO_DIR' && timeout 10 '$COMPILER' build ."
 rm -rf "$FIFO_DIR"
 
-# M4: ast_add_child must append in O(1) time so parsing large lists (e.g. 200,000 call arguments)
-# completes in linear time without timing out under a tight deadline.
+# M4: ast_add_child appends in constant time, so the parse of a call with
+# 200,000 arguments finishes well under the 5 s deadline (0.5 s measured on
+# 2026-11-27). This row checks the parse only. A full `goo build` of the same
+# input took 41 s on 2026-11-27: a later stage is still quadratic. The
+# follow-up is coord task goolang:A-m4-build-quadratic.
 python3 -c '
 with open("'"$WORK"'/large_args.goo", "w") as f:
     f.write("package main\n\nfunc f(a ...int) {}\n\nfunc main() {\n    f(")
