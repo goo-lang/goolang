@@ -3390,6 +3390,13 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
     for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
         Type* vt = type_check_expression(checker, v);
         if (!vt) return 0;
+        // A no-value call is not a value in any position of the list. Checked
+        // per value: `a, b := f(), 1` and `a, b := 1, f()` both reach codegen
+        // without this, where a void alloca crashes the compiler (SIGILL).
+        if (vt->kind == TYPE_VOID) {
+            type_error(checker, v->pos, "used as value");
+            return 0;
+        }
         // Fix 2 (comptime-param functions are not first-class values):
         // `a, b := fill, 1` / `a, b = fill, 1` capture fill's VALUE into a
         // Variable with no func_decl_node — the same alias bypass the
