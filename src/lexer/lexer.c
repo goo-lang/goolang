@@ -175,6 +175,12 @@ static const char* lexer_number_error(const char* s, int is_float) {
         else { base = 8; digits = s + 1; kind = "octal"; } // legacy 0777
     }
 
+    // A binary or octal literal has no exponent in Go. Hex is exempt: its
+    // digits include 'e', so `0x1e5` is the integer 485.
+    if ((base == 2 || base == 8) && strpbrk(digits, "eE")) {
+        return "'e' exponent requires decimal mantissa";
+    }
+
     if (is_float) {
         const char* e = strpbrk(s, "eE");
         if (e) {
@@ -907,9 +913,11 @@ char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float) {
         }
     }
     
-    // Check for exponent
+    // Check for exponent. Go has no exponent after a binary or octal prefix,
+    // so such a literal stays an integer here. The letter is still read into
+    // the literal, so lexer_number_error refuses the whole token at its start.
     if (lexer->ch == 'e' || lexer->ch == 'E') {
-        *is_float = 1;
+        if (!non_decimal) *is_float = 1;
         lexer_read_char(lexer); // consume 'e' or 'E'
         
         if (lexer->ch == '+' || lexer->ch == '-') {
