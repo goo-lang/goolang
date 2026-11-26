@@ -1,0 +1,9 @@
+package main
+
+import "fmt"
+
+func main() {
+	l, c := 100, 2
+	s := make([]int, l, c)
+	fmt.Println("unreachable", len(s))
+}

@@ -288,7 +288,7 @@ The measured split, before the fix:
 
 | Package kind | Alias binds | Original name unbound |
 |---|---|---|
-| Shim — `fmt`, `os`, `math`, `errors`, `sync`, `time`, `far`, `testing` | yes | yes — correct Go semantics |
+| Shim — `fmt`, `os`, `math`, `errors`, `sync`, `time`, `far`, `testing`, `qir` | yes | yes — correct Go semantics |
 | **Source and vendored** — `strings`, `io`, `bytes`, … and local packages | **no** | **no** |
 
 `seed_imported_stdlib_markers` had honoured the alias since it was written

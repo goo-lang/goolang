@@ -1,0 +1,9 @@
+package main
+
+import "fmt"
+import "strings"
+
+func main() {
+	parts := strings.Split("a,b,c", ",")
+	fmt.Println(len(parts))
+}

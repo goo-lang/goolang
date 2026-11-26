@@ -1,19 +1,63 @@
 #include "codegen.h"
 #include "comptime.h"
 #include "value_scope.h"
+#include "local_escape.h"
+#include "param_escape.h"
+#include "embedding.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
 // Function and declaration code generation
 
-// ---- M8b: goroutine-escape pre-pass (file-static; function codegen is
-// non-reentrant and Goo has no nested function decls) --------------------------
+// ---- Address-of promotion pre-pass (M8b, then C1) ---------------------------
+//
+// A local lives in an entry-block alloca unless its address may outlive the
+// frame. C1: until this pass consulted local_escape, it threw its result away
+// in every function with no `go` statement, so `return &x` returned a
+// dangling stack pointer.
+//
+// A local moves to the heap when BOTH are true:
+//   1. Its address is taken: `&x`, `&x.f` or `&x[i]` appears in the body.
+//      This walk collects those roots.
+//   2. The address may outlive the frame. local_escape gives `&x` the taint
+//      of `x` itself, so "x escapes for any reason" over-approximates "the
+//      address of x escapes". A function with a `go` statement promotes every
+//      root, as M8b did.
+// Decision D1(b): requiring (1) keeps an escaping value-only local, such as a
+// string passed to fmt.Println, on the stack. No release path frees a
+// promoted slot, so promoting those would leak in almost every program.
+//
+// SOUNDNESS IS ASYMMETRIC, as in include/escape_core.h. An extra promotion
+// leaks one slot. A missed one dangles. So this walk must reach every node
+// that can hold `&x`, and an unknown node kind sets `all_roots` rather than
+// being skipped.
+//
+// File-static, because function codegen does not re-enter except for a
+// function literal, and codegen_generate_func_lit saves and restores the whole
+// struct around its own pre-pass.
 
 #define ESCAPE_MAX_NAMES 256
-static const char* g_escape_names[ESCAPE_MAX_NAMES];
-static size_t g_escape_count;
-static int g_escape_has_go;
+typedef struct {
+    const char* names[ESCAPE_MAX_NAMES];  // roots of `&x`, borrowed from the AST
+    // The root goes to the heap whatever local_escape says. Set for the
+    // receiver of a pointer-receiver method call when param_escape gives
+    // evidence (or no answer) that the method keeps or returns the receiver.
+    bool forced[ESCAPE_MAX_NAMES];
+    size_t count;
+    // Every name counts as a root: the walk met a node kind it does not know,
+    // or `names` overflowed. Either way a root may be missing.
+    bool all_roots;
+    bool has_go;
+    // The declaration whose local_escape verdicts apply, or NULL when there is
+    // none (a function literal, which local_escape does not analyse as a unit).
+    // NULL makes every root escape.
+    const FuncDeclNode* decl;
+    // The receiver rule needs the static type of a receiver expression.
+    CodeGenerator* codegen;
+    TypeChecker* checker;
+} EscapePrepass;
+static EscapePrepass g_escape;
 
 // Root local name of an lvalue whose address is taken: descend through selector
 // (`x.f`) and index (`x[i]`) to the underlying identifier. (Parens are folded
@@ -31,12 +75,105 @@ static const char* escape_root_local(ASTNode* lv) {
     return NULL;
 }
 
-static void escape_add(const char* name) {
+static void escape_add(const char* name, bool forced) {
     if (!name) return;
-    for (size_t i = 0; i < g_escape_count; i++)
-        if (strcmp(g_escape_names[i], name) == 0) return;  // dedup
-    if (g_escape_count < ESCAPE_MAX_NAMES)
-        g_escape_names[g_escape_count++] = name;
+    for (size_t i = 0; i < g_escape.count; i++) {
+        if (strcmp(g_escape.names[i], name) != 0) { continue; }
+        g_escape.forced[i] = g_escape.forced[i] || forced;  // dedup
+        return;
+    }
+    if (g_escape.count >= (size_t)ESCAPE_MAX_NAMES) {
+        // Dropping a root would leave it on the stack: fail closed instead.
+        g_escape.all_roots = true;
+        return;
+    }
+    g_escape.forced[g_escape.count] = forced;
+    g_escape.names[g_escape.count++] = name;
+}
+
+// Does the method `sel`, called on a receiver of type `recv`, keep or return
+// its receiver? param_escape answers for a method of the program being
+// emitted: parameter 0 is the receiver, and return_escapes covers `return t`.
+// Its summaries are keyed by bare method name, so this unions every method
+// with that name. A method of another package has no summary here, and a miss
+// answers true.
+static bool escape_method_keeps_receiver(const Type* recv, const char* sel) {
+    const CodeGenerator* cg = g_escape.codegen;
+    const ParamEscapeResult* pe = cg ? cg->param_escape : NULL;
+    const ASTNode* prog = cg ? cg->local_escape_program : NULL;
+    if (!pe || !prog || prog->type != AST_PROGRAM) { return true; }
+    const char* pkg = ((const ProgramNode*)prog)->package_name;
+    const Package* owner = type_receiver_owner_package(recv);
+    // A NULL owner means the type is declared in main.
+    const char* owner_pkg = owner ? owner->name : "main";
+    if (!pkg || !owner_pkg || strcmp(pkg, owner_pkg) != 0) { return true; }
+    bool found = false;
+    for (size_t i = 0; i < pe->count; i++) {
+        const ParamEscapeSummary* ps = &pe->summaries[i];
+        if (!ps->function_name || strcmp(ps->function_name, sel) != 0) { continue; }
+        if (ps->param_count == 0U || ps->escapes[0] || ps->return_escapes) { return true; }
+        found = true;
+    }
+    return !found;
+}
+
+// `x.m()` or `x.m` where m has a pointer receiver and `x` is an addressable
+// VALUE: Go takes `&x` with no `&` in the source, so the explicit-`&` walk
+// cannot see it. C1: `t.reg()` with `func (t *T) reg() { G = t }` dangled.
+//
+// A method VALUE (`f := t.reg`, not called here) is recorded as a plain root,
+// exactly like `&t`: local_escape gives `t.reg` the taint of `t`, so the
+// verdict follows wherever `f` goes. A CALL is decided by param_escape, not
+// by local_escape: local_escape marks every receiver CALLEE_VALUE without
+// evidence, and promoting on that would leak almost every local with a
+// method call.
+static void escape_note_receiver(SelectorExprNode* sel, bool called) {
+    const char* root = escape_root_local(sel->expr);
+    if (!root || !g_escape.checker) { return; }
+    Type* ast_recv = sel->expr->node_type;
+    const Type* recv = ast_recv;
+    if (recv && g_escape.codegen) {
+        recv = codegen_resolve_type(g_escape.codegen, recv);
+    }
+    if (!recv) {
+        // A package-qualified call (`fmt.Println`) has no local root type.
+        // Anything else without a type is unknown, so fail closed.
+        escape_add(root, called);
+        return;
+    }
+    if (recv->kind == TYPE_POINTER || recv->kind == TYPE_INTERFACE ||
+        recv->kind == TYPE_PACKAGE) return;
+    if (recv->kind == TYPE_PARAM) {
+        escape_add(root, called);
+        return;
+    }
+    const char* tn = type_receiver_name(recv);
+    if (!tn) { return; }  // no method set: a field read or a builtin type
+    char* mangled = type_method_mangled_name(tn, sel->selector);
+    Variable* mv = mangled
+        ? type_checker_lookup_method(g_escape.checker, recv, sel->selector, mangled)
+        : NULL;
+    free(mangled);
+    if (mv && mv->type && mv->type->kind == TYPE_FUNCTION) {
+        if (mv->type->data.function.param_count == 0U) { return; }
+        const Type* rp = mv->type->data.function.param_types[0];
+        if (!rp || rp->kind != TYPE_POINTER) { return; }  // a value receiver copies
+        if (!called) { escape_add(root, false); return; }
+        if (escape_method_keeps_receiver(recv, sel->selector)) { escape_add(root, true); }
+        return;
+    }
+    // Not a direct method. A method promoted through an embedded field may
+    // take the address of that field, and no summary describes it.
+    if (recv->kind != TYPE_STRUCT) { return; }
+    // embedding_resolve takes a mutable Type*. A type that resolution replaced
+    // (a type parameter bound to a struct) has no mutable handle here, so fail
+    // closed: promote, which leaks and never dangles.
+    if (recv != ast_recv) {
+        escape_add(root, called);
+        return;
+    }
+    EmbedResult er = embedding_resolve(g_escape.checker, ast_recv, sel->selector);
+    if (er.kind == EMBED_METHOD && !er.via_interface) { escape_add(root, called); }
 }
 
 // Recursively visit a node and its `next`-chained siblings, recording any `&`
@@ -45,14 +182,14 @@ static void escape_walk(ASTNode* n) {
     for (; n; n = n->next) {
         switch (n->type) {
             case AST_GO_STMT: {
-                g_escape_has_go = 1;
+                g_escape.has_go = true;
                 escape_walk(((GoStmtNode*)n)->call);
                 break;
             }
             case AST_UNARY_EXPR: {
                 UnaryExprNode* u = (UnaryExprNode*)n;
                 if (u->operator == TOKEN_BIT_AND)
-                    escape_add(escape_root_local(u->operand));
+                    escape_add(escape_root_local(u->operand), false);
                 escape_walk(u->operand);
                 break;
             }
@@ -83,12 +220,16 @@ static void escape_walk(ASTNode* n) {
                 break;
             }
             case AST_POSTFIX_EXPR: escape_walk(((PostfixExprNode*)n)->operand); break;
-            // (AST_PAREN_EXPR is a repurposed map-literal slot, not a wrapper —
-            // a map-literal value position holding `&x` is rare; left to the
-            // default no-op, which only ever under-promotes, never wrongly.)
             case AST_CALL_EXPR: {
                 CallExprNode* c = (CallExprNode*)n;
-                escape_walk(c->function); escape_walk(c->args);
+                if (c->function && c->function->type == AST_SELECTOR_EXPR) {
+                    SelectorExprNode* sel = (SelectorExprNode*)c->function;
+                    escape_note_receiver(sel, true);
+                    escape_walk(sel->expr);
+                } else {
+                    escape_walk(c->function);
+                }
+                escape_walk(c->args);
                 break;
             }
             case AST_INDEX_EXPR: {
@@ -96,7 +237,12 @@ static void escape_walk(ASTNode* n) {
                 escape_walk(ix->expr); escape_walk(ix->index);
                 break;
             }
-            case AST_SELECTOR_EXPR: escape_walk(((SelectorExprNode*)n)->expr); break;
+            case AST_SELECTOR_EXPR: {
+                SelectorExprNode* sel = (SelectorExprNode*)n;
+                escape_note_receiver(sel, false);
+                escape_walk(sel->expr);
+                break;
+            }
             case AST_SWITCH_STMT: {
                 SwitchStmtNode* s = (SwitchStmtNode*)n;
                 escape_walk(s->tag); escape_walk(s->cases);
@@ -143,27 +289,184 @@ static void escape_walk(ASTNode* n) {
             // against a future AST_ADDR_OF path reaching here.
             case AST_ADDR_OF: {
                 AddrOfNode* a = (AddrOfNode*)n;
-                escape_add(escape_root_local(a->operand));
+                escape_add(escape_root_local(a->operand), false);
                 escape_walk(a->operand);
                 break;
             }
-            default: break;  // leaves (identifier, literal, types): nothing to recurse
+            // C1: the kinds below were once left to the default no-op. That
+            // was harmless while promotion only ran beside a `go` statement,
+            // and it would now leave `a, b := &x, 1` or `[]*T{&x}` dangling.
+            case AST_MULTI_ASSIGN: {
+                MultiAssignNode* m = (MultiAssignNode*)n;
+                escape_walk(m->targets); escape_walk(m->values);
+                break;
+            }
+            case AST_ARRAY_LITERAL: escape_walk(((ArrayLitNode*)n)->elements); break;
+            case AST_KEYED_ELEMENT: {
+                KeyedElementNode* k = (KeyedElementNode*)n;
+                escape_walk(k->key); escape_walk(k->value);
+                break;
+            }
+            case AST_PAREN_EXPR: {  // a map literal (MapLitNode), not a paren
+                MapLitNode* ml = (MapLitNode*)n;
+                escape_walk(ml->keys); escape_walk(ml->values);
+                break;
+            }
+            case AST_SLICE_INDEX_EXPR: {
+                SliceIndexExprNode* se = (SliceIndexExprNode*)n;
+                escape_walk(se->expr); escape_walk(se->low); escape_walk(se->high);
+                break;
+            }
+            case AST_TYPE_ASSERT:     escape_walk(((TypeAssertNode*)n)->expr); break;
+            case AST_SLICE_CONVERSION: escape_walk(((SliceConvNode*)n)->operand); break;
+            case AST_TYPE_SWITCH: {
+                TypeSwitchNode* ts = (TypeSwitchNode*)n;
+                escape_walk(ts->expr); escape_walk(ts->cases);
+                break;
+            }
+            case AST_TYPE_CASE:   escape_walk(((TypeCaseNode*)n)->body); break;
+            case AST_ARENA_BLOCK: escape_walk(((ArenaBlockNode*)n)->body); break;
+            case AST_LABEL_STMT:  escape_walk(((LabelStmtNode*)n)->stmt); break;
+            case AST_COMPTIME_BLOCK: escape_walk(((ComptimeBlockNode*)n)->body); break;
+            case AST_ASSERT_STMT: {
+                AssertStmtNode* as = (AssertStmtNode*)n;
+                escape_walk(as->condition); escape_walk(as->message);
+                break;
+            }
+            case AST_ASSUME_STMT: escape_walk(((AssumeStmtNode*)n)->condition); break;
+            case AST_GUARD_CONDITION: escape_walk(((GuardConditionNode*)n)->condition); break;
+            // Leaves: nothing below them can take an address of THIS frame's
+            // locals. A function literal is its own frame with its own
+            // pre-pass, and a local it captures is heap-allocated at its
+            // declaration (VarDeclNode->is_captured).
+            case AST_IDENTIFIER:
+            case AST_LITERAL:
+            case AST_FUNC_LIT:
+            case AST_PATTERN:  // a literal, a binding name or sub-patterns
+            case AST_CONST_DECL:
+            case AST_TYPE_DECL:
+            case AST_BREAK_STMT:
+            case AST_CONTINUE_STMT:
+            case AST_BREAK_LABEL_STMT:
+            case AST_CONTINUE_LABEL_STMT:
+            case AST_GOTO_STMT:
+            case AST_FALLTHROUGH_STMT:
+            case AST_BASIC_TYPE:
+            case AST_ARRAY_TYPE:
+            case AST_SLICE_TYPE:
+            case AST_MAP_TYPE:
+            case AST_CHAN_TYPE:
+            case AST_FUNC_TYPE:
+            case AST_INTERFACE_TYPE:
+            case AST_STRUCT_TYPE:
+            case AST_POINTER_TYPE:
+            case AST_REFERENCE_TYPE:
+            case AST_ERROR_UNION_TYPE:
+            case AST_NULLABLE_TYPE:
+            case AST_UNSAFE_PTR_TYPE:
+                break;
+            default:
+                // A kind this walk does not know may hold `&x`.
+                g_escape.all_roots = true;
+                break;
         }
     }
 }
 
-static void escape_prepass_compute(ASTNode* body) {
-    g_escape_count = 0;
-    g_escape_has_go = 0;
+static void escape_prepass_compute(CodeGenerator* codegen, TypeChecker* checker,
+                                   ASTNode* body, const FuncDeclNode* decl) {
+    g_escape.count = 0;
+    g_escape.all_roots = false;
+    g_escape.has_go = false;
+    g_escape.decl = decl;
+    g_escape.codegen = codegen;
+    g_escape.checker = checker;
     escape_walk(body);
-    if (!g_escape_has_go) g_escape_count = 0;  // promote only in go-containing functions
 }
 
-static int escape_is_promoted(const char* name) {
-    if (!name) return 0;
-    for (size_t i = 0; i < g_escape_count; i++)
-        if (strcmp(g_escape_names[i], name) == 0) return 1;
-    return 0;
+static bool escape_is_root(const char* name) {
+    if (g_escape.all_roots) { return true; }
+    for (size_t i = 0; i < g_escape.count; i++) {
+        if (strcmp(g_escape.names[i], name) == 0) { return true; }
+    }
+    return false;
+}
+
+// Is `name` bound by the signature (receiver, parameter, named result)?
+// local_escape seeds only names that the BODY declares, so it has no verdict
+// for these. Worse, a body local with the same name would lend its verdict to
+// the parameter, so a signature name never reads local_escape at all.
+static bool escape_is_signature_name(const FuncDeclNode* fd, const char* name) {
+    for (const ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type == AST_IDENTIFIER) {
+            if (strcmp(((const IdentifierNode*)p)->name, name) == 0) { return true; }
+            continue;
+        }
+        if (p->type != AST_VAR_DECL) { continue; }
+        const VarDeclNode* vd = (const VarDeclNode*)p;
+        for (size_t i = 0; i < vd->name_count; i++) {
+            if (vd->names[i] && strcmp(vd->names[i], name) == 0) { return true; }
+        }
+    }
+    if (!fd->return_type || fd->return_type->type != AST_STRUCT_TYPE) { return false; }
+    for (const ASTNode* f = ((const StructTypeNode*)fd->return_type)->fields; f; f = f->next) {
+        if (f->type != AST_VAR_DECL) { continue; }
+        const VarDeclNode* vd = (const VarDeclNode*)f;
+        for (size_t i = 0; i < vd->name_count; i++) {
+            if (vd->names[i] && strcmp(vd->names[i], name) == 0) { return true; }
+        }
+    }
+    return false;
+}
+
+static bool program_declares(const ASTNode* program, const FuncDeclNode* fd) {
+    if (!program || program->type != AST_PROGRAM) { return false; }
+    for (const ASTNode* d = ((const ProgramNode*)program)->decls; d; d = d->next) {
+        if (d == (const ASTNode*)fd) { return true; }
+    }
+    return false;
+}
+
+// May the value of local `name` in `fd` outlive the function? local_escape
+// keys its summaries by bare function name, and two methods can share one, so
+// this unions every summary with that name. A miss anywhere answers true.
+static bool escape_local_may_escape(const CodeGenerator* codegen, const FuncDeclNode* fd,
+                                    const char* name) {
+    const LocalEscapeResult* le = codegen->local_escape;
+    if (!le || !fd->name) { return true; }
+    // A monomorphised template from an imported package is emitted under this
+    // program's analysis. A same-named function here must not lend it a verdict.
+    if (!program_declares(codegen->local_escape_program, fd)) { return true; }
+    bool found = false;
+    for (size_t i = 0; i < le->count; i++) {
+        const LocalEscapeSummary* s = &le->summaries[i];
+        if (!s->function_name || strcmp(s->function_name, fd->name) != 0) { continue; }
+        bool local_found = false;
+        for (size_t j = 0; j < s->local_count; j++) {
+            if (!s->local_names[j] || strcmp(s->local_names[j], name) != 0) { continue; }
+            if (s->reasons[j] != ESCAPE_REASON_NONE) { return true; }
+            local_found = true;
+        }
+        if (!local_found) { return true; }
+        found = true;
+    }
+    return !found;
+}
+
+// Should the local `name` of the function now being emitted live on the heap?
+static bool escape_is_forced(const char* name) {
+    for (size_t i = 0; i < g_escape.count; i++) {
+        if (g_escape.forced[i] && strcmp(g_escape.names[i], name) == 0) { return true; }
+    }
+    return false;
+}
+
+static bool escape_is_promoted(const CodeGenerator* codegen, const char* name) {
+    if (!name || !escape_is_root(name)) { return false; }
+    if (g_escape.has_go || escape_is_forced(name)) { return true; }
+    const FuncDeclNode* fd = g_escape.decl;
+    if (!fd || escape_is_signature_name(fd, name)) { return true; }
+    return escape_local_may_escape(codegen, fd, name);
 }
 
 // ---- P3.4: defer-loop-nesting pre-pass (file-static; mirrors the M8b
@@ -395,61 +698,42 @@ static void codegen_setup_defer_stack_mode(CodeGenerator* codegen, FunctionInfo*
 }
 
 // Allocate storage for a named local: heap (goo_alloc, leaked) if the local
-// is EITHER goroutine-escape-promoted (M8b, name-based, `force_promote=0`
-// callers) OR forced by the caller (Closures Task 2: a var-decl/param whose
-// VarDeclNode->is_captured is set — a nested func literal reads or writes
-// it, so its slot must outlive this frame; see codegen_alloc_local's
-// callers in codegen_generate_var_decl/codegen_generate_function_decl/
-// codegen_generate_func_lit). Else a stack entry alloca. Under opaque
-// pointers both return `ptr`, so all downstream loads/stores (which carry
-// explicit types via ValueInfo->goo_type, never LLVMGetAllocatedType) are
-// unchanged — this is the design's core "uniformity trick": a promoted
-// slot's value-table entry is IDENTICAL in shape (a `ptr`, is_lvalue=1) to
-// an alloca'd one.
+// is EITHER address-escape-promoted (escape_is_promoted, name-based,
+// `force_promote=0` callers) OR forced by the caller (Closures Task 2: a
+// var-decl/param whose VarDeclNode->is_captured is set — a nested func
+// literal reads or writes it, so its slot must outlive this frame; see
+// codegen_alloc_local's callers in codegen_generate_var_decl/
+// codegen_generate_function_decl/codegen_generate_func_lit). Else a stack
+// entry alloca. Under opaque pointers both return `ptr`, so all downstream
+// loads/stores (which carry explicit types via ValueInfo->goo_type, never
+// LLVMGetAllocatedType) are unchanged — this is the design's core
+// "uniformity trick": a promoted slot's value-table entry is IDENTICAL in
+// shape (a `ptr`, is_lvalue=1) to an alloca'd one.
+//
+// A promoted slot is never freed. ARC's release path acts only on an alloca
+// slot (codegen_arc_note_local), so a promoted slot also gets no release.
 static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTypeRef type,
                                                  const char* name, int force_promote) {
-    if (!force_promote && !escape_is_promoted(name))
+    if (!force_promote && !escape_is_promoted(codegen, name)) {
         return codegen_create_entry_alloca(codegen, type, name);
-
-    LLVMValueRef size = LLVMSizeOf(type);
-
-    // Closures Task 2 (loop-variable capture fix, DECL-SITE allocation): a
-    // capture-promoted slot is minted AT THE DECLARATION SITE (the current
-    // insert position), NOT hoisted to the entry block. This is what gives a
-    // captured local declared inside a loop body (the `j := i` copy
-    // workaround) Go's per-iteration variable semantics: the declaration
-    // statement executes once per iteration, so each iteration's goo_alloc
-    // mints a FRESH slot, and each iteration's closure env captures that
-    // iteration's slot address (the value table's SSA entry for the name is
-    // rebound to the new call result each time the decl re-executes at
-    // runtime... more precisely: the ONE call instruction yields a different
-    // pointer on each dynamic execution, and every in-body use — including
-    // the env-build store — consumes that same dominating SSA value, i.e.
-    // the current iteration's slot). Entry-hoisting here would silently
-    // share ONE slot across all iterations — verified to produce 6 instead
-    // of Go's 3 on the three-closure copy-capture probe before this fix.
-    // Dominance is safe: a declaration lexically precedes every use of its
-    // name, so the call instruction dominates all uses the same way the
-    // decl's zero-init/initializer store (emitted at this same position by
-    // every caller) always has.
-    if (force_promote) {
-        return codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
     }
 
-    // M8b goroutine-escape path (unchanged): emit the goo_alloc in the entry
-    // block (like an alloca) so it dominates all uses and runs once per
-    // call. Save/restore the builder position.
-    LLVMBasicBlockRef cur = LLVMGetInsertBlock(codegen->builder);
-    LLVMBasicBlockRef entry = codegen->current_function_info
-        ? codegen->current_function_info->entry_block
-        : LLVMGetEntryBasicBlock(codegen->current_function);
-    LLVMValueRef first = entry ? LLVMGetFirstInstruction(entry) : NULL;
-    if (first) LLVMPositionBuilderBefore(codegen->builder, first);
-    else       LLVMPositionBuilderAtEnd(codegen->builder, entry);
-
-    LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
-    if (cur) LLVMPositionBuilderAtEnd(codegen->builder, cur);
-    return p;
+    // DECL-SITE allocation, for BOTH kinds of promotion. The slot is minted
+    // at the declaration (the current insert position), NOT hoisted to the
+    // entry block. This is what gives a local declared inside a loop body
+    // Go's per-iteration variable semantics: the declaration executes once
+    // per iteration, so each iteration's goo_alloc mints a FRESH slot, and
+    // each iteration's closure env or `&x` takes that iteration's address
+    // (the ONE call instruction yields a different pointer on each dynamic
+    // execution, and every in-body use consumes that same dominating SSA
+    // value). Entry-hoisting shares ONE slot across all iterations: it gave
+    // 6 instead of Go's 3 on the three-closure copy-capture probe, and the
+    // C1 fixtures tests/arc_uaf/addr_loop_*.goo and loop_addr_closure.goo
+    // pin the same failure for `&x`. Dominance is safe: a declaration
+    // lexically precedes every use of its name, so the call instruction
+    // dominates all uses the same way the decl's zero-init/initializer store
+    // (emitted at this same position by every caller) always has.
+    return codegen_emit_alloc(codegen, LLVMSizeOf(type), ALLOC_KIND_DEFAULT, NULL);
 }
 
 // Public entry point (declared in codegen.h; called from every codegen file
@@ -657,7 +941,7 @@ LLVMValueRef codegen_get_method_bound_thunk(CodeGenerator* codegen, Type* stripp
 //     OUTER function's eventual codegen_exit_function would truncate the
 //     value table back to the LITERAL's start instead of the outer's own,
 //     leaking the literal's locals past its exit.
-//   - the M8b escape-promotion globals (g_escape_names et al., file-static
+//   - the escape-promotion state (g_escape, an EscapePrepass, file-static
 //     above): escape_prepass_compute OVERWRITES the promoted-name set from
 //     whatever body it is given (it is not accumulative), so leaving it as
 //     the literal's set would misroute goroutine-escape promotion for any
@@ -760,10 +1044,7 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     FunctionInfo* saved_function_info = codegen->current_function_info;
     LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(codegen->builder);
     size_t saved_value_table_function_start = codegen->value_table_function_start;
-    const char* saved_escape_names[ESCAPE_MAX_NAMES];
-    memcpy(saved_escape_names, g_escape_names, sizeof(g_escape_names));
-    size_t saved_escape_count = g_escape_count;
-    int saved_escape_has_go = g_escape_has_go;
+    EscapePrepass saved_escape = g_escape;
     Type* saved_return_type = checker->current_return_type;
     Scope* enclosing_scope = checker->current_scope;
 
@@ -814,11 +1095,11 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     // store must precede every possible exit site).
     codegen_setup_defer_stack_mode(codegen, func_info, lit->body);
 
-    // M8b: compute which of the LITERAL's OWN locals escape into a
-    // goroutine spawned from ITS OWN body — scoped fresh per the doc
-    // comment above (restored below, not left applied to the enclosing
-    // function's remaining codegen).
-    escape_prepass_compute(lit->body);
+    // M8b/C1: compute which of the LITERAL's OWN locals must live on the
+    // heap — scoped fresh per the doc comment above (restored below, not left
+    // applied to the enclosing function's remaining codegen). No declaration:
+    // local_escape has no unit for a literal, so every root is promoted.
+    escape_prepass_compute(codegen, checker, lit->body, NULL);
 
     // Mirror the type-checker scope for re-invocations of type_check_* from
     // inside body codegen (same pattern as codegen_generate_function_decl).
@@ -945,9 +1226,7 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     codegen->current_function = saved_function;
     codegen->current_function_info = saved_function_info;
     if (saved_block) LLVMPositionBuilderAtEnd(codegen->builder, saved_block);
-    memcpy(g_escape_names, saved_escape_names, sizeof(g_escape_names));
-    g_escape_count = saved_escape_count;
-    g_escape_has_go = saved_escape_has_go;
+    g_escape = saved_escape;
 
     // Restore the enclosing function's arena stack — see the save above.
     memcpy(codegen->arena_stack, saved_arena_stack, sizeof(saved_arena_stack));
@@ -1078,7 +1357,7 @@ static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
 // method-scoping rationale.
 static int func_decl_has_comptime_param(FuncDeclNode* fd) {
     for (ASTNode* p = fd->params; p; p = p->next) {
-        if (p->type != AST_VAR_DECL) continue;
+        if (p->type != AST_VAR_DECL) { continue; }
         if (((VarDeclNode*)p)->is_comptime_param) return 1;
     }
     return 0;
@@ -1368,9 +1647,8 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         // Add WebAssembly-specific function attributes
         if (return_type && return_type->kind == TYPE_VOID) {
             // Add no-return attribute for void functions if they don't return
-            LLVMAttributeRef no_return_attr = LLVMCreateEnumAttribute(codegen->context, 
-                                                                     LLVMGetEnumAttributeKindForName("noreturn", 8), 0);
-            // Only add if function actually doesn't return (TODO: analyze control flow)
+            // TODO: attach a "noreturn" enum attribute only when control-flow
+            // analysis shows the function never returns.
         }
     }
     
@@ -1397,7 +1675,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // above; never Goo locals) — before ANY user or global-init code runs,
     // so os.Args is available even from a global initializer. This is now
     // the first instruction in main's body; global-init (next) runs after it.
-    if (is_entry_main) {
+    if (is_entry_main && !codegen->emit_qir) {
         LLVMValueRef args_init_fn = LLVMGetNamedFunction(codegen->module, "goo_os_args_init");
         if (args_init_fn) {
             LLVMValueRef argc_param = LLVMGetParam(function, (unsigned)(param_count - 2));
@@ -1434,8 +1712,8 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // prologue above — harmless either way since those never call defer).
     codegen_setup_defer_stack_mode(codegen, func_info, func_decl->body);
 
-    // M8b: compute which locals escape into a goroutine and must be heap-promoted.
-    escape_prepass_compute(func_decl->body);
+    // M8b/C1: compute which locals' addresses may outlive this frame.
+    escape_prepass_compute(codegen, checker, func_decl->body, func_decl);
 
     // Mirror the type-checker scope so re-invocations of type_check_*
     // from inside codegen (e.g. type_check_binary_expr at
@@ -1462,7 +1740,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         // (monomorphize.c) before this function's body is walked.
         size_t comptime_idx = 0;
         for (ASTNode* p = func_decl->params; p; p = p->next) {
-            if (p->type != AST_VAR_DECL) continue;
+            if (p->type != AST_VAR_DECL) { continue; }
             VarDeclNode* pd = (VarDeclNode*)p;
             Type* pt = pd->type ? type_from_ast(checker, pd->type)
                                 : type_checker_get_builtin(checker, TYPE_INT32);
@@ -1620,7 +1898,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         char** names = cap ? calloc(cap, sizeof(char*)) : NULL;
         size_t nnamed = 0;
         for (ASTNode* f = st->fields; f; f = f->next) {
-            if (f->type != AST_VAR_DECL) continue;
+            if (f->type != AST_VAR_DECL) { continue; }
             VarDeclNode* fd = (VarDeclNode*)f;
             if (fd->name_count == 0 || !fd->names) continue;
             if (is_synthetic_result_name(fd->names[0])) continue;
@@ -2269,7 +2547,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, key_val, key_type);
 
                 // Call goo_map_get_sv_ok(map, key, &out, &found).
-                LLVMValueRef call_args[4] = { map_val->llvm_value, kp, out_slot, found_slot };
+                LLVMValueRef call_args[4] = { codegen_map_handle(codegen, map_val), kp, out_slot, found_slot };
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(ok_fn),
                                ok_fn, call_args, 4, "");
 

@@ -1,0 +1,4 @@
+package main
+type Base struct { N int }
+type E enum { V{Base;} }
+func main(){ }

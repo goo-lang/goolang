@@ -1,0 +1,31 @@
+package main
+
+import "fmt"
+
+type Box struct{ v int }
+type Holder struct{ p *Box }
+
+// No parameter: a parameter's taint sets return_escapes, which makes the
+// result unowned and hides the alias this fixture exists to test.
+func mk1() *Box { return &Box{v: 1} }
+func mk2() *Box { return &Box{v: 2} }
+
+func yes(c bool) int {
+	if c {
+		return 1
+	}
+	return 0
+}
+
+// h holds the first box through a struct literal. The store to x must not
+// release that box, because h.p still reads it.
+func s2() int {
+	x := mk1()
+	h := Holder{p: x}
+	x = mk2()
+	return yes(h.p.v > 0) + yes(x.v > 0)
+}
+
+func main() {
+	fmt.Println(s2(), s2())
+}

@@ -1,0 +1,11 @@
+decode 0 0 0
+decode 0 1 4
+decode 1 0 1
+decode 1 1 2
+canary 0 0 0
+canary 0 1 1
+canary 1 0 1
+canary 1 1 12
+accum 15
+accum 0
+accum -6

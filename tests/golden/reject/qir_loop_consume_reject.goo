@@ -1,0 +1,12 @@
+package main
+
+import "qir"
+
+func main() {
+	q := qir.Alloc()
+	i := 0
+	for i < 2 {
+		qir.FreeZero(q)
+		i = i + 1
+	}
+}

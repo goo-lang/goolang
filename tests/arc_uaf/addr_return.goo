@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+func f(x int) *int { return &x }
+
+func fill() int {
+	var a [64]int
+	s := 0
+	for i := 0; i < 64; i++ {
+		a[i] = 0x5555
+		s += a[i]
+	}
+	return s
+}
+
+func main() {
+	p := f(41)
+	fill()
+	fmt.Println(*p)
+}

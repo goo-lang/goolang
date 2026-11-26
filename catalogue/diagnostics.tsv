@@ -186,6 +186,41 @@ e4f74d18	ownership_checker.c	Undefined variable '%s'
 f0db1e2a	ownership_checker.c	Use of moved variable '%s'
 71c0b7ed	ownership_checker.c	Use of moved variable '%s' (moved at %s:%d:%d)
 d3908c93	ownership_checker.c	Use of uninitialized variable '%s'
+00b67e46	qir_ownership.c	FPGA synthesis subset forbids dynamic parameter type in '%s'; use fixed-size arrays or value structs
+58704720	qir_ownership.c	FPGA synthesis subset forbids dynamic return type in '%s'; use fixed-size arrays or value structs
+25806e1d	qir_ownership.c	FPGA synthesis subset forbids dynamic type in '%s'; use fixed-size arrays or value structs
+d873c89d	qir_ownership.c	FPGA synthesis subset forbids heap allocation or dynamic builtin '%s' in '%s'
+db10b3be	qir_ownership.c	FPGA synthesis subset forbids heap-allocated literal in '%s'; use fixed-size arrays or value structs
+43a162e5	qir_ownership.c	FPGA synthesis subset forbids runtime scheduler or concurrency construct in '%s'
+7e44b850	qir_ownership.c	FPGA synthesis subset requires fixed-size array in 'for range' loop in '%s'
+5a82d448	qir_ownership.c	FPGA synthesis subset requires statically bounded 'for' loop in '%s' (unbounded 'for' cannot be unrolled for RTL pipeline synthesis)
+d3370335	qir_ownership.c	borrowed linear qubit parameter '%s' cannot be moved or consumed
+c6d92077	qir_ownership.c	call returns a linear 'qir.Qubit' which cannot be discarded
+e45648f5	qir_ownership.c	cannot overwrite live linear qubit '%s' (declared at line %d) without consuming it first
+36fc254c	qir_ownership.c	cannot return linear qubit '%s' multiple times (no-cloning)
+5be4f4aa	qir_ownership.c	cannot take address of linear type 'qir.Qubit'
+7a73db88	qir_ownership.c	closure may not capture linear qubit '%s'
+10783ea9	qir_ownership.c	linear 'qir.Qubit' argument must be a bound variable identifier
+58cacc30	qir_ownership.c	linear 'qir.Qubit' cannot be discarded via blank identifier '_'
+c03d8cbc	qir_ownership.c	linear qubit '%s' (declared at line %d) exited scope without being consumed by qir.FreeZero, qir.MeasureReset, or returned
+6cf113b8	qir_ownership.c	linear qubit '%s' (declared at line %d) is consumed on one branch (line %d) but remains live on another branch
+7803ead4	qir_ownership.c	linear qubit '%s' cannot be copied or used as a general value; pass it to a 'qir' gate or consume it
+4136e716	qir_ownership.c	linear qubit '%s' cannot be copied or used in this expression
+dfe9fa12	qir_ownership.c	linear qubit '%s' cannot be declared without an initializer
+c517f82e	qir_ownership.c	linear qubit '%s' may not be passed to a goroutine
+29abc1dd	qir_ownership.c	linear qubit '%s' may not be passed to defer; consume it explicitly
+3d16fe76	qir_ownership.c	linear qubit array '%s' requires a compile-time constant integer index
+2552d458	qir_ownership.c	linear type 'qir.Qubit' cannot be constructed via struct literal; use qir.Alloc or qir.QubitAt
+b08df7aa	qir_ownership.c	linear type 'qir.Qubit' cannot be stored in a global variable
+62a82154	qir_ownership.c	linear type 'qir.Qubit' cannot be stored in a struct, slice, array, map, channel, or interface
+b5c03a6f	qir_ownership.c	linear type 'qir.Qubit' cannot be stored in a struct, slice, array, map, channel, or pointer
+2d1e2a6b	qir_ownership.c	outer linear qubit '%s' (declared at line %d) cannot be moved or consumed inside a loop
+d8a125b1	qir_ownership.c	qir.QubitAt requires a compile-time constant integer id
+9ac01049	qir_ownership.c	quantum operation requires distinct qubit arguments; '%s' passed as both argument %zu and argument %zu
+dccabd09	qir_ownership.c	result of 'qir.%s' is a linear qubit and cannot be discarded
+3e0bd8af	qir_ownership.c	static hardware qubit %llu is already active in binding '%s' (declared at line %d)
+195a313c	qir_ownership.c	use of consumed linear qubit '%s' (consumed at line %d)
+0731de78	qir_ownership.c	use of moved linear qubit '%s' (moved at line %d)
 8899d8eb	type_checker.c	!void (error-only) functions are not yet supported in v1; use !T with a value type for now
 922e355c	type_checker.c	%s
 7fac0317	type_checker.c	%s does not implement %s (%s method %s)

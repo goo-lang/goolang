@@ -1,0 +1,4 @@
+fault 0 recovered: true
+fault 1 recovered: true
+fault 2 recovered: true
+fault 3 recovered: true

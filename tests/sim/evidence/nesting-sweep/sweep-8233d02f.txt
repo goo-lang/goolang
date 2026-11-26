@@ -1,0 +1,5 @@
+-O0:
+seeds=1000 pass=1000 crash_or_nonzero=0 replay_mismatch=0 switched_away_total=1399 seeds_with_zero_switches=144 max_switches_in_one_seed=3
+-O2:
+seeds=1000 pass=1000 crash_or_nonzero=0 replay_mismatch=0 switched_away_total=1399 seeds_with_zero_switches=144 max_switches_in_one_seed=3
+traces -O0 vs -O2: identical (1000 seeds)

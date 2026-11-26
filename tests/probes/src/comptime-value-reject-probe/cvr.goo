@@ -1,0 +1,3 @@
+package main
+func fill(comptime n int, s int) int { return s }
+func main() { x := 5; _ = fill(x, 1) }

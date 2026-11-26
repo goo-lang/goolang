@@ -25,7 +25,7 @@ static void add_runtime_function(CodeGenerator* codegen, const char* name,
     if (runtime_function_count >= runtime_function_capacity) {
         runtime_function_capacity = runtime_function_capacity ? runtime_function_capacity * 2 : 16;
         runtime_functions = xrealloc(runtime_functions, 
-                                   sizeof(RuntimeFunction) * runtime_function_capacity);
+                                     sizeof(RuntimeFunction) * runtime_function_capacity);
     }
     
     RuntimeFunction* func = &runtime_functions[runtime_function_count++];
@@ -34,7 +34,7 @@ static void add_runtime_function(CodeGenerator* codegen, const char* name,
     func->param_count = param_count;
     
     if (param_count > 0) {
-        func->param_types = malloc(sizeof(LLVMTypeRef) * param_count);
+        func->param_types = xmalloc(sizeof(LLVMTypeRef) * param_count);
         memcpy(func->param_types, param_types, sizeof(LLVMTypeRef) * param_count);
     } else {
         func->param_types = NULL;
@@ -491,6 +491,10 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, ptr_type };
         add_runtime_function(codegen, "goo_panic_iface_notimpl", void_type, params, 2);
     }
+    // void goo_panic_makeslice_len(void) / goo_panic_makeslice_cap(void) —
+    // the make([]T, len, cap) range checks emitted in call_codegen.c.
+    add_runtime_function(codegen, "goo_panic_makeslice_len", void_type, NULL, 0);
+    add_runtime_function(codegen, "goo_panic_makeslice_cap", void_type, NULL, 0);
     // void goo_map_set_sv(GooMapSV*, int64_t k, int64_t v) — both key and
     // value are 8-byte slots now; codegen packs the declared K/V to i64 via
     // codegen_map_key_to_slot / codegen_map_value_to_slot before the call.

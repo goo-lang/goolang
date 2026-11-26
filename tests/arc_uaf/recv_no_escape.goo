@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+type T struct {
+	v int
+}
+
+func (t *T) inc() { t.v++ }
+
+func count() int {
+	t := T{v: 0}
+	for i := 0; i < 3; i++ {
+		t.inc()
+	}
+	return t.v
+}
+
+func main() {
+	fmt.Println(count())
+}

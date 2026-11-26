@@ -1,0 +1,12 @@
+package main
+
+func f(a int) !int {
+	return a
+}
+
+func main() {
+	var err int
+	x := f(1)
+	_ = x
+	_ = err
+}

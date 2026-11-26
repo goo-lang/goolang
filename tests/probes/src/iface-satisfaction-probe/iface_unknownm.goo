@@ -1,0 +1,6 @@
+package main
+type Shape interface { Area() int }
+type Sq struct { side int }
+func (s Sq) Area() int { return s.side }
+func main() { var a Shape = Sq{side: 5}
+ _ = a.Perim() }

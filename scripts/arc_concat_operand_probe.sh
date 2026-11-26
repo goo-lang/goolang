@@ -21,11 +21,30 @@
 
 set -uo pipefail
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
-    echo "FATAL: not in a git repository" >&2; exit 2; }
+# git first, because these probes are normally run from anywhere in a
+# checkout. A Bazel sh_test starts with $PWD already AT the runfiles root, but
+# $0 and ${BASH_SOURCE[0]} resolve to <runfiles>/_main/tests/probes/<name> --
+# a symlink one directory too deep for a dirname-based fallback to find its
+# way back to the root. The fallback is $PWD itself: measured, it IS the
+# runfiles root there, and the repo root here.
+# Resolve COMPILER BEFORE the cd below. A Bazel sh_test passes a path relative
+# to the runfiles root, which is the working directory on entry; after `cd
+# "$ROOT"` a relative path no longer resolves, and the probe reports "no
+# bin/goo" while holding a perfectly good compiler path.
+case "${COMPILER:-}" in
+    "") ;;
+    /*) ;;
+    *) COMPILER="$PWD/$COMPILER" ;;
+esac
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || ROOT="$PWD"
+[ -n "$ROOT" ] || ROOT="$PWD"
 cd "$ROOT" || exit 2
 
-COMPILER="./bin/goo"
+# COMPILER is the contract a Bazel sh_test uses to point this probe at the
+# compiler it built: bin/goo does not exist inside the sandbox. Unset, this
+# behaves exactly as it did.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
 SRC="examples/arc_concat_operand_probe.goo"
 WORK="${ARC_CONCAT_WORKDIR:-build}"
 fail=0
@@ -35,6 +54,13 @@ fail=0
 mkdir -p "$WORK"
 
 if ! command -v valgrind >/dev/null 2>&1; then
+    # Under make, tests.yml greps verify-core.log for the SKIPPED line and
+    # fails the job, so the skip is loud there. A Bazel test log is read by
+    # nobody: the harness sets GOO_PROBE_NO_SKIP, and the skip is the failure.
+    if [ "${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then
+        echo "arc-concat-operand-probe: FAIL (valgrind not found, and GOO_PROBE_NO_SKIP forbids a skip)"
+        exit 1
+    fi
     echo "valgrind not found — SKIPPED"
     exit 0
 fi
@@ -107,18 +133,18 @@ else
     echo "  refusals:    valgrind clean — named, borrowed, view and literal operands kept"
 fi
 
-# EXACTLY ONE record may survive: the value `summary` RETURNS. It is nobody's
-# concat operand, so no rule in this change reaches it, and demanding zero here
-# would make the probe fail over work it never claimed. Asserting the COUNT is
-# what keeps that honest — a seventh record reappearing is a regression, and a
-# residue of two means an operand stopped being released.
-if [ "${recs_on:-9}" -ne 1 ]; then
-    echo "  FAIL: summary keeps $recs_on records, expected 1 — an operand release is not firing"
+# ZERO records may survive. The value `summary` returns is nobody's concat
+# operand, and it used to be the one allowed residue. Now returns_fresh proves
+# `summary` fresh (a string `+` result), so its caller `main` releases it. A
+# residue of 1 therefore means that caller release regressed, and a higher
+# count means that an operand release stopped firing.
+if [ "${recs_on:-9}" -ne 0 ]; then
+    echo "  FAIL: summary keeps $recs_on records, expected 0 — the caller release of the returned value or an operand release is not firing"
     grep -A4 "definitely lost in loss record" "$WORK/arc_co_on.vg" | head -20
     fail=1
 else
     echo "  reclaimed:   $lost_off -> $lost_on bytes, $recs_off -> $recs_on records"
-    echo "  residue:     the value summary returns, which is no operand of any concat"
+    echo "  residue:     none — the returned value is released by its caller"
 fi
 
 if ! diff -q "$WORK/arc_co_off.out" "$WORK/arc_co_on.out" > /dev/null 2>&1; then

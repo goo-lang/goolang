@@ -158,7 +158,12 @@ static int nng_far_recv_f64(int64_t h, double* out_v, goo_string_t* out_err) {
         return 0;
     }
     if (sz != sizeof(tmp)) {
-        goo_panic("far: recv message size != 8 (protocol violation)");
+        // A remote peer controls the size, so a bad message must not stop
+        // this process. The socket stays open and the next recv proceeds.
+        char buf[128];
+        snprintf(buf, sizeof(buf), "far: recv failed: message size %zu, want %zu", sz, sizeof(tmp));
+        *out_err = goo_string_new(buf);
+        return 0;
     }
     *out_v = tmp;
     return 1;

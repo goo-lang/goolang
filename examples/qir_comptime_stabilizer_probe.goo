@@ -1,0 +1,110 @@
+package main
+
+import "fmt"
+import "qir"
+
+// Pauli encodings for comptime stabilizer generator synthesis:
+// 0 = I, 1 = X, 2 = Z.
+comptime const PAULI_I int = 0
+comptime const PAULI_X int = 1
+comptime const PAULI_Z int = 2
+
+func syndromeMask(b0 int, b1 int) int {
+	return b0 + b1*2
+}
+
+comptime const SYNDROME_Q0 int = syndromeMask(1, 0)
+comptime const SYNDROME_Q2 int = syndromeMask(0, 1)
+comptime const SYNDROME_Q1 int = syndromeMask(1, 1)
+
+func boolBit(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// Comptime-specialized Pauli check: monomorphized per Pauli operator (I, X, Z)
+// so zero-weight entries (PAULI_I) fold away at compile time.
+func applyPauliCheck(comptime pauli int, data qir.Qubit, anc qir.Qubit) {
+	if pauli == 1 {
+		qir.H(data)
+		qir.CX(data, anc)
+		qir.H(data)
+	} else if pauli == 2 {
+		qir.CX(data, anc)
+	}
+}
+
+func runStabilizerQEC(fault int) bool {
+	d0 := qir.Alloc()
+	d1 := qir.Alloc()
+	d2 := qir.Alloc()
+	a0 := qir.Alloc()
+	a1 := qir.Alloc()
+
+	// Prepare logical |1>_L = |111> using heavy-hex nearest-neighbor chain d0 -> d1 -> d2
+	qir.X(d0)
+	qir.CX(d0, d1)
+	qir.CX(d1, d2)
+
+	if fault == 1 {
+		qir.X(d0)
+	} else if fault == 2 {
+		qir.X(d1)
+	} else if fault == 3 {
+		qir.X(d2)
+	}
+
+	r0 := qir.ResultAt(0)
+	r1 := qir.ResultAt(1)
+
+	// Synthesize Z0*Z1*I and I*Z1*Z2 checks via comptime Pauli rows
+	applyPauliCheck(PAULI_Z, d0, a0)
+	applyPauliCheck(PAULI_Z, d1, a0)
+	applyPauliCheck(PAULI_I, d2, a0)
+	qir.Mz(a0, r0)
+
+	applyPauliCheck(PAULI_I, d0, a1)
+	applyPauliCheck(PAULI_Z, d1, a1)
+	applyPauliCheck(PAULI_Z, d2, a1)
+	qir.Mz(a1, r1)
+
+	// Pause-free arena block for classical syndrome decoding (slice literal
+	// backing buffer routes directly to goo_arena_alloc via Phase 7 M2).
+	arena {
+		weights := []int{SYNDROME_Q0, SYNDROME_Q2, SYNDROME_Q1}
+		_ = weights[0] + weights[1] + weights[2]
+		syn := syndromeMask(boolBit(qir.ReadResult(r0)), boolBit(qir.ReadResult(r1)))
+		if syn == SYNDROME_Q0 {
+			qir.X(d0)
+		} else if syn == SYNDROME_Q1 {
+			qir.X(d1)
+		} else if syn == SYNDROME_Q2 {
+			qir.X(d2)
+		}
+	}
+
+	qir.Reset(a0)
+	qir.Reset(a1)
+
+	// Uncompute encoding along nearest-neighbor chain d2 <- d1 <- d0
+	qir.CX(d1, d2)
+	qir.CX(d0, d1)
+
+	m0 := qir.MeasureReset(d0)
+	m1 := qir.MeasureReset(d1)
+	m2 := qir.MeasureReset(d2)
+	qir.FreeZero(a0)
+	qir.FreeZero(a1)
+
+	return m0 && !m1 && !m2
+}
+
+func main() {
+	f := 0
+	for f < 4 {
+		fmt.Println("stabilizer fault", f, "recovered:", runStabilizerQEC(f))
+		f = f + 1
+	}
+}

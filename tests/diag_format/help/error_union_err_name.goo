@@ -1,0 +1,10 @@
+package main
+
+func f() !int {
+	return 42
+}
+
+func main() {
+	err := f()
+	_ = err
+}

@@ -1,0 +1,5 @@
+package main
+import "fmt"
+func mightFail() !int { return 5 }
+func f() !int { v := try mightFail(); return v + 1 }
+func main() { fmt.Println("ok") }

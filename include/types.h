@@ -1026,7 +1026,7 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
 // prefixed — callers needing the prefixed LLVM symbol derive it separately
 // (see codegen_pkg_mangled_symbol, codegen.h) with
 // type_receiver_owner_package.
-Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
+Variable* type_checker_lookup_method(TypeChecker* checker, const Type* recv_type,
                                       const char* method_name, const char* mangled_name);
 
 // Function generics Task 3: active-type-param stack (see TypeChecker's
@@ -1117,15 +1117,16 @@ int type_check_package(TypeChecker* checker, Package* pkg,
 // from BOTH goo.c's seed_imported_stdlib_markers (main's own import) and
 // type_checker.c's seed_package_own_shim_imports (a vendored/local
 // package's own import) — see either call site's doc comment.
-void seed_sync_package_exports(TypeChecker* checker, Package* pkg);
+void seed_sync_package_exports(const TypeChecker* checker, Package* pkg);
 // `goo test`: testing.T plus Run/Summary. Bespoke like sync (a type with a
 // method set) and impossible in SHIM_TABLE (no func ParamKind for Run's callback).
-void seed_testing_package_exports(TypeChecker* checker, Package* pkg);
-void seed_time_package_exports(TypeChecker* checker, Package* pkg);
+void seed_testing_package_exports(const TypeChecker* checker, Package* pkg);
+void seed_time_package_exports(const TypeChecker* checker, Package* pkg);
 // os.File plus its Write method. Bespoke for the same reason as sync: a TYPE
 // with a method set, which stdlib_package_lookup cannot model. Write's
 // implementation is a codegen-emitted adapter, not a Goo function.
-void seed_os_package_exports(TypeChecker* checker, Package* pkg);
+void seed_os_package_exports(const TypeChecker* checker, Package* pkg);
+void seed_qir_package_exports(const TypeChecker* checker, Package* pkg);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);
@@ -1335,19 +1336,43 @@ int goo_fold_const_string(ASTNode* expr, char** out, size_t* out_len);
 
 // Error reporting
 void type_error(TypeChecker* checker, Position pos, const char* format, ...);
+// Like type_error, plus a help line. `help` is code the reader can paste to
+// fix the error; build it from the user's own identifiers, never from a name
+// that is not in scope at the error site. NULL means no help line.
+void type_error_help(TypeChecker* checker, Position pos, const char* help, const char* format, ...)
+    __attribute__((format(printf, 4, 5)));
+
+// Formats help text into buf. Returns false when it does not fit, so the
+// caller prints no help rather than cut text.
+bool type_help_format(char* buf, size_t cap, const char* format, ...)
+    __attribute__((format(printf, 3, 4)));
 void type_warning(TypeChecker* checker, Position pos, const char* format, ...);
+
+// Copies the user's own call, as written in the source, into buf for a help
+// line. Returns false when it cannot, and the caller must then print no help.
+bool type_call_help_text(const ASTNode* call, char* buf, size_t cap);
+
+// True when `name` is declared in the innermost scope at the error site. A
+// help line that declares a name with `:=` must test this first: the pasted
+// line fails with "already declared in this scope" when it is true.
+bool type_name_in_current_scope(const TypeChecker* checker, const char* name);
+
+// The name the current file imports package `import_path` under, or NULL when
+// no visible binding is that package (an alias can be shadowed by a local).
+// A help line that writes `<pkg>.Func(...)` must use this name, not a guess.
+const char* type_package_alias(TypeChecker* checker, const char* import_path);
 
 // Builtin types access
 void type_checker_init_builtins(TypeChecker* checker);
 void type_checker_add_builtin_functions(TypeChecker* checker);
-Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind);
+Type* type_checker_get_builtin(const TypeChecker* checker, TypeKind kind);
 
 // The v1 representation of Go's `error` interface: a nullable pointer
 // (`?*int8`). Single source of truth — the type checker (`error` keyword,
 // the n,err destructure bind, errors.New) and codegen (destructure, errors.New)
 // all build the error type through this, so Phase 6 (real error struct /
 // `.Error()`) changes one place instead of five.
-Type* type_checker_error_type(TypeChecker* checker);
+Type* type_checker_error_type(const TypeChecker* checker);
 
 // Channel helper functions
 const char* channel_pattern_string(ChannelPattern pattern);

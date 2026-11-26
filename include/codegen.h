@@ -37,6 +37,9 @@ struct BlockEscapeResult;
 // T4: release_decision.h owns the full definition; codegen.h needs only a
 // pointer-sized member.
 struct ReleasePlan;
+// C1: local_escape.h owns the full definition; a pointer-sized member only.
+struct LocalEscapeResult;
+struct ParamEscapeResult;
 
 // Allocation routing (arena-regions groundwork): every heap-allocation call
 // site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
@@ -283,6 +286,36 @@ struct CodeGenerator {
     // free these strings, only the driver does.
     const char** link_libs;
     size_t link_lib_count;
+
+    // The program that links a compiled Goo program, and extra flags for it
+    // (driver-set from --linker/--link-flag). A NULL linker keeps the
+    // platform default. Borrowed from CompilerOptions exactly as link_libs
+    // is -- codegen does not own or free these strings.
+    const char* linker;
+    char* const* link_flags;
+    size_t link_flag_count;
+
+    // Phase 7 M1 (Quantum QIR): when `emit_qir != 0` (`--emit-qir`), suppresses
+    // the POSIX `goo_os_args_init` prologue on `main` and stamps `main` with
+    // the QIR 1.0 Adaptive Profile LLVM function attributes (`"entry_point"`,
+    // `"qir_profiles"="adaptive_profile"`, `"required_num_qubits"`,
+    // `"required_num_results"`). Tail-appended per the no-header-deps rule.
+    int emit_qir;
+    uint64_t qir_num_qubits;
+    uint64_t qir_num_results;
+
+    // C1: per-local escape verdicts for `local_escape_program`, computed in
+    // codegen_generate_program. A local whose address is taken moves to the
+    // heap only when this says its value may outlive the function, so the
+    // stack stays the default. Computed even under GOO_ARC_RELEASE=0, because
+    // a dangling `&x` does not depend on ARC. NULL, or a function declared
+    // outside `local_escape_program`, promotes every address-taken local,
+    // which leaks and never dangles. Tail-appended, as above.
+    struct LocalEscapeResult* local_escape;
+    ASTNode* local_escape_program;
+    // C1: the callee summaries local_escape was computed from, kept for the
+    // pointer-receiver rule: does a method keep or return its receiver?
+    struct ParamEscapeResult* param_escape;
 };
 
 // Function information for code generation
@@ -602,6 +635,10 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 // Emit the current function's registered defers in LIFO order before a `ret`.
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker);
+// Ends the map iterators of the range-over-map frames [from_frame, loop_depth),
+// innermost first. A non-NULL goto_label skips the frames whose body declares
+// that label, because a goto inside the loop does not leave it.
+void codegen_emit_map_iter_ends(CodeGenerator* codegen, int from_frame, const char* goto_label);
 
 // T4: record `info`'s slot for release at function exit, if the release plan
 // approves it. Called from vscope_add, the single point every local binding
@@ -664,7 +701,7 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
 LLVMValueRef codegen_lookup_global_function(CodeGenerator* codegen, TypeChecker* checker,
                                             const char* name);
 #endif
-ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+ValueInfo* codegen_generate_literal(CodeGenerator* codegen, const TypeChecker* checker, ASTNode* expr);
 // Build a *constant* goo_string { i8* data, i64 len } value from `len` raw bytes
 // (embedded NULs preserved). Builder-free, so it is valid at global scope — used
 // by both string-literal codegen and folded const-string tables. The bytes are
@@ -976,6 +1013,9 @@ int codegen_map_key_kind(Type* key_type);
 // reported via codegen_error at `pos`).
 int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
                                   ValueInfo* key_val, Type* key_type, Position pos);
+// The map pointer a runtime call needs. A struct field or index result comes
+// back as an lvalue ADDRESS, so load the pointer from it first (C6).
+LLVMValueRef codegen_map_handle(CodeGenerator* codegen, ValueInfo* map_val);
 LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
                                      ValueInfo* key_val, Type* key_type);
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type);
@@ -1027,6 +1067,8 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
 // goo_string_new. Shared by codegen_map_slot_to_key's STRING arm and the
 // map-range loop's key bind (statement_codegen.c).
 LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr);
+// Length-exact copy into a fresh goo string; keeps embedded NUL bytes.
+LLVMValueRef codegen_string_from_bytes(CodeGenerator* codegen, LLVMValueRef ptr, LLVMValueRef len);
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name);
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block);
 
@@ -1056,7 +1098,7 @@ LLVMValueRef codegen_check_nullable_null(CodeGenerator* codegen, LLVMValueRef nu
 
 // Nullable codegen — used across expression_codegen.c, function_codegen.c,
 // and call_codegen.c (default-nil locals/globals, reassignment, ?T arg wrap).
-ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, TypeChecker* checker, Type* expected_type);
+ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, const TypeChecker* checker, Type* expected_type);
 LLVMValueRef codegen_create_nullable_null(CodeGenerator* codegen, LLVMTypeRef nullable_type, Type* base_type);
 LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMTypeRef nullable_type,
                                                LLVMValueRef value, Type* value_type);
@@ -1144,6 +1186,12 @@ void* codegen_generate_error_return_stub(CodeGenerator* codegen, void* return_va
 
 // Output generation
 int codegen_emit_llvm_ir(CodeGenerator* codegen, const char* filename);
+int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
+                       ASTNode* program, const char* filename);
+int codegen_emit_mlir(CodeGenerator* codegen, TypeChecker* checker,
+                      ASTNode* program, const char* filename);
+int codegen_emit_sv(CodeGenerator* codegen, TypeChecker* checker,
+                    ASTNode* program, const char* filename);
 int codegen_emit_object_file(CodeGenerator* codegen, const char* filename);
 int codegen_emit_executable(CodeGenerator* codegen, const char* filename);
 int codegen_optimize(CodeGenerator* codegen, int level);

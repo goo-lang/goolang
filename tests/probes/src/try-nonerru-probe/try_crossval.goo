@@ -1,0 +1,4 @@
+package main
+func mightFailStr() !string { return error("x") }
+func f() !int { v := try mightFailStr(); return len(v) }
+func main() {}

@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+// A struct large enough that the by-value copy reads far from the pointer.
+type Big struct {
+	a [100]int
+	b [100]int
+	c int
+}
+
+func (t Big) Last() int { return t.c }
+
+func main() {
+	var p *Big
+	fmt.Println(p.Last())
+}

@@ -22,13 +22,33 @@
 # NEVER read through a pipe — a pipeline reports its LAST stage's status, which
 # would silently mask a compiler abort here.
 set -u
-COMPILER="${COMPILER:-bin/goo}"
+# ROOT resolves one directory too deep under a Bazel sh_test, the same
+# $0-derived bug the arc_* and arena_rss scripts had. Harmless here: ROOT
+# only feeds the COMPILER default below, and the macro always sets
+# COMPILER, so the wrong value is never read. Every other path in this
+# script is relative to $PWD. Do not add a new $ROOT/... path here without
+# checking that this still holds.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# COMPILER is the contract a Bazel sh_test uses to point this probe at the
+# compiler it built: bin/goo does not exist inside the sandbox. Unset, this
+# behaves exactly as it did.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
 case "$COMPILER" in
   /*) ;;
   *) COMPILER="$PWD/$COMPILER" ;;
 esac
 
-mkdir -p build
+# GOO_RUNTIME too: the Bazel harness passes it relative to the runfiles
+# root, and the cd into the package below would break it the same way.
+case "${GOO_RUNTIME:-}" in
+  "" | /*) ;;
+  *) GOO_RUNTIME="$PWD/$GOO_RUNTIME"; export GOO_RUNTIME ;;
+esac
+
+# A runfiles tree is not a place to write, and nothing reads these files
+# after the run — the failure paths below already print the diff inline.
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
 failures=0
 
 norm() { sed -E 's/[0-9]+\.[0-9]+s/X.XXs/g'; }
@@ -38,8 +58,8 @@ check_pkg() {
   local dir="$1" want_rc="$2"
   local name raw actual expected rc
   name="$(basename "$dir")"
-  raw="build/goo_test_probe.$name.raw.txt"
-  actual="build/goo_test_probe.$name.actual.txt"
+  raw="$WORKDIR/$name.raw.txt"
+  actual="$WORKDIR/$name.actual.txt"
   expected="$dir/expected.norm.txt"
 
   if [ ! -f "$expected" ]; then
@@ -48,8 +68,8 @@ check_pkg() {
     return
   fi
 
-  # The redirection is applied by THIS shell, so `build/...` stays relative to
-  # the repo root while the compiler itself runs inside the package directory.
+  # The redirection is applied by THIS shell, so $raw stays the absolute
+  # WORKDIR path while the compiler itself runs inside the package directory.
   ( cd "$dir" && "$COMPILER" test . ) > "$raw" 2>&1
   rc=$?
 

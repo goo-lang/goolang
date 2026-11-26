@@ -1,0 +1,10 @@
+package main
+
+func fpga_bad_alloc() int {
+	buf := []int{1, 2, 3, 4}
+	return buf[0]
+}
+
+func main() {
+	_ = fpga_bad_alloc()
+}

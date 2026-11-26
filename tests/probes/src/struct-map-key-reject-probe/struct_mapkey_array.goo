@@ -1,0 +1,8 @@
+package main
+type ArrKey struct {
+	X [3]int
+}
+func main(){
+	m := map[ArrKey]int{}
+	_ = m
+}

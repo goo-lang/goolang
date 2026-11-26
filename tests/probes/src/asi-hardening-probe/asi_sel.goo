@@ -1,0 +1,9 @@
+package main
+import "fmt"
+type P struct { x int; y int }
+func main() {
+	p := P{x: 7, y: 9}
+	q := p
+	.x
+	fmt.Println(q)
+}

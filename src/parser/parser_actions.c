@@ -29,10 +29,6 @@ ASTNode* ast_root = NULL;
 ASTNode* g_func_signature_params = NULL;
 ASTNode* g_func_signature_result = NULL;
 
-// Defined in src/parser/lexer_bridge.c; each consumer translation unit
-// declares its own extern (mirrors parser.y's own declaration for yyerror).
-extern Lexer* current_lexer;
-
 // Go grouped-name shorthand `(x, y int)` == `(x int, y int)`, applied to a
 // parsed parameter or result list. The func_param machinery has no comma-
 // shared-type rule, so a leading `x` (no type of its own) parses as an
@@ -294,10 +290,10 @@ ASTNode* desugar_var_group(ASTNode* spec_chain) {
 // for `=` they are existing lvalues. Simultaneous-eval semantics are enforced
 // in codegen, not here.
 ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
-                             ASTNode* v1, ASTNode* v2, int is_short_decl) {
+                             ASTNode* v1, ASTNode* v2, int is_short_decl, Position pos) {
     MultiAssignNode* ma = (MultiAssignNode*)xmalloc(sizeof(MultiAssignNode));
     ma->base.type = AST_MULTI_ASSIGN;
-    ma->base.pos = get_current_position();
+    ma->base.pos = pos;
     ma->base.node_type = NULL;
     ma->base.next = NULL;
     ma->base.tail = NULL;
@@ -318,10 +314,10 @@ ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
     return (ASTNode*)ma;
 }
 
-ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call) {
+ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call, Position pos) {
     MultiAssignNode* ma = (MultiAssignNode*)xmalloc(sizeof(MultiAssignNode));
     ma->base.type = AST_MULTI_ASSIGN;
-    ma->base.pos = get_current_position();
+    ma->base.pos = pos;
     ma->base.node_type = NULL;
     ma->base.next = NULL;
     ma->base.tail = NULL;
@@ -345,11 +341,11 @@ ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call) {
 // lowered in codegen to load-op-store — this avoids duplicating the LHS AST
 // (there is no safe deep-copy: ast_node_copy under-allocates). Wrapped in an
 // ExprStmt to match the plain-assignment shape.
-ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs) {
-    BinaryExprNode* binary = ast_binary_expr_new(lhs, op, rhs, get_current_position());
+ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs, Position pos) {
+    BinaryExprNode* binary = ast_binary_expr_new(lhs, op, rhs, pos);
     ExprStmtNode* es = (ExprStmtNode*)xmalloc(sizeof(ExprStmtNode));
     es->base.type = AST_EXPR_STMT;
-    es->base.pos = get_current_position();
+    es->base.pos = pos;
     es->base.node_type = NULL;
     es->base.next = NULL;
     es->base.tail = NULL;

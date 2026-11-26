@@ -1,0 +1,4 @@
+package main
+type Counter struct { n int }
+func (c Counter) get() int { return c.n }
+func main() { var c Counter = Counter{n: 7}; c.get(99) }

@@ -5,7 +5,7 @@
 # from the environment, and the compiler takes GOO_RUNTIME and GOOROOT. This
 # only supplies them.
 #
-# EXPECTED RESULT THIS PHASE: 486 passed, 9 failed. The 9 are far_shim_probe
+# EXPECTED RESULT THIS PHASE: 512 passed, 9 failed. The 9 are far_shim_probe
 # and eight lanes_* probes, which reach the far transport and therefore need
 # NNG -- phase 3c. The count is asserted EXACTLY rather than tolerated, so
 # that a tenth failure is a regression and a fixed lanes probe is a visible
@@ -19,7 +19,7 @@ cd "$root"
 
 COMPILER_BIN="${COMPILER_BIN:-bazel-bin/src/compiler/goo}"
 ARCHIVE="${ARCHIVE:-bazel-bin/src/runtime/libgoo_runtime.a}"
-EXPECT_PASS="${EXPECT_PASS:-486}"
+EXPECT_PASS="${EXPECT_PASS:-512}"
 EXPECT_FAIL="${EXPECT_FAIL:-9}"
 
 [ -x "$COMPILER_BIN" ] || { echo "golden_bazel: TOOL FAILURE $COMPILER_BIN missing"; exit 2; }

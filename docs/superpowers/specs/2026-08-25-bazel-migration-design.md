@@ -35,13 +35,40 @@ Measured on 2026-08-25:
 | `tests/**/*.c` | 65 |
 | `tests/**/*.goo` fixtures | 271 |
 | `scripts/*.sh` | 46 |
-| Gates in `VERIFY_ALL_DEPS` that are probes | 183 (155 inline, 28 script-backed) |
+| Gates in `VERIFY_ALL_DEPS` that are probes | 183 (see the census below) |
 | Gates in `VERIFY_ALL_DEPS` that are not probes | 34 |
 | `*-probe:` targets defined in the Makefile | 184 (one unreachable) |
 | Distinct LLVM C API calls | 235, across 19 files |
 
 Host toolchain on the development machine: bazel 9.2.0, llvm-config 22.1.8,
 clang 22.1.8, gcc 16.2.1, bison 3.8.2, flex 2.6.4.
+
+### The probe census, measured 2026-08-25
+
+An earlier version of this spec said the inline probes "follow one repeated
+shape: compile a `.goo` fixture, run it, diff against `.expected.txt`". That was
+measured by asking whether a recipe mentions `scripts/`, which is a proxy for
+the shape rather than the shape itself. Measured properly, the 183 probe gates
+fall into five groups:
+
+| Group | Count | Bazel shape |
+|---|---|---|
+| Calls a script in `scripts/` | 28 | `sh_test` with the script as `data` |
+| Compiles an `examples/*.goo` that is **already a golden fixture** | 48 | fixture macro |
+| Compiles a non-golden `examples/*.goo` | 32 | fixture macro |
+| **`printf`-generates its source inline** | **69** | assertion macro over an extracted fixture |
+| Loops a matrix, needs a tool, or is otherwise bespoke | 6 | hand-written |
+
+28 + 48 + 32 + 69 + 6 = 183.
+
+The 69 matter most, because they are not "compile, run, diff" at all. What they
+assert is an exit code or abort (37), a string in the output (23), a diff
+against an expected file (4), or something else (5). They are largely NEGATIVE
+tests: this program must be rejected, this diagnostic must appear.
+
+So phase 4 needs **two** macros, and 69 sources extracted out of Makefile
+`printf` calls with a gate proving the extraction has not drifted from what the
+Makefile still generates.
 
 ### Why change
 
@@ -123,9 +150,11 @@ failure, which is a real gain. Revisiting it later is cheap: only
 
 ### D3. A `goo_probe` macro, with its own teeth fixture
 
-**Chosen:** one Starlark macro generates the compile/run/diff for the 155
-inline probes. The 28 script-backed probes become `sh_test` with the script as
-`data`.
+**Chosen:** macros rather than 183 hand-written rules. **Superseded in part by
+the census in section 1:** one macro is not enough. The 80 probes that compile
+an `examples/*.goo` take a fixture macro; the 69 that `printf`-generate their
+source are largely negative tests and take an assertion macro; the 28
+script-backed ones become `sh_test` with the script as `data`; 6 are bespoke.
 
 *Rejected — mechanical 1:1* (183 separate `sh_test` rules, each wrapping its
 recipe verbatim): highest fidelity and the easiest to diff against the
@@ -413,7 +442,7 @@ Each phase is one PR. `parity.sh` runs from phase 0 and counts down from 217.
 | 1 | `//tests/unit:goo_check`, `//src/runtime`, `obj_header_test`, the five LLVM-free analysis libraries. Resolve `main_simple.c` / `main_minimal.c`. | `obj_header_test` green under both; `src/` holds nothing ungated |
 | 2 | bison genrule, tripwire `sh_test`, lexer/parser/ast/types, **and the four `tests/unit/types` suites** | Tripwire reports 31 S/R, 0 R/R; the four escape/release suites green under both build systems |
 | 3 | codegen and `//src/compiler:goo` — the 15 `.c` files that actually reach LLVM | Bazel-built `goo` passes the same golden suite as `make bin/goo` |
-| 4 | `goo_probe` macro, its teeth fixture, 155 inline probes | Teeth fixture goes RED; 155 probes green |
+| 4 | Two macros with their teeth fixtures, 80 fixture probes, 69 extracted probes with a source-drift gate, 28 script probes, 6 bespoke | Both teeth fixtures go RED; 183 probes green; drift gate passes |
 | 5 | 28 script probes, golden suites, `goostd` filegroup | — |
 | 6 | Sanitizer configs, `testing/teeth`, coverage gate | `verify_sanitizers.sh` exits 0 |
 | 7 | CI matrix, heavy gates tagged, **Makefile deleted** | `parity.sh` exits 0 |

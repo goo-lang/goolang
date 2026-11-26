@@ -43,6 +43,12 @@ typedef struct {
 } Lexer;
 
 // Lexer functions
+// The lexer the current parse reads from. DEFINED in src/parser/parser_state.c.
+// One declaration here, visible at the definition and at every user, keeps
+// MISRA 8.4 (declaration visible at definition) and 8.5 (one declaration)
+// clean under both Cppcheck 2.13 and 2.22.
+extern Lexer* current_lexer;
+
 Lexer* lexer_new(const char* input, const char* filename);
 void lexer_free(Lexer* lexer);
 

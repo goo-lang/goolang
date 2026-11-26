@@ -1,6 +1,8 @@
 #include "codegen.h"
+#include "diagnostic.h"
 #include "block_escape.h"
 #include "release_decision.h"
+#include "local_escape.h"
 #include "param_escape.h"
 #include "value_scope.h"
 #include <stdlib.h>
@@ -134,6 +136,9 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // program it's about to emit.
     codegen->block_escape = NULL;
     codegen->release_plan = NULL;
+    codegen->local_escape = NULL;
+    codegen->local_escape_program = NULL;
+    codegen->param_escape = NULL;
 
     // Error reporting
     codegen->current_file = NULL;
@@ -151,6 +156,12 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // P3.11: driver overwrites these from -l/--link right after codegen_new.
     codegen->link_libs = NULL;
     codegen->link_lib_count = 0;
+
+    // Driver overwrites these from --linker/--link-flag right after
+    // codegen_new, the same way it does link_libs above.
+    codegen->linker = NULL;
+    codegen->link_flags = NULL;
+    codegen->link_flag_count = 0;
 
     // WebAssembly configuration
     codegen->wasm_configured = 0;
@@ -172,6 +183,9 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // Function-generics Task 9: no override until codegen_generate_function_
     // instance installs one around a single instantiation's stamping.
     codegen->symbol_override = NULL;
+    codegen->emit_qir = 0;
+    codegen->qir_num_qubits = 0;
+    codegen->qir_num_results = 0;
 
     // Comptime value params Task 3: no active comptime instance until
     // codegen_generate_comptime_function_instance installs one around a
@@ -262,6 +276,12 @@ void codegen_free(CodeGenerator* codegen) {
     }
     if (codegen->release_plan) {
         release_plan_free(codegen->release_plan);
+    }
+    if (codegen->local_escape) {
+        local_escape_result_free(codegen->local_escape);
+    }
+    if (codegen->param_escape) {
+        param_escape_result_free(codegen->param_escape);
     }
 #else
     free(codegen->error_message);
@@ -359,7 +379,20 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     }
     ParamEscapeResult* pe = param_escape_analyze(program);
     codegen->block_escape = block_escape_analyze(program, pe); // does NOT retain pe
-    param_escape_result_free(pe);
+
+    // C1: which locals may outlive their function. The address-of promotion
+    // in function_codegen.c reads this, so it runs whatever GOO_ARC_RELEASE
+    // says. A NULL result (allocation failure) promotes every address-taken
+    // local: a leak, never a dangling pointer.
+    if (codegen->local_escape) {
+        local_escape_result_free(codegen->local_escape);
+        codegen->local_escape = NULL;
+    }
+    codegen->local_escape = local_escape_analyze(program, pe); // does NOT retain pe
+    codegen->local_escape_program = program;
+    // Kept, not freed: the pointer-receiver rule reads it during emission.
+    if (codegen->param_escape) { param_escape_result_free(codegen->param_escape); }
+    codegen->param_escape = pe;
 
     // T4: the release plan, from the SAME `program`, for the same reason the two
     // analyses above run here -- a verdict is looked up by (function name, local
@@ -480,6 +513,25 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         return 0;
     }
 
+    // Phase 7 M1 (`--emit-qir`): stamp `main` with the QIR 1.0 Adaptive Profile
+    // entry-point attributes after every declaration's body has been emitted,
+    // so `qir_num_qubits` and `qir_num_results` reflect all static and dynamic
+    // qubit/result allocations across the module.
+    if (is_main_pass && codegen->emit_qir) {
+        LLVMValueRef main_fn = LLVMGetNamedFunction(codegen->module, "main");
+        if (main_fn) {
+            char qbuf[32];
+            char rbuf[32];
+            snprintf(qbuf, sizeof(qbuf), "%llu", (unsigned long long)codegen->qir_num_qubits);
+            snprintf(rbuf, sizeof(rbuf), "%llu", (unsigned long long)codegen->qir_num_results);
+            LLVMAddTargetDependentFunctionAttr(main_fn, "entry_point", "");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "qir_profiles", "adaptive_profile");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "output_labeling_schema", "schema_id");
+            LLVMAddTargetDependentFunctionAttr(main_fn, "required_num_qubits", qbuf);
+            LLVMAddTargetDependentFunctionAttr(main_fn, "required_num_results", rbuf);
+        }
+    }
+
     return codegen->error_count == 0;
 }
 
@@ -540,31 +592,16 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
 }
 
 // Error reporting
-void codegen_error(CodeGenerator* codegen, Position pos, const char* format, ...) {
-    if (!codegen) return;
-    
-    fprintf(stderr, "Error at %s:%d:%d: ", pos.filename ? pos.filename : "<unknown>", pos.line, pos.column);
-    
-    va_list args;
-    va_start(args, format);
-    vfprintf(stderr, format, args);
-    va_end(args);
-    
-    fprintf(stderr, "\n");
-    codegen->error_count++;
-}
+// codegen_error moved to codegen_context.c. runtime_integration.c reached in
+// here for it, and that was one of two edges closing this package's cycle.
 
 void codegen_warning(CodeGenerator* codegen, Position pos, const char* format, ...) {
     if (!codegen) return;
     
-    fprintf(stderr, "Warning at %s:%d:%d: ", pos.filename ? pos.filename : "<unknown>", pos.line, pos.column);
-    
     va_list args;
     va_start(args, format);
-    vfprintf(stderr, format, args);
+    diag_vemit(DIAG_WARNING, pos, NULL, NULL, format, args);
     va_end(args);
-    
-    fprintf(stderr, "\n");
     codegen->warning_count++;
 }
 
@@ -860,22 +897,51 @@ LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr)
                           mkstr_fn, args, 1, "kstr_wrap");
 }
 
-// Get-or-declare the libc `strcmp(const char*, const char*) -> int` extern,
-// mirroring codegen_string_from_cstr's LLVMGetNamedFunction-or-declare
-// pattern above. Used by codegen_get_or_emit_struct_key_eq for STRING struct
-// fields. The final link already pulls in libc (codegen_emit_executable
-// shells out to `clang ... -lm -lpthread`, which links libc by default), so
-// declaring the extern here (never defining it) resolves at link time like
-// any other libc call.
-static LLVMValueRef codegen_get_or_declare_strcmp(CodeGenerator* codegen) {
-    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "strcmp");
-    if (fn) return fn;
+// Copy `len` bytes at `ptr` into a fresh goo string via
+// goo_string_new_with_length (length-exact, so embedded NULs survive, which
+// goo_string_new's strlen would cut).
+LLVMValueRef codegen_string_from_bytes(CodeGenerator* codegen, LLVMValueRef ptr, LLVMValueRef len) {
+    if (!codegen || !ptr || !len) { return NULL; }
+    LLVMContextRef ctx = codegen->context;
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_new_with_length");
+    if (!fn) {
+        LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+        LLVMTypeRef string_type = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr_type, i64 }, 2, 0);
+        LLVMTypeRef params[] = { ptr_type, i64 };
+        fn = LLVMAddFunction(codegen->module, "goo_string_new_with_length",
+                             LLVMFunctionType(string_type, params, 2, 0));
+    }
+    LLVMValueRef args[2] = { ptr, len };
+    return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "kstr_copy");
+}
+
+// i1: do two goo string aggregates {ptr, len} hold the same bytes? Length
+// first, then memcmp. strcmp stopped at the first NUL and read to the end of a
+// substring's parent buffer, so the struct- and interface-key comparators
+// merged distinct keys (H2). The memcmp length is forced to 0 when the lengths
+// differ, so it never reads past a shorter operand.
+static LLVMValueRef codegen_emit_string_eq(CodeGenerator* codegen, LLVMValueRef va, LLVMValueRef vb) {
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
-    LLVMTypeRef params[2] = { i8p, i8p };
-    LLVMTypeRef fnty = LLVMFunctionType(i32, params, 2, 0);
-    return LLVMAddFunction(codegen->module, "strcmp", fnty);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "memcmp");
+    if (!fn) {
+        LLVMTypeRef params[3] = { i8p, i8p, i64 };
+        fn = LLVMAddFunction(codegen->module, "memcmp", LLVMFunctionType(i32, params, 3, 0));
+    }
+    LLVMBuilderRef b = codegen->builder;
+    LLVMValueRef pa = LLVMBuildExtractValue(b, va, 0, "seq.pa");
+    LLVMValueRef pb = LLVMBuildExtractValue(b, vb, 0, "seq.pb");
+    LLVMValueRef la = LLVMBuildExtractValue(b, va, 1, "seq.la");
+    LLVMValueRef lb = LLVMBuildExtractValue(b, vb, 1, "seq.lb");
+    LLVMValueRef len_eq = LLVMBuildICmp(b, LLVMIntEQ, la, lb, "seq.leneq");
+    LLVMValueRef n = LLVMBuildSelect(b, len_eq, la, LLVMConstInt(i64, 0, 0), "seq.n");
+    LLVMValueRef args[3] = { pa, pb, n };
+    LLVMValueRef r = LLVMBuildCall2(b, LLVMGlobalGetValueType(fn), fn, args, 3, "seq.memcmp");
+    LLVMValueRef bytes_eq = LLVMBuildICmp(b, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "seq.bytes");
+    return LLVMBuildAnd(b, len_eq, bytes_eq, "seq.eq");
 }
 
 // Single funnel point for every heap allocation the compiler emits: new(T),
@@ -969,7 +1035,7 @@ LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, Alloc
 // order, so LLVM struct-field index == Goo field index — codegen_get_struct_
 // type builds them 1:1):
 //   - string             : extract field 0 (char*) from both loaded string
-//                           aggregates, `strcmp(...) == 0`.
+//                           aggregates, length then memcmp.
 //   - nested struct       : GEP the field's ADDRESS in both operands,
 //                           PtrToInt, and call THAT type's comparator
 //                           (recursive codegen_get_or_emit_struct_key_eq,
@@ -1059,13 +1125,7 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
                 LLVMBuildStructGEP2(codegen->builder, sty, pa, (unsigned)i, "fa.ptr"), "fa");
             LLVMValueRef fb = LLVMBuildLoad2(codegen->builder, fllty,
                 LLVMBuildStructGEP2(codegen->builder, sty, pb, (unsigned)i, "fb.ptr"), "fb");
-            LLVMValueRef ca = LLVMBuildExtractValue(codegen->builder, fa, 0, "ca");
-            LLVMValueRef cb = LLVMBuildExtractValue(codegen->builder, fb, 0, "cb");
-            LLVMValueRef strcmp_fn = codegen_get_or_declare_strcmp(codegen);
-            LLVMValueRef sargs[2] = { ca, cb };
-            LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(strcmp_fn),
-                                            strcmp_fn, sargs, 2, "strcmp.r");
-            eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "streq");
+            eq_bit = codegen_emit_string_eq(codegen, fa, fb);
         } else if (ft && ft->kind == TYPE_STRUCT) {
             LLVMValueRef nested_eq = codegen_get_or_emit_struct_key_eq(codegen, checker, ft);
             if (!nested_eq) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
@@ -1141,7 +1201,7 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
 //   - float32/float64: same shape, fcmp oeq (a NaN field is therefore never
 //     equal to itself, matching Go/IEEE-754 — not a bug).
 //   - string: inttoptr each word to the `{i8*,i64}` string aggregate, load,
-//     extractvalue the char* (field 0), strcmp == 0.
+//     compare length, then memcmp (codegen_emit_string_eq).
 //   - struct (all fields comparator-safe): delegates STRAIGHT to
 //     codegen_get_or_emit_struct_key_eq (#129) — its i32(i64,i64)-over-ptr-
 //     to-heap-copy signature already matches a struct concrete's boxing
@@ -1284,13 +1344,7 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
         LLVMValueRef pb = LLVMBuildIntToPtr(codegen->builder, b, strptr, "typeeq.pb");
         LLVMValueRef va = LLVMBuildLoad2(codegen->builder, strty, pa, "typeeq.va");
         LLVMValueRef vb = LLVMBuildLoad2(codegen->builder, strty, pb, "typeeq.vb");
-        LLVMValueRef ca = LLVMBuildExtractValue(codegen->builder, va, 0, "typeeq.ca");
-        LLVMValueRef cb = LLVMBuildExtractValue(codegen->builder, vb, 0, "typeeq.cb");
-        LLVMValueRef strcmp_fn = codegen_get_or_declare_strcmp(codegen);
-        LLVMValueRef sargs[2] = { ca, cb };
-        LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(strcmp_fn),
-                                        strcmp_fn, sargs, 2, "typeeq.strcmp");
-        eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "typeeq.streq");
+        eq_bit = codegen_emit_string_eq(codegen, va, vb);
     } else {
         // integer/bool/char/float32/float64: deref both words as T*.
         LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
@@ -1314,6 +1368,15 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
         LLVMPositionBuilderAtEnd(codegen->builder, saved);
     }
     return fn;
+}
+
+LLVMValueRef codegen_map_handle(CodeGenerator* codegen, ValueInfo* map_val) {
+    if (!map_val || !map_val->is_lvalue || !map_val->goo_type) {
+        return map_val ? map_val->llvm_value : NULL;
+    }
+    LLVMTypeRef mt = codegen_type_to_llvm(codegen, map_val->goo_type);
+    if (!mt) { return map_val->llvm_value; }
+    return LLVMBuildLoad2(codegen->builder, mt, map_val->llvm_value, "map_load");
 }
 
 // Interface-typed map keys (Task 2): box a concrete key value into the map's
@@ -1370,11 +1433,10 @@ int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
     return 1;
 }
 
-// Pack a key value into the i64 slot. STRING: extract the char* and PtrToInt
-// (NOT codegen_map_value_to_slot — that heap-boxes strings, which would break
-// strcmp identity: two equal-content string keys must PtrToInt to the SAME
-// comparable representation the runtime's key_kind==STRING arm strcmp's,
-// not two distinct box addresses). INLINE: reuse the value-slot packer (its
+// Pack a key value into the i64 slot. STRING: store the {ptr, len} aggregate
+// in a stack GooStrKey and PtrToInt its address (NOT codegen_map_value_to_slot
+// — that heap-boxes strings; the runtime compares by length and bytes, so the
+// address carries no identity). INLINE: reuse the value-slot packer (its
 // inline arm is exactly PtrToInt/ZExt/SExt/bitcast — safe to share because
 // map keys are restricted to inline-eligible types; Task 3's typecheck gate
 // enforces that).
@@ -1402,9 +1464,17 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
     }
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
     if (kt && kt->kind == TYPE_STRING) {
-        // string aggregate {i8*, i64}: take field 0 (the char*), int-ize it.
-        LLVMValueRef cptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "kstr_ptr");
-        return LLVMBuildPtrToInt(codegen->builder, cptr, i64, "kstr_slot");
+        // The slot is a pointer to a GooStrKey {ptr, len} (include/runtime.h),
+        // which has the string aggregate's own layout, so the whole aggregate
+        // is stored. Passing only the char* lost the length. The header lives
+        // in an entry-block alloca, so a map write in a loop does not grow the
+        // stack; the runtime copies it on insert and never keeps this pointer.
+        LLVMTypeRef str_ty = codegen_type_to_llvm(codegen, kt);
+        if (!str_ty) { return NULL; }
+        LLVMValueRef hdr = codegen_create_entry_alloca(codegen, str_ty, "kstr_hdr");
+        if (!hdr) { return NULL; }
+        LLVMBuildStore(codegen->builder, raw, hdr);
+        return LLVMBuildPtrToInt(codegen->builder, hdr, i64, "kstr_slot");
     }
     if (kt && kt->kind == TYPE_STRUCT) {
         // Heap-copy the struct key (mirrors codegen_map_value_to_slot's
@@ -1464,17 +1534,21 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
     return codegen_map_value_to_slot(codegen, raw, kt);
 }
 
-// Inverse for range key binding. STRING: slot holds a char* (the runtime
-// stores string keys as their raw pointer, per key_kind==STRING); rebuild the
-// goo string aggregate via codegen_string_from_cstr, mirroring exactly what
-// the range loop's key-bind step did before this change (statement_codegen.c:
-// goo_string_new(key_cstr)). INLINE: reuse the value unpacker.
+// Inverse for range key binding. STRING: the slot is the entry's stored
+// GooStrKey*; load its {ptr, len} and copy the bytes into a fresh string, so
+// the loop variable stays valid if the entry is deleted during the walk.
+// INLINE: reuse the value unpacker.
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type) {
     if (!codegen || !slot) return NULL;
     if (key_type && key_type->kind == TYPE_STRING) {
-        LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
-        LLVMValueRef cptr = LLVMBuildIntToPtr(codegen->builder, slot, i8p, "kstr_ptr");
-        return codegen_string_from_cstr(codegen, cptr);
+        LLVMTypeRef str_ty = codegen_type_to_llvm(codegen, key_type);
+        if (!str_ty) { return NULL; }
+        LLVMValueRef hp = LLVMBuildIntToPtr(codegen->builder, slot,
+                                            LLVMPointerType(str_ty, 0), "kstr_hdr");
+        LLVMValueRef stored = LLVMBuildLoad2(codegen->builder, str_ty, hp, "kstr_stored");
+        return codegen_string_from_bytes(codegen,
+            LLVMBuildExtractValue(codegen->builder, stored, 0, "kstr_ptr"),
+            LLVMBuildExtractValue(codegen->builder, stored, 1, "kstr_len"));
     }
     if (key_type && key_type->kind == TYPE_STRUCT) {
         LLVMTypeRef sty = codegen_type_to_llvm(codegen, key_type);
@@ -1527,11 +1601,8 @@ LLVMValueRef codegen_create_entry_alloca(CodeGenerator* codegen, LLVMTypeRef typ
     return alloca;
 }
 
-LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name) {
-    if (!codegen || !codegen->current_function) return NULL;
-    
-    return LLVMAppendBasicBlockInContext(codegen->context, codegen->current_function, name);
-}
+// codegen_create_block moved to codegen_context.c. cfctx.c reached in here for
+// it, and that was the other edge.
 
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block) {
     if (!codegen || !block) return;
@@ -1548,7 +1619,7 @@ int codegen_emit_llvm_ir(CodeGenerator* codegen __attribute__((unused)), const c
     
     char* error_message = NULL;
     if (LLVMPrintModuleToFile(codegen->module, filename, &error_message)) {
-        fprintf(stderr, "Error writing LLVM IR: %s\n", error_message);
+        diag_emit(DIAG_ERROR, (Position){0}, NULL, NULL, "Error writing LLVM IR: %s", error_message);
         LLVMDisposeMessage(error_message);
         return 0;
     }
@@ -1630,8 +1701,21 @@ int codegen_emit_object_file(CodeGenerator* codegen, const char* filename) {
 #endif
 }
 
+// Write <dir><rel> into buf. False, with a warning, when the path does not
+// fit: a path cut short could name another file, so it is never used.
+static bool archive_path_in(char* buf, size_t size, const char* dir, const char* rel) {
+    int w = snprintf(buf, size, "%s%s", dir, rel);
+    if (w < 0 || (size_t)w >= size) {
+        diag_emit(DIAG_WARNING, (Position){0}, NULL, NULL,
+                  "the runtime archive path is too long; trying the next location (set GOO_RUNTIME to override)");
+        return false;
+    }
+    return true;
+}
+
 // Resolve the runtime archive path independent of cwd so the compiler works
 // when invoked from any directory. Order: $GOO_RUNTIME -> <exe-dir>/../lib ->
+// $GOOROOT/lib ->
 // cwd-relative fallback. Returns a pointer into a static buffer (single-threaded
 // codegen; not reentrant — acceptable here).
 static const char* goo_runtime_archive_path(void) {
@@ -1639,19 +1723,37 @@ static const char* goo_runtime_archive_path(void) {
     const char* env = getenv("GOO_RUNTIME");
     if (env && env[0] != '\0') { snprintf(buf, sizeof(buf), "%s", env); return buf; }
 #ifdef __linux__
+    // A path that does not fit is reported and falls back to the cwd-relative
+    // archive; it is never used cut short (a wrong path could name another file).
     char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0) {
+    if (n >= (ssize_t)sizeof(exe) - 1) {
+        diag_emit(DIAG_WARNING, (Position){0}, NULL, NULL,
+                  "the executable path is too long to locate lib/libgoo_runtime.a; trying the working directory (set GOO_RUNTIME to override)");
+    } else if (n > 0) {
         exe[n] = '\0';
         char* slash = strrchr(exe, '/');        // dir-of-exe
         if (slash) {
             *slash = '\0';
-            snprintf(buf, sizeof(buf), "%s/../lib/libgoo_runtime.a", exe);
-            struct stat st;
-            if (stat(buf, &st) == 0) return buf; // exists relative to the binary
+            if (archive_path_in(buf, sizeof(buf), exe, "/../lib/libgoo_runtime.a")) {
+                struct stat st;
+                if (stat(buf, &st) == 0) return buf; // exists relative to the binary
+            }
         }
     }
 #endif
+    // GOOROOT comes after the executable's own directory: the archive must
+    // match the compiler that is running, and GOOROOT can name an older
+    // checkout. It serves a compiler that was copied away from its lib/.
+    const char* root = getenv("GOOROOT");
+    if (root && root[0] != '\0') {
+        if (archive_path_in(buf, sizeof(buf), root, "/lib/libgoo_runtime.a")) {
+            struct stat st;
+            if (stat(buf, &st) == 0) {
+                return buf;
+            }
+        }
+    }
     snprintf(buf, sizeof(buf), "lib/libgoo_runtime.a");  // fallback (repo-root cwd)
     return buf;
 }
@@ -1808,6 +1910,13 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 #else
     const char* linker_name = "gcc"; // Linux and generic Unix
 #endif
+    // --linker overrides the platform default. An instrumented
+    // libgoo_runtime.a must be linked by the driver that owns the sanitizer
+    // runtimes, and the gcc above cannot link them at all on some hosts
+    // (.bazelrc records the measurement).
+    if (codegen->linker) {
+        linker_name = codegen->linker;
+    }
 
 #ifdef __APPLE__
     char* link_triple = codegen->target_triple;
@@ -1818,12 +1927,15 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     }
 #endif
 
-    // argv layout: <linker> [-target <triple> | -no-pie] -o <exe> <obj>
-    // <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed non-NULL slots
-    // covers the larger (__APPLE__) branch with room to spare on Linux;
-    // + one slot per user lib + the NULL terminator.
+    // argv layout: <linker> [-target <triple> | -no-pie] [<link-flag>]*
+    // -o <exe> <obj> <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed
+    // non-NULL slots covers the larger (__APPLE__) branch with room to spare
+    // on Linux; + one slot per user lib, + one per --link-flag, + the NULL
+    // terminator. Both counts must be added here: this sizes the execvp
+    // argv, so an omission is an overflow rather than a dropped flag.
     size_t fixed_slots = 9;
-    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count + 1;
+    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count
+                    + (size_t)codegen->link_flag_count + 1U;
     char** argv = malloc(max_argv * sizeof(char*));
     char** lib_flags = codegen->link_lib_count
         ? calloc((size_t)codegen->link_lib_count, sizeof(char*))
@@ -1849,6 +1961,12 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // -no-pie: see the ordering/relocation comment preserved below.
     argv[argn++] = "-no-pie";
 #endif
+    // User link flags precede -o, so a later flag beats the default set
+    // above (--link-flag=-pie against -no-pie, for one). These are borrowed
+    // strings, so unlike lib_flags below there is nothing here to free.
+    for (size_t i = 0; i < codegen->link_flag_count; i++) {
+        argv[argn++] = codegen->link_flags[i];
+    }
     argv[argn++] = "-o";
     argv[argn++] = (char*)filename;
     argv[argn++] = object_filename;
@@ -2060,7 +2178,7 @@ int codegen_verify_module(CodeGenerator* codegen __attribute__((unused))) {
     
     char* error_message = NULL;
     if (LLVMVerifyModule(codegen->module, LLVMReturnStatusAction, &error_message)) {
-        fprintf(stderr, "Module verification failed: %s\n", error_message);
+        diag_emit(DIAG_ERROR, (Position){0}, NULL, NULL, "Module verification failed: %s", error_message);
         LLVMDisposeMessage(error_message);
         return 0;
     }
@@ -2125,12 +2243,13 @@ int codegen_declare_wasm_runtime_functions(CodeGenerator* codegen) {
     // i32 @llvm.wasm.memory.grow.i32(i32 %memory_index, i32 %delta)
     LLVMTypeRef grow_params[] = { i32_type, i32_type };
     LLVMTypeRef grow_type = LLVMFunctionType(i32_type, grow_params, 2, 0);
-    LLVMValueRef grow_func = LLVMAddFunction(codegen->module, "llvm.wasm.memory.grow.i32", grow_type);
+    // Declared for its side effect on the module; the handle is not needed here.
+    LLVMAddFunction(codegen->module, "llvm.wasm.memory.grow.i32", grow_type);
     
     // i32 @llvm.wasm.memory.size.i32(i32 %memory_index)
     LLVMTypeRef size_params[] = { i32_type };
     LLVMTypeRef size_type = LLVMFunctionType(i32_type, size_params, 1, 0);
-    LLVMValueRef size_func = LLVMAddFunction(codegen->module, "llvm.wasm.memory.size.i32", size_type);
+    LLVMAddFunction(codegen->module, "llvm.wasm.memory.size.i32", size_type);
     
     return 1;
 }
@@ -2145,7 +2264,6 @@ int codegen_configure_wasm_concurrency(CodeGenerator* codegen) {
     // for go statements in WASM vs native targets
     
     // Add JavaScript async/await helper imports
-    LLVMTypeRef void_type = LLVMVoidTypeInContext(codegen->context);
     LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
     
     // Import JavaScript Promise handling functions

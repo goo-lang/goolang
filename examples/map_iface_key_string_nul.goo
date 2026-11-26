@@ -1,0 +1,15 @@
+package main
+
+import "fmt"
+
+func main() {
+	m := map[interface{}]int{}
+	m["x\x00y"] = 10
+	m["x\x00z"] = 20
+	fmt.Println(len(m), m["x\x00y"], m["x\x00z"])
+	t := "hello world"
+	m2 := map[interface{}]int{}
+	m2[t[0:5]] = 3
+	m2[t] = 4
+	fmt.Println(len(m2), m2["hello"], m2["hello world"])
+}

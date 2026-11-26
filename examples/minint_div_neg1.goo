@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+func main() {
+	x := int64(-9223372036854775808)
+	y := int64(-1)
+	fmt.Println(x/y, x%y)
+	a := int32(-2147483648)
+	b := int32(-1)
+	fmt.Println(a/b, a%b)
+	c := int8(-128)
+	d := int8(-1)
+	c /= d
+	fmt.Println(c)
+}

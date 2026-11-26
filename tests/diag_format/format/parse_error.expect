@@ -1,0 +1,3 @@
+parse_error.goo:5:1: error: syntax error, unexpected '}'
+    5 | }
+      | ^

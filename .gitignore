@@ -115,3 +115,4 @@ __pycache__/
 
 # Bazel convenience symlinks
 /bazel-*
+.superpowers/

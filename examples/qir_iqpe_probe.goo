@@ -1,0 +1,76 @@
+// Experiment 2 — Iterative Quantum Phase Estimation (IQPE)
+// Extracts the exact 3-bit eigenphase phi = 3/8 (0.011_2, angle 2*pi*3/8 = 3*pi/4)
+// of a phase unitary U|1> = exp(i * 3*pi/4)|1> one bit at a time using a SINGLE
+// reused ancilla qubit (`anc`) with mid-circuit measurement, reset, and flat
+// classical feed-forward phase correction (`SAdj`, `TAdj`).
+package main
+
+import "fmt"
+import "qir"
+
+func main() {
+	anc := qir.Alloc()
+	target := qir.Alloc()
+
+	// Prepare eigenstate |1> on target qubit
+	qir.X(target)
+
+	rLSB := qir.ResultAt(0)
+	rMid := qir.ResultAt(1)
+	rMSB := qir.ResultAt(2)
+
+	// --- Round 1: Extract LSB b2 (4 * phi = 4 * 3/8 = 1.5 == 0.5 mod 1) ---
+	// Controlled-U^4 kickback imparts phase exp(i * 2*pi * 0.5) = -1 (Z) on anc.
+	qir.H(anc)
+	qir.CZ(anc, target)
+	qir.H(anc)
+	qir.Mz(anc, rLSB)
+	qir.Reset(anc)
+
+	// --- Round 2: Extract middle bit b1 (2 * phi = 2 * 3/8 = 0.75 mod 1) ---
+	// Controlled-U^2 kickback imparts phase 3*pi/2 (-pi/2 = SAdj);
+	// feed-forward from b2=1 subtracts pi/2 (SAdj), yielding net phase pi -> b1=1.
+	qir.H(anc)
+	qir.CZ(anc, target)
+	qir.S(anc)
+	if qir.ReadResult(rLSB) {
+		qir.SAdj(anc)
+	}
+	qir.H(anc)
+	qir.Mz(anc, rMid)
+	qir.Reset(anc)
+
+	// --- Round 3: Extract MSB b0 (1 * phi = 3/8 = 0.375, angle 3*pi/4) ---
+	// Controlled-U^1 kickback imparts phase pi - pi/4 = 3*pi/4 (CZ + TAdj);
+	// feed-forward from b2=1 (-pi/4 = TAdj) and b1=1 (-pi/2 = SAdj) cancels
+	// the phase to 0 -> b0=0.
+	qir.H(anc)
+	qir.CZ(anc, target)
+	qir.TAdj(anc)
+	if qir.ReadResult(rLSB) {
+		qir.TAdj(anc)
+	}
+	if qir.ReadResult(rMid) {
+		qir.SAdj(anc)
+	}
+	qir.H(anc)
+	qir.Mz(anc, rMSB)
+
+	qir.FreeZero(anc)
+	_ = qir.MeasureReset(target)
+
+	b0 := 0
+	if qir.ReadResult(rMSB) {
+		b0 = 1
+	}
+	b1 := 0
+	if qir.ReadResult(rMid) {
+		b1 = 1
+	}
+	b2 := 0
+	if qir.ReadResult(rLSB) {
+		b2 = 1
+	}
+	numerator := b0*4 + b1*2 + b2
+	fmt.Println("iqpe_bits", b0, b1, b2, "phase_num", numerator, "of_8")
+}

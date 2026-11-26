@@ -6,8 +6,9 @@
 #include <string.h>
 #include "parser.tab.h"
 
-// Global lexer instance for Bison integration
-Lexer* current_lexer = NULL;
+// current_lexer (declared in lexer.h) is DEFINED in parser_state.c, so that
+// parser_actions.c and parser_errors.c can read it without taking an edge
+// into this file -- that edge was two of the four closing src/parser's cycle.
 
 // Token value for Bison
 extern YYSTYPE yylval;

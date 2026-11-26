@@ -242,7 +242,7 @@ PY
 # name.
 build() {
     make param_core_teeth_test block_core_teeth_test local_core_teeth_test \
-         CORE_ESCAPE_SRC="$ENGINE" > "$1" 2>&1
+         CORE_ESCAPE_SRC="$ENGINE" WERROR= > "$1" 2>&1
     return $?
 }
 
@@ -391,10 +391,14 @@ self_test() {
     # row. Local row 42 is that row, and it closed four arms at once:
     # AST_UNARY_EXPR, AST_SELECTOR_EXPR, AST_FUNC_LIT and AST_STRUCT_LITERAL
     # all went GAP -> COVERED for local in the same commit.
-    echo "=== Control 2b: over/AST_UNARY_EXPR -> param PASS, block+local FAIL (mixed) ==="
+    #
+    # UPDATED 2026-11-24, from "PASS FAIL FAIL": param rows 28 and 29 (the
+    # returns_fresh rows, added by 9cf6a045) now catch this arm, so param FAILs
+    # too. Control 7 still covers the mixed case (param PASS, block+local FAIL).
+    echo "=== Control 2b: over/AST_UNARY_EXPR -> all three FAIL (param rows 28, 29) ==="
     r=$(measure_arm AST_UNARY_EXPR over)
     echo "  got: $r"
-    [ "$r" = "PASS FAIL FAIL" ] || { echo "  CONTROL 2b FAILED"; rc=1; }
+    [ "$r" = "FAIL FAIL FAIL" ] || { echo "  CONTROL 2b FAILED"; rc=1; }
 
     echo "=== Control 3: over/AST_IDENTIFIER -> all three FAIL ==="
     r=$(measure_arm AST_IDENTIFIER over)

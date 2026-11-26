@@ -1,0 +1,10 @@
+package main
+import "fmt"
+func main() {
+	s := `a
+b`
+	fmt.Println(len(s))
+	fmt.Println(int(s[0]))
+	fmt.Println(int(s[1]))
+	fmt.Println(int(s[2]))
+}

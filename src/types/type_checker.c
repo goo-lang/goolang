@@ -2,6 +2,7 @@
 #include "comptime.h"
 #include "embedding.h"
 #include "lane_ownership.h"
+#include "qir_ownership.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -177,17 +178,6 @@ void type_checker_free(TypeChecker* checker) {
     free(checker);
 }
 
-// Linear search of the package registry by canonical import path.
-Package* type_checker_find_package(TypeChecker* checker, const char* import_path) {
-    if (!checker || !import_path) return NULL;
-    for (Package* pkg = checker->packages; pkg; pkg = pkg->next) {
-        if (pkg->import_path && strcmp(pkg->import_path, import_path) == 0) {
-            return pkg;
-        }
-    }
-    return NULL;
-}
-
 // See types.h doc comment. Single choke point: every shim-dispatch strcmp
 // site (checker AND codegen) resolves its package identity through here
 // instead of comparing the use-site identifier text directly, so `import f
@@ -329,29 +319,9 @@ void type_checker_init_builtins(TypeChecker* checker) {
     type_checker_add_builtin_functions(checker);
 }
 
-Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
-    if (!checker || !checker->builtin_types || kind >= TYPE_COUNT) {
-        return NULL;
-    }
-    return checker->builtin_types[kind];
-}
-
-// v1 `error` = `?*int8` (a nullable pointer). Single source of truth so the
-// `error` keyword, the n,err destructure, and errors.New stay in lockstep —
-// Phase 6's real error struct / `.Error()` changes only this.
-Type* type_checker_error_type(TypeChecker* checker) {
-    Type* t = type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
-    // Phase 6 Task 3: tag the nullable so `.Error()` dispatch (type checker +
-    // codegen) can recognize "this is the error type" without re-deriving its
-    // shape. type_nullable() always auto-derives a name (e.g. "?*int8" here),
-    // so it is never NULL at this point — overwrite it unconditionally rather
-    // than guarding on !t->name (which would never fire).
-    if (t) {
-        free(t->name);
-        t->name = xstrdup("error");
-    }
-    return t;
-}
+// type_checker_get_builtin and type_checker_error_type moved to tc_context.c.
+// They are accessors, and shim_signatures.c reached in here for both, which
+// was one of the four edges closing this package's seven-file cycle.
 
 // Go 1.18+ predeclared `any` = the empty interface (`interface{}`) — exactly
 // the Type the AST_INTERFACE_TYPE case below builds for a bodyless
@@ -614,44 +584,10 @@ void scope_pop(TypeChecker* checker) {
     scope_free(old_scope);
 }
 
-Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
-    if (!checker || !checker->current_scope) return NULL;
-    return scope_lookup_variable(checker->current_scope, name);
-}
+// type_checker_lookup_variable and type_checker_lookup_method moved to
+// tc_context.c. lane_ownership.c and ownership_checker.c reached in here for
+// the first, and embedding.c for the second.
 
-// P4.3 (packages-B): see the doc comment on the declaration (types.h) for the
-// full rationale. Dispatch is decided by the receiver type's OWNER, never by
-// which scope happens to resolve the bare mangled name first (review-fix,
-// CRITICAL): a main-package method with the same receiver-type name AND
-// method name ("Point__Scale") used to hijack cross-package dispatch because
-// the bare current-scope lookup ran first.
-//
-//   - owner set, owner != current_package (a cross-package receiver): the
-//     owning package's exports are the ONLY legitimate source — Go's rule
-//     is that methods on a package's type can only be defined in that
-//     package, so NO fallback to the current scope exists (a bare hit there
-//     is by construction a different, same-named type's method, or an
-//     out-of-package method declaration Go itself would reject). Gated on
-//     the METHOD name being exported (see the declaration comment for why
-//     the mangled name's own leading case is not sufficient).
-//   - owner == current_package (a package's own body checking/codegen'ing
-//     calls on its own types): the method Variable lives in the still-pushed
-//     package scope under the bare name — exports aren't even populated
-//     until the whole body has been checked (package_export_filter runs
-//     last) — so the current-scope lookup is the correct source, and
-//     unexported methods are correctly callable intra-package.
-//   - owner NULL (a main-declared or anonymous/builtin receiver): current
-//     scope, today's behavior.
-Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
-                                      const char* method_name, const char* mangled_name) {
-    if (!checker || !mangled_name) return NULL;
-    struct Package* owner = type_receiver_owner_package(recv_type);
-    if (owner && owner != checker->current_package) {
-        if (!method_name || method_name[0] < 'A' || method_name[0] > 'Z') return NULL;
-        return scope_lookup_variable(owner->exports, mangled_name);
-    }
-    return type_checker_lookup_variable(checker, mangled_name);
-}
 
 // Function generics Task 3: active-type-param stack. Pushed by
 // declare_function_signature and type_check_function_decl before resolving a
@@ -886,6 +822,12 @@ int type_check_program_files(TypeChecker* checker, ASTNode** programs,
     // findings.md Section 2.0). Per file: the walk is over one AST at a time.
     for (size_t i = 0; i < program_count; i++) {
         if (!lane_ownership_check_program(checker, programs[i])) return 0;
+        if (!qir_ownership_check_program(checker, programs[i])) {
+            return 0;
+        }
+        if (!fpga_check_program(checker, programs[i], 0)) {
+            return 0;
+        }
     }
 
     return checker->error_count == 0;
@@ -901,7 +843,7 @@ int type_check_program_files(TypeChecker* checker, ASTNode** programs,
 // resolution (type_checker_lookup_method / type_receiver_owner_package)
 // treats it exactly like a real source-package exported struct: zero new
 // checker logic needed beyond this seeding.
-static Type* sync_make_opaque_struct(TypeChecker* checker, Package* pkg, const char* name) {
+static Type* sync_make_opaque_struct(const TypeChecker* checker, Package* pkg, const char* name) {
     Type* opaque_ptr = type_pointer(type_checker_get_builtin(checker, TYPE_INT8));
     if (!opaque_ptr) return NULL;
 
@@ -985,7 +927,7 @@ static void sync_export_method(Package* pkg, Type* recv_struct, const char* meth
 // Package* harmless rather than relying on that invariant — cheap
 // insurance against a duplicate Mutex/WaitGroup export if a future caller
 // ever seeds the same Package* twice.
-void seed_sync_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_sync_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "Mutex")) return;
 
     Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);
@@ -1024,7 +966,7 @@ void seed_sync_package_exports(TypeChecker* checker, Package* pkg) {
 // named with the ordinary mangled package symbol, so every existing consumer —
 // the direct method-call path and the interface thunk builder alike — resolves
 // it with no special case. See codegen_get_or_emit_shim_method_adapter.
-void seed_os_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_os_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "File")) return;
 
     Type* file_t = sync_make_opaque_struct(checker, pkg, "File");
@@ -1064,6 +1006,28 @@ void seed_os_package_exports(TypeChecker* checker, Package* pkg) {
     sync_export_method(pkg, file_t, "Write", params, 1, ret_t, 0);
 }
 
+// Phase 7 M1 (Quantum QIR): seed the `qir` package's two opaque handle types,
+// `qir.Qubit` and `qir.Result`. Both are single-field opaque structs (`_state`
+// pointer at offset 0) stamped with `owner_package = pkg` so type identity and
+// `--emit-program` JSON serialization treat them identically to `sync.Mutex`
+// and `os.File`. All `qir.*` functions live in `src/types/shim_signatures.c`,
+// which looks up these exact `Type*` pointers out of `pkg->exports` to preserve
+// pointer identity across annotations and call signatures.
+void seed_qir_package_exports(const TypeChecker* checker, Package* pkg) {
+    if (scope_lookup_variable(pkg->exports, "Qubit")) {
+        return;
+    }
+
+    Type* qubit_t = sync_make_opaque_struct(checker, pkg, "Qubit");
+    Type* result_t = sync_make_opaque_struct(checker, pkg, "Result");
+    if (!qubit_t || !result_t) {
+        return;
+    }
+
+    sync_export_type(pkg, "Qubit", qubit_t);
+    sync_export_type(pkg, "Result", result_t);
+}
+
 // `goo test`: the testing package's exports. A bespoke shim for the same reason
 // sync is one — it exports a TYPE WITH A METHOD SET, which
 // stdlib_package_lookup's per-symbol table cannot model (it returns a bare Type
@@ -1083,7 +1047,7 @@ void seed_os_package_exports(TypeChecker* checker, Package* pkg) {
 static void shim_export_func(Package* pkg, const char* name, Type** param_types,
                              size_t param_count, Type* return_type);
 
-void seed_testing_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_testing_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "T")) return;
 
     Type* void_t   = type_checker_get_builtin(checker, TYPE_VOID);
@@ -1132,7 +1096,7 @@ void seed_testing_package_exports(TypeChecker* checker, Package* pkg) {
 // clock primitives. owner_package is stamped directly here for the same
 // reason sync_make_opaque_struct stamps it: this Type never passes through
 // type_check_type_decl, the ordinary stamping site.
-static Type* time_make_time_struct(TypeChecker* checker, Package* pkg) {
+static Type* time_make_time_struct(const TypeChecker* checker, Package* pkg) {
     Type* nanos_t = type_checker_get_builtin(checker, TYPE_INT64);
     if (!nanos_t) return NULL;
 
@@ -1164,7 +1128,7 @@ static Type* time_make_time_struct(TypeChecker* checker, Package* pkg) {
 // expression_checker.c's numeric argument-compatibility gate), never name
 // identity, which is exactly the effect Go's untyped-constant rule gives
 // `50 * time.Millisecond`.
-static Type* time_make_duration_type(TypeChecker* checker, Package* pkg) {
+static Type* time_make_duration_type(const TypeChecker* checker, Package* pkg) {
     Type* builtin = type_checker_get_builtin(checker, TYPE_INT64);
     if (!builtin) return NULL;
     Type* result = type_copy(builtin);
@@ -1248,7 +1212,7 @@ static void time_export_method(Package* pkg, Type* recv_struct, const char* meth
 // time_export_method's doc comment. Non-static (declared in types.h) and
 // idempotence-guarded for the same reason seed_sync_package_exports is —
 // see that function's doc comment.
-void seed_time_package_exports(TypeChecker* checker, Package* pkg) {
+void seed_time_package_exports(const TypeChecker* checker, Package* pkg) {
     if (scope_lookup_variable(pkg->exports, "Duration")) return;
 
     Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);
@@ -1353,6 +1317,14 @@ static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports
             type_checker_seed_package_marker(checker, short_name, p);
             continue;
         }
+        if (spec->path && strcmp(spec->path, "qir") == 0) {
+            const char* short_name = spec->alias ? spec->alias : spec->path;
+            Package* p = type_checker_add_package(checker, spec->path, short_name);
+            if (!p) return false;
+            seed_qir_package_exports(checker, p);
+            type_checker_seed_package_marker(checker, short_name, p);
+            continue;
+        }
         if (spec->path && (strcmp(spec->path, "sync") == 0 ||
                            strcmp(spec->path, "time") == 0)) {
             const char* short_name = spec->alias ? spec->alias : spec->path;
@@ -1368,7 +1340,9 @@ static bool seed_package_own_shim_imports(TypeChecker* checker, ASTNode* imports
         if (!spec->path || !type_checker_is_plain_shim_import(spec->path)) continue;
         const char* short_name = spec->alias ? spec->alias : spec->path;
         Package* p = type_checker_add_package(checker, spec->path, short_name);
-        if (!p) return false;
+        if (!p) {
+            return false;
+        }
         // Mirrors goo.c's seed_imported_stdlib_markers: a NULL return here
         // means only "duplicate import of this name" (harmless — the first
         // marker already covers it) or OOM (already unrecoverable via other
@@ -2614,6 +2588,15 @@ static void register_declared_names_after_failure(TypeChecker* checker,
     }
 }
 
+// True when the checker is inside a function or func literal body, where
+// `:=` is legal. Package scope has no function-boundary scope above it.
+static bool decl_is_in_function(const TypeChecker* checker) {
+    for (const Scope* sc = checker->current_scope; sc; sc = sc->parent) {
+        if (sc->is_function_boundary) { return true; }
+    }
+    return false;
+}
+
 int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_VAR_DECL) return 0;
 
@@ -2795,7 +2778,24 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     // would need its own unwrap that never got enforced.
     if (var_decl->name_count == 1 && var_decl->values &&
         final_type->kind == TYPE_ERROR_UNION) {
-        type_error(checker, var_decl->base.pos,
+        // The help binds the user's own name and call text. It stays NULL when
+        // the call text cannot be copied, or at package level: no help beats
+        // a placeholder or code that does not compile. `:=` is illegal at
+        // package level, and the parser rejects `var x, err = f()` there.
+        const char* shown = NULL;
+        char call_text[160];
+        char help[256];
+        // `err` as the user's name gives `err, err := ...`, and an `err`
+        // already in this scope fails with "already declared": no help.
+        if (decl_is_in_function(checker) &&
+            strcmp(var_decl->names[0], "err") != 0 &&
+            !type_name_in_current_scope(checker, "err") &&
+            type_call_help_text(var_decl->values, call_text, sizeof call_text) &&
+            type_help_format(help, sizeof help, "%s, err := %s",
+                             var_decl->names[0], call_text)) {
+            shown = help;
+        }
+        type_error_help(checker, var_decl->base.pos, shown,
                   "error union must be handled: use try, catch, or v, err := destructuring");
         // Poison rather than bind the raw union: a value the checker never
         // required anyone to unwrap must not silently flow into later

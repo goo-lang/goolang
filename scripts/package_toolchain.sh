@@ -35,8 +35,16 @@ else
 	mkdir -p "$OUT"
 fi
 
-COMPILER="$ROOT/bin/goo"
-RUNTIME="$ROOT/lib/libgoo_runtime.a"
+# The Bazel probe passes the compiler and the archive it built; make and a
+# person get the tree's own. Absolute, because the copies below run from
+# wherever the caller stands. `make install` passes neither variable, and
+# the Makefile has no global `export`, so a person's own exported
+# GOO_RUNTIME would reach this script only if their shell, not make, is
+# what exported it.
+COMPILER="${COMPILER:-$ROOT/bin/goo}"
+RUNTIME="${GOO_RUNTIME:-$ROOT/lib/libgoo_runtime.a}"
+case "$COMPILER" in /*) ;; *) COMPILER="$PWD/$COMPILER" ;; esac
+case "$RUNTIME" in /*) ;; *) RUNTIME="$PWD/$RUNTIME" ;; esac
 for f in "$COMPILER" "$RUNTIME"; do
 	[ -f "$f" ] || { echo "package_toolchain: missing $f (run make first)" >&2; exit 1; }
 done
@@ -64,7 +72,14 @@ count=0
 for entry in $PKGS; do
 	src="${entry#*:}"                      # "strings:goostd/strings" -> goostd/strings
 	[ -d "$ROOT/$src" ] || { echo "package_toolchain: missing $src" >&2; exit 1; }
-	cp -r "$ROOT/$src" "$STAGE/$NAME/lib/goostd/"
+	# -L: a Bazel runfiles tree stages goostd's files as symlinks. Plain -r
+	# copies a symlink AS a symlink, so the tarball would point back at this
+	# machine's source tree instead of holding a copy. -L dereferences, so
+	# the staged tree -- and everything packaged from it below -- holds
+	# files. Measured: 0 of goostd's files are symlinks under make (`find
+	# goostd -type l` is empty there), so this changes no byte of a
+	# make-built release; it only fixes the Bazel-built one.
+	cp -rL "$ROOT/$src" "$STAGE/$NAME/lib/goostd/"
 	count=$((count+1))
 done
 [ "$count" -ge 9 ] || { echo "package_toolchain: only $count stdlib packages staged" >&2; exit 1; }

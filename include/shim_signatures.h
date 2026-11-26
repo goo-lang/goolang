@@ -38,6 +38,8 @@ typedef enum {
     SHIM_PARAM_FLOAT64,
     SHIM_PARAM_STRING_SLICE, // []string
     SHIM_PARAM_ERROR,        // the `error` type (?*int8)
+    SHIM_PARAM_QUBIT,        // qir.Qubit (seeded in pkg->exports by seed_qir_package_exports)
+    SHIM_PARAM_QRESULT,      // qir.Result (seeded in pkg->exports by seed_qir_package_exports)
 } ShimParamKind;
 
 // A call's return type. Most shims return a plain builtin/slice; a few
@@ -63,6 +65,8 @@ typedef enum {
     SHIM_RET_ATOI_RESULT,    // strconv.Atoi + far.Listen/Dial (all !int: int64 success / string error)
     SHIM_RET_STRING_RESULT,  // os.ReadFile / os.ReadLine: !string (string success / string error)
     SHIM_RET_F64_RESULT,     // far.RecvF64: !float64 (float64 success / string error)
+    SHIM_RET_QUBIT,          // qir.Alloc / qir.QubitAt -> qir.Qubit
+    SHIM_RET_QRESULT,        // qir.ResultAt -> qir.Result
 } ShimRetKind;
 
 // Returns a fresh type_function() Type* for (package, name)'s call-site

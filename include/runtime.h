@@ -1,7 +1,11 @@
 #ifndef RUNTIME_H
 #define RUNTIME_H
 
+// Guarded: a build with -D_GNU_SOURCE already makes <features.h> define
+// this, and a newer glibc defines a different value (gcc warns on a redefinition).
+#ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700  // For ucontext functions
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -16,6 +20,9 @@ typedef struct goo_scheduler goo_scheduler_t;
 typedef struct goo_mutex goo_mutex_t;
 typedef struct goo_cond goo_cond_t;
 typedef struct goo_waitgroup goo_waitgroup_t;
+// Moved from src/runtime/platform.h (deterministic-simulation task 1) so a
+// later task can name this type here without including goo_os.h.
+typedef struct goo_thread goo_thread_t;
 
 // Error structure
 struct goo_error {
@@ -386,7 +393,7 @@ double goo_math_max(double x, double y);
 // future work; on a miss `get` returns 0.
 //
 // Map key kind: how goo_map_key_eq compares two int64 key slots. STRING = the
-// slot holds a char*, compared by strcmp; INLINE = the slot holds the key's
+// slot holds a GooStrKey*, compared by length then memcmp; INLINE = the slot holds the key's
 // bits (int/uint/bool/rune/byte/pointer), compared by ==; STRUCT = the slot
 // holds a pointer to a heap copy of the struct, compared via the per-map
 // key_eq comparator. IFACE = the slot holds a pointer to a heap-copied boxed
@@ -394,6 +401,16 @@ double goo_math_max(double x, double y);
 // below (also reached through the per-map key_eq comparator). New kinds
 // (float) append here later.
 typedef int (*GooKeyEqFn)(int64_t a, int64_t b);
+
+// A string map key. The key slot of a STRING map holds a pointer to one of
+// these, never a bare char*: a char* loses the length, so strcmp saw "x\0y"
+// and "x\0z" as one key, and a substring s[0:5] as equal to its parent s.
+// Layout matches goo_string_t, so codegen stores the string aggregate in
+// directly. Lookups pass a stack GooStrKey. Inserts copy header and bytes into
+// one heap block that the entry owns; goo_map_iter_next_sv hands that stored
+// block back. Compared by `len`, then memcmp.
+// ptr is not const: goo_map_set_sv_owning frees the bytes it points at.
+typedef struct GooStrKey { char* ptr; int64_t len; } GooStrKey;
 enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1, GOO_MAPKEY_STRUCT = 2, GOO_MAPKEY_IFACE = 3 };
 
 // Interface-typed map keys (Task 2): compare two boxed interface key slots.
@@ -438,11 +455,19 @@ void goo_panic_iface_conversion(const char* iface_name, void* vtable,
 // descriptor field 1); a NULL vtable (nil interface) renders as "<nil>".
 void goo_panic_iface_notimpl(void* vtable, const char* target_name) __attribute__((noreturn));
 
+// make([]T, len, cap) range-check failures (Go's makeslice wording). Emitted
+// by codegen for a negative len, a negative cap, or len > cap.
+void goo_panic_makeslice_len(void) __attribute__((noreturn));
+void goo_panic_makeslice_cap(void) __attribute__((noreturn));
+
 struct GooMapEntrySV;
 typedef struct GooMapSV {
     struct GooMapEntrySV* head;
     int32_t key_kind;
     GooKeyEqFn key_eq;   // per-map struct-key comparator; NULL for string/inline maps
+    // Range loops currently walking this map. While > 0, delete and clear mark
+    // entries dead and free nothing (goo_map_iter_end_sv frees them).
+    int32_t active_iters;
 } GooMapSV;
 GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq);
 void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v);
@@ -475,10 +500,8 @@ int64_t goo_map_len_sv(GooMapSV* m);
 // DETERMINISTIC. Documented deviation: Go deliberately randomizes map
 // iteration order; Goo does not (recorded in the decl-surface-breadth
 // spec). Entries deleted mid-iteration: unlinking a not-yet-visited entry
-// skips it (Go-consistent); deleting the CURRENT entry frees the node the
-// cursor points through — callers of the codegen'd loop cannot do that
-// today (no delete inside range bodies in generated code paths), recorded
-// as a limitation, not defended.
+// skips it (Go-consistent). Deleting ANY entry mid-iteration only marks it
+// dead (see goo_map_iter_end_sv), so the cursor never points at freed memory.
 //
 // GooMapEntrySV stays opaque here (only forward-declared above, as before):
 // `cursor` is typed `struct GooMapEntrySV**`, which is a legal, fully-typed
@@ -499,6 +522,9 @@ int goo_map_iter_next_sv(struct GooMapEntrySV** cursor, int64_t* key_out, int64_
 // keeps GooMapSV's field layout out of generated IR entirely (no
 // GEP-to-head at the range-loop site).
 struct GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m);
+// Ends the iterator that goo_map_iter_init_sv started; the last one frees the
+// entries that delete/clear marked dead meanwhile. Accepts a NULL map.
+void goo_map_iter_end_sv(GooMapSV* m);
 // Deletes the entry for key k, if present. Backs delete(m, k). Does not
 // free k: the map never owns key storage (see goo_map_set_sv above).
 void goo_map_delete_sv(GooMapSV* m, int64_t k);
@@ -667,8 +693,11 @@ typedef struct goo_deadlock_detector {
     uint64_t last_check_time;
     uint64_t check_interval_ns;
     int detected_deadlock;
-    int blocked_goroutines;   // M9: goroutines currently parked in a channel cond_wait
-    int main_in_wait;         // M9: main has entered goo_scheduler_wait (body done)
+    // 2026-09-02: the SIZE of the blocked SET, not a tally of block_begin calls.
+    // A goroutine joins the set when it parks and leaves it when its WAKER
+    // decides to wake it — never later. See goo_sched_block_begin in
+    // src/runtime/concurrency.c and tests/models/README.md, "The C-level fix".
+    int blocked_goroutines;
 } goo_deadlock_detector_t;
 
 // Deadlock detection functions
@@ -676,8 +705,26 @@ int goo_deadlock_init(void);
 void goo_deadlock_shutdown(void);
 void goo_deadlock_enable(int enable);
 int goo_deadlock_detected(void);
-void goo_sched_block_begin(void);
-void goo_sched_block_end(void);
+
+// The blocked-set protocol. All three take the CHANNEL mutex already held by
+// the caller, and take the scheduler mutex themselves: the lock order is
+// channel, then scheduler, everywhere.
+//
+//   goo_sched_block_begin(&ch->send_waiters)  register, immediately before
+//                                             pthread_cond_wait
+//   goo_sched_block_end(&ch->send_waiters)    idempotent unregister,
+//                                             immediately after it returns
+//   goo_sched_wake_waiters(&ch->send_waiters) unregister EVERY waiter on one
+//                                             condvar, immediately before the
+//                                             pthread_cond_broadcast that
+//                                             wakes them
+//
+// `waiters` is the head of the waiter list of the condition variable the
+// caller is about to wait on or wake. It is NULL only for a wait that no
+// wake site can ever reach (goo_chan_nil_block).
+void goo_sched_block_begin(goo_goroutine_t** waiters);
+void goo_sched_block_end(goo_goroutine_t** waiters);
+void goo_sched_wake_waiters(goo_goroutine_t** waiters);
 void goo_deadlock_abort(void) __attribute__((noreturn));
 
 // Channel pattern operations
@@ -709,18 +756,7 @@ typedef enum {
 goo_channel_t* goo_make_pattern_chan(goo_channel_pattern_t pattern, size_t elem_size, const char* endpoint);
 
 // Platform-specific includes for structure definitions
-#if defined(__APPLE__) && defined(__MACH__)
-    #define GOO_PLATFORM_MACOS 1
-    #define GOO_PLATFORM_UNIX 1
-#elif defined(__linux__)
-    #define GOO_PLATFORM_LINUX 1
-    #define GOO_PLATFORM_UNIX 1
-#elif defined(_WIN32) || defined(_WIN64)
-    #define GOO_PLATFORM_WINDOWS 1
-#else
-    #define GOO_PLATFORM_UNKNOWN 1
-    #define GOO_PLATFORM_UNIX 1  // Assume Unix-like
-#endif
+#include "platform_detect.h"
 
 #ifdef GOO_PLATFORM_UNIX
     #include <pthread.h>
@@ -770,6 +806,20 @@ struct goo_goroutine {
     // Deadlock detection - what this goroutine is waiting for
     goo_channel_t* waiting_on_channel;
     int waiting_for_send;  // 1 for send, 0 for receive
+
+    // 2026-09-02, the detector's blocked SET. counted_blocked is this
+    // goroutine's membership bit, and it makes registration and unregistration
+    // idempotent: a spurious return from pthread_cond_wait re-checks its
+    // predicate and re-waits, so it reaches goo_sched_block_end and then
+    // goo_sched_block_begin again. next_waiter links the goroutine into ONE
+    // condition variable's waiter list (goo_channel::send_waiters for not_full,
+    // ::recv_waiters for not_empty); a goroutine waits on one condvar at a
+    // time, so one link is enough. Both are written with the channel mutex AND
+    // the scheduler mutex held. A bit alone is not enough: the broadcaster must
+    // clear the bit of each waiter it wakes, so it needs their identities —
+    // see tests/models/README.md, "Ruling 2".
+    int counted_blocked;
+    struct goo_goroutine* next_waiter;
 };
 
 // Subscriber node for pub/sub pattern
@@ -798,6 +848,12 @@ struct goo_channel {
     int closed;
     uint64_t id;
 
+    // The deadlock detector's waiter lists, one per condition variable, linked
+    // through goo_goroutine::next_waiter and guarded by `mutex` above.
+    // send_waiters holds the goroutines parked on not_full, recv_waiters those
+    // parked on not_empty. main is never on either list, because main is never
+    // counted in blocked_goroutines. Empty until 2026-09-02, when the detector
+    // stopped being a tally and became a set.
     struct goo_goroutine* send_waiters;
     struct goo_goroutine* recv_waiters;
 
@@ -846,7 +902,7 @@ struct goo_scheduler {
     goo_goroutine_t* current_goroutine;
     
 #ifdef GOO_PLATFORM_UNIX
-    pthread_t* os_threads;
+    goo_thread_t** os_threads;
     ucontext_t main_context;
 #endif
     
