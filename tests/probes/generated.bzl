@@ -44,7 +44,7 @@ def generated_probes():
     goo_reject_probe(
         name = "constf64_reject_probe",
         src = "//examples:constf64_reject.goo",
-        stderr_contains = "overflows float64",
+        stderr_contains = "floating-point constant overflow",
     )
     goo_reject_probe(
         name = "constint8_reject_probe",
