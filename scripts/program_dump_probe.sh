@@ -31,10 +31,14 @@ GOO=${COMPILER:-./bin/goo}
 CHECK="python3 scripts/program_dump_check.py"
 
 # Exit 0 when $1 is a reject fixture and the stderr saved in $2 carries the
-# text of its .err.txt sidecar: the golden rejection, reproduced.
+# text of its .err.txt sidecar, or the JW_MAX_DEPTH refusal: the golden
+# rejection, reproduced.
 golden_rejection() {
     local f=$1 err=$2 sidecar
     case "$f" in tests/golden/reject/*) ;; *) return 1 ;; esac
+    # A dump nested past JW_MAX_DEPTH is refused by the writer with exit 1
+    # (the parse stage stops before the checker's expression-depth limit).
+    grep -qF 'nesting exceeds JW_MAX_DEPTH' "$err" && return 0
     sidecar=${f%.goo}.err.txt
     [ -s "$sidecar" ] || return 1
     grep -qF -- "$(cat "$sidecar")" "$err"
@@ -135,5 +139,26 @@ else
     echo "  --emit-program (GOO_ARC_RELEASE=0): $arc_off_fixture accepted, plan: null"
 fi
 rm -f "$arc_off_tmp"
+
+# Nesting past JW_MAX_DEPTH (512): a left-associative chain of 600 binary
+# additions nests 600 JSON objects. The writer must refuse it with a
+# diagnostic and exit 1. An abort (exit 134) is a failure, never a pass.
+deep_tmp=$(mktemp -d)
+deep_src="$deep_tmp/deep.goo"
+{
+    printf 'package main\n\nfunc main() {\n    x := 1'
+    for i in $(seq 600); do printf '+1'; done
+    printf '\n    _ = x\n}\n'
+} > "$deep_src"
+"$GOO" --emit-ast-json -o /dev/null "$deep_src" > "$deep_tmp/out" 2> "$deep_tmp/err"
+deep_rc=$?
+if [ "$deep_rc" -ne 1 ]; then
+    echo "  FAIL  600-deep chain (--emit-ast-json: exit $deep_rc, want 1)"; sed 's/^/        /' "$deep_tmp/err" | head -3; ok=0
+elif ! grep -qF 'nesting exceeds JW_MAX_DEPTH' "$deep_tmp/err"; then
+    echo "  FAIL  600-deep chain (stderr lacks 'nesting exceeds JW_MAX_DEPTH')"; sed 's/^/        /' "$deep_tmp/err" | head -3; ok=0
+else
+    echo "  --emit-ast-json: 600-deep chain refused with exit 1"
+fi
+rm -rf "$deep_tmp"
 
 if [ $ok = 1 ]; then echo "program-dump-probe: PASS"; else echo "program-dump-probe: FAIL"; exit 1; fi

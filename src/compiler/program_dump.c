@@ -442,6 +442,8 @@ static void emit_tok(JsonW* w, const char* key, TokenType t) { emit_str(w, key, 
 // ---- nodes -----------------------------------------------------------------
 
 static void emit_node(JsonW* w, ASTNode* n) {
+    // A failed writer ends the walk: descending further only recurses deeper.
+    if (w->error) return;
     // Teeth for invariant 3 (GOO_DUMP_SELFTEST=badkind): force the FIRST node
     // emitted through the same abort path an unhandled kind would take,
     // regardless of whether n->type is actually handled below. The
@@ -981,8 +983,8 @@ static void emit_plan(JsonW* w, ReleasePlan* plan) {
 
 // ---- entry -----------------------------------------------------------------
 
-void program_dump_write(FILE* out, ASTNode** files, const char** filenames,
-                        size_t nfiles, ReleasePlan** plans, ProgramDumpStage stage) {
+int program_dump_write(FILE* out, ASTNode** files, const char** filenames,
+                       size_t nfiles, ReleasePlan** plans, ProgramDumpStage stage) {
     JsonW w; jw_init(&w, out);
     g_stage = stage;
     g_selftest = getenv("GOO_DUMP_SELFTEST");
@@ -1025,4 +1027,5 @@ void program_dump_write(FILE* out, ASTNode** files, const char** filenames,
         fprintf(stderr, "program-dump: types visited=%lld distinct_pointers=%zu table=%zu\n",
                 g_types_visited, g_memo.count, g_types.count);
     }
+    return w.error;
 }

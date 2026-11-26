@@ -7,6 +7,11 @@ static void die(const char* what) {
     abort();
 }
 
+const char* jw_error_message(int error) {
+    if (error == JW_ERR_NESTING) return "nesting exceeds JW_MAX_DEPTH";
+    return "unknown JSON writer error";
+}
+
 void jw_init(JsonW* w, FILE* out) {
     memset(w, 0, sizeof(*w));
     w->out = out;
@@ -27,25 +32,33 @@ static void before_element(JsonW* w) {
     indent(w);
 }
 
-static void open_container(JsonW* w, char c, bool is_object) {
+// Returns 0 when the container opened. Past JW_MAX_DEPTH it latches
+// JW_ERR_NESTING and writes nothing, so the matching end call must skip too.
+static int open_container(JsonW* w, char c, bool is_object) {
+    if (w->error) return w->error;
     before_element(w);
-    if (w->depth >= JW_MAX_DEPTH) die("nesting exceeds JW_MAX_DEPTH");
+    if (w->depth >= JW_MAX_DEPTH) {
+        w->error = JW_ERR_NESTING;
+        return w->error;
+    }
     fputc(c, w->out);
     w->first[w->depth] = true;
     w->in_object[w->depth] = is_object;
     w->depth++;
+    return 0;
 }
 
 static void close_container(JsonW* w, char c) {
+    if (w->error) return;
     if (w->depth == 0) die("close with no open container");
     w->depth--;
     if (!w->first[w->depth]) { fputc('\n', w->out); indent(w); }
     fputc(c, w->out);
 }
 
-void jw_begin_object(JsonW* w) { open_container(w, '{', true); }
+int  jw_begin_object(JsonW* w) { return open_container(w, '{', true); }
 void jw_end_object(JsonW* w)   { close_container(w, '}'); }
-void jw_begin_array(JsonW* w)  { open_container(w, '[', false); }
+int  jw_begin_array(JsonW* w)  { return open_container(w, '[', false); }
 void jw_end_array(JsonW* w)    { close_container(w, ']'); }
 
 // Returns the length (2-4) of the well-formed UTF-8 sequence starting at
@@ -94,6 +107,7 @@ static void write_escaped(JsonW* w, const char* s, size_t n) {
 }
 
 void jw_key(JsonW* w, const char* key) {
+    if (w->error) return;
     if (w->depth == 0 || !w->in_object[w->depth - 1]) die("key outside an object");
     before_element(w);
     write_escaped(w, key, strlen(key));
@@ -102,6 +116,7 @@ void jw_key(JsonW* w, const char* key) {
 }
 
 void jw_string_len(JsonW* w, const char* s, size_t n) {
+    if (w->error) return;
     before_element(w);
     if (!s) { fputs("null", w->out); return; }
     write_escaped(w, s, n);
@@ -109,7 +124,7 @@ void jw_string_len(JsonW* w, const char* s, size_t n) {
 
 void jw_string(JsonW* w, const char* s) { jw_string_len(w, s, s ? strlen(s) : 0); }
 
-void jw_int(JsonW* w, long long v)           { before_element(w); fprintf(w->out, "%lld", v); }
-void jw_uint(JsonW* w, unsigned long long v) { before_element(w); fprintf(w->out, "%llu", v); }
-void jw_bool(JsonW* w, bool v)               { before_element(w); fputs(v ? "true" : "false", w->out); }
-void jw_null(JsonW* w)                       { before_element(w); fputs("null", w->out); }
+void jw_int(JsonW* w, long long v)           { if (w->error) return; before_element(w); fprintf(w->out, "%lld", v); }
+void jw_uint(JsonW* w, unsigned long long v) { if (w->error) return; before_element(w); fprintf(w->out, "%llu", v); }
+void jw_bool(JsonW* w, bool v)               { if (w->error) return; before_element(w); fputs(v ? "true" : "false", w->out); }
+void jw_null(JsonW* w)                       { if (w->error) return; before_element(w); fputs("null", w->out); }

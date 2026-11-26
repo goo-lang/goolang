@@ -19,6 +19,7 @@
 #include "ast.h"
 #include "types.h"
 #include "program_dump.h"
+#include "json_writer.h"
 #include "diagnostic.h"
 
 // Name the synthesized `goo test` entry file carries through every phase
@@ -1493,8 +1494,13 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         for (size_t fi = 0; fi < nfiles; fi++) {
             dump_names[fi] = fi < options->input_file_count ? options->input_files[fi] : kTestMainName;
         }
-        program_dump_write(stdout, asts, dump_names, nfiles, NULL, PROGRAM_DUMP_PARSE);
+        int dump_rc = program_dump_write(stdout, asts, dump_names, nfiles, NULL, PROGRAM_DUMP_PARSE);
         free(dump_names);
+        if (dump_rc != 0) {
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "%s", jw_error_message(dump_rc));
+            ENTRY_CLEANUP();
+            return false;
+        }
         ENTRY_CLEANUP();
         return true;
     }
@@ -1657,7 +1663,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         if (!(arc_off && strcmp(arc_off, "0") == 0)) {
             for (size_t fi = 0; fi < nfiles; fi++) plans[fi] = release_plan_analyze(asts[fi]);
         }
-        program_dump_write(stdout, asts, dump_names, nfiles, plans, PROGRAM_DUMP_TYPED);
+        int dump_rc = program_dump_write(stdout, asts, dump_names, nfiles, plans, PROGRAM_DUMP_TYPED);
         for (size_t fi = 0; fi < nfiles; fi++) if (plans[fi]) release_plan_free(plans[fi]);
         free(plans);
         free(dump_names);
@@ -1665,6 +1671,11 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         codegen_free(codegen);
 #endif
         type_checker_free(type_checker);
+        if (dump_rc != 0) {
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "%s", jw_error_message(dump_rc));
+            ENTRY_CLEANUP();
+            return false;
+        }
         ENTRY_CLEANUP();
         return true;
     }
