@@ -167,18 +167,29 @@ static const char* lexer_number_error(const char* s, int is_float) {
     unsigned base = 10;
     const char* digits = s;
     const char* kind = "decimal";
-    if (!is_float && s[0] == '0' && s[1]) {
+    // An explicit prefix counts for a float too, or strtod reads `0b1.5` as 0
+    // and `0x1.5` as a hex float. The legacy 0777 octal form is an integer
+    // only: `01.5` is the decimal float 1.5, as in Go.
+    if (s[0] == '0' && s[1]) {
         char c = s[1] | 0x20; // fold case
         if (c == 'x') { base = 16; digits = s + 2; kind = "hexadecimal"; }
         else if (c == 'b') { base = 2; digits = s + 2; kind = "binary"; }
         else if (c == 'o') { base = 8; digits = s + 2; kind = "octal"; }
-        else { base = 8; digits = s + 1; kind = "octal"; } // legacy 0777
+        else if (!is_float) { base = 8; digits = s + 1; kind = "octal"; }
     }
 
     // A binary or octal literal has no exponent in Go. Hex is exempt: its
     // digits include 'e', so `0x1e5` is the integer 485.
     if ((base == 2 || base == 8) && strpbrk(digits, "eE")) {
         return "'e' exponent requires decimal mantissa";
+    }
+    if ((base == 2 || base == 8) && strchr(digits, '.')) {
+        snprintf(msg, sizeof(msg), "invalid radix point in %s literal", kind);
+        return msg;
+    }
+    // The scanner has no 'p' exponent, so a hex float is never complete.
+    if (base == 16 && is_float) {
+        return "hexadecimal mantissa requires a 'p' exponent";
     }
 
     if (is_float) {
