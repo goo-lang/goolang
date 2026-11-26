@@ -45,6 +45,8 @@ static int open_container(JsonW* w, char c, bool is_object) {
     w->first[w->depth] = true;
     w->in_object[w->depth] = is_object;
     w->depth++;
+    // first[] and in_object[] hold JW_MAX_DEPTH entries.
+    GOO_ASSERT(w->depth <= JW_MAX_DEPTH);
     return 0;
 }
 

@@ -301,6 +301,9 @@ static size_t utf8_encode(uint32_t cp, char* out) {
         out[2] = (char)(0x80 | (cp & 0x3F));
         return 3;
     }
+    // lexer_decode_escape refuses a code point above U+10FFFF, so a larger one
+    // here would write a 4-byte sequence that no UTF-8 decoder accepts.
+    GOO_ASSERT(cp <= 0x10FFFF);
     out[0] = (char)(0xF0 | (cp >> 18));
     out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
     out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
@@ -994,6 +997,8 @@ char* lexer_read_string(Lexer* lexer, size_t* length) {
             lexer_read_char(lexer); // consume closing quote: no cascade
             return NULL;
         }
+        // The decoder reads only inside the `avail` bytes it was given.
+        GOO_ASSERT(used <= raw_len - i - 1);
         i += used;
         if (is_byte) out[out_len++] = (char)val;
         else out_len += utf8_encode(val, out + out_len);

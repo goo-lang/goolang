@@ -758,6 +758,8 @@ void ast_add_child(ASTNode* parent, ASTNode* child) {
         current->next = child;
         parent->tail = child_tail;
     }
+    // The next append starts its walk at the tail, so the tail must be last.
+    GOO_ASSERT(parent->tail->next == NULL);
 }
 
 const char* ast_node_type_string(ASTNodeType type) {
