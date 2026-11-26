@@ -113,9 +113,11 @@ static const char* ast_node_type_strings[] = {
 // ast_continue_stmt_new and ast_fallthrough_stmt_new in ast_constructors.c.
 // The old static ast_node_new had no caller and was deleted when -Werror
 // made "defined but not used" fatal.
-// Generic node destruction (needs to be extended for specific types)
-void ast_node_free(ASTNode* node) {
-    if (!node) return;
+// Frees one node and its children, but not its siblings: ast_node_free walks
+// the sibling chain in a loop, so a block of 200,000 statements costs one
+// stack frame, not 200,000. Child recursion stays, because nesting depth is
+// bounded where sibling count is not.
+static void ast_node_free_one(ASTNode* node) {
     
     // Free type-specific data
     switch (node->type) {
@@ -630,12 +632,15 @@ void ast_node_free(ASTNode* node) {
             break;
     }
     
-    // Free the next node in the list
-    if (node->next) {
-        ast_node_free(node->next);
-    }
-    
     free(node);
+}
+
+void ast_node_free(ASTNode* node) {
+    while (node != NULL) {
+        ASTNode* next = node->next;
+        ast_node_free_one(node);
+        node = next;
+    }
 }
 
 // Deep-clone a *type* AST node (the type-expression node kinds only).

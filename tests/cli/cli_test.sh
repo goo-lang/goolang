@@ -339,6 +339,18 @@ with open("'"$WORK"'/large_args.goo", "w") as f:
 '
 check large-arg-list          0     ""            empty                sh -c "timeout 5 '$COMPILER' --emit-ast-json '$WORK/large_args.goo' >/dev/null"
 
+# A long sibling list must not cost one stack frame per node when the AST is
+# freed. 200,000 statements in one block overflowed the 8 MiB stack in
+# ast_node_free (SIGSEGV, exit 139) after the dump was written.
+python3 -c '
+with open("'"$WORK"'/long_block.goo", "w") as f:
+    f.write("package main\n\nfunc main() {\n")
+    for i in range(100000):
+        f.write("    x%d := 1\n    _ = x%d\n" % (i, i))
+    f.write("}\n")
+'
+check long-block-free         0     ""            empty                sh -c "timeout 20 '$COMPILER' --emit-ast-json '$WORK/long_block.goo' >/dev/null"
+
 # A copied or moved compiler has no lib/ beside it. It must find the runtime
 # archive through GOOROOT, from a working directory that is not the repo root.
 ROOT_ABS="$(pwd)"
