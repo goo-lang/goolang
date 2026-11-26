@@ -78,7 +78,6 @@ fixedbugs/bug497.go
 fixedbugs/bug501.go
 fixedbugs/issue10135.go
 fixedbugs/issue10925.go
-fixedbugs/issue11326b.go
 fixedbugs/issue11369.go
 fixedbugs/issue12133.go
 fixedbugs/issue12226.go

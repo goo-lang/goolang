@@ -154,14 +154,14 @@ static int hex_digit_value(char c) {
     return -1;
 }
 
-// Validate a numeric literal the scanner already cut out, so an overflowing
-// or malformed one becomes a positioned TOKEN_ERROR instead of reaching the
-// bridge's strtoull/atof, which wrap to a wrong value or yield inf without a
-// word. Returns NULL when the literal is well formed. The scanner only
-// accepts digit characters, so this judges digit sets, emptiness, and range.
-// Only a value beyond uint64 is an overflow here: a constant between INT64_MAX
-// and UINT64_MAX (0xFFFFFFFFFFFFFFFF) is legal when the context is unsigned,
-// and that contextual judgement belongs to the type checker, not the lexer.
+// Validate the SYNTAX of a numeric literal the scanner already cut out, so a
+// malformed one becomes a positioned TOKEN_ERROR. Returns NULL when the
+// literal is well formed. The scanner only accepts digit characters, so this
+// judges digit sets, emptiness, exponents and radix points. It does NOT judge
+// the VALUE: a literal above UINT64_MAX or a float that strtod turns into inf
+// is valid Go syntax, and refusing it here made the parse fail (with a
+// cascade error) on valid programs. The type checker refuses those two cases
+// (type_check_literal), and the bridge keeps the facts it needs.
 static const char* lexer_number_error(const char* s, int is_float) {
     static char msg[48]; // one lexer thread at a time; token_new copies it
     unsigned base = 10;
@@ -199,9 +199,6 @@ static const char* lexer_number_error(const char* s, int is_float) {
             if (*e == '+' || *e == '-') e++;
             if (!lexer_is_digit(*e)) return "exponent has no digits";
         }
-        double v = strtod(s, NULL);
-        // Underflow to 0 is a representable constant; only inf is an error.
-        if (isinf(v)) return "floating-point constant overflow";
         return NULL;
     }
 
@@ -209,18 +206,14 @@ static const char* lexer_number_error(const char* s, int is_float) {
         snprintf(msg, sizeof(msg), "%s literal has no digits", kind);
         return msg;
     }
-    uint64_t v = 0;
-    int overflow = 0;
     for (const char* p = digits; *p; p++) {
         int d = hex_digit_value(*p);
         if (d < 0 || (unsigned)d >= base) {
             snprintf(msg, sizeof(msg), "invalid digit '%c' in %s literal", *p, kind);
             return msg;
         }
-        if (v > (UINT64_MAX - (uint64_t)d) / base) overflow = 1;
-        else v = v * base + (uint64_t)d;
     }
-    return overflow ? "integer constant overflow" : NULL;
+    return NULL;
 }
 
 // Decode one escape sequence. `body` points just past the backslash and has

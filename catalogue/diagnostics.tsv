@@ -121,10 +121,12 @@ f55b4fcc	expression_checker.c	elided composite literal '{...}' requires a struct
 4813e230	expression_checker.c	error.Error() takes no arguments
 ec6fc387	expression_checker.c	error: argument must be a string, got %s
 cc9fd316	expression_checker.c	expression nesting exceeds %d levels
+c78f5eed	expression_checker.c	floating-point constant overflow
 aebba07d	expression_checker.c	fmt.%s: %s is not a writer (needs a Write([]byte) (int, error) method)
 82166315	expression_checker.c	fmt.%s: missing writer argument
 ad39190f	expression_checker.c	fmt.Fprintf: the format must be a string
 46f91576	expression_checker.c	impossible type assertion: %s does not implement %s (%s method %s)
+1e213422	expression_checker.c	integer constant overflow
 caee9522	expression_checker.c	invalid negative shift count: %lld
 8492db87	expression_checker.c	invalid type assertion: cannot resolve target type
 a34c7b60	expression_checker.c	invalid type assertion: operand is not an interface type

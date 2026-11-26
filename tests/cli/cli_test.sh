@@ -358,5 +358,29 @@ mkdir -p "$WORK/moved"
 cp "$COMPILER" "$WORK/moved/goo"
 check moved-compiler-gooroot  0     ""            empty                sh -c "cd '$WORK/moved' && env -u GOO_RUNTIME GOOROOT='$ROOT_ABS' ./goo '$ROOT_ABS/$WORK/ok.goo' -o moved_bin"
 
+# The lexer checks syntax only. A literal whose VALUE is too large is valid Go
+# syntax, so --emit-ast-json (parse only) must accept it. The type checker
+# refuses it (tests/golden/reject/*_overflow*).
+cat > "$WORK/float_overflow_lit.goo" <<'EOF2'
+package main
+
+const n = 1e646456992
+
+func main() {
+	_ = n
+}
+EOF2
+cat > "$WORK/int_overflow_lit.goo" <<'EOF2'
+package main
+
+const q = 100000000000000000000
+
+func main() {
+	_ = q
+}
+EOF2
+check parse-float-overflow-lit 0 ""           empty                sh -c "'$COMPILER' --emit-ast-json '$WORK/float_overflow_lit.goo' >/dev/null"
+check parse-int-overflow-lit   0 ""           empty                sh -c "'$COMPILER' --emit-ast-json '$WORK/int_overflow_lit.goo' >/dev/null"
+
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]

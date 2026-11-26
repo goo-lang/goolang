@@ -2,6 +2,7 @@
 #define AST_H
 
 #include "token.h"
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -557,6 +558,9 @@ typedef struct {
     // math/bits lookup tables begin with "\x00..."). Codegen must use this, not
     // strlen, to emit the correct string length.
     size_t length;
+    // TOKEN_INT only: the source value was above UINT64_MAX. The bridge
+    // clamps it, so `value` alone cannot say so. The type checker refuses it.
+    bool int_overflow;
 } LiteralNode;
 
 // Binary expression

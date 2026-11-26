@@ -3139,6 +3139,7 @@ literal:
         char int_str[32];
         snprintf(int_str, sizeof(int_str), "%lld", $1);
         LiteralNode* lit = ast_literal_new(TOKEN_INT, int_str, POS(@1));
+        if (lit) lit->int_overflow = bridge_int_literal_overflowed(@1.first_line, @1.first_column);
         $$ = (ASTNode*)lit;
     }
     | FLOAT_LITERAL {

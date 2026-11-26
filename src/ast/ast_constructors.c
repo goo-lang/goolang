@@ -171,6 +171,7 @@ LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos) {
     node->base.next = NULL;
     node->base.tail = NULL;
     node->literal_type = type;
+    node->int_overflow = false;
     node->value = str_dup(value);
     // Non-string literals never contain embedded NULs, so strlen is the true
     // byte length. Strings that may contain NULs must use ast_string_literal_new.
@@ -189,6 +190,7 @@ LiteralNode* ast_string_literal_new(const char* data, size_t length, Position po
     node->base.next = NULL;
     node->base.tail = NULL;
     node->literal_type = TOKEN_STRING;
+    node->int_overflow = false;
     node->length = length;
 
     // Copy exactly `length` bytes (embedded NULs preserved) plus a trailing NUL

@@ -1173,12 +1173,30 @@ Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
     return var->type;
 }
 
+static bool float64_is_finite(double d);
+
 Type* type_check_literal(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_LITERAL) return NULL;
     
     LiteralNode* lit = (LiteralNode*)expr;
     Type* type = NULL;
-    
+
+    // The lexer checks syntax only, so the two value overflows land here, in
+    // every context (also inside constant arithmetic, where a wrapped or NaN
+    // result would otherwise go through silently). Goo has no arbitrary-
+    // precision constants yet, so an integer above UINT64_MAX has no value to
+    // carry. The parser stores a float above DBL_MAX as the text "inf".
+    GOO_ASSERT(!lit->int_overflow || lit->literal_type == TOKEN_INT); // only INT_LITERAL sets the flag
+    if (lit->literal_type == TOKEN_INT && lit->int_overflow) {
+        // Keep going with the default type: a NULL here would leave the
+        // enclosing const or variable undeclared and add a cascade error.
+        type_error(checker, expr->pos, "integer constant overflow");
+    }
+    if (lit->literal_type == TOKEN_FLOAT && lit->value &&
+        !float64_is_finite(strtod(lit->value, NULL))) {
+        type_error(checker, expr->pos, "floating-point constant overflow");
+    }
+
     switch (lit->literal_type) {
         case TOKEN_INT:
             // Go: an untyped integer constant's default type is `int` (64-bit
