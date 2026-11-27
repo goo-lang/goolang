@@ -115,7 +115,7 @@ static size_t goo_round_to_pages(size_t n) {
         goo_panic("goroutine stack: sysconf(_SC_PAGESIZE) failed");
     }
     size_t p = (size_t)page;
-    return (n + p - 1) / p * p;
+    return (n + p - 1U) / p * p;
 }
 
 // One mmap of guard + stack, then the lowest guard bytes become PROT_NONE.
@@ -139,7 +139,7 @@ static void goo_stack_alloc(goo_goroutine_t* g) {
     g->stack_map_size = total;
     g->stack = (char*)map + guard;
     g->stack_size = usable;
-    GOO_ASSERT((uintptr_t)g->stack == (uintptr_t)g->stack_map + guard);
+    GOO_ASSERT((char*)g->stack == (char*)g->stack_map + guard);
 }
 
 static void goo_stack_free(goo_goroutine_t* g) {
@@ -166,19 +166,19 @@ static void goo_segv_handler(int sig, siginfo_t* info, void* ctx) {
         uintptr_t hi = (uintptr_t)cur->stack;
         if (addr >= lo && addr < hi) {
             static const char msg[] = "fatal error: stack overflow\n";
-            ssize_t w = write(2, msg, sizeof msg - 1);
+            ssize_t w = write(2, msg, sizeof msg - 1U);
             (void)w;
             _exit(2);
         }
     }
-    struct sigaction dfl = {};
+    struct sigaction dfl = {0};
     dfl.sa_handler = SIG_DFL;
     sigemptyset(&dfl.sa_mask);
     sigaction(sig, &dfl, NULL);
 }
 
 static void goo_install_segv_handler(void) {
-    struct sigaction sa = {};
+    struct sigaction sa = {0};
     sa.sa_sigaction = goo_segv_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
