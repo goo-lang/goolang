@@ -219,8 +219,28 @@ static ValueInfo* codegen_map_index_rmw(CodeGenerator* codegen, TypeChecker* che
 }
 #endif
 
+// M3: the type checker refuses nesting past this depth before codegen runs, so
+// reaching it here means a checker bug. Fail loudly instead of overflowing the
+// C stack. Keep in sync with GOO_MAX_EXPR_DEPTH in expression_checker.c.
+#define GOO_MAX_EXPR_DEPTH 500
+static thread_local int g_expr_gen_depth = 0;
+
+static ValueInfo* codegen_generate_expression_inner(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+
 ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
     if (!codegen || !checker || !expr) return NULL;
+    if (g_expr_gen_depth >= GOO_MAX_EXPR_DEPTH) {
+        codegen_error(codegen, expr->pos, "expression nesting exceeds %d levels",
+                      GOO_MAX_EXPR_DEPTH);
+        return NULL;
+    }
+    g_expr_gen_depth++;
+    ValueInfo* result = codegen_generate_expression_inner(codegen, checker, expr);
+    g_expr_gen_depth--;
+    return result;
+}
+
+static ValueInfo* codegen_generate_expression_inner(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
     
     switch (expr->type) {
         case AST_IDENTIFIER:

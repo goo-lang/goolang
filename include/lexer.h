@@ -36,6 +36,10 @@ typedef struct {
     // convention.
     unsigned char asi_ctx[256];
     int asi_depth;
+    // Specific reason for the last NULL return of lexer_read_string /
+    // lexer_read_char_literal, or NULL for the generic cause (unterminated).
+    // Points at a string literal, so it is never freed.
+    const char* literal_error;
 } Lexer;
 
 // Lexer functions
@@ -62,7 +66,7 @@ char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float);
 char* lexer_read_string(Lexer* lexer, size_t* length);
 char* lexer_read_raw_string(Lexer* lexer, size_t* length);
 char* lexer_read_char_literal(Lexer* lexer, size_t* length);
-int lexer_decode_char_value(const char* body, size_t len, long* out);
+int lexer_decode_char_value(const char* body, size_t len, long* out, const char** err);
 
 // Utility functions
 int lexer_is_letter(char ch);

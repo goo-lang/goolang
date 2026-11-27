@@ -1,0 +1,1 @@
+hexadecimal mantissa requires a 'p' exponent

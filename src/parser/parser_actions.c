@@ -126,7 +126,9 @@ void substitute_iota(ASTNode** slot, long idx) {
             snprintf(buf, sizeof(buf), "%ld", idx);
             ASTNode* lit = (ASTNode*)ast_literal_new(TOKEN_INT, buf, n->pos);
             lit->next = n->next;   // preserve sibling chain (NULL in expr context)
+            lit->tail = n->tail;
             n->next = NULL;        // detach so the free below doesn't recurse
+            n->tail = NULL;
             ast_node_free(n);
             *slot = lit;
         }
@@ -165,6 +167,7 @@ ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
     c->base.pos = get_current_position();
     c->base.node_type = NULL;
     c->base.next = NULL;
+    c->base.tail = NULL;
 
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     c->names = xmalloc(sizeof(char*));
@@ -196,6 +199,7 @@ static ASTNode* clone_const_type(const ASTNode* n) {
     basic->base.pos = n->pos;
     basic->base.node_type = NULL;
     basic->base.next = NULL;
+    basic->base.tail = NULL;
     basic->name = xstrdup(src->name);
     basic->package = src->package ? xstrdup(src->package) : NULL;
     return (ASTNode*)basic;
@@ -292,11 +296,16 @@ ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
     ma->base.pos = pos;
     ma->base.node_type = NULL;
     ma->base.next = NULL;
+    ma->base.tail = NULL;
 
     t1->next = t2;
+    t1->tail = t2;
     t2->next = NULL;
+    t2->tail = NULL;
     v1->next = v2;
+    v1->tail = v2;
     v2->next = NULL;
+    v2->tail = NULL;
 
     ma->targets = t1;
     ma->values = v1;
@@ -311,10 +320,14 @@ ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call, Position
     ma->base.pos = pos;
     ma->base.node_type = NULL;
     ma->base.next = NULL;
+    ma->base.tail = NULL;
 
     t1->next = t2;
+    t1->tail = t2;
     t2->next = NULL;
+    t2->tail = NULL;
     call->next = NULL;      /* single value; codegen destructures its fields */
+    call->tail = NULL;
 
     ma->targets = t1;
     ma->values = call;
@@ -335,6 +348,7 @@ ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs, Position
     es->base.pos = pos;
     es->base.node_type = NULL;
     es->base.next = NULL;
+    es->base.tail = NULL;
     es->expr = (ASTNode*)binary;
     return (ASTNode*)es;
 }
@@ -373,6 +387,7 @@ ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries) {
     lit->base.pos = get_current_position();
     lit->base.node_type = NULL;
     lit->base.next = NULL;
+    lit->base.tail = NULL;
     lit->map_type = map_type_node;
     if (entries) {
         lit->keys = entries;
@@ -421,6 +436,7 @@ ASTNode* func_result_from_params(ASTNode* params_list) {
         st->base.pos = get_current_position();
         st->base.node_type = NULL;
         st->base.next = NULL;
+        st->base.tail = NULL;
         st->fields = list;
         st->is_result_tuple = 1;   // parser-synthesized result list
         return (ASTNode*)st;
@@ -433,6 +449,7 @@ ASTNode* const_decl_new(ASTNode* name_ident, ASTNode* type, ASTNode* value, int 
     const_node->base.pos = get_current_position();
     const_node->base.node_type = NULL;
     const_node->base.next = NULL;
+    const_node->base.tail = NULL;
 
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     const_node->names = xmalloc(sizeof(char*));
@@ -452,6 +469,7 @@ ASTNode* call_expr_new(ASTNode* function, ASTNode* args, int has_spread) {
     call->base.pos = get_current_position();
     call->base.node_type = NULL;
     call->base.next = NULL;
+    call->base.tail = NULL;
     call->function = function;
     call->args = args;
     call->has_spread = has_spread;
@@ -468,6 +486,7 @@ ASTNode* index_expr_new(ASTNode* expr, ASTNode* index) {
     node->base.pos = get_current_position();
     node->base.node_type = NULL;
     node->base.next = NULL;
+    node->base.tail = NULL;
     node->expr = expr;
     node->index = index;
     return (ASTNode*)node;
@@ -479,6 +498,7 @@ ASTNode* slice_index_expr_new(ASTNode* expr, ASTNode* low, ASTNode* high) {
     slice->base.pos = get_current_position();
     slice->base.node_type = NULL;
     slice->base.next = NULL;
+    slice->base.tail = NULL;
     slice->expr = expr;
     slice->low = low;
     slice->high = high;
@@ -492,6 +512,7 @@ ASTNode* selector_expr_new(ASTNode* expr, ASTNode* ident_node) {
     selector->base.pos = get_current_position();
     selector->base.node_type = NULL;
     selector->base.next = NULL;
+    selector->base.tail = NULL;
     selector->expr = expr;
     selector->selector = xstrdup(ident->name);
     ast_node_free(ident_node);
@@ -504,6 +525,7 @@ ASTNode* type_assert_expr_new(ASTNode* expr, ASTNode* asserted_type) {
     ta->base.pos = get_current_position();
     ta->base.node_type = NULL;
     ta->base.next = NULL;
+    ta->base.tail = NULL;
     ta->expr = expr;
     ta->asserted_type = asserted_type;
     return (ASTNode*)ta;
@@ -622,6 +644,7 @@ ASTNode* slice_lit_new(ASTNode* elements, ASTNode* elem_type) {
     lit->base.pos = get_current_position();
     lit->base.node_type = NULL;
     lit->base.next = NULL;
+    lit->base.tail = NULL;
     lit->elements = elements;
     lit->elem_type = elem_type;
     return (ASTNode*)lit;
@@ -633,6 +656,7 @@ ASTNode* array_lit_new(ASTNode* elements, ASTNode* array_type) {
     lit->base.pos = get_current_position();
     lit->base.node_type = NULL;
     lit->base.next = NULL;
+    lit->base.tail = NULL;
     lit->elements = elements;
     lit->array_type = array_type;
     return (ASTNode*)lit;
@@ -699,6 +723,7 @@ CatchExprNode* catch_expr_arrow_new(ASTNode* operand, ASTNode* fallback) {
     es->base.pos = get_current_position();
     es->base.node_type = NULL;
     es->base.next = NULL;
+    es->base.tail = NULL;
     es->expr = fallback;
 
     BlockStmtNode* block = ast_block_stmt_new(get_current_position());
