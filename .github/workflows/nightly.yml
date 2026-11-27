@@ -33,6 +33,11 @@ concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
+# Default token is read-only. A job that needs a write sets its own
+# job-level permissions.
+permissions:
+  contents: read
+
 jobs:
   verify-nightly:
     runs-on: ubuntu-24.04
