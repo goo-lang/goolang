@@ -1,0 +1,12 @@
+package main
+
+import "fmt"
+
+func main() {
+	z := 0.0
+	x := z / z
+	fmt.Println(x != 10.0, x == x, x != x, x < 1, x >= 1)
+	var a float32 = 0
+	b := a / a
+	fmt.Println(b != b, b == b)
+}
