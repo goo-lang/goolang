@@ -194,6 +194,7 @@ script probe-teeth-probe
 script program-dump-probe
 script proof-cache-shell-probe
 script pthread-return-probe
+script quantum-emit-probe
 script release-package-probe
 script repro-build-probe
 script runtime-seam-probe
