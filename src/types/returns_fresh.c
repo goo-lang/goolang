@@ -501,6 +501,24 @@ static void scan_free(FreshScan* s) {
     free(s->returns);
 }
 
+bool returns_fresh_addr_taken(const FuncDeclNode* decl, const char*** names_out,
+                              size_t* count_out) {
+    *names_out = NULL;
+    *count_out = 0U;
+    if (!decl || !decl->body) {
+        return true;
+    }
+    FreshScan scan = {0};
+    scan_stmts(&scan, decl->body, decl->return_type != NULL);
+    bool readable = !scan.unreadable;
+    // The array moves to the caller; scan_free then frees the rest.
+    *names_out = scan.addr_taken;
+    *count_out = scan.addr_count;
+    scan.addr_taken = NULL;
+    scan_free(&scan);
+    return readable;
+}
+
 // What one function's return paths need: either a path that is borrowed
 // whatever the callees say, or the Goo callees whose results it returns.
 typedef struct {

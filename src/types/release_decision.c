@@ -223,6 +223,14 @@ typedef struct {
     struct { ASTNode* expr; size_t begin; size_t end; } *range_sites;
     size_t       range_count;
     size_t       range_cap;
+
+    // CONDITION 8's input: every name whose address `&name` is taken (or that
+    // a closure captures), from returns_fresh_addr_taken -- the walk the
+    // freshness proof already trusts, not a second copy of it. addr_unknown
+    // means that walk met a node it does not model, so ANY name may be one.
+    const char** addr_names;
+    size_t       addr_count;
+    bool         addr_unknown;
 } Collected;
 
 typedef struct {
@@ -1582,6 +1590,24 @@ static void collected_free(Collected* c) {
     c->range_sites = NULL;
     c->range_count = 0;
     c->range_cap = 0;
+    // The names are borrowed from the AST; only the array is ours.
+    free(c->addr_names);
+    c->addr_names = NULL;
+    c->addr_count = 0;
+}
+
+// Is `&name` taken anywhere in the function? Fails closed: an unreadable walk
+// answers true for every name.
+static bool address_taken(const Collected* c, const char* name) {
+    if (c->addr_unknown) {
+        return true;
+    }
+    for (size_t i = 0; i < c->addr_count; i++) {
+        if (strcmp(c->addr_names[i], name) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
@@ -1682,29 +1708,38 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
 
     // CONDITION 7 -- no other holder reads what a MID-FUNCTION free releases.
     //
-    // A release at scope exit needs no alias test: every local of the function
-    // dies at the same exit, and condition 6 covers a holder that outlives a
-    // loop iteration. Two codegen paths free EARLIER than that, and both free
-    // what the slot held while the function can still read it elsewhere:
+    // A release at scope exit needs no alias test when every value in the
+    // slot came from a recorded binding: every local of the function dies at
+    // the same exit, and condition 6 covers a holder that outlives a loop
+    // iteration. Two codegen paths free EARLIER than that, and both free what
+    // the slot held while the function can still read it elsewhere:
     //
     //   a rebound local     the store releases the old value
     //                       (codegen_arc_release_before_store)
     //   a self-appended one the append releases the array it replaced
     //                       (codegen_arc_release_replaced_buffer)
     //
-    // So condition 7 runs for EITHER. Until PR #376's review it ran for the
-    // first only: a self-append is not a binding, so `u := xs;
-    // xs = append(xs, 1)` read RELEASE_OK and the release freed u's array
-    // (tests/arc_uaf/append_alias_*.goo, release-decision rows 81-88).
+    // So condition 7 runs for either, and for an address-taken local (see
+    // condition 8). Until PR #376's review it ran for a rebound local only: a
+    // self-append is not a binding, so `u := xs; xs = append(xs, 1)` read
+    // RELEASE_OK and the release freed u's array (tests/arc_uaf/
+    // append_alias_*.goo, release-decision rows 81-88).
     //
-    // THE ARGUMENT. When either free runs, the value it frees came from this
-    // local's slot. A pointer into it can be held in three places only:
+    // THE ARGUMENT. Each free releases a value that came from this local's
+    // slot. Condition 8 below makes the slot's contents KNOWN: with no `&L`,
+    // only a recorded binding or a self-append writes the slot, so conditions
+    // 2 and 2' have seen every value it can hold. A pointer into such a value
+    // can then be held in three places only:
     //   (a) beyond a local -- a field, an index, a pointer, an appended element,
-    //       a return, a global, a channel, a closure, `go`, `defer`. Each is a
-    //       reason in local_escape, and condition 1 above refused the local.
-    //   (b) another named local -- every value bound to one is in its record,
-    //       or in held_exprs when the record has NULL. has_alias refuses any
-    //       mention that is not a fresh copy.
+    //       a return, a global, a channel, a closure, `go`, `defer`, a callee
+    //       parameter that is stored. Each is a reason in local_escape, and
+    //       condition 1 above refused the local.
+    //   (b) another named local. That local gets L's value either from one of
+    //       its own bindings -- in its record, or in held_exprs when the record
+    //       has NULL -- or from a write through ITS address (`set(&u, xs)`,
+    //       `*p = xs`). The write passes L's value to a storing parameter or
+    //       through a non-identifier lvalue, which is (a). has_alias refuses
+    //       any recorded mention of L that is not a fresh copy.
     //   (c) an unnamed temporary that outlives the statement -- only a range
     //       expression does. has_alias also asks range_rebinds_source, which
     //       refuses a store in the loop's body.
@@ -1712,8 +1747,33 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     // free: the right-hand side is complete when the release runs.
     //
     // local_escape cannot see (b) or (c), so nothing else refuses them.
-    if (r->binding_count > 1 || r->self_appended) {
+    bool addr_taken = address_taken(c, r->name);
+    if (r->binding_count > 1 || r->self_appended || addr_taken) {
         if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;
+    }
+
+    // CONDITION 8 -- no write that no record describes reaches L's slot.
+    //
+    // THE RULE: a local whose address `&L` appears anywhere in the function
+    // (or that a closure captures, which is the same reference) is refused.
+    // If a named local holds the address (`p := &L`), its record names L and
+    // condition 7 above has already refused L as ALIASED. Every other use --
+    // `&L` passed to a call, stored, returned, inside a composite -- reads
+    // RELEASE_NO_ADDR_TAKEN.
+    //
+    // WHY BOTH ARE NEEDED. Conditions 2 and 7 read L's recorded values. A
+    // write through the address puts into L's slot a value no binding of L
+    // records: `set(&xs, v)` with `*p = v` hands xs the CALLER's v, and the
+    // exit release then frees v. Measured: tests/arc_uaf/addr_callee_exit.goo,
+    // addr_callee_string.goo (the store release of a rebound string) and
+    // addr_local_exit.goo were live use-after-free bugs on main before PR #376;
+    // addr_callee_append.goo is the same shape through the replaced-array
+    // release. Release-decision rows 93-96.
+    //
+    // FAILS CLOSED: returns_fresh_addr_taken reports a walk it could not
+    // finish, and then every local of the function reads as address-taken.
+    if (addr_taken) {
+        return RELEASE_NO_ADDR_TAKEN;
     }
 
     // THE INVARIANT THIS WHOLE MODULE RESTS ON, and until now it lived only in
@@ -1774,6 +1834,7 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         WalkCtx ctx = { .out = &c, .block_depth = 0, .arena_depth = 0,
                         .in_loop_header = false, };
         walk_stmts(&ctx, ((FuncDeclNode*)d)->body);
+        c.addr_unknown = !returns_fresh_addr_taken(c.decl, &c.addr_names, &c.addr_count);
         mark_block_escapes(&c, local_escape_find_summary(le, name));
 
         ReleasePlanFunction* pf = &plan->functions[plan->count];

@@ -24,4 +24,15 @@
 void returns_fresh_compute(ASTNode* program, ParamEscapeResult* pe,
                            const LocalEscapeResult* le);
 
+// Every name that `&name` or a closure capture reaches in `decl`'s body, from
+// the SAME walk the freshness proof uses, so the two cannot disagree about
+// which locals have their address taken. The names are borrowed from the AST;
+// the caller frees the array in *names_out.
+//
+// Returns false when the walk met a node it does not model. Then any name may
+// be one, and the caller must treat every local as address-taken. A function
+// with no body takes no address and returns true.
+bool returns_fresh_addr_taken(const FuncDeclNode* decl, const char*** names_out,
+                              size_t* count_out);
+
 #endif // RETURNS_FRESH_H

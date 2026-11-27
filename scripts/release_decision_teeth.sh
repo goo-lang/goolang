@@ -111,10 +111,14 @@ MUTATIONS=(
 # self-append is not a binding, and codegen freed the replaced array under
 # `u := xs` and seven other shapes. Restoring the old guard must turn rows
 # 81-88 RED.
-"self-append-alias	    if (r->binding_count > 1 || r->self_appended) {	    if (r->binding_count > 1) {"
+"self-append-alias	    if (r->binding_count > 1 || r->self_appended || addr_taken) {	    if (r->binding_count > 1 || addr_taken) {"
 # THE RANGE TEMPORARY. No record holds it, so has_alias cannot see it, and a
 # store in the loop body frees what the loop iterates. Rows 83 and 89.
 "range-store	    return range_rebinds_source(c, name);	    return range_rebinds_source(c, name) && false;"
+# CONDITION 8. `set(&xs, v)` writes the caller's v into xs's slot, and no
+# record of xs says so. Rows 93-95 (row 96 stays ALIASED: p's record names
+# xs, and condition 7 still runs for an address-taken local).
+"addr-taken	    if (addr_taken) {	    if (addr_taken && false) {"
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
 # Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
 # `L = append(L, x)` counts as a rebind and row 18 must fail.
@@ -157,7 +161,7 @@ MUTATIONS=(
 # them run. A gate whose work can shrink to nothing while its verdict holds
 # still is not a gate. Change this number in the same commit that adds or
 # removes a mutation, and give the reason in the message.
-EXPECTED_MUTATIONS=14
+EXPECTED_MUTATIONS=15
 [ "${#MUTATIONS[@]}" -eq "$EXPECTED_MUTATIONS" ] \
     || die "mutation table holds ${#MUTATIONS[@]} entries, expected $EXPECTED_MUTATIONS"
 
