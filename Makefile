@@ -3280,6 +3280,8 @@ VERIFY_ALL_DEPS := \
     frontend-diff-selftest \
     diagnostics-drift-selftest \
     diagnostics-drift-probe \
+    vendor-drift-selftest \
+    vendor-drift-probe \
     fpga-equiv-selftest \
     fpga-equiv-probe \
     assert-corpus-selftest \
@@ -5239,6 +5241,17 @@ diagnostics-drift-probe:
 
 diagnostics-drift-selftest:
 	@bash scripts/diagnostics_drift_probe.sh --self-test
+
+# Vendored Go source must equal its pristine copy plus the ledger
+# goostd/VENDOR.tsv (trusted-stdlib gates T-3 and T-8). CI has no Go toolchain,
+# so the pristine copy is committed under third_party/go1.27.4-src/ and this
+# probe needs only bash and python3. The selftest builds each fault in a copy.
+vendor-drift-probe:
+	@bash scripts/vendor_drift_probe.sh
+
+vendor-drift-selftest:
+	@bash scripts/vendor_drift_probe.sh --self-test
+.PHONY: vendor-drift-probe vendor-drift-selftest
 
 # ARC step 1, race gate. The ordinary build CANNOT see a data race on the
 # reference count: rows 12-14 of obj_header_test caught the non-atomic version
