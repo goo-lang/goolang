@@ -243,7 +243,6 @@ abb9fdc8	type_checker.c	Invalid initializer expression
 df158e03	type_checker.c	Invalid type node
 5b5af411	type_checker.c	Left side of := must be an identifier
 87817bdd	type_checker.c	Memory allocation failed
-7f693010	type_checker.c	Multiple assignment: more targets than values
 b86bb3bf	type_checker.c	Out of memory cloning type for '%s'
 76b9b01d	type_checker.c	Package '%s' has no exported type '%s'
 65f9a23a	type_checker.c	Type '%s' already declared
@@ -255,8 +254,12 @@ c760c5cf	type_checker.c	Unknown statement type
 ee362ec4	type_checker.c	Variable declaration must have either type or initializer
 0b5b545f	type_checker.c	array length must be a constant expression
 f8f90762	type_checker.c	array length must be non-negative
+bb0ab9e6	type_checker.c	assignment mismatch: %zu variables but %s returns %zu value%s
+60354fce	type_checker.c	assignment mismatch: %zu variables but %zu values
+e6bac1a8	type_checker.c	assignment mismatch: %zu variables but 1 value
 4f0c6da7	type_checker.c	cannot assign to a non-addressable expression
 0cf3a44b	type_checker.c	cannot fallthrough final case in switch
+2bff9867	type_checker.c	comma-ok assignment with = is not supported yet; use :=
 82764154	type_checker.c	comptime parameter type cannot be a type parameter (not yet supported)
 b1f1631f	type_checker.c	comptime parameters are not supported on interface methods
 64bc4f9c	type_checker.c	comptime parameters are not yet supported on methods
@@ -296,6 +299,7 @@ d4a8f109	type_checker.c	method '%s' has comptime parameters and cannot satisfy a
 6e8a44f5	type_checker.c	missing return
 6226c241	type_checker.c	multiple defaults in type switch
 30f6d318	type_checker.c	not enough return values: bare return is only allowed when the function has named results
+63a7f040	type_checker.c	out of memory checking an assignment
 40dca5b4	type_checker.c	range over channel permits at most one iteration variable
 31452932	type_checker.c	range over channel: missing element type
 db88d63c	type_checker.c	range over map: missing key/value type
