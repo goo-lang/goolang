@@ -29,12 +29,22 @@ and every other gate's result is a cache hit — and a cache hit means the same
 thing an uncached run would have reported. The second half is the hard part
 and most of this document.
 
-**Target (owner, 2026-11-27):** with a warm cache, a push whose change is one
-probe script completes `make verify-core` in **under 3 minutes**. The gates
-that always run (F16, and the self-building gates of 5.3) set the floor, so
-each one either moves into Bazel, is made fast, or moves to nightly. Stage 0
-measures today's push time first, in one sitting, so the gain is quoted
-against a measured figure and not the observed ~20 minutes.
+**Target (owner, 2026-11-27, revised the same day).** The owner's problem
+is "verify-core takes 20 minutes on each push", and most pushes change
+`src/`. Nearly every gate depends on `goo`, so a compiler change
+invalidates nearly every cached verdict: input caching alone helps script,
+fixture and doc changes, not the common case. The target is therefore
+stated for the common case:
+
+- **A compiler change** (an edit under `src/`) completes `make verify-core`
+  in under N minutes with a warm cache. **N is set from M0** (section 4)
+  and confirmed by the owner; this document does not invent it.
+- A change to one probe script completes in under 3 minutes.
+
+Two mechanisms serve the compiler-change case: parallel execution, and the
+compile/run split of D10. The gates that always run (F16, and the
+self-building gates of 5.3) set the floor for both figures, so each one
+either moves into Bazel, is made fast, or moves to nightly.
 
 ### Goals
 
@@ -131,6 +141,29 @@ nothing.
 
 See 5.1.
 
+### D10. Split fixture gates into a compile action and a run test (owner, 2026-11-27)
+
+Three ways to make a compiler change cheap were considered.
+
+- **Parallel execution only.** Free with the migration and helps every
+  push. Bounded by cores and by the gates that cannot run in parallel
+  (F15, 6.5). Necessary, not sufficient.
+- **Compile/run split.** **Chosen, with parallel execution.** Each fixture
+  gate becomes (1) a build action that runs the new `goo` on the fixture
+  and writes the binary and the diagnostics, and (2) a test whose inputs
+  are those outputs and the expected files — NOT `goo`. When a compiler
+  change produces byte-identical output for a fixture, Bazel's action
+  cache returns step 2's verdict without running it. A refactor then
+  re-runs only the compile steps; the slow run and valgrind steps re-run
+  only for fixtures whose generated code changed. It also reports which
+  fixtures a change touched, which is information no gate gives today.
+- **Two tiers** (a fast pre-push set, the full set in CI). Fastest to
+  build; it moves the wait rather than removing it, and a branch with no
+  PR gets no full run. Rejected, held in reserve if M0 shows the floor is
+  too high.
+
+Section 6.6 gives the conditions the split needs.
+
 ### D7. Migration sequence: C (owner, 2026-11-27)
 
 Three sequences were considered.
@@ -186,7 +219,9 @@ by one; bump `tools/parity-gate-count.txt` in the same commit.
 //...` does not list it.
 
 **M0. Measure the floor (no code change; do this first).** In one sitting,
-on a quiet machine: (a) the wall time of `make verify-core` as pushed today;
+on a quiet machine, also record the core count and, per gate, how much of
+its time is `goo` compiling against the compiled program running (the
+split of D10 only saves the second). Then: (a) the wall time of `make verify-core` as pushed today;
 (b) the summed wall time of the gates that will always run — the 7 of F16
 and the self-building gates of 5.3. If (b) alone exceeds 3 minutes, the
 target is unreachable without moving some of them to nightly or into Bazel;
@@ -409,6 +444,29 @@ root; companion TSV column `writes_shared_path`) collide under parallel
 execution and escape the sandbox. Each one moves to `$TEST_TMPDIR` as part of
 its family's PR.
 
+### 6.6 The compile/run split (D10)
+
+Conditions, each checked before the first family uses the split:
+
+- **Deterministic output.** The same `goo` and fixture must give the same
+  bytes, with no embedded path, timestamp or build id. The determinism
+  gates cover the program dump and the archive; extend the check to the
+  linked binary of every golden fixture, built twice in two different
+  output directories. A fixture that fails is not split until it passes.
+- **`goo` is not an input of step 2.** If the run test lists `goo` in
+  `data` (the macro does today, I10), every compiler change invalidates
+  it and the split saves nothing. The cache-hit proof of 6.4 gains a case:
+  a comment-only edit in `src/` must leave 100% of the run tests cached.
+- **The runtime archive is an input of step 1's link**, so a runtime change
+  correctly re-runs everything linked against it.
+- **Reject and diagnostic fixtures** split the same way: step 1 captures
+  exit status and stderr as files; step 2 compares them.
+- **Gates that test the compiler's own behaviour** (flags, exit codes,
+  `goo test`, link behaviour) are not fixture gates and are not split.
+
+Order: apply the split to the golden suites first (the largest count), then
+to the valgrind fixture gates (the largest time per fixture).
+
 ## 7. Stage 3 — end state
 
 - `make lexer` = Bazel build + copy (section 5.3).
@@ -493,6 +551,7 @@ its family's PR.
 - Host fingerprint through the wrapper, disk cache only through the wrapper (6.4).
 - Hermetic-sandbox spike in stage 1; a symlink lint either way (6.4).
 - M0 before stage 1; a weekly local uncached run (4, 8).
+- The conditions and order of the compile/run split (6.6).
 - `--max_idle_secs` for idle servers (8).
 - Bazel becomes a hard requirement; Make compile rules kept until stage 3 (D5).
 - The analyser lanes move to Bazel as build actions (6.1).
