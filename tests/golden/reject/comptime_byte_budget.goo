@@ -1,0 +1,20 @@
+package main
+
+import "os"
+
+// Each d() call doubles its string, and each nesting costs only one step,
+// so the step budget cannot stop this. The 26 nested calls would build
+// about 512 MB. The byte budget stops it.
+func d(s string) string {
+    return s + s
+}
+
+func z(s string) int {
+    return 3
+}
+
+comptime const F int = z(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d("abcdefgh")))))))))))))))))))))))))))
+
+func main() {
+    os.Exit(F)
+}

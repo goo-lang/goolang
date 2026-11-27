@@ -109,11 +109,22 @@ static void free_str_array(char** arr, size_t count) {
 // mode: the single predicate is what stops the entry package and an imported
 // package from disagreeing about what files a package contains, and a parallel
 // test-mode scanner would reintroduce exactly that.
-static int is_buildable_source(const char* fname, size_t len, int include_tests) {
+//
+// The name test runs first and cheaply. The file type test runs only on a name
+// that passed it: a FIFO or a device named `y.go` would block fopen forever
+// (L5). A stat that fails returns 1, so the later open reports the real error
+// instead of the file vanishing from the package without a message.
+static int is_buildable_source(int dirfd, const char* fname, size_t len, int include_tests) {
     int is_test = has_suffix(fname, len, "_test.go", 8) ||
                   has_suffix(fname, len, "_test.goo", 9);
-    if (is_test && !include_tests) return 0;
-    return has_suffix(fname, len, ".go", 3) || has_suffix(fname, len, ".goo", 4);
+    if (is_test && !include_tests) { return 0; }
+    if (!has_suffix(fname, len, ".go", 3) && !has_suffix(fname, len, ".goo", 4)) { return 0; }
+
+    struct stat st;
+    // fstatat refuses a negative descriptor with EBADF, which returns 1 below too.
+    if (dirfd < 0) { return 1; }
+    if (fstatat(dirfd, fname, &st, 0) != 0) { return 1; }
+    return S_ISREG(st.st_mode) ? 1 : 0;
 }
 
 // P4.4 (import path aliases): a small table mapping a Go-style nested import
@@ -181,7 +192,7 @@ static int resolve_package_dir(const char* pkg_dir, const char* import_path,
     while ((entry = readdir(dir)) != NULL) {
         const char* fname = entry->d_name;
         size_t len = strlen(fname);
-        if (!is_buildable_source(fname, len, include_tests)) continue;
+        if (!is_buildable_source(dirfd(dir), fname, len, include_tests)) { continue; }
 
         if (count == cap) {
             size_t new_cap = cap ? cap * 2 : 4;

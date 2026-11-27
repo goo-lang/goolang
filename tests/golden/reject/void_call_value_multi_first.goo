@@ -1,0 +1,8 @@
+package main
+
+func f() {}
+
+func main() {
+	x, y := f(), 1
+	_, _ = x, y
+}

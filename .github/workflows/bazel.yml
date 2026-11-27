@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     name: bazel test //...
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # gcc-14: the code is -std=c23 and gcc-13, the distro default, rejects it.
       # llvm-dev: codegen links against the LLVM C API.
@@ -53,7 +53,7 @@ jobs:
           echo "Using $LLVMCFG ($($LLVMCFG --version))"
           echo "llvm_config=$LLVMCFG" >> "$GITHUB_OUTPUT"
 
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}
@@ -89,8 +89,8 @@ jobs:
     runs-on: ubuntu-24.04
     name: gate parity (informational until phase 7)
     steps:
-      - uses: actions/checkout@v4
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}
@@ -139,7 +139,7 @@ jobs:
     runs-on: ubuntu-24.04
     name: header layering and visibility
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # NO gcc-14 HERE, and that is the whole point of this job.
       #
@@ -178,7 +178,7 @@ jobs:
           echo "Using $LLVMCFG ($($LLVMCFG --version))"
           echo "llvm_config=$LLVMCFG" >> "$GITHUB_OUTPUT"
 
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}
@@ -212,7 +212,7 @@ jobs:
       matrix:
         config: [asan, ubsan, tsan]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # NO gcc-14 HERE, exactly as in the boundaries job. Every sanitizer
       # config pins clang, because this runner's gcc cannot link -fsanitize=
@@ -236,7 +236,7 @@ jobs:
           if [ -z "$LLVMCFG" ]; then echo "::error::no llvm-config found"; exit 1; fi
           echo "llvm_config=$LLVMCFG" >> "$GITHUB_OUTPUT"
 
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}
@@ -263,7 +263,7 @@ jobs:
     # This job is migration-time only: phase 7 deletes it along with the
     # Makefile and tools/compiler_differential.sh.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # bin/goo's link line is `-lm -pthread -ljson-c -lcurl -lz`, so the
       # make build needs those dev packages. The first version of this job
@@ -276,7 +276,7 @@ jobs:
             make gcc-14 bison llvm-dev clang \
             libjson-c-dev libcurl4-openssl-dev zlib1g-dev
 
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}
