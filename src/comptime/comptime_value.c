@@ -82,21 +82,21 @@ ComptimeContext* comptime_context_new(ComptimeContext* parent) {
 }
 
 bool comptime_error_is_limit(const ComptimeError* error) {
-    if (!error || !error->message) return false;
+    if (!error || !error->message) { return false; }
     return strcmp(error->message, GOO_COMPTIME_BUDGET_ERROR) == 0
         || strcmp(error->message, GOO_COMPTIME_BYTE_ERROR) == 0
         || strcmp(error->message, GOO_COMPTIME_DEPTH_ERROR) == 0;
 }
 
 void comptime_context_reset_steps(ComptimeContext* ctx) {
-    if (!ctx) return;
+    if (!ctx) { return; }
     ctx->root->steps = 0;
     ctx->root->bytes = 0;
 }
 
 // Free a compile-time context
 void comptime_context_free(ComptimeContext* ctx) {
-    if (!ctx) return;
+    if (!ctx) { return; }
     
     // Free variable bindings
     for (size_t i = 0; i < ctx->var_count; i++) {

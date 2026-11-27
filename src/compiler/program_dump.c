@@ -443,7 +443,7 @@ static void emit_tok(JsonW* w, const char* key, TokenType t) { emit_str(w, key, 
 
 static void emit_node(JsonW* w, ASTNode* n) {
     // A failed writer ends the walk: descending further only recurses deeper.
-    if (w->error) return;
+    if (w->error) { return; }
     // Teeth for invariant 3 (GOO_DUMP_SELFTEST=badkind): force the FIRST node
     // emitted through the same abort path an unhandled kind would take,
     // regardless of whether n->type is actually handled below. The

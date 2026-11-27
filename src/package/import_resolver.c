@@ -117,11 +117,13 @@ static void free_str_array(char** arr, size_t count) {
 static int is_buildable_source(int dirfd, const char* fname, size_t len, int include_tests) {
     int is_test = has_suffix(fname, len, "_test.go", 8) ||
                   has_suffix(fname, len, "_test.goo", 9);
-    if (is_test && !include_tests) return 0;
-    if (!has_suffix(fname, len, ".go", 3) && !has_suffix(fname, len, ".goo", 4)) return 0;
+    if (is_test && !include_tests) { return 0; }
+    if (!has_suffix(fname, len, ".go", 3) && !has_suffix(fname, len, ".goo", 4)) { return 0; }
 
     struct stat st;
-    if (fstatat(dirfd, fname, &st, 0) != 0) return 1;
+    // fstatat refuses a negative descriptor with EBADF, which returns 1 below too.
+    if (dirfd < 0) { return 1; }
+    if (fstatat(dirfd, fname, &st, 0) != 0) { return 1; }
     return S_ISREG(st.st_mode) ? 1 : 0;
 }
 
@@ -190,7 +192,7 @@ static int resolve_package_dir(const char* pkg_dir, const char* import_path,
     while ((entry = readdir(dir)) != NULL) {
         const char* fname = entry->d_name;
         size_t len = strlen(fname);
-        if (!is_buildable_source(dirfd(dir), fname, len, include_tests)) continue;
+        if (!is_buildable_source(dirfd(dir), fname, len, include_tests)) { continue; }
 
         if (count == cap) {
             size_t new_cap = cap ? cap * 2 : 4;

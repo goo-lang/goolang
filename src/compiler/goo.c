@@ -599,7 +599,7 @@ static char* read_file(const char* filename) {
     // buffer. Read to EOF instead, and grow the buffer as the data arrives.
     size_t cap = 4096;
     size_t len = 0;
-    char* buffer = malloc(cap + 1);
+    char* buffer = malloc(cap + 1u);
     if (!buffer) {
         fclose(file);
         diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "Out of memory reading file: %s", filename);
@@ -614,8 +614,8 @@ static char* read_file(const char* filename) {
                 fprintf(stderr, "Error: Out of memory reading file: %s\n", filename);
                 return NULL;
             }
-            size_t new_cap = cap * 2;
-            char* grown = realloc(buffer, new_cap + 1);
+            size_t new_cap = cap * 2u;
+            char* grown = realloc(buffer, new_cap + 1u);
             if (!grown) {
                 free(buffer);
                 fclose(file);
@@ -627,9 +627,10 @@ static char* read_file(const char* filename) {
         }
         // fread returns a short count only at EOF or on error, so a zero
         // count ends the loop. ferror below tells the two apart.
-        size_t n = fread(buffer + len, 1, cap - len, file);
+        size_t want = cap - len;
+        size_t n = fread(buffer + len, 1, want, file);
         len += n;
-        if (n == 0) break;
+        if (n < want) { break; }
     }
 
     if (ferror(file)) {
@@ -639,6 +640,7 @@ static char* read_file(const char* filename) {
         return NULL;
     }
 
+    GOO_ASSERT(len <= cap); // the loop only grows len up to cap
     buffer[len] = '\0';
     fclose(file);
     return buffer;

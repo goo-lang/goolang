@@ -154,6 +154,19 @@ static int hex_digit_value(char c) {
     return -1;
 }
 
+// Concatenate `n` strings into `msg` (capacity `cap`), cutting the text at the
+// capacity, as snprintf did. Returns `msg`.
+static const char* lexer_join_message(char* msg, size_t cap, const char* const* parts, size_t n) {
+    size_t used = 0;
+    for (size_t i = 0; i < n; i++) {
+        for (const char* c = parts[i]; *c && used + 1 < cap; c++) {
+            msg[used++] = *c;
+        }
+    }
+    msg[used] = '\0';
+    return msg;
+}
+
 // Validate the SYNTAX of a numeric literal the scanner already cut out, so a
 // malformed one becomes a positioned TOKEN_ERROR. Returns NULL when the
 // literal is well formed. The scanner only accepts digit characters, so this
@@ -171,24 +184,30 @@ static const char* lexer_number_error(const char* s, int is_float) {
     // and `0x1.5` as a hex float. The legacy 0777 octal form is an integer
     // only: `01.5` is the decimal float 1.5, as in Go.
     if (s[0] == '0' && s[1]) {
-        char c = s[1] | 0x20; // fold case
+        unsigned folded = (unsigned)(unsigned char)s[1] | 0x20u; // fold case
+        char c = (char)folded;
         if (c == 'x') { base = 16; digits = s + 2; kind = "hexadecimal"; }
         else if (c == 'b') { base = 2; digits = s + 2; kind = "binary"; }
         else if (c == 'o') { base = 8; digits = s + 2; kind = "octal"; }
         else if (!is_float) { base = 8; digits = s + 1; kind = "octal"; }
+        else {
+            // A decimal float such as `01.5`: the defaults stay.
+        }
     }
 
     // A binary or octal literal has no exponent in Go. Hex is exempt: its
     // digits include 'e', so `0x1e5` is the integer 485.
-    if ((base == 2 || base == 8) && strpbrk(digits, "eE")) {
+    if ((base == 2u || base == 8u) && strpbrk(digits, "eE")) {
         return "'e' exponent requires decimal mantissa";
     }
-    if ((base == 2 || base == 8) && strchr(digits, '.')) {
-        snprintf(msg, sizeof(msg), "invalid radix point in %s literal", kind);
-        return msg;
+    if ((base == 2u || base == 8u) && strchr(digits, '.')) {
+        {
+            const char* parts[] = {"invalid radix point in ", kind, " literal"};
+            return lexer_join_message(msg, sizeof(msg), parts, 3);
+        }
     }
     // The scanner has no 'p' exponent, so a hex float is never complete.
-    if (base == 16 && is_float) {
+    if (base == 16u && is_float) {
         return "hexadecimal mantissa requires a 'p' exponent";
     }
 
@@ -196,21 +215,26 @@ static const char* lexer_number_error(const char* s, int is_float) {
         const char* e = strpbrk(s, "eE");
         if (e) {
             e++;
-            if (*e == '+' || *e == '-') e++;
-            if (!lexer_is_digit(*e)) return "exponent has no digits";
+            if (*e == '+' || *e == '-') { e++; }
+            if (!lexer_is_digit(*e)) { return "exponent has no digits"; }
         }
         return NULL;
     }
 
-    if (base != 10 && digits != s + 1 && !*digits) {
-        snprintf(msg, sizeof(msg), "%s literal has no digits", kind);
-        return msg;
+    if (base != 10u && digits != s + 1 && !*digits) {
+        {
+            const char* parts[] = {kind, " literal has no digits"};
+            return lexer_join_message(msg, sizeof(msg), parts, 2);
+        }
     }
     for (const char* p = digits; *p; p++) {
         int d = hex_digit_value(*p);
         if (d < 0 || (unsigned)d >= base) {
-            snprintf(msg, sizeof(msg), "invalid digit '%c' in %s literal", *p, kind);
-            return msg;
+            {
+                const char bad[2] = {*p, '\0'};
+                const char* parts[] = {"invalid digit '", bad, "' in ", kind, " literal"};
+                return lexer_join_message(msg, sizeof(msg), parts, 5);
+            }
         }
     }
     return NULL;
@@ -226,7 +250,7 @@ static int lexer_decode_escape(const char* body, size_t avail, char quote,
                                uint32_t* val, int* is_byte, size_t* consumed,
                                const char** err) {
     *is_byte = 0;
-    if (avail == 0) { *err = "escape sequence not terminated"; return 0; }
+    if (avail == 0u) { *err = "escape sequence not terminated"; return 0; }
     char c = body[0];
     *consumed = 1;
     switch (c) {
@@ -244,15 +268,15 @@ static int lexer_decode_escape(const char* body, size_t avail, char quote,
 
     size_t ndig = 0;
     unsigned base = 16;
-    if (c == 'x') ndig = 2;
-    else if (c == 'u') ndig = 4;
-    else if (c == 'U') ndig = 8;
+    if (c == 'x') { ndig = 2; }
+    else if (c == 'u') { ndig = 4; }
+    else if (c == 'U') { ndig = 8; }
     else if (c >= '0' && c <= '7') { ndig = 3; base = 8; }
     else { *err = "unknown escape sequence"; return 0; }
 
-    size_t start = (base == 8) ? 0 : 1; // an octal escape's first digit is c itself
+    size_t start = (base == 8u) ? 0 : 1; // an octal escape's first digit is c itself
     if (avail < start + ndig) {
-        *err = (base == 8) ? "invalid character in octal escape"
+        *err = (base == 8u) ? "invalid character in octal escape"
                            : "escape sequence not terminated";
         return 0;
     }
@@ -260,16 +284,16 @@ static int lexer_decode_escape(const char* body, size_t avail, char quote,
     for (size_t i = 0; i < ndig; i++) {
         int d = hex_digit_value(body[start + i]);
         if (d < 0 || (unsigned)d >= base) {
-            *err = (base == 8) ? "invalid character in octal escape"
+            *err = (base == 8u) ? "invalid character in octal escape"
                                : "invalid character in hexadecimal escape";
             return 0;
         }
         v = v * base + (uint32_t)d;
     }
     *consumed = start + ndig;
-    if (base == 8 && v > 255) { *err = "octal escape value > 255"; return 0; }
+    if (base == 8u && v > 255u) { *err = "octal escape value > 255"; return 0; }
     if (c == 'u' || c == 'U') {
-        if (v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) {
+        if (v > 0x10FFFFu || (v >= 0xD800u && v <= 0xDFFFu)) {
             *err = "escape sequence is invalid Unicode code point";
             return 0;
         }
@@ -281,26 +305,31 @@ static int lexer_decode_escape(const char* body, size_t avail, char quote,
 }
 
 // Append code point `cp` (already validated) to `out` as UTF-8; returns bytes written.
+// Narrow a UTF-8 byte value (already masked to 8 bits) to a char.
+static char utf8_byte(uint32_t v) {
+    return (char)v;
+}
+
 static size_t utf8_encode(uint32_t cp, char* out) {
-    if (cp < 0x80) { out[0] = (char)cp; return 1; }
-    if (cp < 0x800) {
-        out[0] = (char)(0xC0 | (cp >> 6));
-        out[1] = (char)(0x80 | (cp & 0x3F));
+    if (cp < 0x80u) { out[0] = (char)cp; return 1; }
+    if (cp < 0x800u) {
+        out[0] = utf8_byte(0xC0u | (cp >> 6));
+        out[1] = utf8_byte(0x80u | (cp & 0x3Fu));
         return 2;
     }
-    if (cp < 0x10000) {
-        out[0] = (char)(0xE0 | (cp >> 12));
-        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-        out[2] = (char)(0x80 | (cp & 0x3F));
+    if (cp < 0x10000u) {
+        out[0] = utf8_byte(0xE0u | (cp >> 12));
+        out[1] = utf8_byte(0x80u | ((cp >> 6) & 0x3Fu));
+        out[2] = utf8_byte(0x80u | (cp & 0x3Fu));
         return 3;
     }
     // lexer_decode_escape refuses a code point above U+10FFFF, so a larger one
     // here would write a 4-byte sequence that no UTF-8 decoder accepts.
-    GOO_ASSERT(cp <= 0x10FFFF);
-    out[0] = (char)(0xF0 | (cp >> 18));
-    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-    out[3] = (char)(0x80 | (cp & 0x3F));
+    GOO_ASSERT(cp <= 0x10FFFFu);
+    out[0] = utf8_byte(0xF0u | (cp >> 18));
+    out[1] = utf8_byte(0x80u | ((cp >> 12) & 0x3Fu));
+    out[2] = utf8_byte(0x80u | ((cp >> 6) & 0x3Fu));
+    out[3] = utf8_byte(0x80u | (cp & 0x3Fu));
     return 4;
 }
 
@@ -983,7 +1012,7 @@ char* lexer_read_string(Lexer* lexer, size_t* length) {
         // A backslash is always followed by something: the scan loop above
         // would otherwise have swallowed the closing quote as an escape.
         uint32_t val; int is_byte; size_t used; const char* err;
-        if (!lexer_decode_escape(lexer->input + start_pos + i + 1, raw_len - i - 1,
+        if (!lexer_decode_escape(lexer->input + start_pos + i + 1, raw_len - i - 1u,
                                  '"', &val, &is_byte, &used, &err)) {
             lexer->literal_error = err;
             free(out);
@@ -991,10 +1020,13 @@ char* lexer_read_string(Lexer* lexer, size_t* length) {
             return NULL;
         }
         // The decoder reads only inside the `avail` bytes it was given.
-        GOO_ASSERT(used <= raw_len - i - 1);
+        GOO_ASSERT(used <= raw_len - i - 1u);
         i += used;
-        if (is_byte) out[out_len++] = (char)val;
-        else out_len += utf8_encode(val, out + out_len);
+        if (is_byte) {
+            out[out_len++] = (char)val;
+        } else {
+            out_len += utf8_encode(val, out + out_len);
+        }
     }
     out[out_len] = '\0';
     if (length) *length = out_len;
@@ -1053,9 +1085,9 @@ char* lexer_read_raw_string(Lexer* lexer, size_t* length) {
 // separately from the value.
 int lexer_decode_char_value(const char* body, size_t len, long* out, const char** err) {
     const char* dummy;
-    if (!err) err = &dummy;
+    if (!err) { err = &dummy; }
     *err = NULL;
-    if (!body || !out || len == 0) return 0;
+    if (!body || !out || len == 0u) return 0;
     if (body[0] != '\\') {
         // Plain rune: only single-byte ASCII supported in v1.
         if (len != 1) return 0;
@@ -1067,10 +1099,10 @@ int lexer_decode_char_value(const char* body, size_t len, long* out, const char*
         return 1;
     }
     uint32_t val; int is_byte; size_t used;
-    if (!lexer_decode_escape(body + 1, len - 1, '\'', &val, &is_byte, &used, err)) {
+    if (!lexer_decode_escape(body + 1, len - 1u, '\'', &val, &is_byte, &used, err)) {
         return 0;
     }
-    if (used != len - 1) return 0; // trailing bytes after the escape
+    if (used != len - 1u) { return 0; } // trailing bytes after the escape
     *out = (long)val;
     return 1;
 }

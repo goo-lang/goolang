@@ -119,7 +119,7 @@ typedef struct {
 ComptimeContext* comptime_context_new(ComptimeContext* parent);
 
 // Maximum calls plus loop iterations for one top-level comptime evaluation.
-#define GOO_COMPTIME_STEP_BUDGET 1000000
+#define GOO_COMPTIME_STEP_BUDGET 1000000u
 #define GOO_COMPTIME_BUDGET_ERROR "comptime evaluation exceeded 1000000 steps"
 
 #define GOO_COMPTIME_DEPTH_ERROR "Maximum recursion depth exceeded in comptime function"
@@ -131,7 +131,7 @@ bool comptime_error_is_limit(const ComptimeError* error);
 // Maximum bytes of comptime strings and values built by one top-level
 // evaluation. Steps alone cannot bound this: one nested call can double a
 // string, so a few dozen steps build gigabytes.
-#define GOO_COMPTIME_BYTE_BUDGET (16 * 1024 * 1024)
+#define GOO_COMPTIME_BYTE_BUDGET (16u * 1024u * 1024u)
 #define GOO_COMPTIME_BYTE_ERROR "comptime evaluation exceeded 16777216 bytes"
 
 // Start a fresh step budget. A caller that reuses one root context for many

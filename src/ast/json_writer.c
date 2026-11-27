@@ -8,7 +8,7 @@ static void die(const char* what) {
 }
 
 const char* jw_error_message(int error) {
-    if (error == JW_ERR_NESTING) return "nesting exceeds JW_MAX_DEPTH";
+    if (error == JW_ERR_NESTING) { return "nesting exceeds JW_MAX_DEPTH"; }
     return "unknown JSON writer error";
 }
 
@@ -51,7 +51,7 @@ static int open_container(JsonW* w, char c, bool is_object) {
 }
 
 static void close_container(JsonW* w, char c) {
-    if (w->error) return;
+    if (w->error) { return; }
     if (w->depth == 0) die("close with no open container");
     w->depth--;
     if (!w->first[w->depth]) { fputc('\n', w->out); indent(w); }
@@ -109,7 +109,7 @@ static void write_escaped(JsonW* w, const char* s, size_t n) {
 }
 
 void jw_key(JsonW* w, const char* key) {
-    if (w->error) return;
+    if (w->error) { return; }
     if (w->depth == 0 || !w->in_object[w->depth - 1]) die("key outside an object");
     before_element(w);
     write_escaped(w, key, strlen(key));
@@ -118,7 +118,7 @@ void jw_key(JsonW* w, const char* key) {
 }
 
 void jw_string_len(JsonW* w, const char* s, size_t n) {
-    if (w->error) return;
+    if (w->error) { return; }
     before_element(w);
     if (!s) { fputs("null", w->out); return; }
     write_escaped(w, s, n);
@@ -126,7 +126,7 @@ void jw_string_len(JsonW* w, const char* s, size_t n) {
 
 void jw_string(JsonW* w, const char* s) { jw_string_len(w, s, s ? strlen(s) : 0); }
 
-void jw_int(JsonW* w, long long v)           { if (w->error) return; before_element(w); fprintf(w->out, "%lld", v); }
-void jw_uint(JsonW* w, unsigned long long v) { if (w->error) return; before_element(w); fprintf(w->out, "%llu", v); }
-void jw_bool(JsonW* w, bool v)               { if (w->error) return; before_element(w); fputs(v ? "true" : "false", w->out); }
-void jw_null(JsonW* w)                       { if (w->error) return; before_element(w); fputs("null", w->out); }
+void jw_int(JsonW* w, long long v)           { if (w->error) { return; } before_element(w); fprintf(w->out, "%lld", v); }
+void jw_uint(JsonW* w, unsigned long long v) { if (w->error) { return; } before_element(w); fprintf(w->out, "%llu", v); }
+void jw_bool(JsonW* w, bool v)               { if (w->error) { return; } before_element(w); fputs(v ? "true" : "false", w->out); }
+void jw_null(JsonW* w)                       { if (w->error) { return; } before_element(w); fputs("null", w->out); }

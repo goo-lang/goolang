@@ -106,7 +106,7 @@ static ComptimeResult* comptime_eval_binary_expr(ComptimeContext* ctx, ASTNode* 
                 // String concatenation
                 char* left_str = comptime_value_to_string(left_val);
                 char* right_str = comptime_value_to_string(right_val);
-                ComptimeResult* over_bytes = comptime_charge_bytes(ctx, strlen(left_str) + strlen(right_str) + 1, expr->pos);
+                ComptimeResult* over_bytes = comptime_charge_bytes(ctx, strlen(left_str) + strlen(right_str) + 1u, expr->pos);
                 if (over_bytes) {
                     free(left_str);
                     free(right_str);
@@ -531,7 +531,7 @@ static ComptimeResult* comptime_eval_return_stmt(ComptimeContext* ctx, ASTNode* 
 // Charge one step against the evaluation's total budget. Returns an error
 // result once the budget is spent, otherwise NULL.
 static ComptimeResult* comptime_charge_step(ComptimeContext* ctx, Position pos) {
-    if (++ctx->root->steps <= GOO_COMPTIME_STEP_BUDGET) return NULL;
+    if (++ctx->root->steps <= GOO_COMPTIME_STEP_BUDGET) { return NULL; }
     return comptime_result_new(NULL, comptime_error_new(
         GOO_COMPTIME_BUDGET_ERROR, pos), NULL);
 }
@@ -551,19 +551,21 @@ static ComptimeResult* comptime_charge_bytes(ComptimeContext* ctx, size_t n, Pos
 // Bytes of variable-size payload that copying `v` allocates. Fixed-size
 // values cost nothing here: the step budget already bounds how many exist.
 static size_t comptime_value_bytes(const ComptimeValue* v) {
-    if (!v) return 0;
+    if (!v) { return 0; }
     size_t n = 0;
     switch (v->type) {
         case COMPTIME_VALUE_STRING:
-            if (v->string_value) n += strlen(v->string_value) + 1;
+            if (v->string_value) { n += strlen(v->string_value) + 1u; }
             break;
         case COMPTIME_VALUE_ARRAY:
-            for (size_t i = 0; i < v->array_value.count; i++)
+            for (size_t i = 0; i < v->array_value.count; i++) {
                 n += sizeof(ComptimeValue*) + comptime_value_bytes(v->array_value.elements[i]);
+            }
             break;
         case COMPTIME_VALUE_STRUCT:
-            for (size_t i = 0; i < v->struct_value.field_count; i++)
+            for (size_t i = 0; i < v->struct_value.field_count; i++) {
                 n += sizeof(ComptimeValue*) + comptime_value_bytes(v->struct_value.field_values[i]);
+            }
             break;
         default:
             break;
@@ -581,7 +583,7 @@ ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_
     FuncDeclNode* func = (FuncDeclNode*)func_node;
     
     ComptimeResult* over_budget = comptime_charge_step(ctx, func_node->pos);
-    if (over_budget) return over_budget;
+    if (over_budget) { return over_budget; }
 
     // Check recursion depth
     // The depth lives on the root context and follows the call chain: block

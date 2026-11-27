@@ -7,6 +7,37 @@
 #include <stdio.h>
 #include <errno.h>   // literal_fits_type: ERANGE from strtoull (defensive branch)
 
+// strtod on a literal's text. errno is cleared before the call and read right
+// after it, as MISRA C:2012 22.8 and 22.9 require. `*clamped` reports ERANGE
+// and may be NULL when the caller needs only the value, which is the same
+// value a bare strtod call returns.
+static double literal_strtod(const char* text, bool* clamped) {
+    bool range_error = false;
+    errno = 0;
+    double v = strtod(text, NULL);
+    if (errno == ERANGE) {
+        range_error = true;
+    }
+    if (clamped) {
+        *clamped = range_error;
+    }
+    return v;
+}
+
+// strtoull on a literal's text, with the same errno handling as literal_strtod.
+static unsigned long long literal_strtoull(const char* text, bool* clamped) {
+    bool range_error = false;
+    errno = 0;
+    unsigned long long v = strtoull(text, NULL, 0);
+    if (errno == ERANGE) {
+        range_error = true;
+    }
+    if (clamped) {
+        *clamped = range_error;
+    }
+    return v;
+}
+
 // Forward declarations: the untyped-constant rootedness predicates and
 // adapters are defined below (near type_check_binary_expr, their primary
 // call site — see the doc comments there for the full design), but
@@ -1193,7 +1224,7 @@ Type* type_check_literal(TypeChecker* checker, ASTNode* expr) {
         type_error(checker, expr->pos, "integer constant overflow");
     }
     if (lit->literal_type == TOKEN_FLOAT && lit->value &&
-        !float64_is_finite(strtod(lit->value, NULL))) {
+        !float64_is_finite(literal_strtod(lit->value, NULL))) {
         type_error(checker, expr->pos, "floating-point constant overflow");
     }
 
@@ -2025,15 +2056,15 @@ static int is_const_zero(TypeChecker* checker, ASTNode* node) {
     }
     uint64_t ival = 0;
     if (goo_fold_const_int_ctx(checker, node, &ival)) {
-        return (ival == 0);
+        return (ival == 0u);
     }
     if (node->type == AST_LITERAL) {
-        LiteralNode* lit = (LiteralNode*)node;
+        const LiteralNode* lit = (const LiteralNode*)node;
         if (lit->literal_type == TOKEN_INT) {
-            return (strtoull(lit->value, NULL, 0) == 0);
+            return (literal_strtoull(lit->value, NULL) == 0u);
         }
         if (lit->literal_type == TOKEN_FLOAT) {
-            return (strtod(lit->value, NULL) == 0.0);
+            return (literal_strtod(lit->value, NULL) == 0.0);
         }
     }
     if (node->type == AST_UNARY_EXPR) {
@@ -2909,7 +2940,7 @@ static int type_check_capture_comptime_arg(TypeChecker* checker,
     if (!resolved) {
         ComptimeContext* raw_ctx = checker->comptime_type_ctx
             ? checker->comptime_type_ctx->comptime_ctx : NULL;
-        if (raw_ctx) comptime_context_reset_steps(raw_ctx);
+        if (raw_ctx) { comptime_context_reset_steps(raw_ctx); }
         ComptimeResult* res = raw_ctx
             ? comptime_eval_expression(raw_ctx, arg) : NULL;
         int ok = res && res->value && !res->error &&

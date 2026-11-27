@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "parser.tab.h"
+#include "parser/parser_actions.h"
 
 // current_lexer (declared in lexer.h) is DEFINED in parser_state.c, so that
 // parser_actions.c and parser_errors.c can read it without taking an edge
@@ -169,11 +170,11 @@ static void bridge_int_overflow_add(const Position* pos) {
     GOO_ASSERT(pos && pos->line > 0 && pos->column > 0); // the lookup key must be a real position
     GOO_ASSERT(s_int_overflow_n <= s_int_overflow_cap);
     if (s_int_overflow_n == s_int_overflow_cap) {
-        size_t cap = s_int_overflow_cap ? s_int_overflow_cap * 2 : 8;
+        size_t cap = s_int_overflow_cap ? s_int_overflow_cap * 2u : 8u;
         IntOverflowPos* grown = realloc(s_int_overflow, cap * sizeof(*grown));
         if (!grown) {
             // Dropping the record would let the wrong value through silently.
-            fprintf(stderr, "goo: error: out of memory\n");
+            fputs("goo: error: out of memory\n", stderr);
             exit(1);
         }
         s_int_overflow = grown;
@@ -184,8 +185,9 @@ static void bridge_int_overflow_add(const Position* pos) {
 
 bool bridge_int_literal_overflowed(int line, int column) {
     for (size_t i = 0; i < s_int_overflow_n; i++) {
-        if (s_int_overflow[i].line == line && s_int_overflow[i].column == column)
+        if (s_int_overflow[i].line == line && s_int_overflow[i].column == column) {
             return true;
+        }
     }
     return false;
 }
@@ -473,15 +475,19 @@ static int bridge_next_mapped(void) {
             // zero, not Go's `0o`, so parse the digits after a 0o/0O prefix in
             // base 8 explicitly. Real stdlib source is full of these constants.
             const char* s = token->literal;
-            errno = 0;
+            bool out_of_range = false;
             if (s[0] == '0' && (s[1] == 'o' || s[1] == 'O')) {
+                errno = 0;
                 yylval.integer = (long long)strtoull(s + 2, NULL, 8);
+                out_of_range = (errno == ERANGE);
             } else {
+                errno = 0;
                 yylval.integer = (long long)strtoull(s, NULL, 0);
+                out_of_range = (errno == ERANGE);
             }
             // ERANGE: the value is above UINT64_MAX and was clamped. The
             // lexer no longer refuses it (a valid Go literal); the checker does.
-            if (errno == ERANGE) bridge_int_overflow_add(&token->pos);
+            if (out_of_range) { bridge_int_overflow_add(&token->pos); }
             break;
         }
         case TOKEN_FLOAT:
