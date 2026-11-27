@@ -404,7 +404,8 @@ per user-defined function/method:
 `verdict` is one of: `RELEASE_OK`, `RELEASE_NO_ESCAPES`,
 `RELEASE_NO_NOT_OWNED`, `RELEASE_NO_ARENA`, `RELEASE_NO_LOOP_SCOPE`,
 `RELEASE_NO_REBOUND`, `RELEASE_NO_ALIASED`, `RELEASE_NO_BLOCK_ESCAPE`,
-`RELEASE_NO_NO_BINDING`, `RELEASE_NO_UNKNOWN` (`include/release_decision.h`).
+`RELEASE_NO_ADDR_TAKEN`, `RELEASE_NO_NO_BINDING`, `RELEASE_NO_UNKNOWN`
+(`include/release_decision.h`).
 `reasons` is diagnostic only. `include/release_decision.h:320` says
 plainly, of this same field: "NOTHING MAY BRANCH ON THIS." (the field
 itself, `diagnostic_reasons`, is declared at line 237, with its own

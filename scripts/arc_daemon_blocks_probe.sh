@@ -49,11 +49,18 @@ SCRATCH=""
 cleanup() { [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"; }
 trap cleanup EXIT
 
-# The N of valgrind's "in use at exit: X bytes in N blocks", or nothing when
-# the line is absent. An absent line must never read as zero blocks.
+# The N of valgrind's "in use at exit: X bytes in N blocks". valgrind can say
+# "All heap blocks were freed -- no leaks are possible" instead, which is 0.
+# A log with NEITHER line prints nothing: a missing line must never read as
+# zero blocks.
 in_use_blocks() {
-    sed -n 's/^==[0-9]*==\s*in use at exit: [0-9,]* bytes in \([0-9,]*\) blocks$/\1/p' "$1" \
-        | tr -d ','
+    local n
+    n="$(sed -n 's/^==[0-9]*==\s*in use at exit: [0-9,]* bytes in \([0-9,]*\) blocks$/\1/p' "$1" \
+        | tr -d ',')"
+    if [ -z "$n" ] && grep -q 'All heap blocks were freed -- no leaks are possible' "$1"; then
+        n=0
+    fi
+    printf '%s' "$n"
 }
 
 # Run daemon binary $1 under valgrind, with work files in directory $2. Prints
@@ -108,9 +115,12 @@ self_test() {
     # The parser must not read an absent line as a count, and must read the
     # comma form valgrind prints.
     printf '==1==     in use at exit: 82,198 bytes in 4,003 blocks\n' > "$SCRATCH/log_ok"
-    printf '==1== All heap blocks were freed -- no leaks are possible\n' > "$SCRATCH/log_none"
+    printf '==1== All heap blocks were freed -- no leaks are possible\n' > "$SCRATCH/log_freed"
+    printf '==1== ERROR SUMMARY: 0 errors from 0 contexts\n' > "$SCRATCH/log_none"
     [ "$(in_use_blocks "$SCRATCH/log_ok")" = "4003" ] \
         || { echo "arc-daemon-blocks-probe self-test: FAIL (cannot parse '4,003 blocks')"; return 1; }
+    [ "$(in_use_blocks "$SCRATCH/log_freed")" = "0" ] \
+        || { echo "arc-daemon-blocks-probe self-test: FAIL ('All heap blocks were freed' did not read as 0)"; return 1; }
     [ -z "$(in_use_blocks "$SCRATCH/log_none")" ] \
         || { echo "arc-daemon-blocks-probe self-test: FAIL (read a count from a log with none)"; return 1; }
 
