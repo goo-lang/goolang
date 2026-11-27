@@ -72,7 +72,7 @@
 # ".clang-tidy" file, the same direction clang-tidy itself searches. Absent
 # one anywhere on that walk (there is none as of this commit, checked at
 # run time for every entry), the lane passes an explicit
-# -checks="clang-diagnostic-*,clang-analyzer-*" so the run actually
+# -checks="clang-diagnostic-*,clang-analyzer-*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling" so the run actually
 # exercises clang-analyzer's dataflow checks rather than silently doing
 # nothing. A directory that DOES have a .clang-tidy on its walk is used
 # as-is (no -checks override), matching normal clang-tidy behaviour.
@@ -243,7 +243,8 @@ cppcheck_lane_verdict() {
 #   SARIF_CPPCHECK_DIR    cppcheck lane output dir (default: build/sarif/cppcheck)
 #   CLANG_TIDY_CHECKS     fallback -checks= value, used per file only where
 #                         that file's own directory walk finds no
-#                         .clang-tidy (default: clang-diagnostic-*,clang-analyzer-*)
+#                         .clang-tidy (default: clang-diagnostic-*,clang-analyzer-*,
+#                         minus DeprecatedOrUnsafeBufferHandling)
 #   MISRA_JSON            cppcheck addon config (default: docs/misra/tools/misra.json)
 #   MISRA_SUPPRESSIONS    cppcheck suppression list (default: docs/misra/misra-suppressions.txt)
 set -euo pipefail
@@ -267,7 +268,12 @@ COMPILE_COMMANDS_OUT="${COMPILE_COMMANDS_OUT:-$REPO_ROOT/build/compile_commands.
 SARIF_GCC_DIR="${SARIF_GCC_DIR:-$REPO_ROOT/build/sarif/gcc}"
 SARIF_TIDY_DIR="${SARIF_TIDY_DIR:-$REPO_ROOT/build/sarif/clang-tidy}"
 SARIF_CPPCHECK_DIR="${SARIF_CPPCHECK_DIR:-$REPO_ROOT/build/sarif/cppcheck}"
-CLANG_TIDY_CHECKS="${CLANG_TIDY_CHECKS:-clang-diagnostic-*,clang-analyzer-*}"
+# DeprecatedOrUnsafeBufferHandling is off: it asks for the C11 Annex K
+# functions (fprintf_s, memcpy_s, ...), which are optional and which glibc and
+# musl do not provide, so no change to this code can satisfy it. It gave 293
+# code-scanning alerts on 2026-11-27. strcpy and the other unbounded calls keep
+# their own clang-analyzer-security.insecureAPI.* checks.
+CLANG_TIDY_CHECKS="${CLANG_TIDY_CHECKS:-clang-diagnostic-*,clang-analyzer-*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling}"
 MISRA_JSON="${MISRA_JSON:-$REPO_ROOT/docs/misra/tools/misra.json}"
 MISRA_SUPPRESSIONS="${MISRA_SUPPRESSIONS:-$REPO_ROOT/docs/misra/misra-suppressions.txt}"
 

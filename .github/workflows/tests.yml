@@ -187,9 +187,12 @@ jobs:
         # what it found. hashFiles skips the step when verify-core died before
         # findings-probe wrote the file.
         #
-        # A pull request from a fork gets a read-only token that cannot write
-        # security events, so the upload would fail for a reason that is not a
-        # defect of the change. The guard skips it for those pull requests.
+        # No upload from a pull request. GitHub matches an alert by its own
+        # fingerprint, so a finding that only moved to a new line became a "new"
+        # alert on the PR, and the review bot commented on each one (2026-11-27:
+        # many emails for old fprintf findings in json_writer.c and goo.c). The
+        # findings gate in verify-core already blocks a new finding on each PR,
+        # and it treats a moved finding as old. The Security tab shows main.
         #
         # One category: a re-upload replaces the earlier analysis and does not
         # add to it. findings-probe has already checked the GitHub limits (20
@@ -202,8 +205,7 @@ jobs:
         if: >-
           always()
           && hashFiles('build/findings.sarif') != ''
-          && (github.event_name != 'pull_request'
-          || github.event.pull_request.head.repo.full_name == github.repository)
+          && github.event_name != 'pull_request'
         uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: build/findings.sarif
