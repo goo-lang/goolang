@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+import "qir"
+func idx() int { return 3 }
+
+func main() {
+	q := qir.QubitAt(idx())
+	rr := qir.ResultAt(0)
+	qir.Mz(q, rr)
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

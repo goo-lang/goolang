@@ -15,14 +15,20 @@
 #                 non-zero, must not create OUT, and its stderr must contain
 #                 the text of NAME.err.txt (first line).
 #
+# Two completeness checks guard against a deleted fixture: every
+# examples/qir_*.goo needs a NAME.qasm reference, and every .goo in QE_DIR
+# needs a .qasm or an .err.txt file. A refusal must also remove a stale OUT
+# that an earlier run left.
+#
 # A gate that finds zero fixtures is broken, not green. Exit codes are read
 # directly, never through a pipe.
 # Usage: quantum_emit_probe.sh [--self-test]
-# Environment: QE_ROOT, GOO_BIN, QE_DIR.
+# Environment: QE_ROOT, GOO_BIN, QE_DIR, QE_EXAMPLES (the example directory).
 set -u
 QE_ROOT="${QE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 GOO_BIN="${GOO_BIN:-$QE_ROOT/bin/goo}"
 QE_DIR="${QE_DIR:-$QE_ROOT/tests/quantum_emit}"
+QE_EXAMPLES="${QE_EXAMPLES:-$QE_ROOT/examples}"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 TIMEOUT_S=20
 
@@ -31,6 +37,20 @@ run_check() {
 	tmp=$(mktemp -d) || { echo "quantum-emit-probe: FAIL (no temp dir)"; return 1; }
 	trap 'rm -rf "$tmp"' RETURN
 	fail() { echo "quantum-emit-probe: FAIL ($1)"; fails=$((fails + 1)); }
+
+	# Walk the sources, not the references, so a deleted reference is seen.
+	for f in "$QE_EXAMPLES"/qir_*.goo; do
+		[ -e "$f" ] || break
+		name=$(basename "$f" .goo)
+		[ -f "$QE_DIR/$name.qasm" ] || fail "$name: example has no .qasm reference"
+	done
+	for f in "$QE_DIR"/*.goo; do
+		[ -e "$f" ] || break
+		name=$(basename "$f" .goo)
+		if [ ! -f "$QE_DIR/$name.qasm" ] && [ ! -f "$QE_DIR/$name.err.txt" ]; then
+			fail "$name: fixture source has no .qasm or .err.txt"
+		fi
+	done
 
 	for f in "$QE_DIR"/*.qasm; do
 		[ -e "$f" ] || break
@@ -76,7 +96,7 @@ run_check() {
 			fail "$name: no source"
 			continue
 		fi
-		rm -f "$tmp/out.qasm"
+		echo stale > "$tmp/out.qasm"
 		timeout "$TIMEOUT_S" "$GOO_BIN" --emit-qasm3 "$src" -o "$tmp/out.qasm" > /dev/null 2> "$tmp/err"
 		rc=$?
 		if [ "$rc" -eq 0 ]; then
@@ -118,7 +138,7 @@ expect_fail() {
 # probe_with QE_DIR GOO: runs the check mode in a child so its trap and
 # variables stay out of the self-test.
 probe_with() {
-	OUT=$(QE_ROOT="$QE_ROOT" QE_DIR="$1" GOO_BIN="$2" bash "$SELF" 2>&1)
+	OUT=$(QE_ROOT="$QE_ROOT" QE_DIR="$1" GOO_BIN="$2" QE_EXAMPLES="${3:-$EX}" bash "$SELF" 2>&1)
 	RC=$?
 }
 
@@ -129,6 +149,8 @@ self_test() {
 	[ -x "$GOO_BIN" ] || { echo "self-test FAIL: $GOO_BIN is not executable"; return 1; }
 	t=$(mktemp -d) || return 1
 	trap 'rm -rf "$t"' RETURN
+	# an empty example directory for every part except the deleted-reference part.
+	EX="$t/examples"; mkdir "$EX"
 
 	# control: the real fixture and the real compiler pass.
 	d="$t/ok"; mkdir "$d"; cp "$real_dir/$ref.qasm" "$d/"
@@ -176,11 +198,11 @@ STUB
 	d="$t/refuse"; mkdir "$d"
 	echo "int Foo()" > "$d/rj.goo"; echo "cannot resolve widget" > "$d/rj.err.txt"
 	stub="$t/stub_refuse"
-	printf '#!/bin/sh\necho "rj.goo:1:1: error: cannot resolve widget" >&2\nexit 1\n' > "$stub"; chmod +x "$stub"
+	printf '#!/bin/sh\necho "rj.goo:1:1: error: cannot resolve widget" >&2\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && rm -f "$2"; shift; done\nexit 1\n' > "$stub"; chmod +x "$stub"
 	probe_with "$d" "$stub"
 	expect_pass "a refusal with the right text"
 	stub="$t/stub_wrongtext"
-	printf '#!/bin/sh\necho "other" >&2\nexit 1\n' > "$stub"; chmod +x "$stub"
+	printf '#!/bin/sh\necho "other" >&2\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && rm -f "$2"; shift; done\nexit 1\n' > "$stub"; chmod +x "$stub"
 	probe_with "$d" "$stub"
 	expect_fail "a refusal with the wrong text" "FAIL (rj: stderr lacks the expected text)"
 	stub="$t/stub_writes"
@@ -193,6 +215,24 @@ STUB
 	chmod +x "$stub"
 	probe_with "$d" "$stub"
 	expect_fail "a refusal that writes the output file" "FAIL (rj: output file written by a refusal)"
+
+	# a refusal that leaves the stale output file of an earlier run.
+	stub="$t/stub_stale"
+	printf '#!/bin/sh\necho "cannot resolve widget" >&2\nexit 1\n' > "$stub"; chmod +x "$stub"
+	probe_with "$d" "$stub"
+	expect_fail "a refusal that leaves a stale output file" "FAIL (rj: output file written by a refusal)"
+
+	# a deleted .qasm reference for an example.
+	d="$t/noref"; mkdir "$d"; cp "$real_dir/$ref.qasm" "$d/"
+	mkdir "$t/ex2"; cp "$QE_ROOT/examples/$ref.goo" "$t/ex2/"; cp "$QE_ROOT/examples/$ref.goo" "$t/ex2/qir_deleted_probe.goo"
+	probe_with "$d" "$GOO_BIN" "$t/ex2"
+	expect_fail "a deleted example reference" "FAIL (qir_deleted_probe: example has no .qasm reference)"
+
+	# a fixture source with neither reference nor refusal text.
+	d="$t/orphan"; mkdir "$d"; cp "$real_dir/$ref.qasm" "$d/"
+	cp "$real_dir/rz_named_const.goo" "$d/orphan.goo"
+	probe_with "$d" "$GOO_BIN"
+	expect_fail "a fixture source with no reference" "FAIL (orphan: fixture source has no .qasm or .err.txt)"
 
 	# an empty fixture directory.
 	d="$t/empty"; mkdir "$d"

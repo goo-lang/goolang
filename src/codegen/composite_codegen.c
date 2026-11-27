@@ -741,9 +741,10 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
                 }
             }
         }
-        if (strcmp(dispatch_pkg, "math") == 0 && strcmp(selector->selector, "Pi") == 0) {
+        double math_value = 0.0;
+        if (strcmp(dispatch_pkg, "math") == 0 && goo_math_const(selector->selector, &math_value)) {
             LLVMValueRef pi = LLVMConstReal(LLVMDoubleTypeInContext(codegen->context),
-                                            3.14159265358979323846);
+                                            math_value);
             return value_info_new(NULL, pi,
                                   type_checker_get_builtin(checker, TYPE_FLOAT64));
         }

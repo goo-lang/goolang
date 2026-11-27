@@ -1,0 +1,15 @@
+package main
+
+import "fmt"
+import "qir"
+
+
+func main() {
+	q := qir.Alloc()
+	for i := 0; i < 3; i++ { qir.X(q) }
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

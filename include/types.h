@@ -1237,6 +1237,8 @@ int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
 // non-finite result, so a caller never sees a value that the source did not
 // give.
 int goo_fold_const_float_ctx(TypeChecker* checker, ASTNode* expr, double* out);
+// 1 and *out set when name is a float constant of Go's math package (Pi, E, Sqrt2, Phi, Ln2).
+int goo_math_const(const char* name, double* out);
 
 // Arc 12 (p): resolve a `pkg.K` selector expression to the imported
 // package's exported Variable, or NULL when the shape doesn't match

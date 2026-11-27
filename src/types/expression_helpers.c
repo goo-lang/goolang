@@ -358,6 +358,29 @@ static int fold_float_literal(LiteralNode* lit, double* out) {
     return 1;
 }
 
+// The float constants of Go's math package, as float64. One table serves the
+// type checker, codegen and the fold, so the three cannot disagree on a name.
+int goo_math_const(const char* name, double* out) {
+    static const struct { const char* name; double value; } k[] = {
+        { "Pi",    3.14159265358979323846264338327950288419716939937510582097494459 },
+        { "E",     2.71828182845904523536028747135266249775724709369995957496696763 },
+        { "Sqrt2", 1.41421356237309504880168872420969807856967187537694807317667974 },
+        { "Phi",   1.61803398874989484820458683436563811772030917980576286213544862 },
+        { "Ln2",   0.693147180559945309417232121458176568075500134360255254120680009 },
+    };
+    GOO_ASSERT(out != NULL);
+    if (name == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        if (strcmp(k[i].name, name) == 0) {
+            *out = k[i].value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int fold_float_var(const Variable* var, double* out) {
     GOO_ASSERT(out != NULL);
     if (var == NULL) {
@@ -374,6 +397,10 @@ static int fold_float_var(const Variable* var, double* out) {
     return 0;
 }
 
+// The fold uses float64 arithmetic, not Go's exact (arbitrary precision)
+// constant arithmetic. `0.1+0.2` folds to 0.30000000000000004 here where Go
+// gives exactly 0.3. A caller that prints the result (--emit-qasm3) prints the
+// float64 value, which can differ from Go's in the last digits.
 int goo_fold_const_float_ctx(TypeChecker* checker, ASTNode* expr, double* out) {
     if (expr == NULL || out == NULL) {
         return 0;
@@ -386,8 +413,21 @@ int goo_fold_const_float_ctx(TypeChecker* checker, ASTNode* expr, double* out) {
             const Variable* var = (checker != NULL) ? type_checker_lookup_variable(checker, id->name) : NULL;
             return fold_float_var(var, out);
         }
-        case AST_SELECTOR_EXPR:
+        case AST_SELECTOR_EXPR: {
+            const SelectorExprNode* sel = (const SelectorExprNode*)expr;
+            if (checker != NULL && sel->expr != NULL && sel->expr->type == AST_IDENTIFIER) {
+                // The math shim exports no Variable, so its constants come from the table.
+                const Variable* marker = type_checker_lookup_variable(
+                    checker, ((const IdentifierNode*)sel->expr)->name);
+                if (marker != NULL && marker->package != NULL &&
+                    marker->package->import_path != NULL &&
+                    strcmp(marker->package->import_path, "math") == 0 &&
+                    goo_math_const(sel->selector, out)) {
+                    return 1;
+                }
+            }
             return fold_float_var(goo_lookup_pkg_const(checker, expr), out);
+        }
         case AST_UNARY_EXPR: {
             UnaryExprNode* u = (UnaryExprNode*)expr;
             double v = 0.0;

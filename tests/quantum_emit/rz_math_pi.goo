@@ -1,0 +1,15 @@
+package main
+
+import "fmt"
+import "qir"
+import "math"
+
+func main() {
+	q := qir.Alloc()
+	qir.Rz(math.Pi/4, q)
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

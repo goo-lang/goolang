@@ -1,0 +1,1 @@
+qir.QubitAt requires a compile-time constant integer id
