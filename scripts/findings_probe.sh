@@ -352,6 +352,56 @@ sys.exit(0 if len(r) == 1 and r[0]['suppressions'] == [{'kind': 'external', 'jus
 		fail=1
 	fi
 
+	# (k)-(m) what the stamp hashes, task 4 fix round 1. The module is COPIED
+	# into a synthetic tree, so its repository root is that tree and the test
+	# reads no file of the real one.
+	SR="$W/srepo"
+	mkdir -p "$SR/tools" "$SR/scripts" "$SR/docs/misra/tools/__pycache__" "$SR/src"
+	for f in tools/gen_compile_commands.sh tools/cppcheck_xml_to_sarif.py tools/cppcheck_lane_check.py \
+		scripts/analyzer_lanes_probe.sh Makefile docs/misra/misra-suppressions.txt docs/misra/tools/misra.json; do
+		echo "$f v1" >"$SR/$f"
+	done
+	cp "$REPO_ROOT/tools/lanes_stamp.py" "$SR/tools/lanes_stamp.py"
+	echo 'int main(void){return 0;}' >"$SR/src/a.c"
+	echo '[{"directory":".","file":"src/a.c","arguments":["gcc","-c","src/a.c","-o","a.o"]}]' >"$SR/db.json"
+	stree() { MISRA_JSON="$SR/docs/misra/tools/misra.json" MISRA_SUPPRESSIONS="$SR/docs/misra/misra-suppressions.txt" \
+		python3 -I "$SR/tools/lanes_stamp.py" tree "$SR/db.json" 2>&1 || true; }
+	tree0="$(stree)"
+	echo 'x' >"$SR/docs/misra/tools/__pycache__/x.pyc"
+	tree_pyc="$(stree)"
+	echo 'changed' >>"$SR/tools/cppcheck_lane_check.py"
+	tree_chk="$(stree)"
+	echo 'changed' >>"$SR/src/a.c"
+	tree_src="$(stree)"
+	# (k) a __pycache__ file written after the stamp keeps the stamp valid.
+	if [ "${#tree0}" -eq 64 ] && [ "$tree_pyc" = "$tree0" ]; then
+		echo "    ok: a __pycache__/x.pyc written after the stamp does not change the tree hash"
+	else
+		echo "$SELF: FAIL (a __pycache__ file changed the tree hash, or the hash failed): $tree0 / $tree_pyc"
+		fail=1
+	fi
+	# (l) a changed cppcheck_lane_check.py changes the hash. The source-change
+	# twin proves the hash can change at all.
+	if [ "$tree_chk" != "$tree_pyc" ] && [ "$tree_src" != "$tree_chk" ]; then
+		echo "    ok: a change to tools/cppcheck_lane_check.py changes the tree hash"
+	else
+		echo "$SELF: FAIL (tools/cppcheck_lane_check.py is not in the tree hash, or the hash never changes)"
+		fail=1
+	fi
+	# (m) a different CLANG_TIDY_CHECKS value changes the sig. Fixed version lines.
+	sig_of() { python3 -I -c "
+import sys; sys.path.insert(0, sys.argv[1])
+import lanes_stamp
+print(lanes_stamp.signature_from(['gcc 1', 'tidy 1', 'cppcheck 1'], sys.argv[2]))" "$SR/tools" "$1" 2>&1 || true; }
+	sig_a="$(sig_of '')"
+	sig_b="$(sig_of 'clang-analyzer-*')"
+	if [ "${#sig_a}" -eq 64 ] && [ "${#sig_b}" -eq 64 ] && [ "$sig_a" != "$sig_b" ] && [ "$sig_a" = "$(sig_of '')" ]; then
+		echo "    ok: a different CLANG_TIDY_CHECKS value changes the sig, and the same value gives the same sig"
+	else
+		echo "$SELF: FAIL (CLANG_TIDY_CHECKS does not change the sig): $sig_a / $sig_b"
+		fail=1
+	fi
+
 	# (g) repeatability, task 17b: the cppcheck lane, run twice at -j1 on the
 	# REAL runtime units, the second time with the database order reversed,
 	# must give the same count for every (rule, file). misra.py's CTU pass
@@ -433,7 +483,7 @@ PYEOF
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "$SELF: PASS (a/b/c/e/h/i red, d/f green, j green and red, on synthetic fixtures; g repeatable on the real $reorder_scope units; the real pipeline runs in findings-probe)"
+	echo "$SELF: PASS (a/b/c/e/h/i/l/m red, d/f/k green, j green and red, on synthetic fixtures; g repeatable on the real $reorder_scope units; the real pipeline runs in findings-probe)"
 	exit 0
 fi
 

@@ -42,11 +42,16 @@ def signature(db_path):
     if not entries:
         raise SystemExit("lanes_stamp: %s has no entries" % db_path)
     cc = _cc_of(entries[0]["arguments"])
-    parts = [
+    return signature_from([
         cc + ": " + _version_line([cc, "--version"]),
         "clang-tidy: " + _version_line(["clang-tidy", "--version"]),
         "cppcheck: " + _version_line(["cppcheck", "--version"]),
-    ]
+    ], os.environ.get("CLANG_TIDY_CHECKS", ""))
+
+
+def signature_from(version_lines, clang_tidy_checks):
+    """Pure part of sig. CLANG_TIDY_CHECKS changes what the tidy lane reports."""
+    parts = list(version_lines) + ["CLANG_TIDY_CHECKS=" + clang_tidy_checks]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
@@ -80,8 +85,13 @@ def _deps(entry):
 
 
 def _walk_files(root):
-    for d, _dirs, files in os.walk(root):
+    for d, dirs, files in os.walk(root):
+        # Python writes __pycache__ on import, and another gate may import
+        # the addon between the lanes and findings-probe.
+        dirs[:] = [x for x in dirs if x != "__pycache__"]
         for f in files:
+            if f.endswith(".pyc"):
+                continue
             yield os.path.relpath(os.path.join(d, f), REPO)
 
 
@@ -106,6 +116,7 @@ def input_files(db_path):
     files.update(_walk_files(os.path.dirname(os.path.abspath(misra_json))))
     for extra in (misra_supp, "Makefile", "scripts/analyzer_lanes_probe.sh",
                   "tools/gen_compile_commands.sh", "tools/cppcheck_xml_to_sarif.py",
+                  "tools/cppcheck_lane_check.py",
                   "tools/lanes_stamp.py"):
         p = extra if os.path.isabs(extra) else os.path.join(REPO, extra)
         files.add(os.path.relpath(p, REPO))
