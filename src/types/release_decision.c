@@ -401,10 +401,10 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
 //
 // It matters because such an assignment does not REBIND `L` to a different
 // object. It GROWS L's object: append either writes into the existing buffer or
-// copies it into a new one, and for an approved L codegen releases the replaced
-// buffer at the store (codegen_arc_release_replaced_buffer). One local, one live
-// buffer, and ownership never moves. So a release at exit frees exactly the
-// buffer `L` still holds, which is correct.
+// copies it into a new one and leaves the old one live (it may be shared, and
+// nothing here proves it is not, so it leaks). Ownership of the buffer L holds
+// never moves, so a release at exit frees exactly the buffer `L` still holds,
+// which is correct.
 //
 // `t := append(s, x)` is a DIFFERENT and dangerous shape, and it is NOT this
 // one. There, t and s can hold the SAME buffer when capacity suffices, and two
@@ -417,10 +417,9 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
 // self-append: that walks and frees the ELEMENTS, and the new buffer still
 // holds every one of them. When append still realloc'd, that was measured on
 // bench/daemon/daemon.goo as 7 invalid reads through goo_slice_release_elems and
-// goo_release_with, with the program printing nothing at all. Codegen releases
-// only the replaced buffer instead. ONE implementation rather than a second copy
-// in codegen: the two must agree, and this is the same predicate the rebind rule
-// uses.
+// goo_release_with, with the program printing nothing at all. ONE
+// implementation rather than a second copy in codegen: the two must agree, and
+// this is the same predicate the rebind rule uses.
 static bool is_self_append(const char* target, ASTNode* rhs);
 
 bool release_decision_is_self_append(const char* target, ASTNode* rhs) {

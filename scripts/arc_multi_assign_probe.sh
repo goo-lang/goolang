@@ -164,12 +164,14 @@ echo "  release ON:  ${on_bytes} bytes in ${on_blocks} blocks"
 # 99.9%-broken fix green. Change this number in the commit that changes
 # examples/arc_multi_assign_probe.goo, and give the reason.
 #
-# 1501 -> 1510 (fix/append-no-realloc): append no longer reallocs, so with
-# release OFF selfAppend's xs leaks all 10 arrays it grows through (1, 2, ...,
-# 512) instead of only the last. Release ON is unchanged at 1,002 blocks,
-# because codegen releases each replaced array of the approved xs. The 9 extra
-# blocks are the CONTROL leaking more, not the fix reclaiming more.
-EXPECTED_RECLAIM=1510
+# 1501, and the same figure for a different reason since fix/append-no-realloc
+# (PR #376). append no longer reallocs, and nothing frees a replaced array, so
+# selfAppend's xs leaks the 9 arrays it grows through (1, 2, ..., 256) in BOTH
+# builds: release OFF 2,503 -> 2,512 blocks, release ON 1,002 -> 1,011. The
+# difference is unchanged. A first attempt freed the replaced array for a
+# RELEASE_OK local and measured 1510 here, but that freed arrays an alias still
+# read (tests/arc_uaf/append_alias_*.goo), so it was removed.
+EXPECTED_RECLAIM=1501
 
 if [ -z "$off_blocks" ] || [ -z "$on_blocks" ]; then
     echo "  FAIL: could not read a block count from the valgrind log"

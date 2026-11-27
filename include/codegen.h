@@ -670,15 +670,6 @@ void codegen_arc_make_global_immortal(CodeGenerator* codegen, LLVMValueRef targe
 // RELEASE_OK. Call it AFTER the right-hand side is evaluated and immediately
 // before the store; see the definition for why that order is the safe one.
 void codegen_arc_release_before_store(CodeGenerator* codegen, LLVMValueRef slot);
-
-// T4, the self-append half: at `L = append(L, ...)`, release the array the
-// append replaced, if it replaced one. goo_slice_append never frees the old
-// array, because other slices may share it; only an APPROVED slot proves that
-// none do. A NO-OP for any other slot, which leaves the old array live.
-// `new_value` is the append's result header. Call it immediately before the
-// store, while the slot still holds the old header.
-void codegen_arc_release_replaced_buffer(CodeGenerator* codegen, LLVMValueRef slot,
-                                         LLVMValueRef new_value);
 #endif
 int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);

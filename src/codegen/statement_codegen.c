@@ -347,18 +347,16 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             //
             // THE SELF-APPEND GUARD IS NOT OPTIONAL, and it is the SAME
             // predicate, not a second copy. `a, b = append(a, x), y` is not a
-            // rebind: the result keeps a's elements, so a release-before-store
-            // would free elements the new array still holds. Only the replaced
-            // array goes, and only when the append moved it -- the same helper
-            // the single-assign arm calls. Reimplementing the test here would
+            // rebind: the result keeps a's elements, so releasing what the slot
+            // holds would free elements the result still holds. The replaced
+            // array is not released either -- see the single-assign arm for
+            // why RELEASE_OK cannot prove it unshared. Reimplementing the test here would
             // give two rules that must agree while different code maintains
             // them -- the shape that already cost this branch a use-after-free
             // in #284.
-            if (t->type == AST_IDENTIFIER && rnodes[i] &&
-                release_decision_is_self_append(((IdentifierNode*)t)->name,
-                                                rnodes[i])) {
-                codegen_arc_release_replaced_buffer(codegen, target->llvm_value, sval);
-            } else {
+            if (!(t->type == AST_IDENTIFIER && rnodes[i] &&
+                  release_decision_is_self_append(((IdentifierNode*)t)->name,
+                                                  rnodes[i]))) {
                 codegen_arc_release_before_store(codegen, target->llvm_value);
             }
             // Do NOT free `target`: for an identifier it aliases the live
@@ -2894,35 +2892,20 @@ static void emit_site_release(CodeGenerator* codegen, ArcReleaseSite* site,
 // before the old buffer is freed. A right-hand side that ALIASES the old value
 // instead of copying it -- `s = borrowView(s)` -- is refused by condition 2'
 // and never reaches here.
-// The release site the plan APPROVED for `slot`, or NULL. NULL also when there
-// is no plan (GOO_ARC_RELEASE=0) or the builder sits in a terminated block, so
-// a caller that gets NULL emits nothing. Shared by the two store-time release
-// paths: they must agree on what "approved" means.
-static ArcReleaseSite* arc_approved_site(CodeGenerator* codegen, LLVMValueRef slot) {
-    if (!codegen || !codegen->release_plan || !codegen->builder || !slot) {
-        return NULL;
-    }
-    FunctionInfo* fi = codegen->current_function_info;
-    if (!fi || fi->arc_release_count == 0U) {
-        return NULL;
-    }
-    LLVMBasicBlockRef here = LLVMGetInsertBlock(codegen->builder);
-    if (!here || LLVMGetBasicBlockTerminator(here)) {
-        return NULL;
-    }
-    for (size_t i = 0U; i < fi->arc_release_count; i++) {
-        if (fi->arc_release_slots[i].slot == slot) {
-            return &fi->arc_release_slots[i];
-        }
-    }
-    return NULL;
-}
-
 void codegen_arc_release_before_store(CodeGenerator* codegen, LLVMValueRef slot) {
-    ArcReleaseSite* site = arc_approved_site(codegen, slot);
-    if (!site) {
-        return;
+    if (!codegen || !codegen->release_plan) return;   // NULL plan == GOO_ARC_RELEASE=0
+    if (!slot || !codegen->builder) return;
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi || fi->arc_release_count == 0) return;
+
+    LLVMBasicBlockRef here = LLVMGetInsertBlock(codegen->builder);
+    if (!here || LLVMGetBasicBlockTerminator(here)) return;
+
+    ArcReleaseSite* site = NULL;
+    for (size_t i = 0; i < fi->arc_release_count; i++) {
+        if (fi->arc_release_slots[i].slot == slot) { site = &fi->arc_release_slots[i]; break; }
     }
+    if (!site) return;
 
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
@@ -2937,83 +2920,6 @@ void codegen_arc_release_before_store(CodeGenerator* codegen, LLVMValueRef slot)
     LLVMTypeRef relw_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), relw_params, 2, 0);
 
     emit_site_release(codegen, site, rel_ty, rel_fn, relw_ty, false);
-}
-
-// Release the array a SELF-APPEND replaced, `L = append(L, ...)`, immediately
-// before the store of the result into L's slot.
-//
-// goo_slice_append never frees the old array (see goo_slice_grow_to in
-// src/runtime/runtime.c): it cannot know who else holds it. THIS is the one
-// place that can, and only for a slot the plan APPROVED. RELEASE_OK means L
-// does not escape (condition 1), L owns its array (condition 2) and no other
-// local may hold L's value (condition 7), so when the append moved L to a new
-// array, nothing but the dead header in L's slot still names the old one.
-// That is exactly the ownership realloc used to transfer, without the realloc.
-//
-// AN UNAPPROVED SLOT GETS NOTHING, and the old array stays live. That is the
-// fail-closed direction: a leak, never a free under `u := s` or `t := s[1:]`.
-//
-// THE BUFFER ONLY, never the elements. The elements were copied into the new
-// array by value, so the new array owns them now; walking the old one with
-// goo_slice_release_elems would free what L still holds.
-//
-// The compare is the whole test of "did the append grow": with room left, the
-// data pointer is unchanged and nothing was replaced. goo_release is a no-op on
-// NULL and on goo_zerobase, which is what an empty or zero-sized L holds.
-void codegen_arc_release_replaced_buffer(CodeGenerator* codegen, LLVMValueRef slot,
-                                         LLVMValueRef new_value) {
-    ArcReleaseSite* site = arc_approved_site(codegen, slot);
-    if (!site || !new_value) {
-        return;
-    }
-
-    // Fail closed on any shape that is not a slice header with its array in
-    // field 0: no release is a leak, a release built on a guess is not.
-    if (site->dtor || site->field != 0 || !site->slot_ty) {
-        return;
-    }
-    if (LLVMGetTypeKind(LLVMTypeOf(new_value)) != LLVMStructTypeKind) {
-        return;
-    }
-
-    LLVMContextRef ctx = codegen->context;
-    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
-    LLVMTypeRef rel_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_ty, 1, 0);
-    LLVMValueRef rel_fn = LLVMGetNamedFunction(codegen->module, "goo_release");
-    if (!rel_fn) {
-        rel_fn = LLVMAddFunction(codegen->module, "goo_release", rel_ty);
-    }
-    if (!rel_fn) {
-        return;
-    }
-
-    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
-    if (!fn) {
-        return;
-    }
-
-    LLVMValueRef old_addr = LLVMBuildStructGEP2(codegen->builder, site->slot_ty, site->slot,
-                                                0, "arc.append.old.addr");
-    if (!old_addr) {
-        return;
-    }
-    LLVMValueRef old_data = LLVMBuildLoad2(codegen->builder, ptr_ty, old_addr, "arc.append.old");
-    LLVMValueRef new_data = LLVMBuildExtractValue(codegen->builder, new_value, 0, "arc.append.new");
-    // Field 0 of a slice header is its array pointer. Anything else here means
-    // the slot classification and the stored value disagree about the shape.
-    GOO_ASSERT(LLVMGetTypeKind(LLVMTypeOf(new_data)) == LLVMPointerTypeKind);
-    LLVMValueRef moved = LLVMBuildICmp(codegen->builder, LLVMIntNE, old_data, new_data,
-                                       "arc.append.moved");
-
-    LLVMBasicBlockRef rel_bb = LLVMAppendBasicBlockInContext(ctx, fn, "arc.append.release");
-    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(ctx, fn, "arc.append.cont");
-    LLVMBuildCondBr(codegen->builder, moved, rel_bb, cont_bb);
-
-    LLVMPositionBuilderAtEnd(codegen->builder, rel_bb);
-    LLVMBuildCall2(codegen->builder, rel_ty, rel_fn, &old_data, 1, "");
-    LLVMBuildBr(codegen->builder, cont_bb);
-
-    LLVMPositionBuilderAtEnd(codegen->builder, cont_bb);
 }
 #else
 void codegen_arc_release_before_store(CodeGenerator* codegen, LLVMValueRef slot) {

@@ -1576,13 +1576,15 @@ static size_t goo_slice_grow_capacity(size_t capacity, size_t need) {
 //     (valgrind: invalid read through u).
 // tests/arc_uaf/append_alias_move.goo and examples/append_shared_*.goo pin them.
 //
-// WHO FREES THE OLD ARRAY. Not this function: it cannot see who else holds the
-// array, and no slice copy retains (a count of 1 says nothing about aliases).
-// The caller can. For `L = append(L, ...)` on a local the release plan approved
-// -- non-escaping, owned and aliased by no other local -- codegen releases the
-// replaced array after the call (codegen_arc_release_replaced_buffer). Every
-// other array stays live, which leaks when nothing else frees it, and never
-// frees memory a slice still reads.
+// WHO FREES THE OLD ARRAY. Nobody, today, and that is a LEAK by choice. This
+// function cannot see who else holds the array, and no slice copy retains, so
+// a count of 1 says nothing about aliases. Nor can the release plan prove it:
+// condition 7 (no other local holds the value) runs only for a local bound
+// more than once, and a self-append is not a binding, so `u := xs;
+// xs = append(xs, 1)` reads RELEASE_OK for xs. A release of the replaced array
+// at the append was tried and freed u's array (PR #376 review,
+// tests/arc_uaf/append_alias_*.goo). Bounded: a slice grown from empty leaks
+// less than the bytes of its final array, plus one block per doubling.
 //
 // Also headerless memory (goo_zerobase, an arena block) is only READ here now,
 // never handed to the allocator, which closes trusted-stdlib case C7.
@@ -1640,7 +1642,22 @@ int64_t goo_slice_copy_raw(void* dst, int64_t dst_len,
 
 void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
                            int64_t src_len, int64_t elem_size) {
-    if (!dst || !src || src_len <= 0 || elem_size <= 0) {
+    if (!dst || src_len <= 0 || elem_size < 0) {
+        return;
+    }
+    // A ZERO-SIZE element (struct{}) has no bytes to copy, but the length still
+    // grows, as Go's does. Returning here before the length moved left
+    // append(fs, more...) at len 0 (examples/append_zero_size_bulk.goo).
+    if (elem_size == 0) {
+        size_t zneed = dst->length + (size_t)src_len;
+        if (zneed > dst->capacity) {
+            goo_slice_grow_to(dst, zneed, 0U);
+        }
+        dst->length = zneed;
+        GOO_ASSERT(dst->length <= dst->capacity);
+        return;
+    }
+    if (!src) {
         return;
     }
 
