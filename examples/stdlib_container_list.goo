@@ -1,0 +1,41 @@
+package main
+
+import (
+	"container/list"
+	"fmt"
+)
+
+func dump(l *list.List) {
+	for e := l.Front(); e != nil; e = e.Next() {
+		fmt.Print(e.Value, " ")
+	}
+	fmt.Println("| len", l.Len())
+}
+
+func main() {
+	l := list.New()
+	e4 := l.PushBack(4)
+	e1 := l.PushFront(1)
+	l.InsertBefore(3, e4)
+	l.InsertAfter(2, e1)
+	dump(l)
+	l.MoveToFront(e4)
+	dump(l)
+	l.MoveToBack(e4)
+	dump(l)
+	l.MoveBefore(e4, e1)
+	dump(l)
+	l.MoveAfter(e4, e1)
+	dump(l)
+	l.Remove(e1)
+	dump(l)
+	fmt.Println(l.Front().Value, l.Back().Value, l.Back().Prev().Value)
+	o := list.New()
+	o.PushBack(7)
+	o.PushBack(8)
+	l.PushBackList(o)
+	l.PushFrontList(o)
+	dump(l)
+	l.Init()
+	fmt.Println(l.Len(), l.Front() == nil)
+}

@@ -1,0 +1,1 @@
+panic: qir: qubit allocation failed: all 16 simulator qubits are in use

@@ -1,0 +1,49 @@
+package main
+
+import "fmt"
+
+type Both struct{ N int }
+
+func (b Both) String() string { return "S" }
+func (b Both) Error() string  { return "E" }
+
+type PB struct{ N int }
+
+func (b *PB) String() string { return "PS" }
+func (b *PB) Error() string  { return "PE" }
+
+type OnlyErr struct{ N int }
+
+func (o OnlyErr) Error() string { return fmt.Sprintf("err<%d>", o.N) }
+
+type POnlyErr struct{ N int }
+
+func (o *POnlyErr) Error() string { return fmt.Sprintf("perr<%d>", o.N) }
+
+type ErrValStrPtr struct{ N int }
+
+func (b ErrValStrPtr) Error() string   { return "EV" }
+func (b *ErrValStrPtr) String() string { return "SP" }
+
+func main() {
+	fmt.Println(Both{1})
+	fmt.Printf("%v %s\n", Both{1}, Both{1})
+	fmt.Println(fmt.Sprint(Both{1}))
+	fmt.Println(&PB{1})
+	fmt.Println(PB{1})
+	fmt.Println(OnlyErr{2})
+	fmt.Printf("%v|%s\n", OnlyErr{2}, OnlyErr{2})
+	fmt.Println(fmt.Sprint(OnlyErr{2}))
+	fmt.Println(&POnlyErr{3})
+	fmt.Println(POnlyErr{3})
+	fmt.Println(ErrValStrPtr{4})
+	fmt.Println(&ErrValStrPtr{4})
+	var i interface{} = Both{1}
+	fmt.Println(i)
+	var j interface{} = OnlyErr{5}
+	fmt.Println(j)
+	var k interface{} = &PB{1}
+	fmt.Println(k)
+	var l interface{} = PB{1}
+	fmt.Println(l)
+}

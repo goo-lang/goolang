@@ -71,6 +71,8 @@ if [ "${1:-}" = "--self-test" ]; then
 
 	inject "an unclassified goostd package" \
 		'mkdir -p goostd/newpkg && printf "package newpkg\nfunc F() int { return 1 }\n" > goostd/newpkg/newpkg.go'
+	inject "an unlisted package nested under a listed tree" \
+		'mkdir -p goostd/container/heap && printf "package heap\nfunc F() int { return 1 }\n" > goostd/container/heap/heap.go'
 	inject "the shim list changes" \
 		'sed -i "s/\"qir\"};/\"qir\", \"json\"};/" src/compiler/goo.c'
 	inject "a third /proc/self/exe site" \
@@ -84,7 +86,7 @@ io.open("Makefile","w").write(s)
 PY'
 
 	[ "$bad_self" -ne 0 ] && exit 1
-	echo "$SELF: PASS (control green; all 4 claims independently turn it red)"
+	echo "$SELF: PASS (control green; all 5 claims independently turn it red)"
 	exit 0
 fi
 bad()  { echo "  FAIL: $*"; fails=$((fails+1)); }
@@ -100,22 +102,33 @@ if [ -z "$PKGS" ]; then
 	bad "could not read GOOSTD_PKG_DIRS (the stdlib list) from check_stdlib_coverage.sh"
 else
 	shipped=0; fixture=0; unclassified=0
-	for d in "$ROOT"/goostd/*/; do
-		name="$(basename "$d")"
-		if printf '%s' "$PKGS" | tr ' ' '\n' | grep -q "^${name}:"; then
+	# A PACKAGE directory is one that directly holds a .go or .goo file.
+	# Walking only the top-level directories let one entry classify a whole
+	# tree, so a new goostd/container/heap passed. -L follows the symlinks of
+	# a Bazel runfiles tree, where a plain -type f would skip every file.
+	PKG_DIRS="$(find -L "$ROOT/goostd" -type f \( -name '*.go' -o -name '*.goo' \) -exec dirname {} + | sort -u)"
+	if [ -z "$PKG_DIRS" ]; then
+		bad "found no goostd package directory under goostd/"
+	fi
+	while IFS= read -r pkgdir; do
+		[ -n "$pkgdir" ] || continue
+		# The path relative to goostd/, such as container/list or strings.
+		rel="${pkgdir#"$ROOT"/goostd/}"
+		# Exact match on the whole path: an entry for container/list does not
+		# classify container/heap, and no entry classifies the container tree.
+		if printf '%s' "$PKGS" | tr ' ' '\n' | grep -Eq "^[^:]+:goostd/${rel}\$"; then
 			shipped=$((shipped+1)); continue
 		fi
-		# -R, not -r: under Bazel "$d" is a real directory of SYMLINKED
-		# files (a sh_test's data arrives as a runfiles tree), and plain
-		# -r does not follow a symlink found while recursing, so every
-		# package read as unclassified until this was measured and fixed.
-		if grep -Rqil 'fixture' "$d" --include='*.go' --include='*.goo' 2>/dev/null; then
+		# Only the package's own files are read, not a nested package's. A glob,
+		# not -R: under Bazel the files are SYMLINKS, and a plain -r does not
+		# follow a symlink found while recursing.
+		if grep -qi 'fixture' "$pkgdir"/*.go "$pkgdir"/*.goo 2>/dev/null; then
 			fixture=$((fixture+1)); continue
 		fi
-		bad "goostd/$name is neither in GOOSTD_PKG_DIRS nor self-declared a fixture"
+		bad "goostd/$rel is neither in GOOSTD_PKG_DIRS nor self-declared a fixture"
 		note "it would be silently absent from every released toolchain"
 		unclassified=$((unclassified+1))
-	done
+	done <<< "$PKG_DIRS"
 	[ "$unclassified" -eq 0 ] && note "goostd: $shipped shipped, $fixture fixtures, 0 unclassified"
 fi
 

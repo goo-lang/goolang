@@ -1567,6 +1567,8 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // codegen_emit_executable) rather than being threaded through call sites.
     codegen->opt_level = options->opt_level;
     codegen->emit_qir = options->emit_qir ? 1 : 0;
+    codegen->qir_sim_linked = (options->emit_llvm_ir || options->emit_qasm3 ||
+                               options->emit_mlir || options->emit_sv) ? 0 : 1;
 
     // P3.11: link_libs/link_lib_count travel on the codegen object so
     // codegen_emit_executable's fork/execvp argv construction can append
