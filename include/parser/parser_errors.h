@@ -164,4 +164,9 @@ const char* token_type_to_string(int token_type);
 // for parser.tab.c's generated yyparse()). Defined in parser_errors.c.
 void yyerror(const char* msg);
 
+// A positioned error from a grammar action that refuses a shape the rules
+// accept (the action then runs YYERROR). Re-declared extern in parser.y's
+// prologue, like yyerror. Defined in parser_errors.c.
+void parser_error_at(Position pos, const char* msg);
+
 #endif // GOO_PARSER_ERRORS_H

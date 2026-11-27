@@ -1,0 +1,112 @@
+package main
+
+import "fmt"
+
+// Wave 1 Task 7: range clauses that assign to existing variables
+// (`for k, v = range x`). Before the change every shape below was
+// `syntax error, unexpected 'range'`. The expected output comes from
+// `go run` of the same source.
+
+type pair struct {
+	a int
+	b string
+}
+
+func main() {
+	// One key from a map.
+	m := map[string]int{"only": 7}
+	var k string
+	for k = range m {
+	}
+	fmt.Println(k)
+
+	// Key and value; both keep the last values after the loop.
+	var v int
+	for k, v = range m {
+	}
+	fmt.Println(k, v)
+
+	// Index of a slice: the last index after the loop.
+	i := -1
+	for i = range []int{1, 2, 3} {
+	}
+	fmt.Println(i)
+
+	// The value of a string range is a rune.
+	var c rune
+	for _, c = range "héllo" {
+	}
+	fmt.Println(c, string(c))
+
+	// An index expression as the target.
+	m2 := map[string]int{}
+	s := []string{"a", "b", "c"}
+	key := "last"
+	for m2[key] = range s {
+	}
+	fmt.Println(m2["last"])
+
+	// Struct fields as the targets.
+	var p pair
+	for p.a, p.b = range []string{"x", "y"} {
+	}
+	fmt.Println(p.a, p.b)
+
+	// A blank target over a closed channel: the loop runs once per value.
+	ch := make(chan int, 3)
+	ch <- 1
+	ch <- 2
+	close(ch)
+	n := 0
+	for _ = range ch {
+		n++
+	}
+	fmt.Println(n)
+
+	// A value from a channel.
+	ch2 := make(chan string, 2)
+	ch2 <- "first"
+	ch2 <- "second"
+	close(ch2)
+	var got string
+	for got = range ch2 {
+	}
+	fmt.Println(got)
+
+	// The targets are visible in the body and updated each iteration.
+	total := 0
+	var idx, val int
+	for idx, val = range []int{10, 20, 30} {
+		total += idx * val
+	}
+	fmt.Println(total, idx, val)
+
+	// An empty range leaves the targets unchanged.
+	idx, val = 5, 6
+	for idx, val = range []int{} {
+	}
+	fmt.Println(idx, val)
+
+	// break keeps the values of the iteration that broke out.
+	for idx, val = range []int{4, 5, 6, 7} {
+		if val == 6 {
+			break
+		}
+	}
+	fmt.Println(idx, val)
+
+	// Nested range assignments.
+	var r1, r2 int
+	sum := 0
+	for r1 = range []int{0, 0} {
+		for r2 = range []int{0, 0, 0} {
+			sum += r1*10 + r2
+		}
+	}
+	fmt.Println(r1, r2, sum)
+
+	// The declaring forms still work.
+	for a, b := range []string{"p", "q"} {
+		fmt.Println(a, b)
+	}
+}

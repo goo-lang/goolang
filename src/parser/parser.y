@@ -10,6 +10,7 @@
 // External lexer interface
 extern int yylex(void);
 extern void yyerror(const char* msg);
+extern void parser_error_at(Position pos, const char* msg);
 
 // ast_root, g_func_signature_params/result (globals) and every semantic-
 // action helper below except make_embedded_field/make_grouped_field (kept
@@ -231,7 +232,7 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 %type <node> struct_lit struct_lit_inits struct_lit_init
 %type <node> composite_elem composite_elem_list composite_value
 %type <node> identifier literal
-%type <node> expression_list
+%type <node> expression_list expr_list2
 
 // Goo Extensions
 %type <node> error_union_type nullable_type try_expr catch_expr
@@ -734,12 +735,11 @@ var_decl:
         $$ = var_decl_new_1($2, $3, NULL);
     }
     // Multi-name, no-initializer form: `var a, b int`. Explicit productions
-    // (2-name and 3-name), NOT a general list nonterminal — mirrors the
-    // short_var_decl convention (parser.y short_var_decl, above) and bounds
-    // conflict risk to what's already proven safe there. The VAR prefix
-    // disambiguates from short_var_decl's bare `identifier COMMA identifier`
-    // forms, so this does not introduce new shift/reduce or reduce/reduce
-    // conflicts (see the bison guard in the Makefile gate). 4+ names and the
+    // (2-name and 3-name), NOT a general list nonterminal. The VAR prefix
+    // disambiguates from simple_stmt's `expr_list2 SHORT_ASSIGN` and
+    // `expr_list2 ASSIGN` forms, so this does not introduce new shift/reduce
+    // or reduce/reduce conflicts (see the bison guard in the Makefile gate).
+    // 4+ names and the
     // initializer-list form (`var a, b int = 1, 2`) are out of scope: the
     // latter would need codegen changes (walking a values chain in lockstep
     // with names) beyond this task's allowed file set — see decl-surface
@@ -778,19 +778,10 @@ short_var_decl:
     identifier SHORT_ASSIGN expression {
         $$ = short_var_decl_new_1($1, $3);
     }
-    | identifier COMMA identifier SHORT_ASSIGN expression {
-        // Multi-LHS short var decl `a, b := expr`. Destructuring is
-        // resolved at codegen time: the RHS must produce a TYPE_STRUCT
-        // with at least 2 fields, and a/b are bound to its fields 0
-        // and 1 respectively.
-        $$ = short_var_decl_new_2($1, $3, $5);
-    }
-    // F6: `a, b := v1, v2` — two independent RHS values (not a destructure).
-    // The COLON-free trailing `COMMA expression` after the first value is what
-    // distinguishes this from the single-value destructure rule above.
-    | identifier COMMA identifier SHORT_ASSIGN expression COMMA expression {
-        $$ = multi_assign_2_new($1, $3, $5, $7, 1, POS(@$));
-    }
+    // The multi-name forms (`a, b := f()`, `a, b, c := 1, 2, 3`) are
+    // simple_stmt's `expr_list2 SHORT_ASSIGN expression_list` arm. The
+    // identifier-prefixed two-name arms that lived here fought the
+    // expression-prefixed tuple arms on COMMA in every `identifier •` state.
     ;
 
 // Constant declaration
@@ -1245,31 +1236,19 @@ simple_stmt:
     | expression XOR_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_XOR_ASSIGN, $3, POS(@$)); }
     | expression LSHIFT_ASSIGN expression { $$ = compound_assign_stmt($1, TOKEN_LSHIFT_ASSIGN, $3, POS(@$)); }
     | expression RSHIFT_ASSIGN expression { $$ = compound_assign_stmt($1, TOKEN_RSHIFT_ASSIGN, $3, POS(@$)); }
-    // F6: `a, b = v1, v2` — tuple assignment to two existing identifiers. Kept
-    // as an `identifier`-prefixed rule (alongside the `expression`-prefixed rule
-    // below) because short_var_decl uses `identifier COMMA identifier ...`; for a
-    // bare-identifier LHS bison resolves the reduce/reduce toward `identifier`
-    // (this rule is declared first), so `a, b = b, a` keeps working. Index and
-    // selector LHS (`s[i]`) can only reduce as `expression`, so they fall through
-    // to the rule below.
-    | identifier COMMA identifier ASSIGN expression COMMA expression {
-        $$ = multi_assign_2_new($1, $3, $5, $7, 0, POS(@$));
+    // Assignment and short declaration with two or more names on the left:
+    // `a, b = b, a`, `s[i], s[j] = s[j], s[i]`, `a, b, c := 1, 2, 3`,
+    // `x, ok, s := f()`. Targets are full expressions, so the LHS shares the
+    // `expression` reduction with every other statement start and an
+    // `identifier •` state has nothing to shift on COMMA. assign_list_new
+    // picks the node shape (one value is a destructure; N values pair up)
+    // and the checker enforces that a `:=` target is an identifier and that
+    // the counts agree.
+    | expr_list2 ASSIGN expression_list {
+        $$ = assign_list_new($1, $3, 0, POS(@$));
     }
-    // `a, b = f()` — tuple assignment from a SINGLE multi-return call. The
-    // absence of a trailing `COMMA expression` (present in the rule above)
-    // distinguishes this destructuring form. Declared before the general
-    // expression-LHS variant so a bare-identifier LHS reduces here.
-    | identifier COMMA identifier ASSIGN expression {
-        $$ = multi_assign_call_new($1, $3, $5, POS(@$));
-    }
-    // Tuple assignment to any lvalues: `s[i], s[j] = s[j], s[i]`, `p.a, p.b = …`.
-    // Targets are full expressions (addressability checked in the typechecker).
-    | expression COMMA expression ASSIGN expression COMMA expression {
-        $$ = multi_assign_2_new($1, $3, $5, $7, 0, POS(@$));
-    }
-    // `p.a, s[i] = f()` — single-call destructure to general lvalue targets.
-    | expression COMMA expression ASSIGN expression {
-        $$ = multi_assign_call_new($1, $3, $5, POS(@$));
+    | expr_list2 SHORT_ASSIGN expression_list {
+        $$ = assign_list_new($1, $3, 1, POS(@$));
     }
     ;
 
@@ -1503,20 +1482,43 @@ for_stmt:
         for_node->body = $4;
         $$ = (ASTNode*)for_node;
     }
-    | FOR identifier COMMA identifier SHORT_ASSIGN RANGE expression block {
-        // `for k, v := range expr { … }` — key+value form.
-        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
-        for_node->base.type = AST_FOR_STMT;
-        for_node->base.pos = get_current_position();
-        IdentifierNode* kid = (IdentifierNode*)$2;
-        IdentifierNode* vid = (IdentifierNode*)$4;
-        for_node->key_name = strdup(kid->name);
-        for_node->value_name = strdup(vid->name);
-        for_node->range_expr = $7;
-        for_node->body = $8;
-        ast_node_free($2);
-        ast_node_free($4);
-        $$ = (ASTNode*)for_node;
+    // `for k, v = range x`, `for k = range x`: the range clause assigns to
+    // existing lvalues. range_assign_desugar turns it into the declaring form
+    // over hidden names plus a first body statement that assigns them, so
+    // every range kind reuses the tested `:=` lowering. RANGE is not in
+    // FIRST(expression), so these arms part from the `for x = 0; …` init at
+    // RANGE with no new conflict.
+    | FOR expr_list2 ASSIGN RANGE expression block {
+        const char* why = NULL;
+        Position where = POS(@2);
+        $$ = range_assign_desugar($2, $5, $6, &why, &where);
+        if (!$$) {
+            parser_error_at(where, why);
+            YYERROR;
+        }
+    }
+    | FOR expression ASSIGN RANGE expression block {
+        const char* why = NULL;
+        Position where = POS(@2);
+        $$ = range_assign_desugar($2, $5, $6, &why, &where);
+        if (!$$) {
+            parser_error_at(where, why);
+            YYERROR;
+        }
+    }
+    | FOR expr_list2 SHORT_ASSIGN RANGE expression block {
+        // `for k, v := range expr { … }` — key+value form. The names are an
+        // expr_list2, the same list `for i, j := 0, n; …` starts with, so the
+        // `FOR identifier •` state has nothing to shift on COMMA and the two
+        // statement forms part only at RANGE. The helper refuses any left
+        // side other than two identifiers.
+        const char* why = NULL;
+        Position where = POS(@2);
+        $$ = range_short_decl_new($2, $5, $6, &why, &where);
+        if (!$$) {
+            parser_error_at(where, why);
+            YYERROR;
+        }
     }
     ;
 
@@ -2319,6 +2321,20 @@ expression_list:
         $$ = $1;
     }
     | expression_list COMMA expression {
+        ast_add_child($1, $3);
+        $$ = $1;
+    }
+    ;
+
+// Two or more comma-separated expressions: the left side of a multi-name
+// assignment or short declaration. Kept apart from expression_list so a
+// single expression never reduces to it — `x = 1` stays the ExprStmt arm.
+expr_list2:
+    expression COMMA expression {
+        ast_add_child($1, $3);
+        $$ = $1;
+    }
+    | expr_list2 COMMA expression {
         ast_add_child($1, $3);
         $$ = $1;
     }
