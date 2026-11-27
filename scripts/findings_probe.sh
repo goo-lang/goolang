@@ -4,16 +4,27 @@
 # docs/misra/tools/gate.py (one tool's (file, rule) tally) across every
 # analyser and probe verdict this repository already produces.
 #
-# PIPELINE, every stage regenerated unconditionally (no staleness check --
-# see scripts/analyzer_lanes_probe.sh's own header for why that policy is
-# deliberate here: a fresh run costs under two minutes and is always
-# correct, where a staleness check is one more thing to get wrong):
+# PIPELINE. Since task 4 of the 2026-11-27 verify-core plan, the three
+# analyser lanes run ONCE per verify-core, as analyzer-lanes-probe, and this
+# script reads their SARIF. Before that, it ran them a second time: 426 s for
+# this gate, 252 s for the lanes, 67% of a 1016 s verify-core between them.
+#
+# THE CONTRACT. analyzer_lanes_probe.sh writes build/sarif/lanes.stamp after
+# all three lanes pass: `sig=<toolchain hash> tree=<hash of every file the
+# lanes read>`, both from tools/lanes_stamp.py. Step 1 below recomputes the two
+# values. It FAILS when the stamp is missing, when either value differs, or
+# when a lane directory is empty, so a stale or empty SARIF tree can never
+# reach the gate. The Makefile orders the two targets (findings-probe has
+# analyzer-lanes-probe as a prerequisite). A standalone call with no lanes run
+# before it sets FINDINGS_RUN_LANES=1: step 1 then runs the lanes itself, the
+# way this script did before.
 #
 #   1. scripts/analyzer_lanes_probe.sh   -- gcc + clang-tidy + cppcheck,
-#      writes build/sarif/{gcc,clang-tidy,cppcheck}/. Its own stdout is
-#      captured into a gate log (below).
+#      writes build/sarif/{gcc,clang-tidy,cppcheck}/. Only under
+#      FINDINGS_RUN_LANES=1, and then its stdout is captured into a gate log
+#      (below). Otherwise the stamp check.
 #   2. scripts/pthread_return_probe.sh   -- the pthread ratchet's live
-#      verdict, appended to the SAME gate log.
+#      verdict, appended to the SAME gate log. This always runs here.
 #   3. tools/clang_tidy_to_sarif.py      -- clang-tidy has no native SARIF
 #      emitter; converts its .txt lane output into one SARIF run.
 #   4. tools/probe_verdicts_to_sarif.py  -- twice: once over
@@ -43,14 +54,6 @@
 #      documented checker defect, generalising docs/misra/
 #      misra-suppressions.txt's own rule across every tool).
 #
-# UNDER `make verify-core`, this means the three analyser lanes run TWICE --
-# once as analyzer-lanes-probe's own VERIFY_ALL_DEPS entry, once again as
-# step 1 above, since this script must also work standalone (`bash
-# scripts/findings_probe.sh`, no Makefile dependency graph to rely on) and
-# a staleness check across two independently-invocable gates is exactly the
-# fragile kind this repository's probes already choose not to build. An
-# accepted ~70s against verify-core's many minutes.
-#
 # Usage:
 #   scripts/findings_probe.sh                    # gate (exit 1 on red)
 #   scripts/findings_probe.sh --update-baseline   # accept current findings
@@ -59,12 +62,17 @@
 #                                                  # (no pipeline re-run) -- what
 #                                                  # --self-test drives against
 #                                                  # synthetic fixtures
-#   scripts/findings_probe.sh --self-test         # six synthetic cases and one
+#   FINDINGS_RUN_LANES=1 scripts/findings_probe.sh
+#                                                  # run the lanes first (no stamp needed)
+#   scripts/findings_probe.sh --self-test         # nine synthetic cases and one
 #                                                  # cppcheck repeatability control,
 #                                                  # see below; never runs the real
 #                                                  # pipeline
 #
 # Environment overrides:
+#   FINDINGS_RUN_LANES     1 = run analyzer_lanes_probe.sh in step 1 instead of
+#                          checking its stamp (a standalone call)
+#   LANES_STAMP            the stamp path (default: build/sarif/lanes.stamp)
 #   FINDINGS_SARIF         merged output (default: build/findings.sarif)
 #   FINDINGS_BASELINE      shrink-only baseline PREFIX; the file read is
 #                          <prefix>.<toolchain signature>.tsv (default prefix:
@@ -111,6 +119,50 @@ run_check_only() { # $1 = sarif path
 		return 1
 	fi
 	python3 "$REPO_ROOT/tools/findings_gate.py" check "$sarif" "$FINDINGS_BASELINE" "$FINDINGS_SUPPRESSIONS"
+}
+
+# The stamp check of step 1. The caller passes the CURRENT signature and tree
+# hash, so the --self-test below drives this function with synthetic values
+# and reads no machine state. Prints one FAIL line and returns 1 on any fault.
+LANES_STAMP="${LANES_STAMP:-$REPO_ROOT/build/sarif/lanes.stamp}"
+check_lanes_stamp() { # $1 = stamp, $2 = current sig, $3 = current tree, $4-$6 = gcc, tidy, cppcheck dirs
+	local stamp="$1" want_sig="$2" want_tree="$3" line got_sig got_tree
+	local stale="$PROBE: FAIL (analyser SARIF is missing or stale; run analyzer-lanes-probe)"
+	if [ ! -f "$stamp" ]; then
+		echo "$stale" >&2
+		echo "    no stamp at $stamp" >&2
+		return 1
+	fi
+	line="$(head -1 "$stamp")"
+	got_sig="$(printf '%s\n' "$line" | sed -n 's/^sig=\([^ ]*\) tree=.*/\1/p')"
+	got_tree="$(printf '%s\n' "$line" | sed -n 's/^sig=[^ ]* tree=\([^ ]*\)$/\1/p')"
+	if [ -z "$got_sig" ] || [ -z "$got_tree" ]; then
+		echo "$stale" >&2
+		echo "    the stamp $stamp has no sig= and tree= fields" >&2
+		return 1
+	fi
+	if [ "$got_sig" != "$want_sig" ]; then
+		echo "$stale" >&2
+		echo "    the toolchain differs from the stamp's (sig $got_sig, now $want_sig)" >&2
+		return 1
+	fi
+	if [ "$got_tree" != "$want_tree" ]; then
+		echo "$stale" >&2
+		echo "    an input file differs from the stamp's tree (tree $got_tree, now $want_tree)" >&2
+		return 1
+	fi
+	# A valid stamp over a directory that someone emptied is still no data.
+	local d pat
+	for d_pat in "$4:*.sarif" "$5:*.txt" "$6:*.sarif"; do
+		d="${d_pat%%:*}"
+		pat="${d_pat#*:}"
+		if [ -z "$(find "$d" -maxdepth 1 -type f -name "$pat" -print -quit 2>/dev/null)" ]; then
+			echo "$stale" >&2
+			echo "    $d holds no $pat file" >&2
+			return 1
+		fi
+	done
+	return 0
 }
 
 if [ "${1:-}" = "--check-only" ]; then
@@ -254,6 +306,52 @@ sys.exit(0 if len(r) == 1 and r[0]['suppressions'] == [{'kind': 'external', 'jus
 		fail=1
 	fi
 
+	# (h)-(j) the stamp check of step 1, task 4 of the 2026-11-27 plan. The
+	# function takes the current sig and tree as arguments, so these cases use
+	# fixed strings and touch no tool or source file. (d) above is not enough
+	# to show the check can say no, so each case has a GREEN twin.
+	mkdir -p "$W/lg" "$W/lt" "$W/lc"
+	: >"$W/lg/a.c.sarif"
+	: >"$W/lt/a.c.txt"
+	: >"$W/lc/cppcheck.sarif"
+	check_h() { check_lanes_stamp "$1" sigA treeA "$W/lg" "$W/lt" "$W/lc"; }
+	# (h) no stamp -> RED, with the contract's own message.
+	out_h="$(check_h "$W/absent.stamp" 2>&1)" && rc_h=0 || rc_h=$?
+	if [ "${rc_h:-0}" -ne 0 ] && printf '%s\n' "$out_h" | grep -q "analyser SARIF is missing or stale; run analyzer-lanes-probe"; then
+		echo "    ok: no lanes stamp is RED"
+	else
+		echo "$SELF: FAIL (a missing stamp did not go RED): $out_h"
+		fail=1
+	fi
+	# (i) a stamp whose tree differs -> RED. A stamp whose sig differs likewise.
+	echo "sig=sigA tree=treeOLD" >"$W/i.stamp"
+	echo "sig=sigOLD tree=treeA" >"$W/i2.stamp"
+	out_i="$(check_h "$W/i.stamp" 2>&1)" && rc_i=0 || rc_i=$?
+	out_i2="$(check_h "$W/i2.stamp" 2>&1)" && rc_i2=0 || rc_i2=$?
+	if [ "${rc_i:-0}" -ne 0 ] && [ "${rc_i2:-0}" -ne 0 ] \
+		&& printf '%s\n' "$out_i" | grep -q "missing or stale"; then
+		echo "    ok: a stamp with a wrong tree or a wrong sig is RED"
+	else
+		echo "$SELF: FAIL (a stale stamp did not go RED): tree rc=$rc_i sig rc=$rc_i2 $out_i"
+		fail=1
+	fi
+	# (j) a valid stamp is GREEN, and the same stamp with one lane directory
+	# emptied (each of the three in turn) is RED.
+	echo "sig=sigA tree=treeA" >"$W/j.stamp"
+	out_j="$(check_h "$W/j.stamp" 2>&1)" && rc_j=0 || rc_j=$?
+	j_bad=0
+	for lane_file in "$W/lg/a.c.sarif" "$W/lt/a.c.txt" "$W/lc/cppcheck.sarif"; do
+		mv "$lane_file" "$lane_file.away"
+		check_h "$W/j.stamp" >/dev/null 2>&1 && j_bad=1
+		mv "$lane_file.away" "$lane_file"
+	done
+	if [ "${rc_j:-1}" -eq 0 ] && [ "$j_bad" -eq 0 ]; then
+		echo "    ok: a valid stamp is GREEN, and an emptied lane directory is RED"
+	else
+		echo "$SELF: FAIL (valid stamp rc=$rc_j, emptied-directory case went green=$j_bad): $out_j"
+		fail=1
+	fi
+
 	# (g) repeatability, task 17b: the cppcheck lane, run twice at -j1 on the
 	# REAL runtime units, the second time with the database order reversed,
 	# must give the same count for every (rule, file). misra.py's CTU pass
@@ -335,7 +433,7 @@ PYEOF
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "$SELF: PASS (a/b/c/e red and d/f green, on synthetic fixtures; g repeatable on the real $reorder_scope units; the real pipeline runs in findings-probe)"
+	echo "$SELF: PASS (a/b/c/e/h/i red, d/f green, j green and red, on synthetic fixtures; g repeatable on the real $reorder_scope units; the real pipeline runs in findings-probe)"
 	exit 0
 fi
 
@@ -350,14 +448,33 @@ esac
 mkdir -p "$SARIF_PROBES_DIR"
 : >"$GATE_LOG"
 
+if [ "${FINDINGS_RUN_LANES:-0}" != "1" ]; then
+	# Step 1: use the lanes' SARIF only when it is the SARIF of THIS tree. A
+	# lane failure leaves no stamp, so it reaches here as "missing".
+	lanes_db="${COMPILE_COMMANDS_OUT:-$REPO_ROOT/build/compile_commands.json}"
+	if [ ! -f "$lanes_db" ]; then
+		echo "$PROBE: FAIL (analyser SARIF is missing or stale; run analyzer-lanes-probe)" >&2
+		echo "    no compile database at $lanes_db" >&2
+		exit 1
+	fi
+	now_sig="$(python3 "$REPO_ROOT/tools/lanes_stamp.py" sig "$lanes_db")"
+	now_tree="$(python3 "$REPO_ROOT/tools/lanes_stamp.py" tree "$lanes_db")"
+	check_lanes_stamp "$LANES_STAMP" "$now_sig" "$now_tree" \
+		"$SARIF_GCC_DIR" "$SARIF_TIDY_DIR" "$SARIF_CPPCHECK_DIR" || exit 1
+fi
+
 # Neither sub-probe's own PASS/FAIL is a reason to abort THIS script: a
 # lane or ratchet going red is DATA for step 4's gate-log conversion (a
 # goo/gate-failed finding), not an infrastructure failure. set +e / -e
 # brackets only the two calls whose exit status must be read without
 # `set -e` tearing the script down first.
 set +e
-bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" 2>&1 | tee "$GATE_LOG"
-lanes_rc="${PIPESTATUS[0]}"
+if [ "${FINDINGS_RUN_LANES:-0}" = "1" ]; then
+	bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" 2>&1 | tee "$GATE_LOG"
+	lanes_rc="${PIPESTATUS[0]}"
+else
+	lanes_rc=skipped
+fi
 bash "$REPO_ROOT/scripts/pthread_return_probe.sh" 2>&1 | tee -a "$GATE_LOG"
 pthread_rc="${PIPESTATUS[0]}"
 set -e
