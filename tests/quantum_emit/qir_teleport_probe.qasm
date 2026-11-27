@@ -1,7 +1,7 @@
 OPENQASM 3.0;
 include "stdgates.inc";
 qubit[3] q;
-bit[3] c;
+bit[4] c;
 
 ry(1.2345) q[0];
 rz(0.6789) q[0];
@@ -23,6 +23,8 @@ if (c[0] == true) {
   z q[2];
 }
 ry(-1.2345) q[2];
+c[2] = measure q[2];
+reset q[2];
 reset q[0];
 reset q[1];
 rx(0) q[0];
@@ -34,7 +36,7 @@ ccx q[0], q[1], q[2];
 cz q[0], q[1];
 cz q[0], q[1];
 swap q[0], q[1];
-c[2] = measure q[2];
+c[3] = measure q[2];
 reset q[2];
 x q[0];
 x q[1];

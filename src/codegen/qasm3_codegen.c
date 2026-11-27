@@ -537,10 +537,8 @@ static const char* qasm3_stmt_name(ASTNodeType t) {
 // of them leaves the enclosing control flow (break, continue, return).
 // Anything else returns 0 and the caller refuses. A tracked int that the
 // skipped code assigns turns opaque, so that a later fold refuses instead of
-// reading a stale value. `measure_ok` lets the top call of an `if` condition be
-// qir.MeasureReset: the pinned qir_teleport_probe reference still skips that
-// verification measurement, a known gap that the caller documents.
-static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node, int measure_ok);
+// reading a stale value.
+static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node);
 
 static void qasm3_invalidate(Qasm3Ctx* ctx, ASTNode* target) {
     GOO_ASSERT(ctx != NULL);
@@ -554,14 +552,14 @@ static void qasm3_invalidate(Qasm3Ctx* ctx, ASTNode* target) {
 
 static int qasm3_scan_list(Qasm3Ctx* ctx, ASTNode* head) {
     for (ASTNode* n = head; n; n = n->next) {
-        if (!qasm3_scan_classical(ctx, n, 0)) {
+        if (!qasm3_scan_classical(ctx, n)) {
             return 0;
         }
     }
     return 1;
 }
 
-static int qasm3_scan_call(Qasm3Ctx* ctx, CallExprNode* call, int measure_ok) {
+static int qasm3_scan_call(Qasm3Ctx* ctx, CallExprNode* call) {
     GOO_ASSERT(ctx != NULL);
     GOO_ASSERT(call != NULL);
     ASTNode* fn = call->function;
@@ -571,7 +569,6 @@ static int qasm3_scan_call(Qasm3Ctx* ctx, CallExprNode* call, int measure_ok) {
             const char* pkg = ((IdentifierNode*)sel->expr)->name;
             const bool is_qir = (strcmp(pkg, "qir") == 0);
             if ((is_qir && strcmp(sel->selector, "ReadResult") == 0) ||
-                (is_qir && measure_ok && strcmp(sel->selector, "MeasureReset") == 0) ||
                 strcmp(pkg, "fmt") == 0) {
                 return qasm3_scan_list(ctx, call->args);
             }
@@ -586,7 +583,7 @@ static int qasm3_scan_call(Qasm3Ctx* ctx, CallExprNode* call, int measure_ok) {
     return 0;
 }
 
-static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node, int measure_ok) {
+static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node) {
     GOO_ASSERT(ctx != NULL);
     if (!node) {
         return 1;
@@ -596,43 +593,43 @@ static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node, int measure_ok) {
         case AST_LITERAL:
             return 1;
         case AST_UNARY_EXPR:
-            return qasm3_scan_classical(ctx, ((UnaryExprNode*)node)->operand, 0);
+            return qasm3_scan_classical(ctx, ((UnaryExprNode*)node)->operand);
         case AST_POSTFIX_EXPR:
             qasm3_invalidate(ctx, ((PostfixExprNode*)node)->operand);
-            return qasm3_scan_classical(ctx, ((PostfixExprNode*)node)->operand, 0);
+            return qasm3_scan_classical(ctx, ((PostfixExprNode*)node)->operand);
         case AST_BINARY_EXPR: {
             BinaryExprNode* b = (BinaryExprNode*)node;
             // Any operator that stores (=, +=, ...) leaves the left side unknown.
             if (b->operator == TOKEN_ASSIGN || b->operator == TOKEN_PLUS_ASSIGN) {
                 qasm3_invalidate(ctx, b->left);
             }
-            return qasm3_scan_classical(ctx, b->left, 0) && qasm3_scan_classical(ctx, b->right, 0);
+            return qasm3_scan_classical(ctx, b->left) && qasm3_scan_classical(ctx, b->right);
         }
         case AST_SELECTOR_EXPR:
-            return qasm3_scan_classical(ctx, ((SelectorExprNode*)node)->expr, 0);
+            return qasm3_scan_classical(ctx, ((SelectorExprNode*)node)->expr);
         case AST_INDEX_EXPR:
-            return qasm3_scan_classical(ctx, ((IndexExprNode*)node)->expr, 0) &&
-                   qasm3_scan_classical(ctx, ((IndexExprNode*)node)->index, 0);
+            return qasm3_scan_classical(ctx, ((IndexExprNode*)node)->expr) &&
+                   qasm3_scan_classical(ctx, ((IndexExprNode*)node)->index);
         case AST_CALL_EXPR:
-            return qasm3_scan_call(ctx, (CallExprNode*)node, measure_ok);
+            return qasm3_scan_call(ctx, (CallExprNode*)node);
         case AST_EXPR_STMT:
-            return qasm3_scan_classical(ctx, ((ExprStmtNode*)node)->expr, 0);
+            return qasm3_scan_classical(ctx, ((ExprStmtNode*)node)->expr);
         case AST_VAR_DECL:
             return qasm3_scan_list(ctx, ((VarDeclNode*)node)->values);
         case AST_BLOCK_STMT:
             return qasm3_scan_list(ctx, ((BlockStmtNode*)node)->statements);
         case AST_IF_STMT: {
             IfStmtNode* i = (IfStmtNode*)node;
-            return qasm3_scan_classical(ctx, i->condition, measure_ok) &&
-                   qasm3_scan_classical(ctx, i->then_stmt, 0) &&
-                   qasm3_scan_classical(ctx, i->else_stmt, 0);
+            return qasm3_scan_classical(ctx, i->condition) &&
+                   qasm3_scan_classical(ctx, i->then_stmt) &&
+                   qasm3_scan_classical(ctx, i->else_stmt);
         }
         case AST_FOR_STMT: {
             ForStmtNode* f = (ForStmtNode*)node;
-            return f->range_expr == NULL && qasm3_scan_classical(ctx, f->init, 0) &&
-                   qasm3_scan_classical(ctx, f->condition, 0) &&
-                   qasm3_scan_classical(ctx, f->post, 0) &&
-                   qasm3_scan_classical(ctx, f->body, 0);
+            return f->range_expr == NULL && qasm3_scan_classical(ctx, f->init) &&
+                   qasm3_scan_classical(ctx, f->condition) &&
+                   qasm3_scan_classical(ctx, f->post) &&
+                   qasm3_scan_classical(ctx, f->body);
         }
         default:
             return 0;
@@ -656,7 +653,7 @@ static void qasm3_walk_body(Qasm3Ctx* ctx, ASTNode* body) {
             for (ASTNode* v = ((ReturnStmtNode*)s)->values; v; v = v->next) {
                 if (v->type == AST_CALL_EXPR) {
                     qasm3_handle_call(ctx, (CallExprNode*)v, NULL);
-                } else if (!qasm3_scan_classical(ctx, v, 0)) {
+                } else if (!qasm3_scan_classical(ctx, v)) {
                     qasm3_refuse(ctx, v->pos,
                                  "--emit-qasm3 cannot emit a return value that holds a gate or an unknown form");
                 } else {
@@ -820,11 +817,27 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                     }
                 }
             }
+            // `if qir.MeasureReset(x)` measures and resets x whatever its branches do.
+            // Skipping the whole statement once left x in its old state for the next
+            // gate. Emit the measurement, then skip a branch that holds no gate.
+            if (ifs->condition && ifs->condition->type == AST_CALL_EXPR) {
+                CallExprNode* mc = (CallExprNode*)ifs->condition;
+                if (mc->function && mc->function->type == AST_SELECTOR_EXPR &&
+                    ((SelectorExprNode*)mc->function)->selector != NULL &&
+                    strcmp(((SelectorExprNode*)mc->function)->selector, "MeasureReset") == 0) {
+                    if (qasm3_scan_classical(ctx, ifs->then_stmt) &&
+                        qasm3_scan_classical(ctx, ifs->else_stmt)) {
+                        qasm3_handle_call(ctx, mc, NULL);
+                    } else {
+                        qasm3_refuse(ctx, mc->base.pos,
+                                     "--emit-qasm3 cannot emit an if statement whose condition is qir.MeasureReset and whose branches hold a gate");
+                    }
+                    return;
+                }
+            }
             // A branch that holds no gate cannot change the circuit, so it may stay
-            // unwalked. The condition may be qir.MeasureReset: the pinned
-            // qir_teleport_probe reference omits that verification measurement
-            // (a known gap, tracked apart from this fix).
-            if (qasm3_scan_classical(ctx, stmt, 1)) {
+            // unwalked.
+            if (qasm3_scan_classical(ctx, stmt)) {
                 return;
             }
             qasm3_refuse(ctx, ifs->condition ? ifs->condition->pos : stmt->pos,
@@ -844,7 +857,7 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                 int64_t cval = 0;
                 if (!qasm3_eval_int(ctx, f->condition, &cval)) {
                     // A loop that holds no gate cannot change the circuit.
-                    if (qasm3_scan_classical(ctx, stmt, 0)) {
+                    if (qasm3_scan_classical(ctx, stmt)) {
                         return;
                     }
                     qasm3_refuse(ctx, f->condition ? f->condition->pos : stmt->pos,
