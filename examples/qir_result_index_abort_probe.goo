@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+import "qir"
+
+func main() {
+	n := 64
+	a := qir.QubitAt(0)
+	qir.X(a)
+	fmt.Println("measuring into result 64")
+	r := qir.ResultAt(n)
+	qir.Mz(a, r)
+	r0 := qir.ResultAt(0)
+	fmt.Println("unreachable:", qir.ReadResult(r0))
+	qir.MeasureReset(a)
+}

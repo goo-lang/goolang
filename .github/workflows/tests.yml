@@ -99,6 +99,7 @@ jobs:
         #   since Ubuntu 24.04's system pip is externally managed (PEP 668)
         #   and every other tool here already comes from apt.
         run: |
+          { sudo grep -l -r 'packages.microsoft.com' /etc/apt/sources.list.d/ || true; } | xargs -r sudo rm -f -v
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             make gcc-14 bison llvm-dev clang libblocksruntime-dev \
