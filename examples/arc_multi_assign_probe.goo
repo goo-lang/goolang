@@ -64,10 +64,11 @@ func destructured(n int) int {
 
 // THE SELF-APPEND GUARD, and it is why this function exists.
 //
-// `xs, tag = append(xs, v), t` is NOT a rebind. goo_slice_append reallocs and
-// goo_realloc frees the old base ITSELF, so the pointer still in the slot is
-// already dangling when the store runs. Releasing it is a double free, and the
-// single-assign arm learned that in #284 at the cost of a use-after-free.
+// `xs, tag = append(xs, v), t` is NOT a rebind. The result keeps every element
+// xs held, so a release-before-store frees strings the new array still holds.
+// The single-assign arm learned that in #284 at the cost of a use-after-free.
+// What the store may free is only the array the append REPLACED, which
+// codegen_arc_release_replaced_buffer does for this approved xs.
 //
 // Without the guard on the multi-assign arm this is an invalid read or a
 // refcount panic, NOT a leak -- which is the one failure direction in this

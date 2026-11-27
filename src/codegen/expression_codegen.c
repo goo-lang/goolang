@@ -2028,14 +2028,17 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         // evaluated, so `s = s + "x"` has its fresh concat in hand before the
         // old buffer goes. See codegen_arc_release_before_store.
         //
-        // EXCEPT A SELF-APPEND, which does not drop the old value at all --
-        // goo_slice_append reallocs and goo_realloc frees the old base itself,
-        // so the pointer still in the slot is ALREADY dangling by the time we
-        // get here. Measured on bench/daemon/daemon.goo before this guard: 7
-        // invalid reads and a program that printed nothing.
-        if (!(binary->left && binary->left->type == AST_IDENTIFIER &&
-              release_decision_is_self_append(((IdentifierNode*)binary->left)->name,
-                                              binary->right))) {
+        // EXCEPT A SELF-APPEND, which is not a rebind: the result keeps every
+        // element the slot holds. A release-before-store would walk and free
+        // elements the new array still holds -- measured on
+        // bench/daemon/daemon.goo before this guard (when append still
+        // realloc'd): 7 invalid reads and a program that printed nothing.
+        // Only the replaced ARRAY can go, and only when the append moved it.
+        if (binary->left && binary->left->type == AST_IDENTIFIER &&
+            release_decision_is_self_append(((IdentifierNode*)binary->left)->name,
+                                            binary->right)) {
+            codegen_arc_release_replaced_buffer(codegen, target->llvm_value, sval);
+        } else {
             codegen_arc_release_before_store(codegen, target->llvm_value);
         }
 

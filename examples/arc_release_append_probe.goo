@@ -9,16 +9,17 @@
 // Measured on the way through: RELEASE_NO_ESCAPES, then RELEASE_NO_REBOUND after
 // change 1, then RELEASE_OK only with both. It is the daemon's `parts` shape.
 //
-// WHY THIS IS SAFE. append writes into the existing buffer or reallocs, and
-// goo_realloc frees the old base itself, so the intermediate buffers are already
-// gone. One local, one live buffer at exit, and ownership never moves.
+// WHY THIS IS SAFE. append writes into the existing buffer or copies it into a
+// new one, and because xs is approved, codegen releases each replaced buffer at
+// the store, so the intermediate buffers are already gone. One local, one live
+// buffer at exit, and ownership never moves.
 //
 // The dangerous cousin is `t := append(s, x)`, which can leave t.data == s.data
 // and give one buffer two owners. It stays refused by condition 2, and
 // release_decision_test row 19 pins that.
 //
-// Grows to 64 elements so the buffer reallocs several times, which exercises the
-// realloc path rather than only the first allocation.
+// Grows to 64 elements so the buffer moves several times, which exercises the
+// replaced-buffer release rather than only the first allocation.
 //
 // IMPORT-FREE, for the reason the other arc probes record.
 package main

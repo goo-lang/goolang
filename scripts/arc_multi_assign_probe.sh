@@ -163,7 +163,13 @@ echo "  release ON:  ${on_bytes} bytes in ${on_blocks} blocks"
 # source so it can be. `>` alone would pass on 1 block out of 1,000 and call a
 # 99.9%-broken fix green. Change this number in the commit that changes
 # examples/arc_multi_assign_probe.goo, and give the reason.
-EXPECTED_RECLAIM=1501
+#
+# 1501 -> 1510 (fix/append-no-realloc): append no longer reallocs, so with
+# release OFF selfAppend's xs leaks all 10 arrays it grows through (1, 2, ...,
+# 512) instead of only the last. Release ON is unchanged at 1,002 blocks,
+# because codegen releases each replaced array of the approved xs. The 9 extra
+# blocks are the CONTROL leaking more, not the fix reclaiming more.
+EXPECTED_RECLAIM=1510
 
 if [ -z "$off_blocks" ] || [ -z "$on_blocks" ]; then
     echo "  FAIL: could not read a block count from the valgrind log"

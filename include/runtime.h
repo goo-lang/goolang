@@ -553,8 +553,13 @@ int64_t goo_slice_copy_raw(void* dst, int64_t dst_len,
                            const void* src, int64_t src_len, int64_t elem_size);
 // append(dst, s...) bulk arm: snapshot src, grow dst by src_len (same
 // amortized-doubling policy as goo_slice_append), then move the snapshot in.
-// The snapshot is what makes self-append (append(b, b...)) safe across the
-// grow — a realloc of dst may free/move the very block src still aliases.
+// The snapshot is what makes an overlapping in-place append
+// (append(b[:1], b...)) read src before it writes over it.
+//
+// NEITHER append form reallocs or frees dst's old array. Growth copies into a
+// new array and leaves the old one to every other slice that shares it, as Go
+// does. Freeing the replaced array is the caller's job, and codegen does it
+// only for a release-approved `L = append(L, ...)`.
 void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
                            int64_t src_len, int64_t elem_size);
 
