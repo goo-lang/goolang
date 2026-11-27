@@ -283,6 +283,8 @@ void package_export_filter(Scope* pkg_scope, Scope* exports, struct Package* own
         // gates fell open AND codegen had no value to materialize.
         copy->has_const_int_value = v->has_const_int_value;
         copy->const_int_value = v->const_int_value;
+        copy->has_const_float_value = v->has_const_float_value;
+        copy->const_float_value = v->const_float_value;
         if (!scope_add_variable(exports, copy)) {
             // Duplicate name already present in exports — discard the copy.
             variable_free(copy);
@@ -3107,6 +3109,8 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
     // above, which only decides int64-vs-uint64 for an untyped const's Type.
     uint64_t const_int_value = 0;
     int has_const_int_value = goo_fold_const_int_ctx(checker, const_decl->values, &const_int_value);
+    double const_float_value = 0.0;
+    int has_const_float_value = goo_fold_const_float_ctx(checker, const_decl->values, &const_float_value);
 
     // Add constants to scope (treated as immutable variables)
     for (size_t i = 0; i < const_decl->name_count; i++) {
@@ -3120,6 +3124,8 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
         var->is_initialized = 1;
         var->has_const_int_value = has_const_int_value;
         var->const_int_value = const_int_value;
+        var->has_const_float_value = has_const_float_value;
+        var->const_float_value = const_float_value;
         if (comptime_val) {
             // First variable takes ownership of the original copy;
             // subsequent variables get their own copies. The multi-name

@@ -379,6 +379,11 @@ typedef struct Variable {
     // no-header-deps convention.
     int has_const_int_value;
     uint64_t const_int_value;
+    // The float twin of the cache above, set by type_check_const_decl when the
+    // RHS folds through goo_fold_const_float_ctx. --emit-qasm3 reads it to
+    // print a constant rotation angle (`qir.Rz(theta, q)`).
+    int has_const_float_value;
+    double const_float_value;
     // Function generics Task 4: marks this Variable as a generic function
     // TEMPLATE (its FuncDeclNode has type_params != NULL). Set by
     // declare_function_signature alongside registration. generic_decl is the
@@ -1224,6 +1229,14 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out);
 // resolution); the original context-free goo_fold_const_int above is
 // unchanged and keeps its existing (non-identifier) call sites.
 int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
+
+// Float sibling of goo_fold_const_int_ctx. Returns 1 and sets *out for a float
+// or integer literal, an identifier or `pkg.K` selector bound to a const (a
+// `comptime const` too) whose initializer folded, unary + and -, and binary
+// + - * /. Returns 0 for anything else, for a division by zero and for a
+// non-finite result, so a caller never sees a value that the source did not
+// give.
+int goo_fold_const_float_ctx(TypeChecker* checker, ASTNode* expr, double* out);
 
 // Arc 12 (p): resolve a `pkg.K` selector expression to the imported
 // package's exported Variable, or NULL when the shape doesn't match

@@ -1,0 +1,20 @@
+package main
+
+import "fmt"
+import "qir"
+
+const theta = 0.785398
+
+func rot(q qir.Qubit, theta float64) {
+	qir.Rz(theta, q)
+}
+
+func main() {
+	q := qir.Alloc()
+	rot(q, 0.5)
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

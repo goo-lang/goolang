@@ -6,6 +6,7 @@
 
 #include "codegen.h"
 #include "comptime.h"
+#include "diagnostic.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,11 @@ typedef enum {
     QASM3_VAR_QUBIT = 0,
     QASM3_VAR_RESULT,
     QASM3_VAR_INT,
+    // A local or a parameter that the walker cannot model (a float, a helper
+    // result). It is recorded so that it shadows a package const of the same
+    // name: the type checker has already left every function scope, so a
+    // lookup by name would otherwise find the const and print its value.
+    QASM3_VAR_OPAQUE,
 } Qasm3VarKind;
 
 typedef struct {
@@ -44,7 +50,22 @@ typedef struct {
     size_t        len;
     size_t        cap;
     int           indent;
+    // Set by qasm3_refuse. A refused program writes no output file.
+    int           failed;
 } Qasm3Ctx;
+
+// Refuses the program at `pos`: a positioned error through diag_emit, and no
+// output file. A wrong circuit that exits 0 is worse than no circuit.
+__attribute__((format(printf, 3, 4)))
+static void qasm3_refuse(Qasm3Ctx* ctx, Position pos, const char* fmt, ...) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(fmt != NULL);
+    va_list ap;
+    va_start(ap, fmt);
+    diag_vemit(DIAG_ERROR, pos, NULL, NULL, fmt, ap);
+    va_end(ap);
+    ctx->failed = 1;
+}
 
 static void qasm3_emit(Qasm3Ctx* ctx, const char* fmt, ...) {
     va_list ap;
@@ -175,19 +196,59 @@ static int qasm3_eval_int(Qasm3Ctx* ctx, ASTNode* expr, int64_t* out) {
     return 0;
 }
 
-static void qasm3_format_float(ASTNode* expr, char* buf, size_t n) {
-    if (!expr) { snprintf(buf, n, "0.0"); return; }
-    if (expr->type == AST_UNARY_EXPR && ((UnaryExprNode*)expr)->operator == TOKEN_MINUS) {
+// 1 when `expr` names a variable that the walker tracks. A tracked name may
+// shadow a package const, so the checker lookup must not read it.
+static int qasm3_mentions_local(Qasm3Ctx* ctx, ASTNode* expr) {
+    if (!expr) return 0;
+    switch (expr->type) {
+        case AST_IDENTIFIER:
+            return qasm3_find_var(ctx, ((IdentifierNode*)expr)->name) != NULL;
+        case AST_UNARY_EXPR:
+            return qasm3_mentions_local(ctx, ((UnaryExprNode*)expr)->operand);
+        case AST_BINARY_EXPR:
+            return qasm3_mentions_local(ctx, ((BinaryExprNode*)expr)->left) ||
+                   qasm3_mentions_local(ctx, ((BinaryExprNode*)expr)->right);
+        default:
+            return 0;
+    }
+}
+
+// A bare literal keeps its source text, so the circuits that the examples
+// pin stay byte-identical. A folded constant prints with the shortest
+// precision that reads back to the same double.
+static int qasm3_format_angle(Qasm3Ctx* ctx, const char* gate, ASTNode* expr,
+                              Position call_pos, char* buf, size_t n) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(gate != NULL);
+    GOO_ASSERT(buf != NULL && n >= 32);
+    if (expr && expr->type == AST_UNARY_EXPR &&
+        ((UnaryExprNode*)expr)->operator == TOKEN_MINUS &&
+        ((UnaryExprNode*)expr)->operand &&
+        ((UnaryExprNode*)expr)->operand->type == AST_LITERAL) {
         char inner[64];
-        qasm3_format_float(((UnaryExprNode*)expr)->operand, inner, sizeof(inner));
+        if (!qasm3_format_angle(ctx, gate, ((UnaryExprNode*)expr)->operand, call_pos,
+                                inner, sizeof(inner))) return 0;
         snprintf(buf, n, "-%s", inner);
-        return;
+        return 1;
     }
-    if (expr->type == AST_LITERAL && ((LiteralNode*)expr)->value) {
+    if (expr && expr->type == AST_LITERAL && ((LiteralNode*)expr)->value &&
+        (((LiteralNode*)expr)->literal_type == TOKEN_FLOAT ||
+         ((LiteralNode*)expr)->literal_type == TOKEN_INT)) {
         snprintf(buf, n, "%s", ((LiteralNode*)expr)->value);
-        return;
+        return 1;
     }
-    snprintf(buf, n, "0.0");
+    double v = 0.0;
+    if (expr && !qasm3_mentions_local(ctx, expr) && ctx->checker &&
+        goo_fold_const_float_ctx(ctx->checker, expr, &v)) {
+        for (int p = 1; p <= 17; p++) {
+            snprintf(buf, n, "%.*g", p, v);
+            if (strtod(buf, NULL) == v) return 1;
+        }
+        return 1; // 17 digits always round-trip
+    }
+    qasm3_refuse(ctx, expr ? expr->pos : call_pos,
+                 "qir.%s angle must be a compile-time constant for --emit-qasm3", gate);
+    return 0;
 }
 
 static int qasm3_resolve_ref(Qasm3Ctx* ctx, ASTNode* expr, char* out, size_t cap) {
@@ -272,7 +333,7 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
             if (strcmp(op, "Rx") == 0 || strcmp(op, "Ry") == 0 || strcmp(op, "Rz") == 0) {
                 const char* g = (strcmp(op, "Rx") == 0) ? "rx" : (strcmp(op, "Ry") == 0) ? "ry" : "rz";
                 char tbuf[64];
-                qasm3_format_float(call->args, tbuf, sizeof(tbuf));
+                if (!qasm3_format_angle(ctx, op, call->args, call->base.pos, tbuf, sizeof(tbuf))) return;
                 ASTNode* qarg = call->args ? call->args->next : NULL;
                 char ref[64];
                 if (qasm3_resolve_ref(ctx, qarg, ref, sizeof(ref))) {
@@ -389,6 +450,8 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                     }
                     if (qasm3_eval_int(ctx, arg, &ival)) {
                         qasm3_set_var(ctx, pname, QASM3_VAR_INT, ival);
+                    } else {
+                        qasm3_set_var(ctx, pname, QASM3_VAR_OPAQUE, 0);
                     }
                 }
             }
@@ -418,13 +481,20 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
         case AST_VAR_DECL: {
             VarDeclNode* vd = (VarDeclNode*)stmt;
             const char* name = (vd->name_count > 0 && vd->names) ? vd->names[0] : NULL;
+            size_t before = ctx->var_count;
             if (vd->values && vd->values->type == AST_CALL_EXPR) {
                 qasm3_handle_call(ctx, (CallExprNode*)vd->values, name);
-                return;
+            } else {
+                int64_t ival = 0;
+                if (name && qasm3_eval_int(ctx, vd->values, &ival)) {
+                    qasm3_set_var(ctx, name, QASM3_VAR_INT, ival);
+                }
             }
-            int64_t ival = 0;
-            if (name && qasm3_eval_int(ctx, vd->values, &ival)) {
-                qasm3_set_var(ctx, name, QASM3_VAR_INT, ival);
+            // Every name of the declaration shadows an outer const, tracked or not.
+            for (size_t i = 0; i < vd->name_count && vd->names; i++) {
+                if (vd->names[i] && (i > 0 || ctx->var_count == before)) {
+                    qasm3_set_var(ctx, vd->names[i], QASM3_VAR_OPAQUE, 0);
+                }
             }
             return;
         }
@@ -594,6 +664,11 @@ int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
 
     if (main_fd && main_fd->body) {
         qasm3_walk_stmt(&ctx, main_fd->body);
+    }
+
+    if (ctx.failed) {
+        free(ctx.buf);
+        return 0;
     }
 
     if (ctx.num_qubits == 0) ctx.num_qubits = 1;

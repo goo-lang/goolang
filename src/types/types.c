@@ -1050,6 +1050,8 @@ Variable* variable_new(const char* name, Type* type, Position pos) {
     var->is_captured = 0;   // Closures Task 2: set by type_checker_record_capture
     var->is_loop_var = 0;   // Closures Task 2: set by type_check_for_stmt's loop-binding sites
     var->has_const_int_value = 0;  // fix/const-array-length: set by type_check_const_decl
+    var->has_const_float_value = 0;
+    var->const_float_value = 0.0;
     var->const_int_value = 0;
     var->is_generic = 0;       // Function generics Task 4: set by declare_function_signature
     var->generic_decl = NULL;
