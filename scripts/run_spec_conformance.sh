@@ -211,10 +211,16 @@ self_test() {
         echo "self-test control (unchanged doc): FAIL, expected GREEN"; ok=0
     fi
 
-    sed -E 's/\*\*90% construct coverage\*\*/**91% construct coverage**/' "$DOC" > "$tmp/pct.md"
+    # Each fault is built from the measured counts, so a new manifest row
+    # cannot leave a fault that no longer applies.
+    local denom=$((works + divergent + absent))
+    local pct=$((works * 100 / denom))
+    sed -E "s/\*\*${pct}% construct coverage\*\*/**$((pct + 1))% construct coverage**/" "$DOC" > "$tmp/pct.md"
     if fault_changed "$tmp/pct.md" && self_fault "percentage changed by one" "$tmp/pct.md"; then :; else ok=0; fi
 
-    sed -E 's/^\| Types \| 9 \|/| Types | 8 |/' "$DOC" > "$tmp/cell.md"
+    local types_n
+    types_n="$(sed -nE 's/^\| Types \| ([0-9]+) \|.*/\1/p' "$DOC" | head -1)"
+    sed -E "s/^\| Types \| ${types_n:-0} \|/| Types | $(( ${types_n:-0} + 1 )) |/" "$DOC" > "$tmp/cell.md"
     if fault_changed "$tmp/cell.md" && self_fault "chapter cell changed by one" "$tmp/cell.md"; then :; else ok=0; fi
 
     sed '/spec-conformance:headline:begin/,/spec-conformance:headline:end/d' "$DOC" > "$tmp/nohead.md"
@@ -223,7 +229,7 @@ self_test() {
     { cat "$DOC"; printf '\n%s\n%s\n%s\n' "$HB" "$(render_headline "$works" "$divergent" "$rejected" "$absent")" "$HE"; } > "$tmp/twohead.md"
     if fault_changed "$tmp/twohead.md" && self_fault "second headline marker block added" "$tmp/twohead.md"; then :; else ok=0; fi
 
-    { printf '%s\n\n' "$(render_headline "$works" "$divergent" "$rejected" "$absent")"; sed -E 's/\(50 works \/ 55/(51 works \/ 55/' "$DOC"; } > "$tmp/countchg.md"
+    { printf '%s\n\n' "$(render_headline "$works" "$divergent" "$rejected" "$absent")"; sed -E "s/\(${works} works \/ ${denom}/($((works + 1)) works \/ ${denom}/" "$DOC"; } > "$tmp/countchg.md"
     if fault_changed "$tmp/countchg.md" && self_fault "headline count changed, correct line outside markers" "$tmp/countchg.md"; then :; else ok=0; fi
 
     empty="$tmp/empty.tsv"
