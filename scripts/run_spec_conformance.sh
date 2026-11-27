@@ -127,5 +127,12 @@ if [ "$pass" -gt 0 ] && [ "$drift" -eq 0 ]; then
     denom=$((works + divergent + absent))
     pct=$(( works * 100 / denom ))
     echo "    conformance (works / tested-excl-deliberate-rejections): ${pct}% (${works}/${denom})"
+    # The headline in the matrix is a hand-kept copy of these numbers. A stale
+    # copy is a claim that rots, so this run refuses it.
+    headline="(${works} works / ${denom} tested constructs, excluding ${rejected} deliberate rejections)"
+    if ! grep -Fq -- "$headline" docs/GO_SPEC_CONFORMANCE.md; then
+        echo "spec-conformance: FAIL (docs/GO_SPEC_CONFORMANCE.md headline does not match this run)"
+        drift=$((drift+1))
+    fi
 fi
 [ "$drift" -eq 0 ]
