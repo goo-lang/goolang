@@ -242,6 +242,12 @@ void goo_defer_push(goo_defer_frame_t* f, void (*fn)(void* env), void* env);
 // on a frame that was never pushed to at all.
 void goo_defer_run(goo_defer_frame_t* f);
 
+// Capacity of the embedded QIR simulator (src/runtime/qir_sim.c). The compiler
+// reads these limits to refuse a constant id that a native build cannot hold,
+// and the simulator reads them to refuse an id that reaches it at run time.
+#define GOO_QIR_SIM_MAX_QUBITS 16
+#define GOO_QIR_SIM_MAX_RESULTS 64
+
 // Error handling
 void goo_panic(const char* message) __attribute__((noreturn));
 goo_error_t* goo_new_error(const char* message);
