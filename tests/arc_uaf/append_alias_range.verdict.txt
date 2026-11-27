@@ -1,0 +1,4 @@
+[arc?] rangeGrow: xs -> RELEASE_NO_ALIASED
+[arc?] rangeGrow: sum -> RELEASE_OK
+[arc?] rangeGrow: _ -> RELEASE_NO_NO_BINDING
+[arc?] rangeGrow: v -> RELEASE_NO_LOOP_SCOPE

@@ -1,0 +1,6 @@
+[arc?] mkReg: r -> RELEASE_NO_NO_BINDING
+[arc?] mkReg: b -> RELEASE_NO_ESCAPES
+[arc?] use: r -> RELEASE_NO_NO_BINDING
+[arc?] use: b -> RELEASE_NO_NOT_OWNED
+[arc?] main: r -> RELEASE_NO_ESCAPES
+[arc?] main: n -> RELEASE_OK

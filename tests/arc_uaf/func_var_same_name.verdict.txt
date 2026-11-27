@@ -1,0 +1,5 @@
+[arc?] B__get: b -> RELEASE_NO_NO_BINDING
+[arc?] use: b -> RELEASE_NO_NOT_OWNED
+[arc?] main: r -> RELEASE_NO_ESCAPES
+[arc?] __goo_lit_0: r -> RELEASE_NO_NO_BINDING
+[arc?] main: n -> RELEASE_OK

@@ -1,0 +1,3 @@
+[arc?] viaPtr: xs -> RELEASE_NO_ALIASED
+[arc?] viaPtr: p -> RELEASE_NO_NOT_OWNED
+[arc?] viaPtr: i -> RELEASE_NO_ESCAPES

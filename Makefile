@@ -6012,7 +6012,9 @@ arc-reassign-probe: $(COMPILER) $(RUNTIME_LIB)
 arc-uaf-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_uaf_probe.sh
 
-arc-uaf-selftest:
+# The self-test compiles a real fixture to prove a wrong or missing
+# .verdict.txt turns the gate RED, so it needs the compiler too.
+arc-uaf-selftest: $(COMPILER) $(RUNTIME_LIB)
 	@CC="$(CC)" ./scripts/arc_uaf_probe.sh --self-test
 
 arc-release-probe: $(COMPILER) $(RUNTIME_LIB)

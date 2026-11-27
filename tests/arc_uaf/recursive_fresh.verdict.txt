@@ -1,0 +1,4 @@
+[arc?] mk: n -> RELEASE_NO_NO_BINDING
+[arc?] main: i -> RELEASE_NO_LOOP_SCOPE
+[arc?] main: b -> RELEASE_OK
+[arc] main: will release b at scope exit (field=-1, dtor=none)

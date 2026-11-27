@@ -1,0 +1,3 @@
+[arc?] main: n -> RELEASE_NO_NOT_OWNED
+[arc?] main: p -> RELEASE_NO_LOOP_SCOPE
+[arc?] main: x -> RELEASE_NO_BLOCK_ESCAPE

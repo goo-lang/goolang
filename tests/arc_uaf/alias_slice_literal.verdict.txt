@@ -1,0 +1,4 @@
+[arc?] yes: c -> RELEASE_NO_NO_BINDING
+[arc?] s3: x -> RELEASE_NO_ALIASED
+[arc?] s3: xs -> RELEASE_OK
+[arc] s3: will release xs at function exit (field=0, dtor=none)
