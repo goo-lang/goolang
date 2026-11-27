@@ -155,7 +155,7 @@ make_synth_tree() {
         > "$t/third_party/go1.27.4-src/synth/renamed/r.go"
     printf 'package renamed\n\nfunc G(match_ int) int {\n\t// match stays in a comment\n\treturn match_ + 1\n}\n' \
         > "$t/goostd/synth/renamed/r.go"
-    printf 'synth/renamed\tr.go\trename\tmatch->match_@3:8\nsynth/renamed\tr.go\trename\tmatch->match_@5:9\n' \
+    printf 'synth/plain\t-\tpackage\tgo1.27.4\nsynth/renamed\t-\tpackage\tgo1.27.4\nsynth/renamed\tr.go\trename\tmatch->match_@3:8\nsynth/renamed\tr.go\trename\tmatch->match_@5:9\n' \
         > "$t/goostd/VENDOR.tsv"
 }
 
@@ -194,6 +194,12 @@ self_test() {
     m_nopristine(){ rm "$1/third_party/go1.27.4-src/synth/renamed/r.go"; }
     m_novendored(){ rm "$1/goostd/synth/plain/plain.go"; }
     m_extra()     { printf 'package plain\n' > "$1/goostd/synth/plain/extra.go"; }
+    m_nopristine_plain() { rm "$1/third_party/go1.27.4-src/synth/plain/plain.go"; }
+    m_nopristine_dir()   { rm -r "$1/third_party/go1.27.4-src/synth/plain"; }
+    m_nopkgrow()  { sed -i '/^synth\/plain\t-\tpackage\t/d' "$1/goostd/VENDOR.tsv"; }
+    m_capsen()    { sed -i 's/return match + 1/return cap + 1/' "$1/third_party/go1.27.4-src/synth/renamed/r.go"
+                    sed -i 's/return match_ + 1/return len + 1/' "$1/goostd/synth/renamed/r.go"
+                    sed -i 's/match->match_@5:9/cap->len@5:9/' "$1/goostd/VENDOR.tsv"; }
     m_empty()     { rm -rf "$1/third_party/go1.27.4-src/synth" "$1/goostd/synth"; : > "$1/goostd/VENDOR.tsv"; }
 
     echo "vendor-drift-probe --self-test"
@@ -205,6 +211,10 @@ self_test() {
     fault "pristine file missing"                     NO-PRISTINE     m_nopristine
     fault "vendored twin missing"                     NO-VENDORED     m_novendored
     fault "vendored file with no pristine twin"       NO-PRISTINE-TWIN m_extra
+    fault "only pristine file of a 0-deviation package deleted" NO-PRISTINE m_nopristine_plain
+    fault "whole pristine directory of a 0-deviation package deleted" NO-PRISTINE m_nopristine_dir
+    fault "package row deleted"                       LEDGER          m_nopkgrow
+    fault "rename row cap->len (not a reserved word)" RENAME          m_capsen
     fault "empty work list"                           EMPTY           m_empty
     if [ $fails -eq 0 ]; then echo "vendor-drift-probe --self-test: PASS"; return 0; fi
     echo "vendor-drift-probe --self-test: FAIL ($fails)"; return 1
