@@ -1,6 +1,8 @@
 #ifndef GOO_PARSER_ACTIONS_H
 #define GOO_PARSER_ACTIONS_H
 
+#include <stdbool.h>
+
 // Semantic-action helpers and parser-owned globals for parser.y.
 //
 // This header is the C-extraction counterpart of parser.y's former
@@ -231,5 +233,11 @@ ASTNode* map_entry_list_append(ASTNode* keys_head, ASTNode* new_key);
 // `operand catch e { fallback }` — see the call site in parser.y for why no
 // new type-check/codegen logic is needed.
 CatchExprNode* catch_expr_arrow_new(ASTNode* operand, ASTNode* fallback);
+
+// Did the INT_LITERAL token that starts at (line, column) have a source value
+// above UINT64_MAX? The lexer bridge clamps such a value to UINT64_MAX, so the
+// literal's decimal text ("-1") cannot say so. The INT_LITERAL action records
+// the answer in LiteralNode.int_overflow, and the type checker refuses it.
+bool bridge_int_literal_overflowed(int line, int column);
 
 #endif // GOO_PARSER_ACTIONS_H

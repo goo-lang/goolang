@@ -2643,6 +2643,11 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
             register_declared_names_after_failure(checker, var_decl, declared_type);
             return 0;
         }
+        if (inferred_type->kind == TYPE_VOID) {
+            type_error(checker, var_decl->values->pos, "used as value");
+            register_declared_names_after_failure(checker, var_decl, declared_type);
+            return 0;
+        }
         // Fix 2 (comptime-param functions are not first-class values): a
         // comptime-parameterized function captured into a variable — typed
         // (`var f func(int,int) int = fill`) OR inferred (`f := fill`) —
@@ -2994,6 +2999,10 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
     if (!value_type) {
         return 0;
     }
+    if (value_type->kind == TYPE_VOID) {
+        type_error(checker, const_decl->values->pos, "used as value");
+        return 0;
+    }
     
     // Check declared type if present
     Type* declared_type = NULL;
@@ -3073,7 +3082,16 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
     if (const_decl->is_comptime && checker->comptime_type_ctx
                                 && checker->comptime_type_ctx->comptime_ctx) {
         ComptimeContext* raw_ctx = checker->comptime_type_ctx->comptime_ctx;
+        comptime_context_reset_steps(raw_ctx);
         ComptimeResult* res = comptime_eval_expression(raw_ctx, const_decl->values);
+        // Other evaluation errors stay non-fatal here (see above), but a
+        // spent budget is a hard error: without it the compile would only
+        // fail later with the generic "must be compile-time constant".
+        if (res && comptime_error_is_limit(res->error)) {
+            type_error(checker, res->error->position, "%s", res->error->message);
+            comptime_result_free(res);
+            return 0;
+        }
         if (res && res->value && !res->error) {
             comptime_val = comptime_value_copy(res->value);
         }
@@ -3372,6 +3390,13 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
     for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
         Type* vt = type_check_expression(checker, v);
         if (!vt) return 0;
+        // A no-value call is not a value in any position of the list. Checked
+        // per value: `a, b := f(), 1` and `a, b := 1, f()` both reach codegen
+        // without this, where a void alloca crashes the compiler (SIGILL).
+        if (vt->kind == TYPE_VOID) {
+            type_error(checker, v->pos, "used as value");
+            return 0;
+        }
         // Fix 2 (comptime-param functions are not first-class values):
         // `a, b := fill, 1` / `a, b = fill, 1` capture fill's VALUE into a
         // Variable with no func_decl_node — the same alias bypass the
@@ -4360,6 +4385,10 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 return 0;
             }
         } else if (expected) {
+            if (expected->kind != TYPE_VOID && return_type->kind == TYPE_VOID) {
+                type_error(checker, ret_stmt->values->pos, "used as value");
+                return 0;
+            }
             // Non-error-union enclosing return type. Reject a returned value
             // whose type is incompatible with the declared return type here,
             // before it reaches codegen and crashes the LLVM verifier with a

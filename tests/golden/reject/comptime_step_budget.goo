@@ -1,0 +1,18 @@
+package main
+
+import "os"
+
+func fib(n int) int {
+    if n < 2 {
+        return n
+    }
+    return fib(n-1) + fib(n-2)
+}
+
+// fib(40) makes about 3.3e8 calls. The depth limit (100) and the per-loop
+// limit (1000) never trip, so only a total step budget stops it.
+comptime const F int = fib(40)
+
+func main() {
+    os.Exit(F)
+}
