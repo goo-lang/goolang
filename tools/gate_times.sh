@@ -119,7 +119,8 @@ bad:
 	false
 EOF
     printf 'HEAVY_DEPS := bad\nVERIFY_ALL_DEPS := \\\n    slow \\\n    bad\n' > "$scratch/heavy.mk"
-    printf '# no gates here\n' > "$scratch/none.mk"
+    # Every gate is heavy, so only the empty-list check can cause exit 2.
+    printf 'HEAVY_DEPS := bad\nVERIFY_ALL_DEPS := \\\n    bad\n' > "$scratch/none.mk"
 
     out="$scratch/rows.tsv"
     env -i PATH=/usr/bin:/bin HOME="$HOME" MAKEFILE="$scratch/Makefile" \
@@ -151,10 +152,10 @@ EOF
     # An empty default gate list must exit 2.
     env -i PATH=/usr/bin:/bin HOME="$HOME" MAKEFILE="$scratch/none.mk" \
         GATE_TIMES_OUT="$scratch/none.tsv" GATE_TIMES_LOGDIR="$scratch/logs" \
-        bash "$self" >/dev/null 2>&1
+        bash "$self" >/dev/null 2>"$scratch/none.err"
     rc=$?
-    if [ "$rc" -ne 2 ]; then
-        echo "self-test FAIL: empty gate list exited $rc, expected 2" >&2
+    if [ "$rc" -ne 2 ] || ! grep -q 'the gate list is empty' "$scratch/none.err"; then
+        echo "self-test FAIL: empty gate list exited $rc, expected 2 with 'the gate list is empty'" >&2
         fail=1
     fi
 
@@ -181,6 +182,7 @@ case "${1:-}" in
         self_test
         exit $?
         ;;
+    # --source-only lets the self-test load the functions without running a sweep.
     --source-only)
         return 0 2>/dev/null || exit 0
         ;;
