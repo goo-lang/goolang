@@ -1,0 +1,9 @@
+package main
+
+const n = 1e646456992
+const d = 1e646456991
+
+func main() {
+	x := n / d
+	_ = x
+}
