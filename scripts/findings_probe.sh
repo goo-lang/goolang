@@ -64,7 +64,7 @@
 #                                                  # synthetic fixtures
 #   FINDINGS_RUN_LANES=1 scripts/findings_probe.sh
 #                                                  # run the lanes first (no stamp needed)
-#   scripts/findings_probe.sh --self-test         # nine synthetic cases and one
+#   scripts/findings_probe.sh --self-test         # ten synthetic cases and one
 #                                                  # cppcheck repeatability control,
 #                                                  # see below; never runs the real
 #                                                  # pipeline
@@ -125,41 +125,40 @@ run_check_only() { # $1 = sarif path
 # hash, so the --self-test below drives this function with synthetic values
 # and reads no machine state. Prints one FAIL line and returns 1 on any fault.
 LANES_STAMP="${LANES_STAMP:-$REPO_ROOT/build/sarif/lanes.stamp}"
+stamp_stale() { # $1 = the detail line
+	echo "$PROBE: FAIL (analyser SARIF is missing or stale; run analyzer-lanes-probe)" >&2
+	echo "    $1" >&2
+	return 1
+}
 check_lanes_stamp() { # $1 = stamp, $2 = current sig, $3 = current tree, $4-$6 = gcc, tidy, cppcheck dirs
 	local stamp="$1" want_sig="$2" want_tree="$3" line got_sig got_tree
-	local stale="$PROBE: FAIL (analyser SARIF is missing or stale; run analyzer-lanes-probe)"
 	if [ ! -f "$stamp" ]; then
-		echo "$stale" >&2
-		echo "    no stamp at $stamp" >&2
-		return 1
+		stamp_stale "no stamp at $stamp"
+		return
 	fi
 	line="$(head -1 "$stamp")"
 	got_sig="$(printf '%s\n' "$line" | sed -n 's/^sig=\([^ ]*\) tree=.*/\1/p')"
 	got_tree="$(printf '%s\n' "$line" | sed -n 's/^sig=[^ ]* tree=\([^ ]*\)$/\1/p')"
 	if [ -z "$got_sig" ] || [ -z "$got_tree" ]; then
-		echo "$stale" >&2
-		echo "    the stamp $stamp has no sig= and tree= fields" >&2
-		return 1
+		stamp_stale "the stamp $stamp has no sig= and tree= fields"
+		return
 	fi
 	if [ "$got_sig" != "$want_sig" ]; then
-		echo "$stale" >&2
-		echo "    the toolchain differs from the stamp's (sig $got_sig, now $want_sig)" >&2
-		return 1
+		stamp_stale "the toolchain differs from the stamp's (sig $got_sig, now $want_sig)"
+		return
 	fi
 	if [ "$got_tree" != "$want_tree" ]; then
-		echo "$stale" >&2
-		echo "    an input file differs from the stamp's tree (tree $got_tree, now $want_tree)" >&2
-		return 1
+		stamp_stale "an input file differs from the stamp's tree (tree $got_tree, now $want_tree)"
+		return
 	fi
 	# A valid stamp over a directory that someone emptied is still no data.
-	local d pat
+	local d d_pat pat
 	for d_pat in "$4:*.sarif" "$5:*.txt" "$6:*.sarif"; do
 		d="${d_pat%%:*}"
 		pat="${d_pat#*:}"
 		if [ -z "$(find "$d" -maxdepth 1 -type f -name "$pat" -print -quit 2>/dev/null)" ]; then
-			echo "$stale" >&2
-			echo "    $d holds no $pat file" >&2
-			return 1
+			stamp_stale "$d holds no $pat file"
+			return
 		fi
 	done
 	return 0
@@ -329,10 +328,11 @@ sys.exit(0 if len(r) == 1 and r[0]['suppressions'] == [{'kind': 'external', 'jus
 	out_i="$(check_h "$W/i.stamp" 2>&1)" && rc_i=0 || rc_i=$?
 	out_i2="$(check_h "$W/i2.stamp" 2>&1)" && rc_i2=0 || rc_i2=$?
 	if [ "${rc_i:-0}" -ne 0 ] && [ "${rc_i2:-0}" -ne 0 ] \
-		&& printf '%s\n' "$out_i" | grep -q "missing or stale"; then
+		&& printf '%s\n' "$out_i" | grep -q "an input file differs" \
+		&& printf '%s\n' "$out_i2" | grep -q "the toolchain differs"; then
 		echo "    ok: a stamp with a wrong tree or a wrong sig is RED"
 	else
-		echo "$SELF: FAIL (a stale stamp did not go RED): tree rc=$rc_i sig rc=$rc_i2 $out_i"
+		echo "$SELF: FAIL (a stale stamp did not go RED for its own reason): tree rc=$rc_i sig rc=$rc_i2 $out_i / $out_i2"
 		fail=1
 	fi
 	# (j) a valid stamp is GREEN, and the same stamp with one lane directory
@@ -399,6 +399,24 @@ print(lanes_stamp.signature_from(['gcc 1', 'tidy 1', 'cppcheck 1'], sys.argv[2])
 		echo "    ok: a different CLANG_TIDY_CHECKS value changes the sig, and the same value gives the same sig"
 	else
 		echo "$SELF: FAIL (CLANG_TIDY_CHECKS does not change the sig): $sig_a / $sig_b"
+		fail=1
+	fi
+
+	# (n) signature() itself reads CLANG_TIDY_CHECKS from the environment, which
+	# (m) cannot show because signature_from takes the value as an argument. The
+	# environment is built by env -i, and _version_line is replaced so that no
+	# tool on the machine is run.
+	sig_env_of() { env -i PATH=/usr/bin:/bin CLANG_TIDY_CHECKS="$1" python3 -I -c "
+import sys; sys.path.insert(0, sys.argv[1])
+import lanes_stamp
+lanes_stamp._version_line = lambda cmd: 'fixed ' + cmd[0]
+print(lanes_stamp.signature(sys.argv[2]))" "$SR/tools" "$SR/db.json" 2>&1 || true; }
+	sig_na="$(sig_env_of '')"
+	sig_nb="$(sig_env_of 'clang-analyzer-*')"
+	if [ "${#sig_na}" -eq 64 ] && [ "${#sig_nb}" -eq 64 ] && [ "$sig_na" != "$sig_nb" ] && [ "$sig_na" = "$(sig_env_of '')" ]; then
+		echo "    ok: signature() reads CLANG_TIDY_CHECKS from the environment"
+	else
+		echo "$SELF: FAIL (signature() ignores CLANG_TIDY_CHECKS in the environment): $sig_na / $sig_nb"
 		fail=1
 	fi
 
@@ -483,7 +501,7 @@ PYEOF
 	if [ "$fail" -ne 0 ]; then
 		exit 1
 	fi
-	echo "$SELF: PASS (a/b/c/e/h/i/l/m red, d/f/k green, j green and red, on synthetic fixtures; g repeatable on the real $reorder_scope units; the real pipeline runs in findings-probe)"
+	echo "$SELF: PASS (a/b/c/e/h/i/l/m/n red, d/f/k green, j green and red, on synthetic fixtures; g repeatable on the real $reorder_scope units; the real pipeline runs in findings-probe)"
 	exit 0
 fi
 
@@ -503,8 +521,7 @@ if [ "${FINDINGS_RUN_LANES:-0}" != "1" ]; then
 	# lane failure leaves no stamp, so it reaches here as "missing".
 	lanes_db="${COMPILE_COMMANDS_OUT:-$REPO_ROOT/build/compile_commands.json}"
 	if [ ! -f "$lanes_db" ]; then
-		echo "$PROBE: FAIL (analyser SARIF is missing or stale; run analyzer-lanes-probe)" >&2
-		echo "    no compile database at $lanes_db" >&2
+		stamp_stale "no compile database at $lanes_db"
 		exit 1
 	fi
 	now_sig="$(python3 "$REPO_ROOT/tools/lanes_stamp.py" sig "$lanes_db")"
@@ -521,14 +538,14 @@ fi
 set +e
 if [ "${FINDINGS_RUN_LANES:-0}" = "1" ]; then
 	bash "$REPO_ROOT/scripts/analyzer_lanes_probe.sh" 2>&1 | tee "$GATE_LOG"
-	lanes_rc="${PIPESTATUS[0]}"
+	lanes_note="exited ${PIPESTATUS[0]}"
 else
-	lanes_rc=skipped
+	lanes_note="not run here (its stamp was checked)"
 fi
 bash "$REPO_ROOT/scripts/pthread_return_probe.sh" 2>&1 | tee -a "$GATE_LOG"
 pthread_rc="${PIPESTATUS[0]}"
 set -e
-echo "$PROBE: analyzer-lanes-probe exited $lanes_rc, pthread-return-probe exited $pthread_rc" \
+echo "$PROBE: analyzer-lanes-probe $lanes_note, pthread-return-probe exited $pthread_rc" \
 	"(a nonzero exit here becomes a goo/gate-failed finding below, not an abort)"
 
 CLANG_TIDY_VERSION="$(clang-tidy --version | sed -n 's/.*LLVM version[[:space:]]*//p')"
