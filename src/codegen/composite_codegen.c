@@ -742,7 +742,12 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
             }
         }
         double math_value = 0.0;
-        if (strcmp(dispatch_pkg, "math") == 0 && goo_math_const(selector->selector, &math_value)) {
+        // A local, parameter or field named `math` has a value type here. Only
+        // a base that the checker typed as a package may read the math table.
+        const bool base_is_package = pkg->base.node_type == NULL ||
+                                     pkg->base.node_type->kind == TYPE_PACKAGE;
+        if (base_is_package && strcmp(dispatch_pkg, "math") == 0 &&
+            goo_math_const(selector->selector, &math_value)) {
             LLVMValueRef pi = LLVMConstReal(LLVMDoubleTypeInContext(codegen->context),
                                             math_value);
             return value_info_new(NULL, pi,

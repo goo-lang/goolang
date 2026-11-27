@@ -42,6 +42,10 @@ typedef struct {
     size_t        func_count;
     Qasm3Var      vars[QASM3_MAX_VARS];
     size_t        var_count;
+    // Names whose address `&name` is taken somewhere in the program. A store
+    // through a pointer is invisible to the scan, so such an int is never folded.
+    char          addr_taken[QASM3_MAX_VARS][64];
+    size_t        addr_taken_count;
     uint64_t      num_qubits;
     uint64_t      num_results;
     uint64_t      num_syn_bits;
@@ -105,6 +109,17 @@ static Qasm3Var* qasm3_find_var(Qasm3Ctx* ctx, const char* name) {
     return qasm3_find_var_upto(ctx, name, ctx->var_count);
 }
 
+static int qasm3_is_addr_taken(const Qasm3Ctx* ctx, const char* name) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(name != NULL);
+    for (size_t i = 0; i < ctx->addr_taken_count; i++) {
+        if (strcmp(ctx->addr_taken[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static Qasm3Var* qasm3_set_var(Qasm3Ctx* ctx, const char* name, Qasm3VarKind kind, int64_t val) {
     if (!name) return NULL;
     if (ctx->var_count >= QASM3_MAX_VARS) return NULL;
@@ -113,6 +128,9 @@ static Qasm3Var* qasm3_set_var(Qasm3Ctx* ctx, const char* name, Qasm3VarKind kin
     snprintf(v->name, sizeof(v->name), "%s", name);
     v->kind = kind;
     v->index_or_val = val;
+    if (kind == QASM3_VAR_INT && qasm3_is_addr_taken(ctx, name)) {
+        v->kind = QASM3_VAR_OPAQUE;
+    }
     return v;
 }
 
@@ -540,6 +558,93 @@ static const char* qasm3_stmt_name(ASTNodeType t) {
 // reading a stale value.
 static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node);
 
+// True for `=`, `:=` and every compound assignment operator.
+static int qasm3_is_store_op(TokenType op) {
+    switch (op) {
+        case TOKEN_ASSIGN:
+        case TOKEN_SHORT_ASSIGN:
+        case TOKEN_PLUS_ASSIGN:
+        case TOKEN_MINUS_ASSIGN:
+        case TOKEN_MUL_ASSIGN:
+        case TOKEN_DIV_ASSIGN:
+        case TOKEN_MOD_ASSIGN:
+        case TOKEN_AND_ASSIGN:
+        case TOKEN_OR_ASSIGN:
+        case TOKEN_XOR_ASSIGN:
+        case TOKEN_LSHIFT_ASSIGN:
+        case TOKEN_RSHIFT_ASSIGN:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// Records every `&name` below `node` and its siblings. Kinds that the walker
+// refuses anyway are not followed.
+static void qasm3_note_addr_taken(Qasm3Ctx* ctx, ASTNode* node) {
+    GOO_ASSERT(ctx != NULL);
+    for (ASTNode* n = node; n; n = n->next) {
+        switch (n->type) {
+            case AST_UNARY_EXPR: {
+                UnaryExprNode* u = (UnaryExprNode*)n;
+                if ((u->operator == TOKEN_BIT_AND || u->operator == TOKEN_ADDR_OF) &&
+                    u->operand && u->operand->type == AST_IDENTIFIER &&
+                    ctx->addr_taken_count < sizeof(ctx->addr_taken) / sizeof(ctx->addr_taken[0])) {
+                    snprintf(ctx->addr_taken[ctx->addr_taken_count++],
+                             sizeof(ctx->addr_taken[0]), "%s",
+                             ((IdentifierNode*)u->operand)->name);
+                }
+                qasm3_note_addr_taken(ctx, u->operand);
+                break;
+            }
+            case AST_BINARY_EXPR:
+                qasm3_note_addr_taken(ctx, ((BinaryExprNode*)n)->left);
+                qasm3_note_addr_taken(ctx, ((BinaryExprNode*)n)->right);
+                break;
+            case AST_SELECTOR_EXPR:
+                qasm3_note_addr_taken(ctx, ((SelectorExprNode*)n)->expr);
+                break;
+            case AST_INDEX_EXPR:
+                qasm3_note_addr_taken(ctx, ((IndexExprNode*)n)->expr);
+                qasm3_note_addr_taken(ctx, ((IndexExprNode*)n)->index);
+                break;
+            case AST_CALL_EXPR:
+                qasm3_note_addr_taken(ctx, ((CallExprNode*)n)->function);
+                qasm3_note_addr_taken(ctx, ((CallExprNode*)n)->args);
+                break;
+            case AST_EXPR_STMT:
+                qasm3_note_addr_taken(ctx, ((ExprStmtNode*)n)->expr);
+                break;
+            case AST_VAR_DECL:
+                qasm3_note_addr_taken(ctx, ((VarDeclNode*)n)->values);
+                break;
+            case AST_BLOCK_STMT:
+                qasm3_note_addr_taken(ctx, ((BlockStmtNode*)n)->statements);
+                break;
+            case AST_IF_STMT: {
+                IfStmtNode* i = (IfStmtNode*)n;
+                qasm3_note_addr_taken(ctx, i->condition);
+                qasm3_note_addr_taken(ctx, i->then_stmt);
+                qasm3_note_addr_taken(ctx, i->else_stmt);
+                break;
+            }
+            case AST_FOR_STMT: {
+                ForStmtNode* f = (ForStmtNode*)n;
+                qasm3_note_addr_taken(ctx, f->init);
+                qasm3_note_addr_taken(ctx, f->condition);
+                qasm3_note_addr_taken(ctx, f->post);
+                qasm3_note_addr_taken(ctx, f->body);
+                break;
+            }
+            case AST_RETURN_STMT:
+                qasm3_note_addr_taken(ctx, ((ReturnStmtNode*)n)->values);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 static void qasm3_invalidate(Qasm3Ctx* ctx, ASTNode* target) {
     GOO_ASSERT(ctx != NULL);
     if (target && target->type == AST_IDENTIFIER) {
@@ -600,7 +705,11 @@ static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node) {
         case AST_BINARY_EXPR: {
             BinaryExprNode* b = (BinaryExprNode*)node;
             // Any operator that stores (=, +=, ...) leaves the left side unknown.
-            if (b->operator == TOKEN_ASSIGN || b->operator == TOKEN_PLUS_ASSIGN) {
+            if (qasm3_is_store_op(b->operator)) {
+                // A store through a pointer, an index or a field cannot be tracked.
+                if (b->left == NULL || b->left->type != AST_IDENTIFIER) {
+                    return 0;
+                }
                 qasm3_invalidate(ctx, b->left);
             }
             return qasm3_scan_classical(ctx, b->left) && qasm3_scan_classical(ctx, b->right);
@@ -927,6 +1036,11 @@ int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
 
+    for (ASTNode* d = prog->decls; d; d = d->next) {
+        if (d->type == AST_FUNC_DECL) {
+            qasm3_note_addr_taken(&ctx, ((FuncDeclNode*)d)->body);
+        }
+    }
     if (main_fd && main_fd->body) {
         qasm3_walk_body(&ctx, main_fd->body);
     }
