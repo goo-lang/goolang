@@ -247,6 +247,19 @@ Measured 2026-08-02, three builds in ONE sitting, on `bench/daemon/daemon.goo`
 96.7% of peak reclaimed; 1,433 → 41 bytes retained per request; 3.19x Go's
 peak RSS, where ADR 0002's opening measurement was 81x. valgrind: 0 errors.
 
+Re-measured 2026-11-27 for PR #376 (append allocates a new array instead of
+`realloc`), three compilers in ONE sitting, default build (ARC on), same
+output-path length:
+
+| compiler | in use at exit / 2,000 req | valgrind errors | peak RSS, 400,000 req |
+|---|---|---|---|
+| main (`realloc` in append) | 82,200 bytes / 4,003 blocks | 0 | 26,228 KB |
+| 719a1c58 (no array freed after growth) | 402,200 bytes / 10,003 blocks | 0 | 107,204 KB |
+| fix/append-alias-sound (replaced array freed) | 82,200 bytes / 4,003 blocks | 0 | 26,436 KB |
+
+`arc-daemon-blocks-probe` gates the block count (budget 4,043, the measured
+4,003 + 1%).
+
 **Quote bytes, or re-measure all builds together.** A control drifted 5.6%
 between two sittings, which made cross-session percentages non-comparable.
 Read the BLOCK COUNT first — `main` reads `os.Args` and the runtime copies
@@ -302,17 +315,19 @@ length while the block count holds. The figures in this section are for a progra
 - **A multi-assign target gets no store release.** `a, b = x, y` stores
   without freeing what the slots held. A LEAK, never a use-after-free, and
   untested rather than proven absent.
-- **The earlier arrays of a growing slice are not freed.** `append` never
-  frees the old array when it grows (PR #376): another slice may share it,
-  and the release plan cannot yet prove that no alias holds it (condition 7
-  runs only for a local bound more than once, and a self-append is not a
-  binding). A LEAK, never a use-after-free. MEASURED 2026-11-27, 1,024 ints
-  appended to an empty slice that is returned: 16,552 bytes in 11 blocks
-  against main's 8,208 bytes in 1 block. The bound: less than the bytes of
-  the final array, plus one block for each doubling. On
-  `bench/daemon/daemon.goo` (same sitting): 4,003 -> 10,003 blocks in use at
-  exit for 2,000 requests, and peak RSS 25,272 KB -> 107,904 KB at 400,000,
-  so the ARC table above is a pre-#376 figure.
+- **The earlier arrays of a growing slice are freed only for a RELEASE_OK
+  local.** `append` never frees the old array when it grows (PR #376):
+  another slice may share it. Codegen frees it at `L = append(L, ...)` when L
+  reads RELEASE_OK, and condition 7 now runs for a self-appended local (no
+  other local's value names L, and no `range` over L has the append in its
+  body). EVERY OTHER self-appended slice leaks its earlier arrays: one that
+  escapes (is returned, stored, passed to a retaining call) or is aliased.
+  A LEAK, never a use-after-free. MEASURED 2026-11-27, 1,024 ints appended to
+  an empty slice that is RETURNED: 16,552 bytes in 11 blocks on this branch
+  and on 719a1c58, against main's 8,208 bytes in 1 block. The bound: less
+  than the bytes of the final array, plus one block for each doubling. The
+  daemon's `parts` is RELEASE_OK, so the daemon is back to 4,003 blocks (the
+  table above).
 - **An unbound temporary has no release site at all.** `return
   len(strings.ToUpper(x))` leaks 32 bytes with release OFF and ON.
 - **The residual 82,207 is a conditional hand-over** — `f` reaches
