@@ -1,0 +1,57 @@
+name: codeql
+
+# CodeQL, a second and independent analyser for the C in src/. Its
+# interprocedural data flow finds defects that cppcheck, clang-tidy and the gcc
+# analyser lanes of verify-core do not. The query suite is the default
+# (security queries), not security-and-quality, so that the first result set
+# stays small enough to triage. The SARIF goes to code scanning under the
+# category "codeql". This check is NOT in the required set of the main ruleset.
+#
+# CodeQL sees only the files that the traced build compiles, so the build is
+# the same `make lexer` with gcc-14 that CI uses for verify-core.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 3 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  analyze:
+    name: codeql (c-cpp)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write   # upload the SARIF to code scanning
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install toolchain
+        # The same packages as the verify-core job, less the ones that only
+        # the gates use (valgrind, clang-tidy, cppcheck, python3-jsonschema).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make gcc-14 bison llvm-dev clang libblocksruntime-dev cmake \
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev
+
+      - uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: c-cpp
+          build-mode: manual
+
+      - name: Build under the CodeQL tracer
+        run: make CC=gcc-14 -j"$(nproc)" lexer
+
+      - uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          category: codeql
