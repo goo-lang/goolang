@@ -37,8 +37,14 @@ fixture and doc changes, not the common case. The target is therefore
 stated for the common case:
 
 - **A compiler change** (an edit under `src/`) completes `make verify-core`
-  in under N minutes with a warm cache. **N is set from M0** (section 4)
-  and confirmed by the owner; this document does not invent it.
+  in under **5 minutes** with a warm cache (owner, 2026-11-27, from the M0
+  figures in `2026-11-27-gate-times.tsv`). The basis: 438 s of gate work
+  outside the two analyser gates is ~14 s on 32 cores, so the slowest single
+  gates set the floor (`source-drift-selftest` 90 s, `program-dump-probe`
+  69 s); the always-run Make set is 48 s; the Bazel rebuild of `goo` is
+  estimated at ~1 minute, unmeasured. ~3.5 minutes plus a margin for load.
+  **Condition:** the analyser lanes become one action per translation unit
+  (6.1). As one 266 s step they alone push the figure to ~7 minutes.
 - A change to one probe script completes in under 3 minutes.
 
 Two mechanisms serve the compiler-change case: parallel execution, and the
