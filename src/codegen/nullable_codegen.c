@@ -12,12 +12,11 @@ LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMType
                                                LLVMValueRef value, Type* value_type) {
     if (!codegen || !nullable_type || !value) return NULL;
     
-    // Nullable structure: { i1 is_null, value_type value }
+    // Nullable structure: { i1 has_value, value_type value }
     LLVMValueRef nullable_val = LLVMGetUndef(nullable_type);
     
-    // Set is_null flag to false (0)
-    LLVMValueRef is_null_false = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
-    nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val, is_null_false, 0, "nullable.is_null");
+    nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val,
+                                        codegen_nullable_flag_const(codegen, 0), 0, "nullable.has_value");
     
     // Coerce the value to match the expected element type of slot 1 before
     // inserting.  Without this, a value whose LLVM type differs from the
@@ -67,12 +66,12 @@ LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMType
 LLVMValueRef codegen_create_nullable_null(CodeGenerator* codegen, LLVMTypeRef nullable_type, Type* base_type) {
     if (!codegen || !nullable_type) return NULL;
     
-    // Nullable structure: { i1 is_null, value_type value }
+    // Nullable structure: { i1 has_value, value_type value }. A nil has
+    // has_value = 0 and a zero value, so it is all zero bits.
     LLVMValueRef nullable_val = LLVMGetUndef(nullable_type);
     
-    // Set is_null flag to true (1)
-    LLVMValueRef is_null_true = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 1, 0);
-    nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val, is_null_true, 0, "nullable.is_null");
+    nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val,
+                                        codegen_nullable_flag_const(codegen, 1), 0, "nullable.has_value");
     
     // Set a default value for the value field (even though it's null for memory layout consistency)
     LLVMTypeRef value_type = codegen_type_to_llvm(codegen, base_type);
@@ -86,10 +85,7 @@ LLVMValueRef codegen_create_nullable_null(CodeGenerator* codegen, LLVMTypeRef nu
 
 // Generate code to check if a nullable value is null
 LLVMValueRef codegen_nullable_is_null(CodeGenerator* codegen, LLVMValueRef nullable_value) {
-    if (!codegen || !nullable_value) return NULL;
-    
-    // Extract the is_null flag (index 0)
-    return LLVMBuildExtractValue(codegen->builder, nullable_value, 0, "is_null_check");
+    return codegen_check_nullable_null(codegen, nullable_value);
 }
 
 // Generate code to extract the value from a nullable (assumes not null)
@@ -166,16 +162,14 @@ ValueInfo* codegen_generate_if_let_nullable(CodeGenerator* codegen, TypeChecker*
     (void)var_name;
     (void)pos;
     
-    // Check if the nullable value is null
-    LLVMValueRef is_null = codegen_nullable_is_null(codegen, nullable_value);
+    LLVMValueRef is_not_null = codegen_nullable_has_value(codegen, nullable_value);
     
     // Create basic blocks
     LLVMBasicBlockRef non_null_block = codegen_create_block(codegen, "if_let.non_null");
     LLVMBasicBlockRef else_block = else_stmt ? codegen_create_block(codegen, "if_let.else") : NULL;
     LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "if_let.merge");
     
-    // Branch based on null status (note: branch to non_null when is_null is false)
-    LLVMValueRef is_not_null = LLVMBuildNot(codegen->builder, is_null, "is_not_null");
+    // Branch to non_null when a value is present.
     LLVMBuildCondBr(codegen->builder, is_not_null, non_null_block, else_block ? else_block : merge_block);
     
     // Non-null block: extract value and execute then statement
@@ -325,7 +319,7 @@ ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, const TypeCheck
     // local) — so explicit `= nil` and implicit zero-value agree bit-for-
     // bit. MUST be checked before the ?T branch below: this is bare-kind
     // nil (no tag), not ?T tag-nil — conflating the two would build an
-    // untagged nullable and silently break `?*T = nil`'s is_null flag (the
+    // untagged nullable and silently break `?*T = nil`'s has_value flag (the
     // hard invariant this task must not violate).
     if (type_is_nilable_ref_kind(expected_type)) {
         LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, expected_type);

@@ -19,7 +19,7 @@ cd "$root"
 
 COMPILER_BIN="${COMPILER_BIN:-bazel-bin/src/compiler/goo}"
 ARCHIVE="${ARCHIVE:-bazel-bin/src/runtime/libgoo_runtime.a}"
-EXPECT_PASS="${EXPECT_PASS:-520}"
+EXPECT_PASS="${EXPECT_PASS:-522}"
 EXPECT_FAIL="${EXPECT_FAIL:-9}"
 
 [ -x "$COMPILER_BIN" ] || { echo "golden_bazel: TOOL FAILURE $COMPILER_BIN missing"; exit 2; }

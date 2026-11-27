@@ -1,0 +1,62 @@
+// zero_nil_probe: the zero value of `error` is nil in every container.
+// A nullable lowered to {i1 flag, ptr}, and the flag meant "is null", so
+// memory filled with zero bytes (a struct field, a make() element, a map
+// miss, new(T), an array element, a named result) read as NOT nil. The
+// flag now means "has a value", so all-zero bits are nil. Expected output
+// is from `go run` of this program.
+package main
+
+import "fmt"
+
+type R struct {
+	n   int
+	err error
+}
+
+var g error
+
+func a() (err error) { return }
+
+func b() (err error) { return err }
+
+func e() (n int, err error) { return }
+
+func main() {
+	fmt.Println("named result:", a() == nil)
+	fmt.Println("named result returned:", b() == nil)
+	_, ee := e()
+	fmt.Println("second named result:", ee == nil)
+
+	var r R
+	fmt.Println("var struct field:", r.err == nil)
+	r2 := R{n: 1}
+	fmt.Println("literal omitted field:", r2.err == nil, r2.n)
+
+	es := make([]error, 2)
+	fmt.Println("make element:", es[0] == nil, es[1] != nil)
+
+	m := map[string]error{}
+	fmt.Println("map miss:", m["x"] == nil)
+	v, ok := m["y"]
+	fmt.Println("map miss comma-ok:", v == nil, ok)
+
+	p := new(R)
+	fmt.Println("new field:", p.err == nil)
+
+	var arr [2]error
+	fmt.Println("array element:", arr[1] == nil)
+
+	fmt.Println("package var:", g == nil)
+
+	var le error
+	fmt.Println("local var:", le == nil)
+
+	err := a()
+	fmt.Println(7, err)
+	fmt.Println(r.err, es[0], m["x"], arr[0])
+
+	r.err = fmt.Errorf("boom")
+	fmt.Println("set field:", r.err != nil, r.err)
+	r.err = nil
+	fmt.Println("reset field:", r.err == nil)
+}

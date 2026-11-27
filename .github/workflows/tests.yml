@@ -58,6 +58,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# Default token is read-only. A job that needs a write sets its own
+# job-level permissions.
+permissions:
+  contents: read
+
 jobs:
   verify-core:
     runs-on: ubuntu-24.04
