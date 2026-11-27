@@ -114,7 +114,7 @@ MUTATIONS=(
 "self-append-alias	    if (r->binding_count > 1 || r->self_appended) {	    if (r->binding_count > 1) {"
 # THE RANGE TEMPORARY. No record holds it, so has_alias cannot see it, and a
 # store in the loop body frees what the loop iterates. Rows 83 and 89.
-"range-store	        if (range_rebinds_source(c, r->name)) return RELEASE_NO_ALIASED;	        if (range_rebinds_source(c, r->name) && false) return RELEASE_NO_ALIASED;"
+"range-store	    return range_rebinds_source(c, name);	    return range_rebinds_source(c, name) && false;"
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
 # Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
 # `L = append(L, x)` counts as a rebind and row 18 must fail.

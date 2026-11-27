@@ -298,7 +298,7 @@ static bool record_value(LocalRecord* r, ASTNode* value) {
 // stored local pass the rule, and that frees what the loop still reads.
 static void log_store(Collected* c, const char* name) {
     if (c->store_count >= c->store_cap) {
-        size_t ncap = c->store_cap ? c->store_cap * 2 : 8;
+        size_t ncap = (c->store_cap != 0U) ? (c->store_cap * 2U) : 8U;
         const char** grown = realloc(c->store_log, ncap * sizeof(*c->store_log));
         if (!grown) { c->unreadable = true; return; }
         c->store_log = grown;
@@ -311,9 +311,11 @@ static void log_store(Collected* c, const char* name) {
 // rule as log_store, for the same reason: an alias source that is not recorded
 // cannot refuse anything.
 static void note_held_expr(Collected* c, ASTNode* expr) {
-    if (!expr) return;
+    if (!expr) {
+        return;
+    }
     if (c->held_count >= c->held_cap) {
-        size_t ncap = c->held_cap ? c->held_cap * 2 : 4;
+        size_t ncap = (c->held_cap != 0U) ? (c->held_cap * 2U) : 4U;
         ASTNode** grown = realloc(c->held_exprs, ncap * sizeof(*c->held_exprs));
         if (!grown) { c->unreadable = true; return; }
         c->held_exprs = grown;
@@ -323,7 +325,9 @@ static void note_held_expr(Collected* c, ASTNode* expr) {
 }
 
 static void note_held_list(Collected* c, ASTNode* list) {
-    for (ASTNode* e = list; e; e = e->next) note_held_expr(c, e);
+    for (ASTNode* e = list; e; e = e->next) {
+        note_held_expr(c, e);
+    }
 }
 
 // Record a range loop over `expr` whose body's stores are the log entries from
@@ -331,7 +335,7 @@ static void note_held_list(Collected* c, ASTNode* list) {
 // refuse.
 static void note_range_site(Collected* c, ASTNode* expr, size_t begin) {
     if (c->range_count >= c->range_cap) {
-        size_t ncap = c->range_cap ? c->range_cap * 2 : 4;
+        size_t ncap = (c->range_cap != 0U) ? (c->range_cap * 2U) : 4U;
         void* grown = realloc(c->range_sites, ncap * sizeof(*c->range_sites));
         if (!grown) { c->unreadable = true; return; }
         c->range_sites = grown;
@@ -737,7 +741,9 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 for (ASTNode* v = n->values; v; v = v->next) vcount++;
                 // Unpaired, the targets record NULL or one shared call, so
                 // condition 7 reads the right-hand side itself. See seed_names.
-                if (tcount != vcount) note_held_list(ctx->out, n->values);
+                if (tcount != vcount) {
+                    note_held_list(ctx->out, n->values);
+                }
 
                 ASTNode* v = n->values;
                 for (ASTNode* t = n->targets; t; t = t->next) {
@@ -800,7 +806,9 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // is evaluated after the init clause and before any body.
                 size_t body_begin = ctx->out->store_count;
                 walk_stmts(ctx, n->body);
-                if (n->range_expr) note_range_site(ctx->out, n->range_expr, body_begin);
+                if (n->range_expr) {
+                    note_range_site(ctx->out, n->range_expr, body_begin);
+                }
                 ctx->block_depth--;
                 break;
             }
@@ -1355,6 +1363,45 @@ static bool is_composite_value(const ASTNode* v) {
     }
 }
 
+// Does a `for ... range X` loop store into `name` while X may hold its value?
+//
+// THE RANGE TEMPORARY. `for _, v := range xs` evaluates xs ONCE and iterates
+// that header to the end of the loop. It has no name, so no record holds it and
+// has_alias cannot see it. A store into xs inside the body frees what the slot
+// held -- the old value at a rebind, the replaced array at a self-append -- and
+// the loop then reads freed memory. Measured on both paths before this rule:
+// tests/arc_uaf/append_alias_range.goo (self-append) and
+// tests/arc_uaf/range_rebind_string.goo (rebind, invalid read in
+// goo_utf8_decode).
+//
+// ONLY THE BODY'S STORES. A store before the loop happens before the range
+// expression is evaluated, and one after it happens when the temporary is dead.
+// An enclosing loop that re-runs the range re-evaluates it, so that is the same
+// two cases again.
+//
+// A range expression this scanner cannot read counts as naming `name`.
+static bool range_rebinds_source(Collected* c, const char* name) {
+    for (size_t i = 0; i < c->range_count; i++) {
+        // A span past the log would read names that were never written, and
+        // a NULL name is not a mismatch strcmp can answer.
+        GOO_ASSERT(c->range_sites[i].begin <= c->range_sites[i].end
+                   && c->range_sites[i].end <= c->store_count);
+        bool stores = false;
+        for (size_t j = c->range_sites[i].begin; j < c->range_sites[i].end && !stores; j++) {
+            stores = strcmp(c->store_log[j], name) == 0;
+        }
+        if (!stores) {
+            continue;
+        }
+        bool unknown = false;
+        bool named = expr_names_local(c->range_sites[i].expr, name, &unknown);
+        if (named || unknown) {   // unknown: fail closed
+            return true;
+        }
+    }
+    return false;
+}
+
 // Does another local hold a second pointer to what this one holds?
 //
 // THIS IS THE CONDITION NOTHING ELSE PROVIDES. `p := last` keeps a pointer to
@@ -1415,42 +1462,15 @@ static bool has_alias(Collected* c, const ParamEscapeResult* pe, const char* nam
     // means the view may point into `name`'s memory.
     for (size_t i = 0; i < c->held_count; i++) {
         bool unknown = false;
-        if (expr_names_local(c->held_exprs[i], name, &unknown)) return true;
-        if (unknown) return true;   // fail closed
+        bool named = expr_names_local(c->held_exprs[i], name, &unknown);
+        if (named || unknown) {   // unknown: fail closed
+            return true;
+        }
     }
-    return false;
+    // The one unnamed holder that outlives a statement.
+    return range_rebinds_source(c, name);
 }
 
-// Does a `for ... range X` loop store into `name` while X may hold its value?
-//
-// THE RANGE TEMPORARY. `for _, v := range xs` evaluates xs ONCE and iterates
-// that header to the end of the loop. It has no name, so no record holds it and
-// has_alias cannot see it. A store into xs inside the body frees what the slot
-// held -- the old value at a rebind, the replaced array at a self-append -- and
-// the loop then reads freed memory. Measured on both paths before this rule:
-// tests/arc_uaf/append_alias_range.goo (self-append) and
-// tests/arc_uaf/range_rebind_string.goo (rebind, invalid read in
-// goo_utf8_decode).
-//
-// ONLY THE BODY'S STORES. A store before the loop happens before the range
-// expression is evaluated, and one after it happens when the temporary is dead.
-// An enclosing loop that re-runs the range re-evaluates it, so that is the same
-// two cases again.
-//
-// A range expression this scanner cannot read counts as naming `name`.
-static bool range_rebinds_source(const Collected* c, const char* name) {
-    for (size_t i = 0; i < c->range_count; i++) {
-        bool stores = false;
-        for (size_t j = c->range_sites[i].begin; j < c->range_sites[i].end && !stores; j++) {
-            stores = strcmp(c->store_log[j], name) == 0;
-        }
-        if (!stores) continue;
-        bool unknown = false;
-        if (expr_names_local(c->range_sites[i].expr, name, &unknown)) return true;
-        if (unknown) return true;   // fail closed
-    }
-    return false;
-}
 
 // ---------------------------------------------------------------------------
 // ADR 0005: may a map own a key that is a bare IDENTIFIER?
@@ -1552,13 +1572,16 @@ static void collected_free(Collected* c) {
     c->elem_count = c->elem_cap = 0;
     free(c->held_exprs);
     c->held_exprs = NULL;
-    c->held_count = c->held_cap = 0;
+    c->held_count = 0;
+    c->held_cap = 0;
     free(c->store_log);
     c->store_log = NULL;
-    c->store_count = c->store_cap = 0;
+    c->store_count = 0;
+    c->store_cap = 0;
     free(c->range_sites);
     c->range_sites = NULL;
-    c->range_count = c->range_cap = 0;
+    c->range_count = 0;
+    c->range_cap = 0;
 }
 
 static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
@@ -1653,6 +1676,8 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     } else if (!binding_is_owned((Collected*)c, pe, r->bound_value)) {
         // Condition 2: it is the one that needs the callee summaries.
         return RELEASE_NO_NOT_OWNED;
+    } else {
+        // Bound once and owned: condition 2 holds.
     }
 
     // CONDITION 7 -- no other holder reads what a MID-FUNCTION free releases.
@@ -1681,14 +1706,14 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     //       or in held_exprs when the record has NULL. has_alias refuses any
     //       mention that is not a fresh copy.
     //   (c) an unnamed temporary that outlives the statement -- only a range
-    //       expression does. range_rebinds_source refuses a store in its body.
+    //       expression does. has_alias also asks range_rebinds_source, which
+    //       refuses a store in the loop's body.
     // A temporary inside the storing statement itself is read before the
     // free: the right-hand side is complete when the release runs.
     //
     // local_escape cannot see (b) or (c), so nothing else refuses them.
     if (r->binding_count > 1 || r->self_appended) {
         if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;
-        if (range_rebinds_source(c, r->name)) return RELEASE_NO_ALIASED;
     }
 
     // THE INVARIANT THIS WHOLE MODULE RESTS ON, and until now it lived only in

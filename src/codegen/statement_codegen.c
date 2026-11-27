@@ -3039,7 +3039,7 @@ void codegen_arc_release_replaced_buffer(CodeGenerator* codegen, LLVMValueRef sl
     // Printed only once the call is in the IR, so a fixture's committed
     // verdict file proves the release was EMITTED, not merely approved: a
     // RELEASE_OK verdict alone is also what a refused slot shape prints
-    // (tests/arc_uaf/*.verdict.txt, scripts/arc_uaf_probe.sh).
+    // (tests/arc_uaf/<name>.verdict.txt, scripts/arc_uaf_probe.sh).
     if (getenv("GOO_ARC_DEBUG")) {
         FunctionInfo* fi = codegen->current_function_info;
         fprintf(stderr, "[arc] %s: releases the array a self-append of %s replaced\n",
