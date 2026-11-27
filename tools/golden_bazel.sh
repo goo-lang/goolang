@@ -5,11 +5,18 @@
 # from the environment, and the compiler takes GOO_RUNTIME and GOOROOT. This
 # only supplies them.
 #
-# EXPECTED RESULT THIS PHASE: 512 passed, 9 failed. The 9 are far_shim_probe
-# and eight lanes_* probes, which reach the far transport and therefore need
-# NNG -- phase 3c. The count is asserted EXACTLY rather than tolerated, so
-# that a tenth failure is a regression and a fixed lanes probe is a visible
-# change rather than a silently absorbed one.
+# EXPECTED RESULT: the fixtures that run_golden.sh runs (every examples/*.goo
+# with a sibling .expected.txt) split into a pass group and a fail group. The
+# fail group is the committed list tools/golden_bazel_known_fail.txt, which
+# names each fixture and its reason (all need NNG, phase 3c). The pass count
+# is COMPUTED from the tree, so adding a fixture needs no edit here. The check
+# compares the SET of failing names, not only counts, so it turns red when
+#   - a pass-group fixture starts to fail (a regression),
+#   - a listed fixture starts to pass (the list must stay exact),
+#   - a listed name is no longer a fixture, or
+#   - the suite runs zero fixtures.
+# GOLDEN_BAZEL_REPLAY=<file> replays captured run_golden.sh output in place of
+# the run, so the red paths can be proved without a 3-minute suite.
 #
 # Exit codes: 0 exactly the expected split, 1 anything else, 2 a tool failed.
 set -uo pipefail
@@ -19,14 +26,33 @@ cd "$root"
 
 COMPILER_BIN="${COMPILER_BIN:-bazel-bin/src/compiler/goo}"
 ARCHIVE="${ARCHIVE:-bazel-bin/src/runtime/libgoo_runtime.a}"
-EXPECT_PASS="${EXPECT_PASS:-524}"
-EXPECT_FAIL="${EXPECT_FAIL:-9}"
+KNOWN_FAIL="${KNOWN_FAIL:-tools/golden_bazel_known_fail.txt}"
+EX_DIR="${EX_DIR:-examples}"
 
-[ -x "$COMPILER_BIN" ] || { echo "golden_bazel: TOOL FAILURE $COMPILER_BIN missing"; exit 2; }
-[ -r "$ARCHIVE" ]      || { echo "golden_bazel: TOOL FAILURE $ARCHIVE missing"; exit 2; }
+[ -r "$KNOWN_FAIL" ] || { echo "golden_bazel: TOOL FAILURE $KNOWN_FAIL missing"; exit 2; }
 
-out="$(COMPILER="$COMPILER_BIN" GOO_RUNTIME="$root/$ARCHIVE" GOOROOT="$root" \
-       bash scripts/run_golden.sh 2>&1)"
+# The same fixture rule as run_golden.sh: a .goo with a sibling .expected.txt.
+total=0
+for f in "$EX_DIR"/*.goo; do
+    [ -f "${f%.goo}.expected.txt" ] && total=$((total + 1))
+done
+if [ "$total" -eq 0 ]; then
+    echo "golden_bazel: FAIL no fixture found in '$EX_DIR' -- the suite would run nothing"
+    exit 1
+fi
+
+known="$(grep -vE '^[[:space:]]*(#|$)' "$KNOWN_FAIL" | cut -f1 | LC_ALL=C sort)"
+EXPECT_FAIL="${EXPECT_FAIL:-$(printf '%s\n' "$known" | grep -c .)}"
+EXPECT_PASS="${EXPECT_PASS:-$((total - EXPECT_FAIL))}"
+
+if [ -n "${GOLDEN_BAZEL_REPLAY:-}" ]; then
+    out="$(cat "$GOLDEN_BAZEL_REPLAY")"
+else
+    [ -x "$COMPILER_BIN" ] || { echo "golden_bazel: TOOL FAILURE $COMPILER_BIN missing"; exit 2; }
+    [ -r "$ARCHIVE" ]      || { echo "golden_bazel: TOOL FAILURE $ARCHIVE missing"; exit 2; }
+    out="$(COMPILER="$COMPILER_BIN" GOO_RUNTIME="$root/$ARCHIVE" GOOROOT="$root" \
+           bash scripts/run_golden.sh 2>&1)"
+fi
 
 summary="$(printf '%s\n' "$out" | grep -oE '[0-9]+ passed, [0-9]+ failed' | tail -1)"
 if [ -z "$summary" ]; then
@@ -39,11 +65,17 @@ passed="$(printf '%s\n' "$summary" | awk '{print $1}')"
 failed="$(printf '%s\n' "$summary" | awk '{print $3}')"
 echo "golden_bazel: $summary (expected $EXPECT_PASS passed, $EXPECT_FAIL failed)"
 
-if [ "$passed" -eq "$EXPECT_PASS" ] && [ "$failed" -eq "$EXPECT_FAIL" ]; then
+actual="$(printf '%s\n' "$out" | grep -E '^FAIL  ' | awk '{print $2}' | LC_ALL=C sort)"
+unexpected="$(comm -13 <(printf '%s\n' "$known") <(printf '%s\n' "$actual") | grep .)"
+stale="$(comm -23 <(printf '%s\n' "$known") <(printf '%s\n' "$actual") | grep .)"
+
+if [ "$passed" -eq "$EXPECT_PASS" ] && [ "$failed" -eq "$EXPECT_FAIL" ] \
+   && [ -z "$unexpected" ] && [ -z "$stale" ]; then
     echo "golden_bazel: PASS the Bazel-built compiler and archive behave as expected"
     exit 0
 fi
 
-printf '%s\n' "$out" | grep -E '^FAIL' | head -20
-echo "golden_bazel: FAIL split moved -- if a lanes/far probe was fixed, update EXPECT_*"
+[ -n "$unexpected" ] && printf 'golden_bazel: REGRESSION fails but is not in %s: %s\n' "$KNOWN_FAIL" "$(echo $unexpected)"
+[ -n "$stale" ]      && printf 'golden_bazel: STALE listed in %s but did not fail: %s\n' "$KNOWN_FAIL" "$(echo $stale)"
+echo "golden_bazel: FAIL split moved -- fix the regression, or edit $KNOWN_FAIL"
 exit 1

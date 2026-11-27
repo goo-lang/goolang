@@ -1,0 +1,19 @@
+# Fixtures that FAIL under the Bazel-built toolchain, and must keep failing.
+#
+# Format: <fixture basename><TAB><reason>. Lines starting with # are comments.
+# tools/golden_bazel.sh compares this list EXACTLY against the fixtures that
+# fail in the Bazel golden run: a fixture that fails and is not listed is a
+# regression, and a listed fixture that passes is a stale entry. Both turn the
+# gate red, so delete a line in the same PR that makes the fixture pass.
+#
+# All nine reach the far transport (NNG), which the Bazel build does not link
+# yet (phase 3c). Each one fails at compile/link.
+far_shim_probe	imports the far shim, which needs NNG (phase 3c)
+lanes_allreduce_probe	lanes far transport needs NNG (phase 3c)
+lanes_jacobi_probe	lanes far transport needs NNG (phase 3c)
+lanes_monomorphize_probe	lanes far transport needs NNG (phase 3c)
+lanes_partition_probe	lanes far transport needs NNG (phase 3c)
+lanes_repartition_probe	lanes far transport needs NNG (phase 3c)
+lanes_stencil_probe	lanes far transport needs NNG (phase 3c)
+lanes_stencilstep_probe	lanes far transport needs NNG (phase 3c)
+lanes_stencilstep_r2_probe	lanes far transport needs NNG (phase 3c)
