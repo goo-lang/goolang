@@ -242,3 +242,7 @@ void yyerror(const char* msg) {
     Position pos = pos_from_loc(yylloc.first_line, yylloc.first_column);
     diag_emit(DIAG_ERROR, pos, NULL, NULL, "%s", msg);
 }
+
+void parser_error_at(Position pos, const char* msg) {
+    diag_emit(DIAG_ERROR, pos, NULL, NULL, "%s", msg);
+}

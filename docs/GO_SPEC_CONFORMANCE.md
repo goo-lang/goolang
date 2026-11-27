@@ -1,7 +1,7 @@
 # Go Spec Conformance Matrix
 
 <!-- spec-conformance:headline:begin -->
-**Snapshot:** 2026-11-27, post-v1.0.0 — **90% construct coverage** (50 works / 55 tested constructs, excluding 3 deliberate rejections).
+**Snapshot:** 2026-11-27, post-v1.0.0 — **91% construct coverage** (52 works / 57 tested constructs, excluding 3 deliberate rejections).
 <!-- spec-conformance:headline:end -->
 
 **Method.** One tiny fixture per Go-spec construct under `tests/spec/`,
@@ -38,10 +38,10 @@ percentage moves only with evidence.
 | Chapter | works | divergent | rejected | absent | Constructs |
 |---|---|---|---|---|---|
 | Lexical | 4 | – | – | – | ASI/newlines, raw strings, rune literals, hex escapes |
-| Declarations | 6 | – | – | – | grouped var, const+iota, short var, named types, tuple assign, blank ident |
+| Declarations | 7 | – | – | – | grouped var, const+iota, short var, named types, tuple assign, assign and short var with three or more names, blank ident |
 | Types | 9 | – | – | 1 | arrays, slices, maps, struct embedding, pointers, closures, interfaces, channels, an interface embedded in a struct (dynamic promotion); **absent:** complex |
 | Expressions | 7 | – | – | 1 | keyed/elided composites, type assertions, method values, conversions, conversion to a named non-struct type, shift/div/mod, user variadics; **absent:** method expressions |
-| Statements | 12 | 1 | – | – | if-init, for (3 forms), for with init/condition/post OMITTED (all seven combinations), range (slices, string→**runes**, channels), switch-init + type switch, fallthrough, labels/goto, defer-in-loop, go+select, empty case/default bodies (switch/type-switch/select); **divergent:** named-result defer |
+| Statements | 13 | 1 | – | – | if-init, for (3 forms), for with init/condition/post OMITTED (all seven combinations), range (slices, string→**runes**, channels), range that assigns with `=`, switch-init + type switch, fallthrough, labels/goto, defer-in-loop, go+select, empty case/default bodies (switch/type-switch/select); **divergent:** named-result defer |
 | Builtins | 5 | – | 1 | – | len/cap/make/new/append/delete, copy, panic (exit 2), min/max (Go 1.21, NaN-propagating), clear (Go 1.21, map+slice); **rejected:** recover (clean v1 diagnostic) |
 | Generics | 2 | – | – | 2 | `[T any]` inference-only funcs; explicit instantiation `f[T](...)` (single type param — Task C); **absent:** union constraints (P2.10), generic types |
 | Packages | 4 | – | 1 | – | shim-package alias imports (`import f "fmt"`, Task B); `io.Writer` with two implementations (`*os.File`, `bytes.Buffer`); multi-file packages (a package is the union of its files); `goo test` (discovers `TestXxx` in `_test` files, synthesizes the entry point, runs them); **rejected:** `init()` — clean diagnostic since the post-v1.0.0 fix (previously compiled but silently never ran) |

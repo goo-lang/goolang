@@ -19,6 +19,7 @@ decl_const_iota	run	works	Declarations	const group with iota
 decl_shortvar	run	works	Declarations	short var decl from multi-return call
 decl_type	run	works	Declarations	named type declaration
 decl_multi_assign	run	works	Declarations	a, b = f() tuple assignment
+decl_multi_assign_n	run	works	Declarations	three or more names with = and :=, index operands read before the stores
 type_array	run	works	Types	fixed arrays, zero value, index assign
 type_slice	run	works	Types	literals, append, len, slicing
 type_map	run	works	Types	make, write, read, delete, comma-ok
@@ -40,6 +41,7 @@ stmt_if_init	run	works	Statements	if with init statement
 stmt_for_forms	run	works	Statements	3-clause, condition-only, infinite+break
 stmt_for_omit_clauses	run	works	Statements	ForClause with init, condition and/or post OMITTED (all seven combinations); each is a distinct token sequence
 stmt_range_forms	run	works	Statements	range slice with index+value
+stmt_range_assign	run	works	Statements	range clause that assigns with = (map, slice, string, empty range)
 str_range_runes	run	works	Statements	range string yields RUNES + byte offsets (Go parity; stale bytes note corrected 2026-07-11)
 stmt_switch_init_type	run	works	Statements	switch-init + type switch on any
 stmt_fallthrough	run	works	Statements	fallthrough in expression switch
