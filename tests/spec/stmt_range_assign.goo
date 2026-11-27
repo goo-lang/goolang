@@ -1,0 +1,25 @@
+// Spec: Statements / For statements with range clause — iteration variables assigned with =
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]int{"k": 3}
+	var k string
+	var v int
+	for k, v = range m {
+	}
+	fmt.Println(k, v)
+	i := -1
+	for i = range []int{5, 6, 7} {
+	}
+	fmt.Println(i)
+	var r rune
+	for _, r = range "ok" {
+	}
+	fmt.Println(string(r))
+	idx, val := 9, 9
+	for idx, val = range []int{} {
+	}
+	fmt.Println(idx, val)
+}
