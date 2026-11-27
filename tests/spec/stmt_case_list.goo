@@ -1,0 +1,24 @@
+package main
+
+import "fmt"
+
+func name(n int) string {
+	switch n {
+	case 1, 2, 3:
+		return "low"
+	case 4,
+		5:
+		return "mid"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	fmt.Println(name(2), name(5), name(9))
+	var v any = "x"
+	switch v.(type) {
+	case int, string:
+		fmt.Println("int-or-string")
+	}
+}

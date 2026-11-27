@@ -1916,7 +1916,7 @@ case_clause_list:
     ;
 
 case_clause:
-    CASE expression COLON case_body {
+    CASE expression_list COLON case_body {
         $$ = (ASTNode*)ast_case_clause_new($2, $4, POS(@$));
     }
     | DEFAULT COLON case_body {
