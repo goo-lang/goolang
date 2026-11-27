@@ -3,17 +3,15 @@ name: repro
 # Separate from `tests` on purpose. This job runs four full builds (see the
 # self-test step below), where verify-core takes about 3.5 minutes, and it
 # needs podman which verify-core deliberately does not assume.
+#
+# The job starts on EVERY pull request, because the main ruleset requires the
+# repro-build check. A `paths:` filter here left that check missing on a PR
+# that touched none of the paths, and GitHub then blocked the PR with no end
+# (PR #348, 2026-11-27). The path list now lives in the `scope` step below.
+# On an unrelated PR the job reports success and prints why. On a related PR
+# it runs the same four builds as before.
 on:
   pull_request:
-    paths:
-      - 'Containerfile'
-      - 'scripts/podman_build.sh'
-      - 'scripts/repro_build_probe.sh'
-      - 'scripts/record_toolchain.sh'
-      - 'scripts/podman_image_probe.sh'
-      - 'Makefile'
-      - 'src/**'
-      - '.github/workflows/repro.yml'
   workflow_dispatch:
 
 concurrency:
@@ -29,13 +27,43 @@ jobs:
         with:
           fetch-depth: 0   # the probe builds from `git archive HEAD`
 
+      # Decide if this change can affect the build. Keep this list equal to
+      # what the build reads. A wrong list skips the check, so the step prints
+      # each file that it matched, and the count of files it compared.
+      - name: scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "scope: $EVENT always runs the full check"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$BASE"...HEAD) || { echo "::error::git diff failed"; exit 1; }
+          n=$(printf '%s\n' "$changed" | grep -c . || true)
+          if [ "$n" -eq 0 ]; then
+            echo "::error::scope: 0 changed files against $BASE; the diff is broken, not empty"; exit 1
+          fi
+          hits=$(printf '%s\n' "$changed" | grep -E '^(Containerfile|Makefile|src/.*|scripts/(podman_build|repro_build_probe|record_toolchain|podman_image_probe)\.sh|\.github/workflows/repro\.yml)$' || true)
+          if [ -n "$hits" ]; then
+            echo "scope: $n changed files, these can affect the build:"; printf '%s\n' "$hits" | sed 's/^/  /'
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scope: $n changed files, none can affect the build; the check passes without a build"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Tool versions
+        if: steps.scope.outputs.relevant == 'true'
         run: podman --version
 
       - name: Build the pinned image
+        if: steps.scope.outputs.relevant == 'true'
         run: make podman-image
 
       - name: Prove the image is right
+        if: steps.scope.outputs.relevant == 'true'
         run: bash scripts/podman_image_probe.sh | tee image.log
 
       # Same reason as the guard below, and this step needed it most: the
@@ -45,7 +73,7 @@ jobs:
       # this, a runner lacking podman reports green having verified nothing —
       # including the ccache check the design calls the trap it had to bypass.
       - name: Prove the image probe did not skip
-        if: always()
+        if: always() && steps.scope.outputs.relevant == 'true'
         run: |
           if grep -q "^podman-image-probe: PASS" image.log; then
             echo "ok: podman-image-probe ran and passed"
@@ -55,6 +83,7 @@ jobs:
           fi
 
       - name: repro-build-probe
+        if: steps.scope.outputs.relevant == 'true'
         run: bash scripts/repro_build_probe.sh 2>&1 | tee repro.log
 
       # A GATE THAT SILENTLY SKIPS IS NOT A GATE. The probe returns 0 when
@@ -65,7 +94,7 @@ jobs:
       # reproducibility regression is reported, and the job stops, without
       # first paying for two more container builds to check the checker.
       - name: Prove the probe did not skip
-        if: always()
+        if: always() && steps.scope.outputs.relevant == 'true'
         run: |
           if grep -q "^repro-build-probe: PASS" repro.log; then
             echo "ok: repro-build-probe ran and passed"
@@ -86,13 +115,14 @@ jobs:
       # the plain probe step above already passed, so a plain regression is
       # never masked by, or made to wait behind, this more expensive check.
       - name: repro-build-probe --self-test
+        if: steps.scope.outputs.relevant == 'true'
         run: bash scripts/repro_build_probe.sh --self-test 2>&1 | tee selftest.log
 
       # Same anti-vacuity reasoning as the plain probe above: a self-test that
       # reports green without ever printing its own PASS line has proved
       # nothing about whether the probe can go red.
       - name: Prove the self-test did not skip
-        if: always()
+        if: always() && steps.scope.outputs.relevant == 'true'
         run: |
           if grep -q "^repro-build-probe --self-test: PASS" selftest.log; then
             echo "ok: repro-build-probe --self-test ran and passed"
