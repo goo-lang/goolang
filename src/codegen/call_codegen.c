@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "embedding.h"
+#include "runtime.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -52,7 +53,15 @@ static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMVal
 // TYPE_STRUCT and pointer-to-struct can recurse into it. See its definition
 // (near codegen_generate_println_call) for the full contract.
 static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
-                                   LLVMValueRef val, Type* ty, int depth, Position pos);
+                                   LLVMValueRef val, Type* ty, int depth, Position pos,
+                                   int stringer_ok);
+
+// Go's fmt can call a method on a struct field only when the field is exported,
+// because it reaches the value through reflection. An embedded field takes the
+// exported-ness of its type name.
+static int fmt_field_exported(const char* name) {
+    return name != NULL && name[0] >= 'A' && name[0] <= 'Z';
+}
 
 // fmt.Sprintf %v value formatter: the string-building counterpart to
 // codegen_emit_fmt_value above. Same recursive dispatch/shape (struct,
@@ -61,7 +70,8 @@ static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
 // definition (right after codegen_emit_fmt_value) for the full contract.
 static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeChecker* checker,
                                                     LLVMValueRef acc, LLVMValueRef val,
-                                                    Type* ty, int depth, Position pos);
+                                                    Type* ty, int depth, Position pos,
+                                                    int stringer_ok);
 #endif
 
 // Defined in expression_codegen.c: storage address of an addressable
@@ -2437,6 +2447,17 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     }
                     uint64_t const_id = 0;
                     if (goo_fold_const_int_ctx(checker, call->args, &const_id)) {
+                        uint64_t sim_limit = is_qubit ? GOO_QIR_SIM_MAX_QUBITS
+                                                      : GOO_QIR_SIM_MAX_RESULTS;
+                        if (codegen->qir_sim_linked && const_id >= sim_limit) {
+                            codegen_error(codegen, call->args->pos,
+                                          "qir.%s(%llu) is out of range for the embedded simulator "
+                                          "(%llu %s); use --emit-qasm3 or --emit-qir for a larger device",
+                                          sel->selector, (unsigned long long)const_id,
+                                          (unsigned long long)sim_limit,
+                                          is_qubit ? "qubits" : "results");
+                            return NULL;
+                        }
                         if (is_qubit) {
                             if (const_id + 1U > codegen->qir_num_qubits) {
                                 codegen->qir_num_qubits = const_id + 1U;
@@ -4139,13 +4160,40 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
 // is non-deterministic and not needed here.
 //
 // Returns 1 on success, 0 after emitting a source-located codegen_error.
+
+// The precision a float is printed at: 32 for float32 (widened to double at the
+// call), else 64. goo_format_float uses it to pick the shortest text that reads
+// back as the same value at that precision.
+static LLVMValueRef fmt_float_bits(CodeGenerator* codegen, TypeKind kind) {
+    return LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                        kind == TYPE_FLOAT32 ? 32 : 64, 0);
+}
+
 static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
-                                   LLVMValueRef val, Type* ty, int depth, Position pos) {
-    (void)checker;
+                                   LLVMValueRef val, Type* ty, int depth, Position pos,
+                                   int stringer_ok) {
     LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
     if (!print_func) {
         codegen_error(codegen, pos, "goo_print function not found in module");
         return 0;
+    }
+
+    // A value with `String() string` prints through that method (Go's
+    // Stringer rule). A caller passes stringer_ok = 0 for an unexported struct
+    // field, where Go cannot call the method, and for a pointer's pointee.
+    if (stringer_ok) {
+        LLVMValueRef disp = codegen_stringer_string(codegen, checker, val, ty, pos);
+        if (disp) {
+            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+            if (!str_fn) {
+                codegen_error(codegen, pos, "goo_print_string not found in module");
+                return 0;
+            }
+            LLVMValueRef sargs[] = { disp };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                           str_fn, sargs, 1, "");
+            return 1;
+        }
     }
 
     // Recursion cap (REQUIRED, see doc comment above): a self-referential
@@ -4223,9 +4271,9 @@ static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
             ? LLVMBuildFPExt(codegen->builder, val,
                              LLVMDoubleTypeInContext(codegen->context), "fpext")
             : val;
-        LLVMValueRef args[] = { widened };
+        LLVMValueRef args[] = { widened, fmt_float_bits(codegen, kind) };
         LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
-                      float_fn, args, 1, "");
+                      float_fn, args, 2, "");
     } else if (kind == TYPE_INTERFACE) {
         // Print an interface value by its dynamic type: {vtable,data} ->
         // goo_iface_format (runtime helper: nil vtable -> "<nil>", else
@@ -4267,7 +4315,8 @@ static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
                               print_func, spargs, 1, "");
             }
             LLVMValueRef fv = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_struct_field");
-            if (!codegen_emit_fmt_value(codegen, checker, fv, fields[i].type, depth + 1, pos)) {
+            if (!codegen_emit_fmt_value(codegen, checker, fv, fields[i].type, depth + 1, pos,
+                                              fmt_field_exported(fields[i].name))) {
                 return 0;
             }
         }
@@ -4308,7 +4357,7 @@ static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
             return 0;
         }
         LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, struct_llvm, val, "fmt_ptr_load");
-        if (!codegen_emit_fmt_value(codegen, checker, loaded, pointee, depth + 1, pos)) {
+        if (!codegen_emit_fmt_value(codegen, checker, loaded, pointee, depth + 1, pos, 0)) {
             return 0;
         }
         LLVMBuildBr(codegen->builder, cont_bb);
@@ -4369,7 +4418,7 @@ static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
         LLVMValueRef indices[] = { i_loaded };
         LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem, data_ptr, indices, 1, "fmt_slice_elem_ptr");
         LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "fmt_slice_elem");
-        if (!codegen_emit_fmt_value(codegen, checker, elem_val, elem_type, depth + 1, pos)) {
+        if (!codegen_emit_fmt_value(codegen, checker, elem_val, elem_type, depth + 1, pos, 1)) {
             return 0;
         }
         LLVMBuildBr(codegen->builder, post_bb);
@@ -4407,7 +4456,7 @@ static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
                               print_func, spargs, 1, "");
             }
             LLVMValueRef ev = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_array_elem");
-            if (!codegen_emit_fmt_value(codegen, checker, ev, elem_type, depth + 1, pos)) {
+            if (!codegen_emit_fmt_value(codegen, checker, ev, elem_type, depth + 1, pos, 1)) {
                 return 0;
             }
         }
@@ -4466,8 +4515,8 @@ static LLVMValueRef fmt_sprintf_lit(CodeGenerator* codegen, LLVMTypeRef string_l
 // source-located codegen_error.
 static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeChecker* checker,
                                                     LLVMValueRef acc, LLVMValueRef val,
-                                                    Type* ty, int depth, Position pos) {
-    (void)checker;
+                                                    Type* ty, int depth, Position pos,
+                                                    int stringer_ok) {
     LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
     if (!concat_fn) {
         codegen_error(codegen, pos, "goo_string_concat function not found in module");
@@ -4487,6 +4536,16 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
     }
 
     TypeKind kind = (ty ? ty->kind : TYPE_VOID);
+
+    // Stringer rule (see codegen_emit_fmt_value for stringer_ok).
+    if (stringer_ok) {
+        LLVMValueRef sdisp = codegen_stringer_string(codegen, checker, val, ty, pos);
+        if (sdisp) {
+            LLVMValueRef sargs[] = { acc, sdisp };
+            return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                  concat_fn, sargs, 2, "sp_acc");
+        }
+    }
 
     if (type_is_error(ty)) {
         LLVMValueRef disp = codegen_error_display_string(codegen, val, pos);
@@ -4538,9 +4597,9 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
             ? LLVMBuildFPExt(codegen->builder, val,
                              LLVMDoubleTypeInContext(codegen->context), "fpext")
             : val;
-        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef sargs[] = { widened, fmt_float_bits(codegen, kind) };
         LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
-                                        float_fn, sargs, 1, "sp_float");
+                                        float_fn, sargs, 2, "sp_float");
         LLVMValueRef cargs[] = { acc, s };
         return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
                               concat_fn, cargs, 2, "sp_acc");
@@ -4575,7 +4634,8 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
                                      concat_fn, spargs, 2, "sp_acc");
             }
             LLVMValueRef fv = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_struct_field");
-            acc = codegen_build_fmt_value_string(codegen, checker, acc, fv, fields[i].type, depth + 1, pos);
+            acc = codegen_build_fmt_value_string(codegen, checker, acc, fv, fields[i].type, depth + 1, pos,
+                                              fmt_field_exported(fields[i].name));
             if (!acc) return NULL;
         }
 
@@ -4624,7 +4684,7 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
         }
         LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, struct_llvm, val, "fmt_ptr_load");
         LLVMValueRef acc_nn = codegen_build_fmt_value_string(codegen, checker, acc1, loaded,
-                                                              pointee, depth + 1, pos);
+                                                              pointee, depth + 1, pos, 0);
         if (!acc_nn) return NULL;
         // Captured AFTER the recursive call, NOT nonnil_bb: recursing into
         // a nested struct/pointer field can itself append basic blocks
@@ -4702,7 +4762,7 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
         LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem, data_ptr, indices, 1, "sp_slice_elem_ptr");
         LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "sp_slice_elem");
         LLVMValueRef with_elem = codegen_build_fmt_value_string(codegen, checker, with_sep, elem_val,
-                                                                 elem_type, depth + 1, pos);
+                                                                 elem_type, depth + 1, pos, 1);
         if (!with_elem) return NULL;
         LLVMBuildStore(codegen->builder, with_elem, acc_alloca);
         LLVMBuildBr(codegen->builder, post_bb);
@@ -4737,7 +4797,7 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
                                      concat_fn, spargs, 2, "sp_acc");
             }
             LLVMValueRef ev = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "sp_array_elem");
-            acc = codegen_build_fmt_value_string(codegen, checker, acc, ev, elem_type, depth + 1, pos);
+            acc = codegen_build_fmt_value_string(codegen, checker, acc, ev, elem_type, depth + 1, pos, 1);
             if (!acc) return NULL;
         }
 
@@ -4776,7 +4836,7 @@ LLVMValueRef codegen_fmt_value_to_string(CodeGenerator* codegen, TypeChecker* ch
     LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
     if (!string_llvm) return NULL;
     LLVMValueRef acc0 = fmt_sprintf_lit(codegen, string_llvm, "");
-    return codegen_build_fmt_value_string(codegen, checker, acc0, val, ty, 0, pos);
+    return codegen_build_fmt_value_string(codegen, checker, acc0, val, ty, 0, pos, 1);
 }
 #endif
 
@@ -4836,7 +4896,7 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
         // recursive codegen_emit_fmt_value helper — depth 0 for a top-level
         // Println argument.
         if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
-                                     arg_val->goo_type, 0, a->pos)) {
+                                     arg_val->goo_type, 0, a->pos, 1)) {
             value_info_free(arg_val);
             return NULL;
         }
@@ -4919,7 +4979,7 @@ ValueInfo* codegen_generate_fmt_print_call(CodeGenerator* codegen, TypeChecker* 
                           print_func, spargs, 1, "");
         }
         if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
-                                    arg_val->goo_type, 0, a->pos)) {
+                                    arg_val->goo_type, 0, a->pos, 1)) {
             value_info_free(arg_val);
             return NULL;
         }
@@ -4964,7 +5024,7 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
             }
         }
         if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
-                                    arg_val->goo_type, 0, a->pos)) {
+                                    arg_val->goo_type, 0, a->pos, 1)) {
             value_info_free(arg_val);
             return NULL;
         }
@@ -5182,6 +5242,26 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
 
         TypeKind kind = arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID;
 
+        // %v and %s call String() on a Stringer (Go's handleMethods).
+        if (verb == 'v' || verb == 's') {
+            LLVMValueRef sdisp = codegen_stringer_string(c, tc, arg_val->llvm_value,
+                                                         arg_val->goo_type, arg_cursor->pos);
+            if (sdisp) {
+                if (!sprintf_mode) {
+                    LLVMValueRef pargs[] = { sdisp };
+                    LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_str_fn),
+                                   print_str_fn, pargs, 1, "");
+                } else {
+                    LLVMValueRef cargs[] = { acc, sdisp };
+                    acc = LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(concat_fn),
+                                         concat_fn, cargs, 2, "sp_acc");
+                }
+                value_info_free(arg_val);
+                arg_cursor = arg_cursor->next;
+                continue;
+            }
+        }
+
         if (verb == 'd') {
             // %d — signed decimal integer
             if (kind != TYPE_INT8 && kind != TYPE_INT16 &&
@@ -5277,15 +5357,25 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                 ? LLVMBuildFPExt(c->builder, arg_val->llvm_value,
                                   LLVMDoubleTypeInContext(c->context), "fpext")
                 : arg_val->llvm_value;
+            // %f is six digits after the point, as in Go.
+            LLVMValueRef format_fn = LLVMGetNamedFunction(c->module, "goo_format_float");
+            if (!format_fn) {
+                codegen_error(c, arg_cursor->pos, "goo_format_float not found in module");
+                value_info_free(arg_val);
+                ok = 0;
+                break;
+            }
+            LLVMTypeRef i32t = LLVMInt32TypeInContext(c->context);
+            LLVMValueRef f_args[] = { w, LLVMConstInt(i32t, 'f', 0), LLVMConstInt(i32t, 6, 0),
+                                      fmt_float_bits(c, kind) };
+            LLVMValueRef f_str = LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(format_fn),
+                                                format_fn, f_args, 4, "pf_float");
             if (!sprintf_mode) {
-                LLVMValueRef pargs[] = { w };
-                LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_float_fn),
-                               print_float_fn, pargs, 1, "");
+                LLVMValueRef pargs[] = { f_str };
+                LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_str_fn),
+                               print_str_fn, pargs, 1, "");
             } else {
-                LLVMValueRef s_args[] = { w };
-                LLVMValueRef s = LLVMBuildCall2(c->builder,
-                                                LLVMGlobalGetValueType(float_to_str_fn),
-                                                float_to_str_fn, s_args, 1, "sp_float");
+                LLVMValueRef s = f_str;
                 LLVMValueRef cargs[] = { acc, s };
                 acc = LLVMBuildCall2(c->builder,
                                      LLVMGlobalGetValueType(concat_fn),
@@ -5389,14 +5479,14 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                                       LLVMDoubleTypeInContext(c->context), "fpext")
                     : arg_val->llvm_value;
                 if (!sprintf_mode) {
-                    LLVMValueRef pargs[] = { w };
+                    LLVMValueRef pargs[] = { w, fmt_float_bits(c, kind) };
                     LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_float_fn),
-                                   print_float_fn, pargs, 1, "");
+                                   print_float_fn, pargs, 2, "");
                 } else {
-                    LLVMValueRef s_args[] = { w };
+                    LLVMValueRef s_args[] = { w, fmt_float_bits(c, kind) };
                     LLVMValueRef s = LLVMBuildCall2(c->builder,
                                                     LLVMGlobalGetValueType(float_to_str_fn),
-                                                    float_to_str_fn, s_args, 1, "sp_float");
+                                                    float_to_str_fn, s_args, 2, "sp_float");
                     LLVMValueRef cargs[] = { acc, s };
                     acc = LLVMBuildCall2(c->builder,
                                          LLVMGlobalGetValueType(concat_fn),
@@ -5443,14 +5533,14 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                 // helper PRINTS rather than accumulating a goo_string.
                 if (sprintf_mode) {
                     acc = codegen_build_fmt_value_string(c, tc, acc, arg_val->llvm_value,
-                                                          arg_val->goo_type, 0, arg_cursor->pos);
+                                                          arg_val->goo_type, 0, arg_cursor->pos, 1);
                     if (!acc) {
                         value_info_free(arg_val);
                         ok = 0;
                         break;
                     }
                 } else if (!codegen_emit_fmt_value(c, tc, arg_val->llvm_value,
-                                            arg_val->goo_type, 0, arg_cursor->pos)) {
+                                            arg_val->goo_type, 0, arg_cursor->pos, 1)) {
                     value_info_free(arg_val);
                     ok = 0;
                     break;
@@ -5632,7 +5722,7 @@ static ValueInfo* codegen_generate_fmt_sprint_call(CodeGenerator* codegen, TypeC
             LLVMValueRef ca[] = { acc, sp };
             acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, ca, 2, "sprint_sep");
         }
-        acc = codegen_build_fmt_value_string(codegen, checker, acc, arg_val->llvm_value, arg_val->goo_type, 0, a->pos);
+        acc = codegen_build_fmt_value_string(codegen, checker, acc, arg_val->llvm_value, arg_val->goo_type, 0, a->pos, 1);
         if (!acc) { value_info_free(arg_val); return NULL; }
         prev_is_string = is_string; first = 0;
         value_info_free(arg_val);
@@ -5669,7 +5759,7 @@ static ValueInfo* codegen_generate_fmt_sprintln_call(CodeGenerator* codegen, Typ
             LLVMValueRef ca[] = { acc, sp };
             acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, ca, 2, "sprintln_sep");
         }
-        acc = codegen_build_fmt_value_string(codegen, checker, acc, arg_val->llvm_value, arg_val->goo_type, 0, a->pos);
+        acc = codegen_build_fmt_value_string(codegen, checker, acc, arg_val->llvm_value, arg_val->goo_type, 0, a->pos, 1);
         if (!acc) { value_info_free(arg_val); return NULL; }
         first = 0;
         value_info_free(arg_val);

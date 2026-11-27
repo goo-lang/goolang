@@ -48,7 +48,6 @@ podman_image_probe.sh
 proof_cache_shell_probe.sh
 record_toolchain.sh
 run_golden_reject.sh
-run_spec_conformance.sh
 rust_compare_bench.sh
 safety-scan.sh
 stdlib_coverage_drift.sh

@@ -79,7 +79,13 @@ for entry in $PKGS; do
 	# files. Measured: 0 of goostd's files are symlinks under make (`find
 	# goostd -type l` is empty there), so this changes no byte of a
 	# make-built release; it only fixes the Bazel-built one.
-	cp -rL "$ROOT/$src" "$STAGE/$NAME/lib/goostd/"
+	# The destination keeps the path below goostd/ ("goostd/container/list" ->
+	# lib/goostd/container/list), because the resolver joins the import path
+	# "container/list" onto GOOROOT/goostd. A flat copy would land it at
+	# lib/goostd/list and the packaged toolchain could not resolve it.
+	dest="$STAGE/$NAME/lib/${src%/*}"
+	mkdir -p "$dest"
+	cp -rL "$ROOT/$src" "$dest/"
 	count=$((count+1))
 done
 [ "$count" -ge 9 ] || { echo "package_toolchain: only $count stdlib packages staged" >&2; exit 1; }

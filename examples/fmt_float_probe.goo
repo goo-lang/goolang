@@ -1,0 +1,53 @@
+package main
+
+import "fmt"
+
+type P struct{ A, B float64 }
+
+func main() {
+	fmt.Printf("%f\n", 3.14159)
+	fmt.Println(1.0 / 3.0)
+	fmt.Println(0.785398163397448)
+	fmt.Printf("%v\n", 2.5)
+	fmt.Println(2.0)
+	fmt.Println(1e21)
+	fmt.Println(1e20)
+	fmt.Println(100000000.0)
+	fmt.Println(123456789.0)
+	fmt.Println(0.0001)
+	fmt.Println(0.00001)
+	fmt.Println(1000000.0)
+	fmt.Println(123456.0)
+	fmt.Println(999999.5)
+	fmt.Println(1234.5678)
+	fmt.Println(100.0)
+	fmt.Println(-0.000123)
+	x := 0.1
+	fmt.Println(x + 0.2)
+	fmt.Println(fmt.Sprint(1.0 / 3.0))
+	fmt.Println(fmt.Sprintf("%v", 1.5e-7))
+	var f32 float32 = 0.1
+	fmt.Println(f32)
+	var g32 float32 = 1.0 / 3.0
+	fmt.Println(g32)
+	fmt.Printf("%v %f\n", g32, g32)
+	var big32 float32 = 16777216.0
+	fmt.Println(big32)
+	var z float64
+	one := 1.0
+	fmt.Println(-z, one/z, -one/z)
+	fmt.Println(z / z)
+	nz := -z
+	fmt.Println(nz * 1)
+	fmt.Printf("%f %f %f\n", one/z, -one/z, z/z)
+	fmt.Printf("%f\n", -2.5)
+	fmt.Printf("%f\n", 1e10)
+	fmt.Printf("%f|%v\n", 0.0, 0.0)
+	fmt.Println(1.7976931348623157e308)
+	fmt.Println(5e-324)
+	var any1 interface{} = 1.0 / 3.0
+	fmt.Println(any1)
+	fmt.Printf("%v\n", any1)
+	fmt.Printf("%s\n", fmt.Sprint(any1))
+	fmt.Println(P{0.1, 2})
+}

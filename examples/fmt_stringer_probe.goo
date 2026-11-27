@@ -1,0 +1,97 @@
+package main
+
+import "fmt"
+
+type State int
+
+const (
+	Queued State = iota
+	Running
+)
+
+func (s State) String() string {
+	if s == Queued {
+		return "Queued"
+	}
+	return "Running"
+}
+
+type Job struct {
+	Name string
+	N    int
+}
+
+func (j *Job) String() string {
+	return "Job(" + j.Name + ")"
+}
+
+type Plain struct {
+	A int
+	B string
+}
+
+type Tag string
+
+func (t Tag) String() string {
+	return "tag:fixed"
+}
+
+type Base struct{ ID int }
+
+func (b Base) String() string {
+	return fmt.Sprintf("Base#%d", b.ID)
+}
+
+type Wrapper struct {
+	Base
+	Extra int
+}
+
+type Rec struct {
+	St State
+	N  int
+}
+
+type Hid struct {
+	st State
+	N  int
+}
+
+func main() {
+	fmt.Println(Running)
+	fmt.Println(Queued, Running)
+	fmt.Printf("%v\n", Queued)
+	fmt.Println(fmt.Sprint(Running))
+	fmt.Printf("%s\n", Running)
+	fmt.Println(fmt.Sprintf("%s|%v", Queued, Running))
+
+	j := Job{"a", 1}
+	fmt.Println(j)
+	fmt.Println(&j)
+	fmt.Printf("%v %s\n", &j, &j)
+
+	var any1 interface{} = Running
+	fmt.Println(any1)
+	fmt.Printf("%v\n", any1)
+	var any2 interface{} = &j
+	fmt.Println(any2)
+
+	fmt.Println(Plain{1, "x"})
+	fmt.Println(Tag("go"))
+	fmt.Println(Base{7})
+	fmt.Println(Wrapper{Base{3}, 4})
+	fmt.Print(Running, "\n")
+	fmt.Printf("%d\n", Running)
+
+	var np *Job
+	fmt.Println(np)
+	var nv *State
+	fmt.Println(nv)
+	fmt.Println(Rec{Running, 2})
+	fmt.Println(Hid{Running, 2})
+	fmt.Println([]State{Queued, Running})
+	for i := 0; i < 2; i++ {
+		fmt.Println(State(i))
+	}
+	fmt.Println(fmt.Sprint(Rec{Queued, 1}), fmt.Sprintf("%v|%s", []State{Running}, &j))
+}
