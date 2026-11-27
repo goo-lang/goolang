@@ -255,8 +255,9 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_print_bool", void_type, params, 1);
     }
     {
-        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };
-        add_runtime_function(codegen, "goo_print_float", void_type, params, 1);
+        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context),
+                                 LLVMInt32TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_print_float", void_type, params, 2);
     }
     
     // String operations
@@ -301,10 +302,17 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { i64_type };
         add_runtime_function(codegen, "goo_uint_to_string", string_type, params, 1);
     }
-    // goo_string_t goo_float_to_string(double value)
+    // goo_string_t goo_float_to_string(double value, int32_t bits)
     {
-        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };
-        add_runtime_function(codegen, "goo_float_to_string", string_type, params, 1);
+        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context),
+                                 LLVMInt32TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_float_to_string", string_type, params, 2);
+    }
+    // goo_string_t goo_format_float(double v, int32_t fmt, int32_t prec, int32_t bits)
+    {
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
+        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context), i32, i32, i32 };
+        add_runtime_function(codegen, "goo_format_float", string_type, params, 4);
     }
     // goo_string_t goo_bool_to_string(int value)
     {

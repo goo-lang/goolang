@@ -292,7 +292,7 @@ void goo_println_bool(int value);
 void goo_println_float(double value);
 void goo_print_int(int64_t value);
 void goo_print_bool(int value);
-void goo_print_float(double value);
+void goo_print_float(double value, int32_t bits);
 void goo_println_uint(uint64_t value);
 void goo_print_uint(uint64_t value);
 
@@ -311,7 +311,7 @@ int goo_string_cmp(goo_string_t a, goo_string_t b);
 // and reusable by a later strconv milestone.
 goo_string_t goo_int_to_string(int64_t value);
 goo_string_t goo_uint_to_string(uint64_t value);
-goo_string_t goo_float_to_string(double value);
+goo_string_t goo_float_to_string(double value, int32_t bits);
 goo_string_t goo_bool_to_string(int value);
 int goo_string_to_int(goo_string_t s, int64_t* out);
 // string(rune) / string(byte) conversion (Go: any integer type -> string

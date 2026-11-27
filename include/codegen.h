@@ -853,6 +853,10 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
                                    Type* iface, Type* concrete, LLVMValueRef value,
                                    Position pos);
+// fmt's Stringer rule: the result of `val.String()` when static type `ty` has
+// `String() string` in its method set, else NULL (no error is reported).
+LLVMValueRef codegen_stringer_string(CodeGenerator* codegen, TypeChecker* checker,
+                                     LLVMValueRef val, Type* ty, Position pos);
 // ADR 0001 (T3 review, Important finding #1): this function OWNS the
 // nil-vtable check — it extracts `iface_val`'s vtable (field 0) and
 // nil-checks it internally, via `expr`, before ever loading through it.
