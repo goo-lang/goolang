@@ -271,6 +271,29 @@ static int qasm3_resolve_ref(Qasm3Ctx* ctx, ASTNode* expr, char* out, size_t cap
     return 0;
 }
 
+// Resolves a qubit or result operand to its hardware index, or refuses. A name
+// that the walker does not track as that kind (a qubit that a helper returned,
+// an index that is not constant) once became index 0 here, and the circuit
+// then acted on the wrong qubit. Returns 1 and sets *idx on success.
+static int qasm3_operand(Qasm3Ctx* ctx, ASTNode* expr, Position fallback,
+                         Qasm3VarKind kind, int64_t* idx) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(idx != NULL);
+    GOO_ASSERT(kind == QASM3_VAR_QUBIT || kind == QASM3_VAR_RESULT);
+    char ref[64] = "<expression>";
+    if (expr && qasm3_resolve_ref(ctx, expr, ref, sizeof(ref))) {
+        Qasm3Var* v = qasm3_find_var(ctx, ref);
+        if (v && v->kind == kind) {
+            *idx = v->index_or_val;
+            return 1;
+        }
+    }
+    qasm3_refuse(ctx, expr ? expr->pos : fallback,
+                 "--emit-qasm3 cannot resolve %s '%s' to a hardware index",
+                 kind == QASM3_VAR_QUBIT ? "qubit" : "result", ref);
+    return 0;
+}
+
 static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt);
 
 static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs_name) {
@@ -310,18 +333,15 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 return;
             }
             if (strcmp(op, "FreeZero") == 0) {
-                char ref[64];
-                if (qasm3_resolve_ref(ctx, call->args, ref, sizeof(ref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ref);
-                    if (v) qasm3_free_qubit(ctx, v->index_or_val);
+                int64_t q = 0;
+                if (qasm3_operand(ctx, call->args, call->base.pos, QASM3_VAR_QUBIT, &q)) {
+                    qasm3_free_qubit(ctx, q);
                 }
                 return;
             }
             if (strcmp(op, "MeasureReset") == 0) {
-                char ref[64];
-                if (qasm3_resolve_ref(ctx, call->args, ref, sizeof(ref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ref);
-                    int64_t q = v ? v->index_or_val : 0;
+                int64_t q = 0;
+                if (qasm3_operand(ctx, call->args, call->base.pos, QASM3_VAR_QUBIT, &q)) {
                     int64_t c = qasm3_alloc_result(ctx);
                     qasm3_emit(ctx, "c[%lld] = measure q[%lld];\n", (long long)c, (long long)q);
                     qasm3_emit(ctx, "reset q[%lld];\n", (long long)q);
@@ -335,10 +355,8 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 char tbuf[64];
                 if (!qasm3_format_angle(ctx, op, call->args, call->base.pos, tbuf, sizeof(tbuf))) return;
                 ASTNode* qarg = call->args ? call->args->next : NULL;
-                char ref[64];
-                if (qasm3_resolve_ref(ctx, qarg, ref, sizeof(ref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ref);
-                    int64_t q = v ? v->index_or_val : 0;
+                int64_t q = 0;
+                if (qasm3_operand(ctx, qarg, call->base.pos, QASM3_VAR_QUBIT, &q)) {
                     qasm3_emit(ctx, "%s(%s) q[%lld];\n", g, tbuf, (long long)q);
                 }
                 return;
@@ -347,15 +365,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 ASTNode* qarg = call->args;
                 ASTNode* rarg = qarg ? qarg->next : NULL;
                 int64_t q = 0, r = 0;
-                char qref[64], rref[64];
-                if (qasm3_resolve_ref(ctx, qarg, qref, sizeof(qref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, qref);
-                    if (v) q = v->index_or_val;
-                }
-                if (qasm3_resolve_ref(ctx, rarg, rref, sizeof(rref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, rref);
-                    if (v) r = v->index_or_val;
-                }
+                int q_ok = qasm3_operand(ctx, qarg, call->base.pos, QASM3_VAR_QUBIT, &q);
+                int r_ok = qasm3_operand(ctx, rarg, call->base.pos, QASM3_VAR_RESULT, &r);
+                if (!q_ok || !r_ok) return;
                 if (ctx->has_syndrome_reg) {
                     qasm3_emit(ctx, "syn[%lld] = measure q[%lld];\n", (long long)r, (long long)q);
                 } else {
@@ -383,12 +395,8 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 if (gate && arity >= 1 && arity <= 3) {
                     int64_t qs[3] = {0, 0, 0};
                     ASTNode* a = call->args;
-                    for (int k = 0; k < arity && a; k++, a = a->next) {
-                        char qref[64];
-                        if (qasm3_resolve_ref(ctx, a, qref, sizeof(qref))) {
-                            Qasm3Var* v = qasm3_find_var(ctx, qref);
-                            if (v) qs[k] = v->index_or_val;
-                        }
+                    for (int k = 0; k < arity; k++, a = a ? a->next : NULL) {
+                        if (!qasm3_operand(ctx, a, call->base.pos, QASM3_VAR_QUBIT, &qs[k])) return;
                     }
                     if (arity == 1) {
                         qasm3_emit(ctx, "%s q[%lld];\n", gate, (long long)qs[0]);
@@ -543,11 +551,9 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                 CallExprNode* c = (CallExprNode*)ifs->condition;
                 if (c->function && c->function->type == AST_SELECTOR_EXPR) {
                     SelectorExprNode* sel = (SelectorExprNode*)c->function;
-                    char rref[64];
-                    if (sel->selector && strcmp(sel->selector, "ReadResult") == 0 &&
-                        qasm3_resolve_ref(ctx, c->args, rref, sizeof(rref))) {
-                        Qasm3Var* rv = qasm3_find_var(ctx, rref);
-                        int64_t bit = rv ? rv->index_or_val : 0;
+                    if (sel->selector && strcmp(sel->selector, "ReadResult") == 0) {
+                        int64_t bit = 0;
+                        if (!qasm3_operand(ctx, c->args, c->base.pos, QASM3_VAR_RESULT, &bit)) return;
                         size_t saved_len = ctx->len;
                         qasm3_emit(ctx, "if (c[%lld] == true) {\n", (long long)bit);
                         size_t header_len = ctx->len;
