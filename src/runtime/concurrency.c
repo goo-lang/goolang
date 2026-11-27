@@ -17,11 +17,28 @@
     #include "goo_os.h"
     #include <unistd.h>
     #include <sys/mman.h>
+    #include <signal.h>
     #include <ucontext.h>
 #endif
 
-// Goroutine stack size (64KB by default)
-#define GOO_GOROUTINE_STACK_SIZE (64 * 1024)
+// Goroutine stack size: 1 MiB of usable stack (H1). The stack is an mmap
+// region, so an untouched page costs address space and no memory.
+#define GOO_GOROUTINE_STACK_SIZE (1024 * 1024)
+
+// H1: the PROT_NONE guard below each stack. It is 1 MiB, not one page, for two
+// reasons. A frame larger than the guard could step over it and write into the
+// neighbouring mapping with no fault, and a larger guard costs only address
+// space. Valgrind also treats an SP change of more than 2,000,000 bytes as a
+// stack switch and treats a smaller one as ordinary stack growth. Without the
+// client request VALGRIND_STACK_REGISTER, a guard + stack mapping under that
+// distance makes valgrind report invalid reads on a goroutine stack that sits
+// next to another stack. 1 MiB + 1 MiB is 2 MiB, above that threshold.
+// goo_stack_alloc rounds the guard up to whole pages.
+#define GOO_GOROUTINE_GUARD_SIZE (1024 * 1024)
+
+// Alternate signal stack per worker thread, so the SIGSEGV handler can run
+// when the faulting goroutine stack is the thing that overflowed.
+#define GOO_ALTSTACK_SIZE (64 * 1024)
 
 // Maximum number of OS threads in scheduler
 #define GOO_MAX_OS_THREADS 16
@@ -88,6 +105,121 @@ int goo_default_thread_count(void) {
 #endif
 }
 
+#ifdef GOO_PLATFORM_UNIX
+// ---------------------------------------------------------------------------
+// H1: guarded goroutine stacks.
+// ---------------------------------------------------------------------------
+static size_t goo_round_to_pages(size_t n) {
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) {
+        goo_panic("goroutine stack: sysconf(_SC_PAGESIZE) failed");
+    }
+    size_t p = (size_t)page;
+    return (n + p - 1U) / p * p;
+}
+
+// One mmap of guard + stack, then the lowest guard bytes become PROT_NONE.
+// It never falls back to an unguarded stack: a failure is a panic.
+static void goo_stack_alloc(goo_goroutine_t* g) {
+    size_t guard = goo_round_to_pages(GOO_GOROUTINE_GUARD_SIZE);
+    size_t usable = goo_round_to_pages(GOO_GOROUTINE_STACK_SIZE);
+    size_t total = guard + usable;
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
+#ifdef MAP_STACK
+    flags |= MAP_STACK;
+#endif
+    void* map = mmap(NULL, total, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (map == MAP_FAILED) {
+        goo_panic("goroutine stack: mmap failed");
+    }
+    if (mprotect(map, guard, PROT_NONE) != 0) {
+        goo_panic("goroutine stack: mprotect of the guard region failed");
+    }
+    g->stack_map = map;
+    g->stack_map_size = total;
+    g->stack = (char*)map + guard;
+    g->stack_size = usable;
+    GOO_ASSERT((char*)g->stack == (char*)g->stack_map + guard);
+}
+
+static void goo_stack_free(goo_goroutine_t* g) {
+    if (!g->stack_map) {
+        return;
+    }
+    if (munmap(g->stack_map, g->stack_map_size) != 0) {
+        goo_panic("goroutine stack: munmap failed");
+    }
+    g->stack_map = NULL;
+    g->stack = NULL;
+}
+
+// Async-signal-safe: only write, _exit and sigaction. A fault inside the guard
+// of the goroutine that runs on this thread is a stack overflow. Any other
+// fault gets the default action back, and the faulting instruction runs
+// again, so the process stops as it did before the handler existed.
+static void goo_segv_handler(int sig, siginfo_t* info, void* ctx) {
+    (void)ctx;
+    const goo_goroutine_t* cur = goo_os_tls()->current;
+    if (cur && cur->stack_map && info) {
+        uintptr_t addr = (uintptr_t)info->si_addr;
+        uintptr_t lo = (uintptr_t)cur->stack_map;
+        uintptr_t hi = (uintptr_t)cur->stack;
+        if (addr >= lo && addr < hi) {
+            static const char msg[] = "fatal error: stack overflow\n";
+            ssize_t w = write(2, msg, sizeof msg - 1U);
+            (void)w;
+            _exit(2);
+        }
+    }
+    struct sigaction dfl = {0};
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    sigaction(sig, &dfl, NULL);
+}
+
+static void goo_install_segv_handler(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = goo_segv_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0) {
+        goo_panic("runtime: cannot install the SIGSEGV handler");
+    }
+}
+
+// An alternate signal stack is per thread. Install one per real thread, one
+// time. The simulator runs every worker as a coroutine on one real thread, so
+// the kernel's own record answers "does this thread have one": sigaltstack
+// with a NULL new stack only reads it. (No _Thread_local here: the
+// runtime-seam-probe keeps concurrency.c free of raw TLS.)
+static void goo_install_altstack(void) {
+    stack_t cur;
+    if (sigaltstack(NULL, &cur) != 0) {
+        goo_panic("runtime: sigaltstack query failed");
+    }
+    if (!(cur.ss_flags & SS_DISABLE)) {
+        return;
+    }
+    size_t size = GOO_ALTSTACK_SIZE;
+    if (size < (size_t)SIGSTKSZ) {
+        size = (size_t)SIGSTKSZ;
+    }
+    size = goo_round_to_pages(size);
+    void* mem = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mem == MAP_FAILED) {
+        goo_panic("runtime: mmap of the alternate signal stack failed");
+    }
+    stack_t ss;
+    ss.ss_sp = mem;
+    ss.ss_size = size;
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, NULL) != 0) {
+        goo_panic("runtime: sigaltstack failed");
+    }
+}
+#endif
+
 // Scheduler initialization
 void goo_scheduler_init(int num_threads) {
     if (g_scheduler) {
@@ -111,6 +243,12 @@ void goo_scheduler_init(int num_threads) {
     g_scheduler->scheduler_mutex = goo_mutex_new();
     
 #ifdef GOO_PLATFORM_UNIX
+    // H1: one handler for the process, before any worker can run a goroutine.
+    static atomic_flag segv_installed = ATOMIC_FLAG_INIT;
+    if (!atomic_flag_test_and_set(&segv_installed)) {
+        goo_install_segv_handler();
+    }
+
     // Create OS threads for the scheduler
     g_scheduler->os_threads = goo_alloc(sizeof(goo_thread_t*) * num_threads);
 
@@ -229,7 +367,6 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     goroutine->state = GOO_GOROUTINE_READY;
     goroutine->function = func;
     goroutine->arg = arg;
-    goroutine->stack_size = GOO_GOROUTINE_STACK_SIZE;
     goroutine->creation_time = goo_platform_time_ns();
     
     goo_mutex_lock(g_scheduler->scheduler_mutex);
@@ -237,10 +374,10 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     g_scheduler->stats.num_goroutines++;
     goo_mutex_unlock(g_scheduler->scheduler_mutex);
     
-    // Allocate stack
-    goroutine->stack = goo_alloc(goroutine->stack_size);
-    
 #ifdef GOO_PLATFORM_UNIX
+    // Allocate the guarded stack (H1); it sets stack and stack_size.
+    goo_stack_alloc(goroutine);
+
     // Set up goroutine context
     // Note: ucontext functions are deprecated on macOS 10.6+ but still functional
     // 
@@ -569,6 +706,9 @@ static void* scheduler_main_loop(void* arg) {
     int thread_id = (int)(intptr_t)arg;
     (void)thread_id;  // Suppress unused warning
     
+#ifdef GOO_PLATFORM_UNIX
+    goo_install_altstack();   // H1: before this worker runs any goroutine
+#endif
     while (g_scheduler->running) {
         goo_goroutine_t* goroutine = scheduler_get_next_goroutine();
         
@@ -612,7 +752,7 @@ static void* scheduler_main_loop(void* arg) {
             // tls->requeue instead (handled just below) and leaves tls->reap NULL.
             // A DONE goroutine is never re-enqueued, so tls->reap is ours alone.
             if (tls->reap) {
-                goo_free(tls->reap->stack);
+                goo_stack_free(tls->reap);
                 goo_free(tls->reap);
                 tls->reap = NULL;
             }

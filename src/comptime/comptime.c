@@ -9,6 +9,7 @@
 #include <stdarg.h>
 
 static ComptimeResult* comptime_eval_binary_expr(ComptimeContext* ctx, ASTNode* expr);
+static ComptimeResult* comptime_charge_bytes(ComptimeContext* ctx, size_t n, Position pos);
 static ComptimeResult* comptime_eval_unary_expr(ComptimeContext* ctx, ASTNode* expr);
 static ComptimeResult* comptime_eval_identifier(ComptimeContext* ctx, ASTNode* expr);
 // Non-static — also called from the bridge (comptime_types.c, type_checker glue).
@@ -105,6 +106,14 @@ static ComptimeResult* comptime_eval_binary_expr(ComptimeContext* ctx, ASTNode* 
                 // String concatenation
                 char* left_str = comptime_value_to_string(left_val);
                 char* right_str = comptime_value_to_string(right_val);
+                ComptimeResult* over_bytes = comptime_charge_bytes(ctx, strlen(left_str) + strlen(right_str) + 1u, expr->pos);
+                if (over_bytes) {
+                    free(left_str);
+                    free(right_str);
+                    comptime_result_free(left_result);
+                    comptime_result_free(right_result);
+                    return over_bytes;
+                }
                 char* concat = malloc(strlen(left_str) + strlen(right_str) + 1);
                 strcpy(concat, left_str);
                 strcat(concat, right_str);
@@ -497,6 +506,8 @@ ComptimeResult* execute_comptime_block(ASTNode* comptime_block, ComptimeContext*
         created_context = true;
     }
     
+    comptime_context_reset_steps(ctx);
+
     // Execute the block body
     ComptimeResult* result = comptime_eval_block(ctx, block->body);
     
@@ -517,6 +528,51 @@ static ComptimeResult* comptime_eval_if_stmt(ComptimeContext* ctx, ASTNode* stmt
 static ComptimeResult* comptime_eval_for_stmt(ComptimeContext* ctx, ASTNode* stmt);
 static ComptimeResult* comptime_eval_return_stmt(ComptimeContext* ctx, ASTNode* stmt);
 
+// Charge one step against the evaluation's total budget. Returns an error
+// result once the budget is spent, otherwise NULL.
+static ComptimeResult* comptime_charge_step(ComptimeContext* ctx, Position pos) {
+    if (++ctx->root->steps <= GOO_COMPTIME_STEP_BUDGET) { return NULL; }
+    return comptime_result_new(NULL, comptime_error_new(
+        GOO_COMPTIME_BUDGET_ERROR, pos), NULL);
+}
+
+// Charge `n` bytes against the evaluation's byte budget. Returns an error
+// result once the budget is spent, otherwise NULL.
+static ComptimeResult* comptime_charge_bytes(ComptimeContext* ctx, size_t n, Position pos) {
+    // Compare against the remainder so a huge `n` cannot wrap the sum.
+    if (n <= GOO_COMPTIME_BYTE_BUDGET - ctx->root->bytes
+        && ctx->root->bytes <= GOO_COMPTIME_BYTE_BUDGET) {
+        ctx->root->bytes += n;
+        return NULL;
+    }
+    return comptime_result_new(NULL, comptime_error_new(GOO_COMPTIME_BYTE_ERROR, pos), NULL);
+}
+
+// Bytes of variable-size payload that copying `v` allocates. Fixed-size
+// values cost nothing here: the step budget already bounds how many exist.
+static size_t comptime_value_bytes(const ComptimeValue* v) {
+    if (!v) { return 0; }
+    size_t n = 0;
+    switch (v->type) {
+        case COMPTIME_VALUE_STRING:
+            if (v->string_value) { n += strlen(v->string_value) + 1u; }
+            break;
+        case COMPTIME_VALUE_ARRAY:
+            for (size_t i = 0; i < v->array_value.count; i++) {
+                n += sizeof(ComptimeValue*) + comptime_value_bytes(v->array_value.elements[i]);
+            }
+            break;
+        case COMPTIME_VALUE_STRUCT:
+            for (size_t i = 0; i < v->struct_value.field_count; i++) {
+                n += sizeof(ComptimeValue*) + comptime_value_bytes(v->struct_value.field_values[i]);
+            }
+            break;
+        default:
+            break;
+    }
+    return n;
+}
+
 // Execute a user-defined function
 ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_node, 
                                            ComptimeValue** args, size_t arg_count) {
@@ -526,9 +582,15 @@ ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_
     
     FuncDeclNode* func = (FuncDeclNode*)func_node;
     
+    ComptimeResult* over_budget = comptime_charge_step(ctx, func_node->pos);
+    if (over_budget) { return over_budget; }
+
     // Check recursion depth
-    if (ctx->current_recursion_depth >= ctx->max_recursion_depth) {
-        return comptime_result_new(NULL, comptime_error_new("Maximum recursion depth exceeded in comptime function", func_node->pos), NULL);
+    // The depth lives on the root context and follows the call chain: block
+    // and loop contexts are new scopes, not new calls, so a per-context
+    // counter would restart at 0 inside every function body.
+    if (ctx->root->current_recursion_depth >= ctx->max_recursion_depth) {
+        return comptime_result_new(NULL, comptime_error_new(GOO_COMPTIME_DEPTH_ERROR, func_node->pos), NULL);
     }
     
     // Create new context for function scope
@@ -537,7 +599,7 @@ ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_
         return comptime_result_new(NULL, comptime_error_new("Failed to create function context", func_node->pos), NULL);
     }
     
-    func_ctx->current_recursion_depth = ctx->current_recursion_depth + 1;
+    ctx->root->current_recursion_depth++;
     
     // Bind arguments to parameters using the parameters' real names from
     // func->params. Each param decl is an AST_VAR_DECL with names[]/name_count,
@@ -548,7 +610,14 @@ ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_
         if (p->type != AST_VAR_DECL) continue;
         VarDeclNode* pd = (VarDeclNode*)p;
         for (size_t n = 0; n < pd->name_count && arg_idx < arg_count; n++) {
+            ComptimeResult* over_bytes = comptime_charge_bytes(ctx, comptime_value_bytes(args[arg_idx]), func_node->pos);
+            if (over_bytes) {
+                ctx->root->current_recursion_depth--;
+                comptime_context_free(func_ctx);
+                return over_bytes;
+            }
             if (!comptime_context_bind_var(func_ctx, pd->names[n], comptime_value_copy(args[arg_idx]))) {
+                ctx->root->current_recursion_depth--;
                 comptime_context_free(func_ctx);
                 return comptime_result_new(NULL, comptime_error_new("Failed to bind function parameter", func_node->pos), NULL);
             }
@@ -564,6 +633,7 @@ ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_
         result->generated_code = xstrdup(func_ctx->generated_code);
     }
     
+    ctx->root->current_recursion_depth--;
     comptime_context_free(func_ctx);
     return result;
 }
@@ -696,6 +766,13 @@ static ComptimeResult* comptime_eval_for_stmt(ComptimeContext* ctx, ASTNode* stm
     size_t iteration_count = 0;
     
     while (iteration_count < max_iterations) {
+        ComptimeResult* over_budget = comptime_charge_step(loop_ctx, stmt->pos);
+        if (over_budget) {
+            comptime_result_free(last_result);
+            comptime_context_free(loop_ctx);
+            return over_budget;
+        }
+
         // Check condition if present
         if (for_stmt->condition) {
             ComptimeResult* cond_result = comptime_eval_expression(loop_ctx, for_stmt->condition);

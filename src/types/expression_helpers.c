@@ -714,6 +714,11 @@ Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_t
 Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, ASTNode* value_expr, Position pos) {
     if (!checker || !target || !target_type || !value_type) return NULL;
 
+    if (value_type->kind == TYPE_VOID) {
+        type_error(checker, value_expr ? value_expr->pos : pos, "used as value");
+        return NULL;
+    }
+
     // Fix 2 (comptime-param functions are not first-class values): `f = fill`
     // (f a func-typed variable) would rebind f to a Variable with no
     // func_decl_node — the SAME silent bypass adapt_var_decl_initializer's
