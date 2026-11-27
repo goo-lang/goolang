@@ -1218,6 +1218,207 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "q", RELEASE_NO_NOT_OWNED } }, 1
     },
+
+    // ---- CONDITION 7 FOR A SELF-APPENDED LOCAL (PR #376 review) ----------
+    //
+    // Codegen frees the array a self-append replaced, `xs = append(xs, ...)`,
+    // when xs reads RELEASE_OK. That free is sound only if no other value
+    // still points into the old array. Condition 7 asked that question only
+    // for a local bound more than once, and a self-append is not a binding,
+    // so every row below read RELEASE_OK for xs and freed a live array. Each
+    // row is the unit form of tests/arc_uaf/append_alias_<shape>.goo, where
+    // valgrind reports the invalid read.
+    {
+        81, "u := xs, then xs self-appends -> xs ALIASED",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 7)\n"
+        "    u := xs\n"
+        "    for i := 0; i < 100; i++ {\n"
+        "        xs = append(xs, i)\n"
+        "    }\n"
+        "    _ = u\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        82, "t := xs[1:], then xs self-appends -> xs ALIASED",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 1)\n"
+        "    xs = append(xs, 2)\n"
+        "    t := xs[1:]\n"
+        "    for i := 0; i < 100; i++ {\n"
+        "        xs = append(xs, i)\n"
+        "    }\n"
+        "    _ = t\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        // THE RANGE TEMPORARY IS NOT A NAMED LOCAL. `range xs` evaluates xs
+        // once and iterates that header for the whole loop, so an append in
+        // the body that moves xs frees the array the loop still reads. No
+        // record's values name xs here: only the range clause does.
+        83, "for range xs whose body self-appends xs -> xs ALIASED",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 1)\n"
+        "    sum := 0\n"
+        "    for _, v := range xs {\n"
+        "        xs = append(xs, 10)\n"
+        "        sum = sum + v\n"
+        "    }\n"
+        "    _ = sum\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        84, "xs, ys = append(xs, 6), xs -> xs ALIASED",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 5)\n"
+        "    ys := []int{}\n"
+        "    xs, ys = append(xs, 6), xs\n"
+        "    _ = ys\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        85, "b := Box{s: xs}, then xs self-appends -> xs ALIASED",
+        "package main\n"
+        "type Box struct { s []int }\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 4)\n"
+        "    b := Box{s: xs}\n"
+        "    for i := 0; i < 100; i++ {\n"
+        "        xs = append(xs, i)\n"
+        "    }\n"
+        "    _ = b\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        86, "p := &xs[0], then xs self-appends -> xs ALIASED",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 4)\n"
+        "    p := &xs[0]\n"
+        "    for i := 0; i < 100; i++ {\n"
+        "        xs = append(xs, i)\n"
+        "    }\n"
+        "    _ = p\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        87, "ys := append(xs[:1], 9), then xs self-appends -> xs ALIASED",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 1)\n"
+        "    xs = append(xs, 2)\n"
+        "    ys := append(xs[:1], 9)\n"
+        "    for i := 0; i < 100; i++ {\n"
+        "        xs = append(xs, i)\n"
+        "    }\n"
+        "    _ = ys\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        // The block reuse shape: the freed array of xs is handed to ys's
+        // append, so u reads 99 where Go prints 7. ys has no alias and stays
+        // RELEASE_OK, which pins that the rule refuses the aliased local only.
+        88, "u := xs, one self-append, then a fresh ys -> xs ALIASED, ys OK",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 7)\n"
+        "    u := xs\n"
+        "    xs = append(xs, 8)\n"
+        "    ys := []int{}\n"
+        "    ys = append(ys, 99)\n"
+        "    _ = u\n"
+        "    _ = ys\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED }, { "ys", RELEASE_OK } }, 2
+    },
+    {
+        // THE RANGE RULE IS NOT ONLY FOR APPEND. A store that rebinds the
+        // ranged local frees the old value at the store, and the loop still
+        // iterates it. Measured before this rule: valgrind reported an invalid
+        // read in goo_utf8_decode (tests/arc_uaf/range_rebind_string.goo).
+        89, "for range last whose body rebinds last -> last ALIASED",
+        "package main\n"
+        "func f(s string) {\n"
+        "    last := \"\"\n"
+        "    last = s + \"a\"\n"
+        "    for _, c := range last {\n"
+        "        last = last + \"x\"\n"
+        "        _ = c\n"
+        "    }\n"
+        "    _ = last\n"
+        "}\n",
+        "f", { { "last", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        // The control for rows 83 and 89: the range is over before the
+        // append, so the range temporary is dead and nothing reads the old
+        // array. The rule asks about stores INSIDE the loop body only.
+        90, "for range xs, self-append AFTER the loop -> xs OK",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 1)\n"
+        "    sum := 0\n"
+        "    for _, v := range xs {\n"
+        "        sum = sum + v\n"
+        "    }\n"
+        "    xs = append(xs, 3)\n"
+        "    _ = sum\n"
+        "}\n",
+        "f", { { "xs", RELEASE_OK } }, 1
+    },
+    {
+        // THE PRICE OF AN UNTYPED SCAN. `n := xs[0]` copies an int and holds
+        // no pointer into the array, but this module has no types and cannot
+        // tell it from `n := xs[0]` on a [][]int, whose element shares
+        // nothing either, or from `p := &xs[0]` (row 86), which does. Any
+        // mention that is not a fresh value refuses. A row that relaxes this
+        // must bring the type that proves the copy.
+        91, "n := xs[0] names xs and is not fresh -> xs ALIASED (fail closed)",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 1)\n"
+        "    n := xs[0]\n"
+        "    xs = append(xs, 2)\n"
+        "    _ = n\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        // ...and the prune that keeps it usable. `n := xs[0] + 1` is a `+`,
+        // which condition 2's table calls fresh (a concat copies, an integer
+        // holds nothing), so the scan skips it and xs keeps its release.
+        92, "n := xs[0] + 1 is a fresh value -> xs OK",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{}\n"
+        "    xs = append(xs, 1)\n"
+        "    n := xs[0] + 1\n"
+        "    xs = append(xs, 2)\n"
+        "    _ = n\n"
+        "}\n",
+        "f", { { "xs", RELEASE_OK } }, 1
+    },
 };
 
 // =============================================================================
