@@ -21,6 +21,14 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLOOR_REL="tests/stdlib/api-floor.txt"
 
+# The gate never skips: it needs python3 and bash only (the API denominator is
+# a committed snapshot, so no Go is needed). A missing python3 is a FAIL
+# whether or not GOO_PROBE_NO_SKIP is set, because a skip would read as a pass.
+if ! command -v python3 >/dev/null 2>&1; then
+	echo "stdlib-api-ratchet: FAIL (python3 not found; this gate has no skip, GOO_PROBE_NO_SKIP=${GOO_PROBE_NO_SKIP:-0})"
+	exit 1
+fi
+
 # gate ROOT: run the ratchet against the tree at ROOT. The FAIL tag is what the
 # self-test matches, so each fault must be refused for its own reason.
 gate() {

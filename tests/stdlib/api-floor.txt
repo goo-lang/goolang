@@ -1,1 +1,1 @@
-linux-amd64 0 application 0
+linux-amd64 88 application 88
