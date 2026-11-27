@@ -1,0 +1,52 @@
+// zero_nullable_probe: the zero value of a Goo nullable `?T` is nil in every
+// container, the same rule as Go's nil pointer. Go has no `?T`, so the
+// expected output is hand-checked: every zero value prints true for
+// `== nil`, and a set value reads back through if-let.
+package main
+
+import "fmt"
+
+type S struct {
+	n int
+	p ?int
+}
+
+func named() (r ?int) { return }
+
+func main() {
+	var s S
+	fmt.Println("var struct field:", s.p == nil)
+	s2 := S{n: 3}
+	fmt.Println("literal omitted field:", s2.p == nil, s2.n)
+	q := new(S)
+	fmt.Println("new field:", q.p == nil)
+	fmt.Println("named result:", named() == nil)
+
+	xs := make([]?int, 2)
+	fmt.Println("make element:", xs[0] == nil, xs[1] != nil)
+
+	m := map[string]?int{}
+	fmt.Println("map miss:", m["x"] == nil)
+
+	var arr [2]?int
+	fmt.Println("array element:", arr[1] == nil)
+
+	var lv ?int
+	fmt.Println("local var:", lv == nil)
+
+	s.p = 42
+	if let v = s.p {
+		fmt.Println("set field:", v)
+	} else {
+		fmt.Println("set field: nil")
+	}
+	s.p = nil
+	fmt.Println("reset field:", s.p == nil)
+
+	xs[1] = 0
+	if let v = xs[1] {
+		fmt.Println("set element zero value:", v)
+	} else {
+		fmt.Println("set element zero value: nil")
+	}
+}
