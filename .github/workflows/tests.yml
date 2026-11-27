@@ -72,7 +72,7 @@ jobs:
     # says nothing. A public repo's job limit is 6h.
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install toolchain
         # gcc-14: the Makefile uses -std=c23 (gcc-13, the distro default, rejects it).
@@ -161,7 +161,7 @@ jobs:
 
       - name: Upload the gate log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: verify-core-log
           path: verify-core.log
@@ -173,7 +173,7 @@ jobs:
         # that file as scripts/findings-baseline.<signature>.tsv. On a green
         # run the candidate is absent, and the SARIF is the only upload.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: findings-baseline-candidate
           path: |
