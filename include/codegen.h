@@ -1095,6 +1095,12 @@ LLVMValueRef codegen_create_nullable_value(CodeGenerator* codegen, LLVMTypeRef n
                                          LLVMValueRef value, int is_null);
 LLVMValueRef codegen_extract_nullable_value(CodeGenerator* codegen, LLVMValueRef nullable_value);
 LLVMValueRef codegen_check_nullable_null(CodeGenerator* codegen, LLVMValueRef nullable_value);
+// The flag in field 0 of a nullable is has_value: 1 = a value is present,
+// 0 = nil, so all-zero memory is nil. flag_const gives the i1 to store for a
+// nil (is_nil != 0) or a present value. has_value reads the flag as it is
+// stored. check_nullable_null gives its negation.
+LLVMValueRef codegen_nullable_flag_const(CodeGenerator* codegen, int is_nil);
+LLVMValueRef codegen_nullable_has_value(CodeGenerator* codegen, LLVMValueRef nullable_value);
 
 // Nullable codegen — used across expression_codegen.c, function_codegen.c,
 // and call_codegen.c (default-nil locals/globals, reassignment, ?T arg wrap).

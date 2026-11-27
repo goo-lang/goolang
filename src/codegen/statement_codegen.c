@@ -389,8 +389,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_if_stmt(codegen, checker, stmt);
         case AST_IF_LET_STMT: {
             // Desugar `if let v = expr { … } [else { … }]` to:
-            //   evaluate expr (TYPE_NULLABLE struct {i1 is_null, T value})
-            //   br is_null, .else_or_skip, .then
+            //   evaluate expr (TYPE_NULLABLE struct {i1 has_value, T value})
+            //   br has_value, .then, .else_or_skip
             //   .then: alloca v; v = ExtractValue 1; codegen then_stmt
             //   .else: codegen else_stmt if present
             //   .exit
@@ -399,7 +399,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             IfLetStmtNode* il;
             ValueInfo* nv;
             LLVMValueRef raw;
-            LLVMValueRef is_null;
+            LLVMValueRef has_value;
             LLVMBasicBlockRef then_bb;
             LLVMBasicBlockRef else_bb;
             LLVMBasicBlockRef exit_bb;
@@ -415,11 +415,11 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, nv->goo_type);
                 if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "il_load");
             }
-            is_null = LLVMBuildExtractValue(codegen->builder, raw, 0, "is_null");
+            has_value = codegen_nullable_has_value(codegen, raw);
             then_bb = codegen_create_block(codegen, "iflet.then");
             else_bb = codegen_create_block(codegen, "iflet.else");
             exit_bb = codegen_create_block(codegen, "iflet.exit");
-            LLVMBuildCondBr(codegen->builder, is_null, else_bb, then_bb);
+            LLVMBuildCondBr(codegen->builder, has_value, then_bb, else_bb);
 
             codegen_set_insert_point(codegen, then_bb);
             inner_type = nv->goo_type ? nv->goo_type->data.nullable.base_type : NULL;
@@ -2008,7 +2008,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // context), which mismatches the `{i1, T}` nullable return type (or
         // a slice/func's aggregate return type) and fails module
         // verification. Intercept here, generate the correct
-        // {is_null=1, zero_value} struct (or bare zero value), and return it
+        // {has_value=0, zero_value} struct (or bare zero value), and return it
         // directly — same pattern as var_decl's `var b ?T = nil` fix.
 #if LLVM_AVAILABLE
         if (function_return_type &&
@@ -2055,7 +2055,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // Nullable auto-wrap: `return Point{...}` inside a `?Point` function.
         // When the function's declared return type is ?T (TYPE_NULLABLE) and the
         // actual return value has the inner type T (not already nullable), wrap it
-        // in an {is_null=0, value} aggregate — same InsertValue pattern used in
+        // in an {has_value=1, value} aggregate — same InsertValue pattern used in
         // var_decl for `var hit ?int = 42`. This is the core ABI fix for M4 Task 3:
         // the {i1, BigStruct} wrapper struct is what LLVM's backend sees as the
         // "large" return type (>16 bytes on x86-64), so fixing the wrapper here

@@ -2078,7 +2078,7 @@ static int global_init_elem_is_const(CodeGenerator* codegen, ASTNode* e) {
 // location-less "invalid number of bytes". Deferral routes these through
 // codegen_create_nullable_with_value, which width- and kind-coerces first.
 // `?T = nil` stays immediate: the nil intercept in codegen_generate_var_decl
-// builds the {is_null=1, zero} constant without the builder.
+// builds the {has_value=0, zero} constant without the builder.
 //
 // `codegen == NULL` selects pre-pass mode — see global_init_elem_is_const.
 static int global_init_should_defer(CodeGenerator* codegen, ASTNode* expr, Type* var_type) {
@@ -2176,7 +2176,7 @@ static int codegen_apply_local_init_pipeline(CodeGenerator* codegen, TypeChecker
             // keep the original inline InsertValue pair, which does not
             // coerce the value's width/kind first.
             LLVMValueRef agg = LLVMGetUndef(llvm_type);
-            LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
+            LLVMValueRef tag = codegen_nullable_flag_const(codegen, 0);
             agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "null_tag");
             agg = LLVMBuildInsertValue(codegen->builder, agg, init_value->llvm_value, 1, "null_val");
             init_value->llvm_value = agg;
@@ -2367,7 +2367,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
 
     // Go-style error-union destructure `n, err := <!T>` — evaluate the !T
     // once, then bind name0 to the unwrapped value arm and name1 to a `?error`
-    // ({i1 is_null, i8*}) that is nil exactly when the union holds no error.
+    // ({i1 has_value, i8*}) that is nil exactly when the union holds no error.
     // Must precede the generic struct-destructure: a !T is a 2-field
     // {i1 is_error, union} aggregate, and ExtractValue'ing its raw fields would
     // hand the is_error flag to name0 and the union payload to name1.
@@ -2412,13 +2412,13 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             scope_add_variable(checker->current_scope, tv0);
         }
 
-        // name1 = ?error {i1 is_null, i8*}. nil ⟺ !is_error, so `err != nil`
-        // (which lowers to !is_null) is true exactly when is_error is true.
+        // name1 = ?error {i1 has_value, i8*}. nil ⟺ !is_error, so the
+        // has_value flag IS is_error, and `err != nil` (which lowers to
+        // has_value) is true exactly when is_error is true.
         const char* nm1 = var_decl->names[1];
         Type* err_type = type_checker_error_type(checker);
         LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
         LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
-        LLVMValueRef is_null = LLVMBuildNot(codegen->builder, is_error, "err_is_null");
 
         // Branch: box the union's goo_string error arm only when is_error (keeps the
         // common success path allocation-free). PHI the resulting i8* handle.
@@ -2471,7 +2471,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         LLVMAddIncoming(err_ptr, &boxed, &box_exit, 1);
 
         LLVMValueRef err_val = LLVMGetUndef(err_llvm);
-        err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "err.is_null");
+        err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_error, 0, "err.has_value");
         err_val = LLVMBuildInsertValue(codegen->builder, err_val, err_ptr, 1, "err.ptr");
         LLVMValueRef err_alloca = codegen_alloc_local_promoted(codegen, err_llvm, nm1, var_decl->is_captured);
         LLVMBuildStore(codegen->builder, err_val, err_alloca);
@@ -2827,10 +2827,11 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             alloca_inst = codegen_alloc_local_promoted(codegen, llvm_type, var_name, var_decl->is_captured);
             if (alloca_inst && !var_decl->values) {
                 // For a `?T` local with no initializer, the Go-style zero value
-                // must be nil ({is_null=1, ...}). LLVMConstNull would set the
-                // is_null tag to 0, which reads as PRESENT — wrong. Route to the
-                // shared null-nullable builder. Falls back to ConstNull if it
-                // cannot be built (defensive; should not happen for valid ?T).
+                // must be nil ({has_value=0, zero}). That is all zero bits, the
+                // same as LLVMConstNull, but route to the shared null-nullable
+                // builder so the encoding stays in one place. Falls back to
+                // ConstNull if it cannot be built (defensive; should not
+                // happen for valid ?T).
                 if (var_type && var_type->kind == TYPE_NULLABLE) {
                     LLVMValueRef null_init = codegen_create_nullable_null(
                         codegen, llvm_type, var_type->data.nullable.base_type);
@@ -2846,12 +2847,12 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             // Global variable
             alloca_inst = LLVMAddGlobal(codegen->module, llvm_type, var_name);
             // Same nil-default rule as locals, but globals need a *constant*
-            // initializer, so build {i1 true, zero_of_base} directly.
+            // initializer, so build {has_value=0, zero_of_base} directly.
             if (var_type && var_type->kind == TYPE_NULLABLE) {
                 Type* base_type = var_type->data.nullable.base_type;
                 LLVMTypeRef base_llvm = base_type ? codegen_type_to_llvm(codegen, base_type) : NULL;
                 LLVMValueRef fields[2];
-                fields[0] = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 1, 0);
+                fields[0] = codegen_nullable_flag_const(codegen, 1);
                 fields[1] = base_llvm ? LLVMConstNull(base_llvm)
                                       : LLVMConstNull(LLVMInt32TypeInContext(codegen->context));
                 LLVMSetInitializer(alloca_inst,
@@ -2912,7 +2913,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 ValueInfo* init_value;
 
                 // `var b ?T = nil` — intercept here so codegen_generate_null_literal
-                // receives the declared ?T type and emits {is_null=1, zero_value}.
+                // receives the declared ?T type and emits {has_value=0, zero_value}.
                 // Without this intercept the generic nil fallback (a void* null pointer)
                 // lands in the auto-wrap block below and causes an LLVM type mismatch.
                 // P2.2 option A: same intercept, widened to a bare (non-?T)

@@ -1,0 +1,16 @@
+named result: true
+named result returned: true
+second named result: true
+var struct field: true
+literal omitted field: true 1
+make element: true false
+map miss: true
+map miss comma-ok: true false
+new field: true
+array element: true
+package var: true
+local var: true
+7 <nil>
+<nil> <nil> <nil> <nil>
+set field: true boom
+reset field: true
