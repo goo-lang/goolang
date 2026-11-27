@@ -1,4 +1,5 @@
 #include "types.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -313,37 +314,55 @@ int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out) {
 // works as an angle. Every arm returns 0 rather than a guess: --emit-qasm3
 // refuses an angle that does not fold, and a wrong constant is worse than a
 // refusal.
-static int fold_float_literal(const LiteralNode* lit, double* out) {
+static int fold_float_literal(LiteralNode* lit, double* out) {
     GOO_ASSERT(lit != NULL);
     GOO_ASSERT(out != NULL);
-    if (!lit->value) return 0;
+    if (lit->value == NULL) {
+        return 0;
+    }
     if (lit->literal_type == TOKEN_INT) {
-        uint64_t v = strtoull(lit->value, NULL, 0);
-        *out = (double)(int64_t)v;
+        uint64_t u = 0;
+        if (!goo_fold_const_int(&lit->base, &u)) {
+            return 0;
+        }
+        *out = (double)(int64_t)u;
         return 1;
     }
-    if (lit->literal_type != TOKEN_FLOAT) return 0;
+    if (lit->literal_type != TOKEN_FLOAT) {
+        return 0;
+    }
     // Go allows `1_000.5`: strtod stops at the underscore, so copy without it.
-    size_t n = strlen(lit->value);
-    char* clean = malloc(n + 1);
-    if (!clean) return 0;
+    // A literal too long for the buffer is refused, never cut short.
+    char clean[64];
     size_t k = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (lit->value[i] != '_') clean[k++] = lit->value[i];
+    for (size_t i = 0; lit->value[i] != '\0'; i++) {
+        if (lit->value[i] == '_') {
+            continue;
+        }
+        if (k + 1U >= sizeof(clean)) {
+            return 0;
+        }
+        clean[k++] = lit->value[i];
     }
     clean[k] = '\0';
+    if (k == 0U) {
+        return 0;
+    }
     char* end = NULL;
+    errno = 0;
     double v = strtod(clean, &end);
-    int ok = end && *end == '\0' && k > 0;
-    free(clean);
-    if (!ok) return 0;
+    if (errno != 0 || end == NULL || *end != '\0') {
+        return 0;
+    }
     *out = v;
     return 1;
 }
 
 static int fold_float_var(const Variable* var, double* out) {
     GOO_ASSERT(out != NULL);
-    if (!var) return 0;
+    if (var == NULL) {
+        return 0;
+    }
     if (var->has_const_float_value) {
         *out = var->const_float_value;
         return 1;
@@ -356,40 +375,62 @@ static int fold_float_var(const Variable* var, double* out) {
 }
 
 int goo_fold_const_float_ctx(TypeChecker* checker, ASTNode* expr, double* out) {
-    if (!expr || !out) return 0;
+    if (expr == NULL || out == NULL) {
+        return 0;
+    }
     switch (expr->type) {
         case AST_LITERAL:
             return fold_float_literal((LiteralNode*)expr, out);
         case AST_IDENTIFIER: {
-            IdentifierNode* id = (IdentifierNode*)expr;
-            Variable* var = checker ? type_checker_lookup_variable(checker, id->name) : NULL;
+            const IdentifierNode* id = (const IdentifierNode*)expr;
+            const Variable* var = (checker != NULL) ? type_checker_lookup_variable(checker, id->name) : NULL;
             return fold_float_var(var, out);
         }
         case AST_SELECTOR_EXPR:
             return fold_float_var(goo_lookup_pkg_const(checker, expr), out);
         case AST_UNARY_EXPR: {
             UnaryExprNode* u = (UnaryExprNode*)expr;
-            double v;
-            if (!goo_fold_const_float_ctx(checker, u->operand, &v)) return 0;
-            if (u->operator == TOKEN_MINUS) { *out = -v; return 1; }
-            if (u->operator == TOKEN_PLUS) { *out = v; return 1; }
+            double v = 0.0;
+            if (!goo_fold_const_float_ctx(checker, u->operand, &v)) {
+                return 0;
+            }
+            if (u->operator == TOKEN_MINUS) {
+                *out = -v;
+                return 1;
+            }
+            if (u->operator == TOKEN_PLUS) {
+                *out = v;
+                return 1;
+            }
             return 0;
         }
         case AST_BINARY_EXPR: {
             BinaryExprNode* b = (BinaryExprNode*)expr;
-            double l, r, v;
+            double l = 0.0;
+            double r = 0.0;
+            double v = 0.0;
             if (!goo_fold_const_float_ctx(checker, b->left, &l) ||
-                !goo_fold_const_float_ctx(checker, b->right, &r))
+                !goo_fold_const_float_ctx(checker, b->right, &r)) {
                 return 0;
+            }
             switch (b->operator) {
                 case TOKEN_PLUS:     v = l + r; break;
                 case TOKEN_MINUS:    v = l - r; break;
                 case TOKEN_MULTIPLY: v = l * r; break;
-                case TOKEN_DIVIDE:   if (r == 0.0) return 0; v = l / r; break;
-                default: return 0;
+                case TOKEN_DIVIDE:
+                    if (r == 0.0) {
+                        return 0;
+                    }
+                    v = l / r;
+                    break;
+                default:
+                    return 0;
             }
-            if (v != v || v - v != 0.0) return 0; // NaN or infinity
-            GOO_ASSERT(v == v);
+            // NaN and infinity both fail the finite test: v - v is not 0.
+            if (v - v != 0.0) {
+                return 0;
+            }
+            GOO_ASSERT(v - v == 0.0);
             *out = v;
             return 1;
         }

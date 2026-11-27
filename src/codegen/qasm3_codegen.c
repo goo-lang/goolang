@@ -7,6 +7,7 @@
 #include "codegen.h"
 #include "comptime.h"
 #include "diagnostic.h"
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -213,6 +214,13 @@ static int qasm3_mentions_local(Qasm3Ctx* ctx, ASTNode* expr) {
     }
 }
 
+// 1 when the text parses back to exactly `v`.
+static int qasm3_reads_back(const char* text, double v) {
+    errno = 0;
+    double back = strtod(text, NULL);
+    return errno == 0 && back == v;
+}
+
 // A bare literal keeps its source text, so the circuits that the examples
 // pin stay byte-identical. A folded constant prints with the shortest
 // precision that reads back to the same double.
@@ -220,7 +228,7 @@ static int qasm3_format_angle(Qasm3Ctx* ctx, const char* gate, ASTNode* expr,
                               Position call_pos, char* buf, size_t n) {
     GOO_ASSERT(ctx != NULL);
     GOO_ASSERT(gate != NULL);
-    GOO_ASSERT(buf != NULL && n >= 32);
+    GOO_ASSERT(buf != NULL && n >= 32U);
     if (expr && expr->type == AST_UNARY_EXPR &&
         ((UnaryExprNode*)expr)->operator == TOKEN_MINUS &&
         ((UnaryExprNode*)expr)->operand &&
@@ -242,7 +250,9 @@ static int qasm3_format_angle(Qasm3Ctx* ctx, const char* gate, ASTNode* expr,
         goo_fold_const_float_ctx(ctx->checker, expr, &v)) {
         for (int p = 1; p <= 17; p++) {
             snprintf(buf, n, "%.*g", p, v);
-            if (strtod(buf, NULL) == v) return 1;
+            if (qasm3_reads_back(buf, v)) {
+                return 1;
+            }
         }
         return 1; // 17 digits always round-trip
     }
@@ -280,7 +290,8 @@ static int qasm3_operand(Qasm3Ctx* ctx, ASTNode* expr, Position fallback,
     GOO_ASSERT(ctx != NULL);
     GOO_ASSERT(idx != NULL);
     GOO_ASSERT(kind == QASM3_VAR_QUBIT || kind == QASM3_VAR_RESULT);
-    char ref[64] = "<expression>";
+    char ref[64];
+    ref[0] = '\0';
     if (expr && qasm3_resolve_ref(ctx, expr, ref, sizeof(ref))) {
         Qasm3Var* v = qasm3_find_var(ctx, ref);
         if (v && v->kind == kind) {
@@ -290,7 +301,8 @@ static int qasm3_operand(Qasm3Ctx* ctx, ASTNode* expr, Position fallback,
     }
     qasm3_refuse(ctx, expr ? expr->pos : fallback,
                  "--emit-qasm3 cannot resolve %s '%s' to a hardware index",
-                 kind == QASM3_VAR_QUBIT ? "qubit" : "result", ref);
+                 kind == QASM3_VAR_QUBIT ? "qubit" : "result",
+                 ref[0] != '\0' ? ref : "<expression>");
     return 0;
 }
 
@@ -353,7 +365,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
             if (strcmp(op, "Rx") == 0 || strcmp(op, "Ry") == 0 || strcmp(op, "Rz") == 0) {
                 const char* g = (strcmp(op, "Rx") == 0) ? "rx" : (strcmp(op, "Ry") == 0) ? "ry" : "rz";
                 char tbuf[64];
-                if (!qasm3_format_angle(ctx, op, call->args, call->base.pos, tbuf, sizeof(tbuf))) return;
+                if (!qasm3_format_angle(ctx, op, call->args, call->base.pos, tbuf, sizeof(tbuf))) {
+                    return;
+                }
                 ASTNode* qarg = call->args ? call->args->next : NULL;
                 int64_t q = 0;
                 if (qasm3_operand(ctx, qarg, call->base.pos, QASM3_VAR_QUBIT, &q)) {
@@ -367,7 +381,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 int64_t q = 0, r = 0;
                 int q_ok = qasm3_operand(ctx, qarg, call->base.pos, QASM3_VAR_QUBIT, &q);
                 int r_ok = qasm3_operand(ctx, rarg, call->base.pos, QASM3_VAR_RESULT, &r);
-                if (!q_ok || !r_ok) return;
+                if (!q_ok || !r_ok) {
+                    return;
+                }
                 if (ctx->has_syndrome_reg) {
                     qasm3_emit(ctx, "syn[%lld] = measure q[%lld];\n", (long long)r, (long long)q);
                 } else {
@@ -396,7 +412,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                     int64_t qs[3] = {0, 0, 0};
                     ASTNode* a = call->args;
                     for (int k = 0; k < arity; k++, a = a ? a->next : NULL) {
-                        if (!qasm3_operand(ctx, a, call->base.pos, QASM3_VAR_QUBIT, &qs[k])) return;
+                        if (!qasm3_operand(ctx, a, call->base.pos, QASM3_VAR_QUBIT, &qs[k])) {
+                            return;
+                        }
                     }
                     if (arity == 1) {
                         qasm3_emit(ctx, "%s q[%lld];\n", gate, (long long)qs[0]);
@@ -500,7 +518,7 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
             }
             // Every name of the declaration shadows an outer const, tracked or not.
             for (size_t i = 0; i < vd->name_count && vd->names; i++) {
-                if (vd->names[i] && (i > 0 || ctx->var_count == before)) {
+                if (vd->names[i] != NULL && (i > 0U || ctx->var_count == before)) {
                     qasm3_set_var(ctx, vd->names[i], QASM3_VAR_OPAQUE, 0);
                 }
             }
