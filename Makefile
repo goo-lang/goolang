@@ -202,7 +202,7 @@ TEST_RUNNER = $(BINDIR)/test_runner
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
 .PHONY: diagnostic-test
-.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-uaf-probe arc-uaf-selftest arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
+.PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-uaf-probe arc-uaf-selftest arc-daemon-blocks-probe arc-daemon-blocks-selftest arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe alloc-doors-selftest ast-free-leak-probe ast-free-leak-selftest string-literal-header-probe
 .PHONY: all clean test install lexer analyzer coverage-goo coverage-goo-selftest coverage-clean debug format check runtime-lib test-lexer test-codegen test-units test-golden-poison goostd-resolver-probe param-escape-test block-escape-test local-escape-test release-decision-test release-decision-teeth escape-teeth escape-arm-coverage-selftest arc-concat-operand-probe arc-map-key-local-probe arc-multi-assign-probe arc-reassign-probe obj-header-test obj-header-tsan arena-routing-test arena-free-probe arena-valgrind-probe arc-release-probe arc-loop-carried-probe arena-rss-probe dead-package-code-probe alloc-doors-probe goo-assert-probe assert-corpus string-literal-header-probe
 
 all: lexer
@@ -3475,6 +3475,8 @@ VERIFY_ALL_DEPS := \
     arc-release-probe \
     arc-uaf-probe \
     arc-uaf-selftest \
+    arc-daemon-blocks-probe \
+    arc-daemon-blocks-selftest \
     arc-loop-carried-probe \
     arc-concat-operand-probe \
     arena-rss-probe \
@@ -6011,6 +6013,16 @@ arc-reassign-probe: $(COMPILER) $(RUNTIME_LIB)
 
 arc-uaf-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_uaf_probe.sh
+
+# bench/daemon/daemon.goo's blocks in use at exit for 2,000 requests, against a
+# committed budget (the script's BUDGET_BLOCKS). PR #376 moved the figure from
+# 4,003 to 10,003 and no gate noticed. The self-test builds with
+# GOO_ARC_RELEASE=0, which must be reported OVER BUDGET.
+arc-daemon-blocks-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/arc_daemon_blocks_probe.sh
+
+arc-daemon-blocks-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/arc_daemon_blocks_probe.sh --self-test
 
 # The self-test compiles a real fixture to prove a wrong or missing
 # .verdict.txt turns the gate RED, so it needs the compiler too.
