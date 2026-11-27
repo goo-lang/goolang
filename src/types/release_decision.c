@@ -1602,6 +1602,8 @@ static bool address_taken(const Collected* c, const char* name) {
     if (c->addr_unknown) {
         return true;
     }
+    // A count with no array would read through NULL below.
+    GOO_ASSERT(c->addr_count == 0U || c->addr_names != NULL);
     for (size_t i = 0; i < c->addr_count; i++) {
         if (strcmp(c->addr_names[i], name) == 0) {
             return true;
