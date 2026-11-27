@@ -3041,7 +3041,7 @@ void codegen_arc_release_replaced_buffer(CodeGenerator* codegen, LLVMValueRef sl
     // RELEASE_OK verdict alone is also what a refused slot shape prints
     // (tests/arc_uaf/<name>.verdict.txt, scripts/arc_uaf_probe.sh).
     if (getenv("GOO_ARC_DEBUG")) {
-        FunctionInfo* fi = codegen->current_function_info;
+        const FunctionInfo* fi = codegen->current_function_info;
         fprintf(stderr, "[arc] %s: releases the array a self-append of %s replaced\n",
                 (fi && fi->name) ? fi->name : "?", local ? local : "?");
     }
