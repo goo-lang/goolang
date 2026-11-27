@@ -1,8 +1,10 @@
 # Bison conflict ledger
 
-Baseline: **31 shift/reduce + 0 reduce/reduce** — verified 2026-07-11 on
-`refactor/p5-10-rr-cleanup` (P5.10: Go-shaped statement termination + dead
-GPU/WASM grammar deletion; full justification below). Previous baseline
+Baseline: **27 shift/reduce + 0 reduce/reduce** — verified 2026-11-27 on
+`feat/go-compat-grammar` (Go-compat wave 1 Task 6: assignments and short
+declarations with N names; full justification below). Previous baseline 31/0,
+verified 2026-07-11 on `refactor/p5-10-rr-cleanup` (P5.10: Go-shaped statement
+termination + dead GPU/WASM grammar deletion). Previous baseline
 121/256, verified 2026-07-09 on `feat/go-syntax-grammar-b` (gofmt-syntax
 sub-project B, review Fix 5a, labeled empty statement). The tripwire
 (`scripts/grammar-tripwire.sh`) asserts these numbers exactly; treat any
@@ -26,6 +28,71 @@ delta as a stop-the-line event, not noise.
 | gofmt-syntax-b Task 4 (select value-binding cases) | **zero delta** | `select_case` gained `CASE identifier SHORT_ASSIGN expression COLON statement_list`, `CASE identifier ASSIGN expression COLON statement_list`, and a grammar-accepted-but-always-type-rejected `CASE identifier COMMA identifier SHORT_ASSIGN expression COLON statement_list` (comma-ok) arm. Same "mandatory operand after a keyword/CASE token, no competing bare reduce" shape as `goto_stmt: GOTO identifier` (Task 2 immediately above): `CASE identifier` was already followed by a mandatory `SHORT_ASSIGN`/`ASSIGN`/`COLON`/`COMMA` in every existing `select_case`/`case_clause` arm, so there is no bare `CASE identifier`-alone reduce for the new arms' extra lookahead to conflict against. Receive-ness (`expression` must actually be a channel receive) is validated semantically, not encoded in the grammar, by design (spec T4) — keeping the grammar arm generic (`expression`, not `ARROW expression`) is exactly why there is nothing new for the token to fight over. Confirmed by direct tripwire run (88 S/R + 256 R/R, unchanged), not assumed. This row was added retroactively in gofmt-syntax-b Task 5's docs truth pass — Task 4 shipped the zero-delta result correctly but, unlike Task 2 and Task 3 immediately above, did not add a history-table row at the time; recorded now for consistency with the "every ledgered task gets a row, delta or not" convention this table otherwise follows without a gap. |
 | P5.10 (Go-shaped statement termination + dead GPU/WASM grammar deletion) | 121/256 → **31/0** (−90 S/R, −256 R/R) | Two independent mechanisms, isolated then combined. (1) The grammar's per-statement optional-SEMICOLON design (bare `simple_stmt`/`return_stmt`/... arms) was replaced by Go's actual shape — `statement_list: stmt_seq [final_stmt]`, terminated statements everywhere except a bare FINAL statement before RBRACE/CASE/DEFAULT — with the lexer's ASI generalized from hazard-targeted to Go rule 1 (insert at every value-ending newline; leniency exceptions `)` `}` `...` `else`, each pinned by a golden). This removed the bare-arm S/R artifacts wholesale (RETURN's 21-conflict state, label-epsilon's +33, BREAK/CONTINUE's +2, ...). (2) The unreachable GPU/WASM productions (tokens never mapped by lexer_bridge.c) were deleted; `wasm_memory: MEMORY expression expression` — two ADJACENT expressions — was the sole source of ALL six 42-conflict R/R families (unary `+ - * & ^ <-` vs `expression: unary_expr`), 252 of the 256 R/R; the defer/go pair (4 R/R) fell to the statement restructure. Differential: **all 415 golden fixtures emit byte-identical LLVM IR** before/after, golden 415/0 at -O0 AND -O2, reject 76/0, unit tests unchanged. Full justification below. |
 | gofmt-syntax-b review Fix 5a (labeled empty statement) | 88 → **121** S/R (+33) | `label_stmt` gained two arms, `identifier COLON SEMICOLON` (explicit `done: ;`) and `identifier COLON` (bare `done:` immediately before whatever ends the enclosing statement list — the goto-to-end-of-block idiom). Both arms' new items land in exactly ONE pre-existing, previously-unconflicted, single-item state (state 598, `label_stmt: identifier COLON • statement` — reached ONLY from label_stmt's own predecessor states, not shared/merged with any other production). The +33 is `statement`'s own FIRST set: FOLLOW(label_stmt) overlaps FIRST(statement) because a label can be followed by another real statement in the same `statement_list`, so 33 of `statement`'s FIRST tokens are now ambiguous between "shift, keep trying to parse a real trailing statement" and "reduce, the label's target is empty" — bison's default shift-wins resolves every one of them toward the pre-existing behavior (state 598's shift table is completely unchanged; the 33 shifts area is bracketed-reduce-suppressed, not shift-suppressed), so no previously-parsing program's parse tree changes. SEMICOLON is unambiguous (shifts toward the explicit-SEMICOLON arm; not in the epsilon arm's per-state reduce lookahead here). `$default` (RBRACE, CASE, DEFAULT, and everything else outside `statement`'s FIRST set and SEMICOLON) reduces the empty form — exactly the previously-rejected shapes this fix targets. R/R unchanged (256); every OTHER pre-existing conflicted state's count is byte-identical before/after (state-diffed, see "Justification" below) — this is the whole delta. Full justification below. |
+| Go-compat wave 1 Task 6 (assignments and short declarations with N names) | 31 → **27** S/R (−4) | The identifier-prefixed two-name arms (`short_var_decl: identifier COMMA identifier SHORT_ASSIGN …`, `simple_stmt: identifier COMMA identifier ASSIGN …`, and `for_stmt: FOR identifier COMMA identifier SHORT_ASSIGN RANGE …`) became one list nonterminal, `expr_list2: expression COMMA expression \| expr_list2 COMMA expression`, used by `simple_stmt: expr_list2 ASSIGN expression_list \| expr_list2 SHORT_ASSIGN expression_list` and `for_stmt: FOR expr_list2 SHORT_ASSIGN RANGE expression block`. With no `identifier • COMMA` item left anywhere, family 3's COMMA conflict leaves all four `identifier •` dispatch states: statement start (base state 367, its only conflict), FOR (485), IF (491) and SWITCH (501). The last three keep their family-2 LBRACE conflict. The other 12 conflicted states are fingerprint-identical (core items and conflict tokens). R/R stays 0. The plan predicted 28 for this task with the FOR arm left for Task 7, but that grammar refuses `for i, j := 0, n; …` (valid Go that parsed before), so the FOR arm moved here. Full justification below. |
+| Go-compat wave 1 Task 7 (range with an assignment and N names) | **zero delta** (27) | Two new `for_stmt` arms, `FOR expr_list2 ASSIGN RANGE expression block` and `FOR expression ASSIGN RANGE expression block`, desugared by `range_assign_desugar` into the declaring form over hidden names. After `FOR expression ASSIGN` or `FOR expr_list2 ASSIGN`, RANGE is not in FIRST(expression), so the arms part from `for x = 0; …` (simple_stmt's `expression ASSIGN expression`) and from the expr_list2 init at RANGE with nothing to fight over. `bison -r all`: the same 15 conflicted states with identical core items and conflict tokens before and after. R/R stays 0. The plan's 28 → 27 for this task already happened in Task 6 (the FOR state's COMMA conflict; see that row). |
+
+## Justification: Go-compat wave 1 Task 6 (31 → 27)
+
+**Grammar change.** Six identifier- or expression-prefixed two-name arms
+(`short_var_decl`'s `a, b := e` and `a, b := e1, e2`, and `simple_stmt`'s
+four `a, b = …` arms) became two arms over a new list nonterminal:
+
+```
+expr_list2: expression COMMA expression | expr_list2 COMMA expression ;
+simple_stmt: … | expr_list2 ASSIGN expression_list
+                | expr_list2 SHORT_ASSIGN expression_list ;
+for_stmt:    … | FOR expr_list2 SHORT_ASSIGN RANGE expression block ;
+```
+
+`assign_list_new` (parser_actions.c) builds the same node shapes as before:
+`:=` with one value and identifier targets is the VarDeclNode destructure,
+everything else is a MultiAssignNode with `count` = the number of targets.
+The checker owns the count rules (`assignment mismatch: …`, Go's wording) and
+the `:=` identifier rule. `range_short_decl_new` builds the old key+value
+ForStmtNode and refuses three or more names (`range clause permits at most two
+iteration variables`, Go's wording) and non-identifier targets.
+
+**State diff** (`bison -r all`, base 4427f67a vs this commit, matched by core
+items, not state numbers):
+
+| Base state | Core | Base conflicts | After |
+|---|---|---|---|
+| 367 | statement-start `identifier •` (short_var_decl, labels, tuple arms, primary_expr, struct_lit) | 1 (COMMA) | no conflict |
+| 485 | `FOR identifier •` | 2 (LBRACE, COMMA) | 1 (LBRACE) |
+| 491 | `IF identifier •` | 2 (LBRACE, COMMA) | 1 (LBRACE) |
+| 501 | `SWITCH identifier •` | 2 (LBRACE, COMMA) | 1 (LBRACE) |
+
+Each removed conflict is family 3's COMMA conflict (shift into an
+`identifier COMMA identifier …` item vs. reduce `primary_expr: identifier`).
+No `identifier • COMMA` item remains, so after `identifier` the parser always
+reduces to `expression` and decides at the COMMA inside `expr_list2`, which
+is LR(1)-clean. The LBRACE conflicts that stay are family 2 (struct_lit vs.
+bare identifier, neutralised by the LBRACE_BODY bridge). The other 12
+conflicted states (func-result shift-wins, struct-lit, expression-list,
+match pattern) have identical core items and conflict tokens.
+
+**Why 27 and not the plan's 28.** The plan kept `FOR identifier COMMA
+identifier SHORT_ASSIGN RANGE` for Task 7. Built that way (28 S/R), state 485
+still shifts COMMA toward the range arm, and the short_var_decl arms that used
+to share that state are gone: `for i, j := 0, 3; i < j; …` became
+`syntax error, unexpected integer literal, expecting 'range'`. No golden
+covered that shape. Moving the FOR arm onto `expr_list2` here removes the
+fourth COMMA conflict, the same state the plan expected Task 7 to clear.
+
+**Behavioural verification.**
+- `-O0` IR differential over every golden fixture: 521 of the 526
+  pre-existing fixtures are byte-identical.
+  The 5 that change (`index_swap_probe`, `pkg_arg_shapes_probe`,
+  `selector_swap_probe`, `sort_named_probe`, `tuple_assign_from_call`) each
+  change only the functions that hold an `=` multi-assign with an index or
+  selector target. The address of each such target is now computed before
+  the right-hand side (Go's phase 1), so `i, x[i] = 1, 100` stores into x[0].
+- Probes for the old shapes: `a, b := f()`, `a, b = b, a`, `px, py := p`
+  (named struct), `n, err := strconv.Atoi(…)`, `for k, v := range xs`,
+  `for i, j := 0, 3; …` all compile and print the Go result.
+
+`EXPECTED_SR=27` / `EXPECTED_RR=0` in `scripts/grammar-tripwire.sh`, updated
+in the same commit as this entry.
 
 ## Justification: P5.10 (121/256 → 31/0)
 
