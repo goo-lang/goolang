@@ -1836,7 +1836,8 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
         WalkCtx ctx = { .out = &c, .block_depth = 0, .arena_depth = 0,
                         .in_loop_header = false, };
         walk_stmts(&ctx, ((FuncDeclNode*)d)->body);
-        c.addr_unknown = !returns_fresh_addr_taken(c.decl, &c.addr_names, &c.addr_count);
+        c.addr_unknown = !returns_fresh_addr_taken((FuncDeclNode*)d, &c.addr_names,
+                                                   &c.addr_count);
         mark_block_escapes(&c, local_escape_find_summary(le, name));
 
         ReleasePlanFunction* pf = &plan->functions[plan->count];

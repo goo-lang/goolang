@@ -501,7 +501,9 @@ static void scan_free(FreshScan* s) {
     free(s->returns);
 }
 
-bool returns_fresh_addr_taken(const FuncDeclNode* decl, const char*** names_out,
+// `decl` is not const: the walk takes the body as a plain ASTNode*, and a
+// const declaration would hand it one through a const object (MISRA 11.8).
+bool returns_fresh_addr_taken(FuncDeclNode* decl, const char*** names_out,
                               size_t* count_out) {
     *names_out = NULL;
     *count_out = 0U;

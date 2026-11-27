@@ -32,7 +32,7 @@ void returns_fresh_compute(ASTNode* program, ParamEscapeResult* pe,
 // Returns false when the walk met a node it does not model. Then any name may
 // be one, and the caller must treat every local as address-taken. A function
 // with no body takes no address and returns true.
-bool returns_fresh_addr_taken(const FuncDeclNode* decl, const char*** names_out,
+bool returns_fresh_addr_taken(FuncDeclNode* decl, const char*** names_out,
                               size_t* count_out);
 
 #endif // RETURNS_FRESH_H
