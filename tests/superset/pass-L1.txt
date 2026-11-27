@@ -85,6 +85,7 @@ fixedbugs/bug196.go
 fixedbugs/bug199.go
 fixedbugs/bug201.go
 fixedbugs/bug204.go
+fixedbugs/bug206.go
 fixedbugs/bug207.go
 fixedbugs/bug221.go
 fixedbugs/bug225.go
@@ -490,6 +491,7 @@ fixedbugs/issue8620.go
 fixedbugs/issue8961.go
 fixedbugs/issue9006.go
 fixedbugs/issue9110.go
+fixedbugs/issue9321.go
 fixedbugs/issue9355.go
 fixedbugs/issue9604.go
 fixedbugs/issue9691.go

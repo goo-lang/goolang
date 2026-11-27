@@ -1,0 +1,11 @@
+package main
+
+// Task 11: a qualified composite literal with a field the type does not
+// declare is rejected, as in Go.
+
+import "shapes"
+
+func main() {
+	p := shapes.Point{Z: 1}
+	_ = p
+}

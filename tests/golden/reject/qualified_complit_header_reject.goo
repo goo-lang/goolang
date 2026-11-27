@@ -1,0 +1,13 @@
+package main
+
+// Task 11: Go needs parentheses around a composite literal in an `if`
+// header. `if v == shapes.Point{} {` is a parse error.
+
+import "shapes"
+
+func main() {
+	v := shapes.Point{X: 1}
+	if v == shapes.Point{} {
+		return
+	}
+}

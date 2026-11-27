@@ -192,6 +192,7 @@ static void ast_node_free_one(ASTNode* node) {
         case AST_STRUCT_LITERAL: {
             StructLiteralNode* lit = (StructLiteralNode*)node;
             free(lit->type_name);
+            free(lit->type_package);
             if (lit->field_names) {
                 for (size_t i = 0; i < lit->field_count; i++) {
                     free(lit->field_names[i]);

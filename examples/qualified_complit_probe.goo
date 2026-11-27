@@ -1,0 +1,73 @@
+package main
+
+// Task 11: qualified composite literals `pkg.T{...}` and `&pkg.T{...}`
+// against a shim package type (sync.Mutex, bytes.Buffer, strings.Builder)
+// and a vendored source package type (shapes.Point).
+
+import (
+	"bytes"
+	"fmt"
+	"shapes"
+	"strings"
+	"sync"
+)
+
+type Holder struct {
+	mu sync.Mutex
+	n  int
+}
+
+func sum(p shapes.Point) int {
+	return p.X + p.Y
+}
+
+func main() {
+	b := strings.Builder{}
+	b.WriteString("hi")
+	fmt.Println(b.String())
+
+	p := &bytes.Buffer{}
+	p.WriteString("yo")
+	fmt.Println(p.String())
+
+	pt := shapes.Point{X: 3, Y: 4}
+	fmt.Println(pt.X, pt.Y, pt.Sum())
+
+	pos := shapes.Point{5, 6}
+	fmt.Println(pos.X, pos.Y)
+
+	pp := &shapes.Point{X: 1, Y: 2}
+	pp.Scale(10)
+	fmt.Println(pp.X, pp.Y)
+
+	empty := shapes.Point{}
+	fmt.Println(empty.X, empty.Y)
+
+	pts := []shapes.Point{shapes.Point{X: 1, Y: 1}, shapes.Point{X: 2, Y: 2}}
+	fmt.Println(len(pts), pts[1].X)
+
+	m := map[string]shapes.Point{"a": shapes.Point{X: 7, Y: 8}}
+	fmt.Println(m["a"].X, m["a"].Y)
+
+	fmt.Println(sum(shapes.Point{X: 20, Y: 22}))
+
+	if (shapes.Point{X: 3, Y: 4}).X == pt.X {
+		fmt.Println("equal")
+	}
+	n := 0
+	for i := (shapes.Point{X: 0}).X; i < (shapes.Point{X: 2}).X; i++ {
+		if (shapes.Point{X: i, Y: 0}).X == 1 {
+			n++
+		}
+	}
+	fmt.Println(n)
+
+	var mu sync.Mutex = sync.Mutex{}
+	mu.Lock()
+	mu.Unlock()
+	h := Holder{mu: sync.Mutex{}, n: 3}
+	h.mu.Lock()
+	h.n++
+	h.mu.Unlock()
+	fmt.Println(h.n)
+}

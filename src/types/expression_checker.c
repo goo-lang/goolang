@@ -883,6 +883,20 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
                        "slice element type, got '%s'", type_to_string(named_type));
             return NULL;
         }
+    } else if (lit->type_package) {
+        // Task 11: `pkg.T{...}`. Resolve the pair exactly as the type
+        // position `var x pkg.T` does (type_from_ast's AST_BASIC_TYPE arm),
+        // so the unknown-package, unexported and value-member diagnostics
+        // stay the same. The stack node is read-only for that arm.
+        BasicTypeNode qualified = {0};
+        qualified.base.type = AST_BASIC_TYPE;
+        qualified.base.pos = expr->pos;
+        qualified.name = lit->type_name;
+        qualified.package = lit->type_package;
+        named_type = type_from_ast(checker, (ASTNode*)&qualified);
+        if (!named_type) {
+            return NULL;
+        }
     } else {
         // Named types are registered in the variable scope by
         // type_check_type_decl (the Variable's type IS the named Type).
