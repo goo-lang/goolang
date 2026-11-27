@@ -1,1 +1,6 @@
 name:goo true
+bin:goo true
+x:app:goo true
+x:txt:goo true
+from-bin true
+from-text true

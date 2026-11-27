@@ -15,8 +15,51 @@ func (n Name) MarshalText() ([]byte, error) {
 	return []byte("name:" + n.v), nil
 }
 
+func (n Name) MarshalBinary() ([]byte, error) {
+	return []byte("bin:" + n.v), nil
+}
+
+func (n Name) AppendBinary(b []byte) ([]byte, error) {
+	return append(b, []byte("app:"+n.v)...), nil
+}
+
+func (n Name) AppendText(b []byte) ([]byte, error) {
+	return append(b, []byte("txt:"+n.v)...), nil
+}
+
+func (n *Name) UnmarshalBinary(data []byte) error {
+	n.v = string(data)
+	return nil
+}
+
+func (n *Name) UnmarshalText(text []byte) error {
+	n.v = string(text)
+	return nil
+}
+
 func main() {
 	var m encoding.TextMarshaler = Name{v: "goo"}
 	b, err := m.MarshalText()
 	fmt.Println(string(b), err == nil)
+
+	var bm encoding.BinaryMarshaler = Name{v: "goo"}
+	bb, berr := bm.MarshalBinary()
+	fmt.Println(string(bb), berr == nil)
+
+	var ba encoding.BinaryAppender = Name{v: "goo"}
+	ab, aerr := ba.AppendBinary([]byte("x:"))
+	fmt.Println(string(ab), aerr == nil)
+
+	var ta encoding.TextAppender = Name{v: "goo"}
+	at, taerr := ta.AppendText([]byte("x:"))
+	fmt.Println(string(at), taerr == nil)
+
+	var n Name
+	var bu encoding.BinaryUnmarshaler = &n
+	ubErr := bu.UnmarshalBinary([]byte("from-bin"))
+	fmt.Println(n.v, ubErr == nil)
+
+	var tu encoding.TextUnmarshaler = &n
+	utErr := tu.UnmarshalText([]byte("from-text"))
+	fmt.Println(n.v, utErr == nil)
 }
