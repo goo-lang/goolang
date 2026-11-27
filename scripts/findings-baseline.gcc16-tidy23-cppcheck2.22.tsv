@@ -14,9 +14,10 @@
 # IMPROVEMENT. A count above what is recorded here is a REGRESSION and fails
 # the gate. Suppressed rows (docs/misra/findings-suppressions.tsv) never
 # appear here at all. Never edit by hand.
-# 4766 accepted findings, from build/findings.sarif.
+# 4773 accepted findings, from build/findings.sarif.
 Cppcheck	arrayIndexOutOfBoundsCond	src/lexer/token.c	253	27	Either the condition 'type<TOKEN_COUNT' is redundant or the array 'token_strings[137]' is accessed at index 137, which is out of bounds.	f0d9cd535ec173191eac1a2523305a1d4a4f6b15452c3309bfb296c8a5825be5
-Cppcheck	constParameterCallback	src/runtime/concurrency.c	118	56	Parameter 'arg' can be declared as pointer to const. However it seems that 'scheduler_main_loop' is a callback function, if 'arg' is declared with const you might also need to cast function pointer(s).	2cf337c93eec47d0e0e6667ce1f6e72dbf8ace2add8c8cb3fed21e662c7c19bb
+Cppcheck	constParameterCallback	src/runtime/concurrency.c	182	23	Parameter 'info' can be declared as pointer to const. However it seems that 'goo_segv_handler' is a callback function, if 'info' is declared with const you might also need to cast function pointer(s).	98d75cc91551456569cf62e303453e64621e06c76f09f83ddafba121d2f0ec81
+Cppcheck	constParameterCallback	src/runtime/concurrency.c	256	56	Parameter 'arg' can be declared as pointer to const. However it seems that 'scheduler_main_loop' is a callback function, if 'arg' is declared with const you might also need to cast function pointer(s).	2cf337c93eec47d0e0e6667ce1f6e72dbf8ace2add8c8cb3fed21e662c7c19bb
 Cppcheck	constParameterPointer	src/codegen/call_codegen.c	317	51	Parameter 'from' can be declared as pointer to const	4b375ce0b25a6abd89535f347a14619b6a3acb1766f82c68d05b520a171a002d
 Cppcheck	constParameterPointer	src/codegen/call_codegen.c	317	63	Parameter 'to' can be declared as pointer to const	4b375ce0b25a6abd89535f347a14619b6a3acb1766f82c68d05b520a171a002d
 Cppcheck	constParameterPointer	src/codegen/call_codegen.c	447	75	Parameter 'recv_type' can be declared as pointer to const	1861da25cf3726d9241fdf49c1470d7fe7b637b2289abb0d433a68faa76bf1e8
@@ -398,7 +399,7 @@ Cppcheck	constVariablePointer	src/types/type_checker.c	6276	27	Variable 'p' can 
 Cppcheck	constVariablePointer	src/types/type_checker.c	768	35	Variable 'func' can be declared as pointer to const	86b6271ef3f69e29f99a7321b7f18f26bb646c5a5092a8e46e482a601a140aad
 Cppcheck	constVariablePointer	src/types/types.c	1100	15	Variable 'existing' can be declared as pointer to const	f1de4037082cd5292fc47d765e5e50305ff2d8314f1bd1238663f0eb25d101b3
 Cppcheck	constVariablePointer	src/types/types.c	973	15	Variable 'f' can be declared as pointer to const	3e5be1146932eb43dd669245405b92c689f5f27ffbc529323e991cfd2c348e3e
-Cppcheck	getcontextCalled	src/runtime/concurrency.c	259	9	Obsolescent function 'getcontext' called. Applications are recommended to be rewritten to use POSIX threads.	1181e82756914efef8d3d8cec7e7fad9ae43a2c15b1ccd521b9442ca6d0d1536
+Cppcheck	getcontextCalled	src/runtime/concurrency.c	396	9	Obsolescent function 'getcontext' called. Applications are recommended to be rewritten to use POSIX threads.	1181e82756914efef8d3d8cec7e7fad9ae43a2c15b1ccd521b9442ca6d0d1536
 Cppcheck	knownConditionTrueFalse	src/ast/ast_constructors.c	1004	9	Condition '!node' is always false	99785aad4ee57abfda1851b9643b1ef675768b39650c96c7808a0788d34f17dc
 Cppcheck	knownConditionTrueFalse	src/ast/ast_constructors.c	1021	9	Condition '!node' is always false	99785aad4ee57abfda1851b9643b1ef675768b39650c96c7808a0788d34f17dc
 Cppcheck	knownConditionTrueFalse	src/ast/ast_constructors.c	1038	9	Condition '!node' is always false	99785aad4ee57abfda1851b9643b1ef675768b39650c96c7808a0788d34f17dc
@@ -531,7 +532,7 @@ Cppcheck	knownConditionTrueFalse	src/types/types.c	1033	9	Condition '!var' is al
 Cppcheck	knownConditionTrueFalse	src/types/types.c	1073	9	Condition '!scope' is always false	34ee615ee96913958a3b87921a06ff0498d8b3b5066dca8046f7f26a4546ad55
 Cppcheck	knownConditionTrueFalse	src/types/types.c	23	9	Condition '!type' is always false	a779d9c9c640eb29d95e1c8fd138a676148ef65604050c489803d097e95b086e
 Cppcheck	knownConditionTrueFalse	src/types/types.c	625	9	Condition '!copy' is always false	11c78eedab889fb185acde8e0e70df3e0d986ac0badd56bc75099a627170f3f9
-Cppcheck	makecontextCalled	src/runtime/concurrency.c	267	5	Obsolescent function 'makecontext' called. Applications are recommended to be rewritten to use POSIX threads.	777c2ed7eadefbbaac815dcfcd1d93152707bf9231989cf2465c0bf98e18fffd
+Cppcheck	makecontextCalled	src/runtime/concurrency.c	404	5	Obsolescent function 'makecontext' called. Applications are recommended to be rewritten to use POSIX threads.	777c2ed7eadefbbaac815dcfcd1d93152707bf9231989cf2465c0bf98e18fffd
 Cppcheck	memleak	src/parser/parser_actions.c	178	5	Memory leak: c.names	d12c7d511505dfbf53464471aeeaac0b4fa57a1bbc6d11475b396f8a9787cec9
 Cppcheck	memleak	src/parser/parser_actions.c	201	5	Memory leak: basic.name	1f4f8221b01cf478eb036b4403f23e08875e9bfd037f473e2d2a01a6aeab33ec
 Cppcheck	memleak	src/parser/parser_actions.c	446	5	Memory leak: const_node.names	ac435dc3594728ab68afb54458628982594b9c5092cc75a5479983e6430f662c
@@ -623,10 +624,10 @@ Cppcheck	misra-c2012-10.3	src/codegen/statement_codegen.c	3734	21	misra violatio
 Cppcheck	misra-c2012-10.3	src/codegen/statement_codegen.c	851	23	misra violation (use --rule-texts=<file> to get proper output)	7425c7155dda435521933016ae65d2ef62af2b984f0b61e82bea90d1a3568d7e
 Cppcheck	misra-c2012-10.3	src/codegen/statement_codegen.c	868	22	misra violation (use --rule-texts=<file> to get proper output)	a33945b29b5827de707ec57c16903dc5d85c55aef403430f9b2a0829059fc78f
 Cppcheck	misra-c2012-10.3	src/package/import_resolver.c	113	17	misra violation (use --rule-texts=<file> to get proper output)	d51fbbcf8366695b6eda3835e5f32d65bcf2a353c14c03587e9c5258e3342c47
-Cppcheck	misra-c2012-10.3	src/runtime/concurrency.c	195	18	misra violation (use --rule-texts=<file> to get proper output)	83f4306dfc72b820142cbb8da4ceb21cbe68503dd481afba9f35a6d50254111e
-Cppcheck	misra-c2012-10.3	src/runtime/concurrency.c	197	21	misra violation (use --rule-texts=<file> to get proper output)	8e715bbe33c1163c4985f71bf052febebdd20fdcdba38c199400a852fa2fecab
-Cppcheck	misra-c2012-10.3	src/runtime/concurrency.c	200	24	misra violation (use --rule-texts=<file> to get proper output)	9b3f964b48355037eaa4f56dc50e1d2113bbff4bf736eea982c33282b0b0a25a
-Cppcheck	misra-c2012-10.3	src/runtime/concurrency.c	384	18	misra violation (use --rule-texts=<file> to get proper output)	61fb43b8a5c80451b7eb426aebad983b6176a9d988d159cefe02817232092b81
+Cppcheck	misra-c2012-10.3	src/runtime/concurrency.c	333	18	misra violation (use --rule-texts=<file> to get proper output)	83f4306dfc72b820142cbb8da4ceb21cbe68503dd481afba9f35a6d50254111e
+Cppcheck	misra-c2012-10.3	src/runtime/concurrency.c	335	21	misra violation (use --rule-texts=<file> to get proper output)	8e715bbe33c1163c4985f71bf052febebdd20fdcdba38c199400a852fa2fecab
+Cppcheck	misra-c2012-10.3	src/runtime/concurrency.c	338	24	misra violation (use --rule-texts=<file> to get proper output)	9b3f964b48355037eaa4f56dc50e1d2113bbff4bf736eea982c33282b0b0a25a
+Cppcheck	misra-c2012-10.3	src/runtime/concurrency.c	521	18	misra violation (use --rule-texts=<file> to get proper output)	61fb43b8a5c80451b7eb426aebad983b6176a9d988d159cefe02817232092b81
 Cppcheck	misra-c2012-10.3	src/runtime/runtime.c	440	19	misra violation (use --rule-texts=<file> to get proper output)	29cf1ee134cafae8dd91a59f1479a9b0cfa121750b66860c09d004c093213916
 Cppcheck	misra-c2012-10.3	src/runtime/runtime.c	965	15	misra violation (use --rule-texts=<file> to get proper output)	560ded83e40ebd4273da0e372bc57529f6dd223a92f620d43e583317bfaff01a
 Cppcheck	misra-c2012-10.3	src/types/expression_checker.c	1627	33	misra violation (use --rule-texts=<file> to get proper output)	168179946a6d76f22ce19ffaa19014129fbda460b54465ed16c0dc4e34aa3287
@@ -1079,10 +1080,10 @@ Cppcheck	misra-c2012-10.4	src/runtime/channels.c	579	30	misra violation (use --r
 Cppcheck	misra-c2012-10.4	src/runtime/channels.c	671	29	misra violation (use --rule-texts=<file> to get proper output)	803fe784b451b202f08c00c0ec8fdae913ebb3872278f170635a009e829c286d
 Cppcheck	misra-c2012-10.4	src/runtime/channels.c	814	76	misra violation (use --rule-texts=<file> to get proper output)	3496764293401e343db6948d029c70e3ffab5b0b1f2feaddc320c92ec67ab72c
 Cppcheck	misra-c2012-10.4	src/runtime/channels.c	825	27	misra violation (use --rule-texts=<file> to get proper output)	73649eae161cf6287dab06d715b50eb0ef5afd82e52940d3132c2bb94df2a429
-Cppcheck	misra-c2012-10.4	src/runtime/concurrency.c	115	63	misra violation (use --rule-texts=<file> to get proper output)	191f42ff7288d99c3655d208e38b554c191c3ccf99b276753ae1735c26aaae59
-Cppcheck	misra-c2012-10.4	src/runtime/concurrency.c	195	55	misra violation (use --rule-texts=<file> to get proper output)	952fbf0a93b002ff575b1cd9e74cd268ed2f691d658fc4631aae3876e5b2acfe
-Cppcheck	misra-c2012-10.4	src/runtime/concurrency.c	200	61	misra violation (use --rule-texts=<file> to get proper output)	c8a0f66652dfe84b093f7963dcf2003dc4feb48c9a01e39f6737302810beb23f
-Cppcheck	misra-c2012-10.4	src/runtime/concurrency.c	384	55	misra violation (use --rule-texts=<file> to get proper output)	f0fbeea0d71941760c8f632094556f6a5df473417fab9ed42b320867a6ffb39e
+Cppcheck	misra-c2012-10.4	src/runtime/concurrency.c	253	63	misra violation (use --rule-texts=<file> to get proper output)	191f42ff7288d99c3655d208e38b554c191c3ccf99b276753ae1735c26aaae59
+Cppcheck	misra-c2012-10.4	src/runtime/concurrency.c	333	55	misra violation (use --rule-texts=<file> to get proper output)	952fbf0a93b002ff575b1cd9e74cd268ed2f691d658fc4631aae3876e5b2acfe
+Cppcheck	misra-c2012-10.4	src/runtime/concurrency.c	338	61	misra violation (use --rule-texts=<file> to get proper output)	c8a0f66652dfe84b093f7963dcf2003dc4feb48c9a01e39f6737302810beb23f
+Cppcheck	misra-c2012-10.4	src/runtime/concurrency.c	521	55	misra violation (use --rule-texts=<file> to get proper output)	f0fbeea0d71941760c8f632094556f6a5df473417fab9ed42b320867a6ffb39e
 Cppcheck	misra-c2012-10.4	src/runtime/defer.c	14	41	misra violation (use --rule-texts=<file> to get proper output)	485339233c00fca9c3b5ece8ab03061b2116a222af5ff072b5bd25627d89850a
 Cppcheck	misra-c2012-10.4	src/runtime/defer.c	33	31	misra violation (use --rule-texts=<file> to get proper output)	d2400e201ff04376bd736ed1f20d150c8eef7a0ea7d8e79679d92f36cd3cd1fe
 Cppcheck	misra-c2012-10.4	src/runtime/defer.c	34	46	misra violation (use --rule-texts=<file> to get proper output)	4582fc854adec22f298d5a000fd9b209f980055b0e0a2cc49c32d37aabaff576
@@ -1371,8 +1372,10 @@ Cppcheck	misra-c2012-10.8	src/types/release_decision.c	1745	40	misra violation (
 Cppcheck	misra-c2012-10.8	src/types/release_decision.c	1754	16	misra violation (use --rule-texts=<file> to get proper output)	601b0a54ddc991476472fb4cb37efa159d923dc6c1d844ffd095a6f4470e4664
 Cppcheck	misra-c2012-10.8	src/types/release_decision.c	1756	12	misra violation (use --rule-texts=<file> to get proper output)	601b0a54ddc991476472fb4cb37efa159d923dc6c1d844ffd095a6f4470e4664
 Cppcheck	misra-c2012-11.6	src/runtime/arena.c	90	16	misra violation (use --rule-texts=<file> to get proper output)	9b86e6bca2951aeeceafe5676a9a879d571239b431827e8ec2c2d5216ef9ce87
-Cppcheck	misra-c2012-11.6	src/runtime/concurrency.c	119	57	misra violation (use --rule-texts=<file> to get proper output)	339b0fd1b0095112f199545ede56f6a0cd65ad97d6a94b97f27bc3e7e14340f0
-Cppcheck	misra-c2012-11.6	src/runtime/concurrency.c	569	26	misra violation (use --rule-texts=<file> to get proper output)	fdbc6be4a703d5454f4ac5d419bad1218682f9a7d4afad21c75b3fa12546c178
+Cppcheck	misra-c2012-11.6	src/runtime/concurrency.c	165	24	misra violation (use --rule-texts=<file> to get proper output)	47012f8b12b046669d47a4bb6355f947bf26878d08bb9ba4b9b9b00a3a973542
+Cppcheck	misra-c2012-11.6	src/runtime/concurrency.c	166	24	misra violation (use --rule-texts=<file> to get proper output)	f0c6ac25885181e866525025321c7de8f45cec11414d6be233ede23863012f4a
+Cppcheck	misra-c2012-11.6	src/runtime/concurrency.c	257	57	misra violation (use --rule-texts=<file> to get proper output)	339b0fd1b0095112f199545ede56f6a0cd65ad97d6a94b97f27bc3e7e14340f0
+Cppcheck	misra-c2012-11.6	src/runtime/concurrency.c	706	26	misra violation (use --rule-texts=<file> to get proper output)	fdbc6be4a703d5454f4ac5d419bad1218682f9a7d4afad21c75b3fa12546c178
 Cppcheck	misra-c2012-11.6	src/runtime/qir_sim.c	58	31	misra violation (use --rule-texts=<file> to get proper output)	4520e424615cdda5b020047df5898bccdb4bfdd59994a1769bb98f5c4fd08fbc
 Cppcheck	misra-c2012-11.6	src/runtime/qir_sim.c	65	23	misra violation (use --rule-texts=<file> to get proper output)	aef07c2448d36702963c3ad921482110964dd5306ed633cad4067443d9fbc13e
 Cppcheck	misra-c2012-11.6	src/runtime/qir_sim.c	95	41	misra violation (use --rule-texts=<file> to get proper output)	415287dabeacd7446962d6b487957230fc1e75da41c1e9cfb599db2978daae0d
@@ -2765,8 +2768,8 @@ Cppcheck	misra-c2012-15.6	src/runtime/channels.c	712	5	misra violation (use --ru
 Cppcheck	misra-c2012-15.6	src/runtime/channels.c	754	5	misra violation (use --rule-texts=<file> to get proper output)	c39a5ed5af8bfe006f81ff4e81792526408bd9ae439d4e3a92d309aad87c3189
 Cppcheck	misra-c2012-15.6	src/runtime/channels.c	786	5	misra violation (use --rule-texts=<file> to get proper output)	eeab8fb8facd9e12cee9d96e8a8f85399f7ef0e23c6d3f14a835e61e31d42748
 Cppcheck	misra-c2012-15.6	src/runtime/channels.c	806	5	misra violation (use --rule-texts=<file> to get proper output)	55b603a7837939f59198cc1cc1ce288113b50179c7adf0fe97e79bbbab4c1c2d
-Cppcheck	misra-c2012-15.6	src/runtime/concurrency.c	502	5	misra violation (use --rule-texts=<file> to get proper output)	9aea128f1c286d26a208197ce0c0a7c6d6863d6e4742d8c1ff759e3b6b73e58b
-Cppcheck	misra-c2012-15.6	src/runtime/concurrency.c	84	5	misra violation (use --rule-texts=<file> to get proper output)	f83ca9ca475678284f1003d6b62ff810cdc287c98f587c779f2dddccf5cecb15
+Cppcheck	misra-c2012-15.6	src/runtime/concurrency.c	101	5	misra violation (use --rule-texts=<file> to get proper output)	f83ca9ca475678284f1003d6b62ff810cdc287c98f587c779f2dddccf5cecb15
+Cppcheck	misra-c2012-15.6	src/runtime/concurrency.c	639	5	misra violation (use --rule-texts=<file> to get proper output)	9aea128f1c286d26a208197ce0c0a7c6d6863d6e4742d8c1ff759e3b6b73e58b
 Cppcheck	misra-c2012-15.6	src/runtime/deadlock.c	10	5	misra violation (use --rule-texts=<file> to get proper output)	4648a2f892a3efa530654434a3ede1ab34bd8c7f0e7d54aa1032c338957ab73c
 Cppcheck	misra-c2012-15.6	src/runtime/deadlock.c	22	5	misra violation (use --rule-texts=<file> to get proper output)	4484fc7f09be220732f81fa4f8eb30d1ee98d95d22e0fc5ff2c25327a3f460cc
 Cppcheck	misra-c2012-15.6	src/runtime/deadlock.c	29	5	misra violation (use --rule-texts=<file> to get proper output)	4484fc7f09be220732f81fa4f8eb30d1ee98d95d22e0fc5ff2c25327a3f460cc
@@ -4142,6 +4145,7 @@ Cppcheck	misra-c2012-21.16	src/compiler/goo.c	1164	24	misra violation (use --rul
 Cppcheck	misra-c2012-21.16	src/package/import_resolver.c	85	12	misra violation (use --rule-texts=<file> to get proper output)	4981de34362f69c9f08e8f86ad524b8248942c7e38ced382b9a8ba14fa47324a
 Cppcheck	misra-c2012-21.16	src/runtime/runtime.c	829	12	misra violation (use --rule-texts=<file> to get proper output)	6993b47c7e85bf847a26cb900f2bc07835b04c0eea000b14303412070ffd3e47
 Cppcheck	misra-c2012-21.16	src/runtime/runtime.c	837	40	misra violation (use --rule-texts=<file> to get proper output)	41dc3da12e1acc3a8e6c5baebac8e761c01c8a092df26556c4cb4a3b5f1f9913
+Cppcheck	misra-c2012-21.5	src/runtime/concurrency.c	20	1	misra violation (use --rule-texts=<file> to get proper output)	a4e1844be7355ddf3c53044e31cd086d72385fb2031631b6d1c99ef491c6877d
 Cppcheck	misra-c2012-21.7	src/codegen/expression_codegen.c	886	32	misra violation (use --rule-texts=<file> to get proper output)	6231a1ce6a7cf157ccfb6a501a42fd70d4d56329f7a34931eaa51addc44f9ac3
 Cppcheck	misra-c2012-21.7	src/compiler/goo.c	377	42	misra violation (use --rule-texts=<file> to get proper output)	8cc88db9a2d272dfb9f091592c763f9ea7869113a1d058581d40c65c91a0ad33
 Cppcheck	misra-c2012-21.7	src/comptime/comptime_intrinsics.c	182	45	misra violation (use --rule-texts=<file> to get proper output)	e85168dbcb24979bff22dafea8315147fd13c7db37255709a5b37797388d6b7d
@@ -4157,7 +4161,7 @@ Cppcheck	misra-c2012-22.8	src/compiler/goo.c	592	22	misra violation (use --rule-
 Cppcheck	misra-c2012-22.8	src/parser/lexer_bridge.c	433	53	misra violation (use --rule-texts=<file> to get proper output)	ef2b476ca92ded304fa070cedca5bd1d3a70af611a32be0dc2680321309128d5
 Cppcheck	misra-c2012-22.8	src/parser/lexer_bridge.c	435	53	misra violation (use --rule-texts=<file> to get proper output)	47eccdc7f504b6d36b9e1d525e90c956a7e433440921ce295b48e4e1f40eb201
 Cppcheck	misra-c2012-22.8	src/parser/lexer_bridge.c	567	22	misra violation (use --rule-texts=<file> to get proper output)	cc6c115529685cd412963925402e81877616eb49e931a5d572cb416082963e66
-Cppcheck	misra-c2012-22.8	src/runtime/concurrency.c	75	24	misra violation (use --rule-texts=<file> to get proper output)	1c411c0386d2dba41dff9f458bb6753bdddf65badeaea666ec91007d2f596c5c
+Cppcheck	misra-c2012-22.8	src/runtime/concurrency.c	92	24	misra violation (use --rule-texts=<file> to get proper output)	1c411c0386d2dba41dff9f458bb6753bdddf65badeaea666ec91007d2f596c5c
 Cppcheck	misra-c2012-22.8	src/runtime/qir_sim.c	38	49	misra violation (use --rule-texts=<file> to get proper output)	4a70246209e9c0578c387395860c967d8897704342fb62bafa9030e51e73dba3
 Cppcheck	misra-c2012-22.8	src/types/expression_checker.c	1410	26	misra violation (use --rule-texts=<file> to get proper output)	93916b972417774c46c6f5e98110c7178d27339d49102e17bb05bc9838b9af10
 Cppcheck	misra-c2012-22.8	src/types/expression_checker.c	1492	22	misra violation (use --rule-texts=<file> to get proper output)	93916b972417774c46c6f5e98110c7178d27339d49102e17bb05bc9838b9af10
@@ -4169,7 +4173,7 @@ Cppcheck	misra-c2012-22.9	src/compiler/goo.c	592	28	misra violation (use --rule-
 Cppcheck	misra-c2012-22.9	src/parser/lexer_bridge.c	433	69	misra violation (use --rule-texts=<file> to get proper output)	ef28538ed42b759b525290b15b63cb4c218f0e93edad9a3e36d716a2405ab088
 Cppcheck	misra-c2012-22.9	src/parser/lexer_bridge.c	435	65	misra violation (use --rule-texts=<file> to get proper output)	f4eae6ca6d59dc3f6c75b768c9e980a07b51056dd39d63dcc879beac5bbc148e
 Cppcheck	misra-c2012-22.9	src/parser/lexer_bridge.c	567	28	misra violation (use --rule-texts=<file> to get proper output)	272e642e0d7a143a47ecd09c9da48ec5106c9d3671d9075b97bbcab02f2ac6b5
-Cppcheck	misra-c2012-22.9	src/runtime/concurrency.c	75	39	misra violation (use --rule-texts=<file> to get proper output)	d8c6dd12039e7a92080d1bf0fd12e9f85f6b07425b6dc3bd5e86a63ca8f7ed24
+Cppcheck	misra-c2012-22.9	src/runtime/concurrency.c	92	39	misra violation (use --rule-texts=<file> to get proper output)	d8c6dd12039e7a92080d1bf0fd12e9f85f6b07425b6dc3bd5e86a63ca8f7ed24
 Cppcheck	misra-c2012-22.9	src/runtime/qir_sim.c	38	68	misra violation (use --rule-texts=<file> to get proper output)	6d309c9d36cdf0c8ab6e95cd295b7910c3275a8c0c0123701bac770af83b4dd6
 Cppcheck	misra-c2012-22.9	src/types/expression_checker.c	1410	44	misra violation (use --rule-texts=<file> to get proper output)	e0e20540c024c7ecbabd02904a8be70d6f546ff3eea7edca289db2ed495e2ca0
 Cppcheck	misra-c2012-22.9	src/types/expression_checker.c	1492	40	misra violation (use --rule-texts=<file> to get proper output)	e0e20540c024c7ecbabd02904a8be70d6f546ff3eea7edca289db2ed495e2ca0
@@ -4229,7 +4233,7 @@ Cppcheck	misra-c2012-8.4	src/parser/lexer_bridge.c	153	6	misra violation (use --
 Cppcheck	misra-c2012-8.4	src/parser/lexer_bridge.c	478	5	misra violation (use --rule-texts=<file> to get proper output)	01f1bd2dd0b2528f8f7191b61e0e9bfc13ac68816a1491e8117c82c1814112ef
 Cppcheck	misra-c2012-8.4	src/parser/lexer_bridge.c	538	5	misra violation (use --rule-texts=<file> to get proper output)	efc8fbee9f67a5815976151f454dadd7a6b36fe47091a319432b462c0ab2e4ef
 Cppcheck	misra-c2012-8.4	src/parser/lexer_bridge.c	558	5	misra violation (use --rule-texts=<file> to get proper output)	2e10916f90ac9288b31f46c7fa89b5249ef26f64ea984cc767eebf4c2b3ce5f1
-Cppcheck	misra-c2012-8.4	src/runtime/concurrency.c	32	18	misra violation (use --rule-texts=<file> to get proper output)	d9e0f217a393af7412105def6daf830a4f687dcb138fd1f7599ac94545c82135
+Cppcheck	misra-c2012-8.4	src/runtime/concurrency.c	49	18	misra violation (use --rule-texts=<file> to get proper output)	d9e0f217a393af7412105def6daf830a4f687dcb138fd1f7599ac94545c82135
 Cppcheck	misra-c2012-8.4	src/runtime/qir_sim.c	102	6	misra violation (use --rule-texts=<file> to get proper output)	82c1b707a5116f8ee73d8a3e2b27256c61f9283003f298e07d1d94c6de8d55df
 Cppcheck	misra-c2012-8.4	src/runtime/qir_sim.c	108	6	misra violation (use --rule-texts=<file> to get proper output)	6be36de9d43a5ce83b283e1d4713b994fbd68b4382f7e1e775328e5cff6c8269
 Cppcheck	misra-c2012-8.4	src/runtime/qir_sim.c	123	6	misra violation (use --rule-texts=<file> to get proper output)	f4e900f73dbb88e444930e0eacd4db0af50666d8dda0843bba50222eb9ba8270
@@ -4285,7 +4289,10 @@ Cppcheck	misra-config	src/compiler/goo.c	495	17	Because of missing configuration
 Cppcheck	misra-config	src/compiler/goo.c	521	30	Because of missing configuration, misra checking is incomplete. There can be false negatives! Unknown constant PATH_MAX, please review configuration	1db56e89be3a6b42a0a0d2120d36ddb95e5aabc2ea312d9802cffab11e6afd9d
 Cppcheck	misra-config	src/compiler/goo.c	523	34	Because of missing configuration, misra checking is incomplete. There can be false negatives! Unknown constant PATH_MAX, please review configuration	10872311a852db21c0d32c13d2d97c6a97255e2586094ad69a9968b8d85b496c
 Cppcheck	misra-config	src/package/import_resolver.c	245	18	Because of missing configuration, misra checking is incomplete. There can be false negatives! Unknown constant PATH_MAX, please review configuration	af283f0778e7369eb002512a2c26bba913dac970478693786c96fa9a64e60fb5
-Cppcheck	misra-config	src/runtime/concurrency.c	368	14	Because of missing configuration, misra checking is incomplete. There can be false negatives! Variable '__func__' is unknown	772ca25541311b34aa6b2fdb0450bdd26c4cd2b8632168aef9cfa5f2eb7b8709
+Cppcheck	misra-config	src/runtime/concurrency.c	135	30	Because of missing configuration, misra checking is incomplete. There can be false negatives! Variable 'PROT_NONE' is unknown	25c948f64b82db24c04824b2bb79e5531093f527034240cd0fb3983121550940
+Cppcheck	misra-config	src/runtime/concurrency.c	200	26	Because of missing configuration, misra checking is incomplete. There can be false negatives! Variable 'SS_DISABLE' is unknown	b94a5f15c7a6fd485d30ae9d69dd539eb9a8b22778885b60b148ae15a28a1e84
+Cppcheck	misra-config	src/runtime/concurrency.c	204	24	Because of missing configuration, misra checking is incomplete. There can be false negatives! Variable 'SIGSTKSZ' is unknown	0fe9125b15faf5037cfa3c5db0c204fa5e7d7740e97fa9ed3e871aaacccc4193
+Cppcheck	misra-config	src/runtime/concurrency.c	505	14	Because of missing configuration, misra checking is incomplete. There can be false negatives! Variable '__func__' is unknown	772ca25541311b34aa6b2fdb0450bdd26c4cd2b8632168aef9cfa5f2eb7b8709
 Cppcheck	misra-config	src/runtime/runtime.c	255	51	Because of missing configuration, misra checking is incomplete. There can be false negatives! Variable '__ATOMIC_RELAXED' is unknown	428ce4d4032536360d88a2f32830bffce8eaf6eaefb8dea3e497797b33a8ba1c
 Cppcheck	misra-config	src/runtime/runtime.c	275	33	Because of missing configuration, misra checking is incomplete. There can be false negatives! Variable '__ATOMIC_RELAXED' is unknown	f733273bfa56a47336bdcbcc8192111375376bcc2f3bbc4cf7bf938a9db0f2ff
 Cppcheck	misra-config	src/runtime/runtime.c	359	51	Because of missing configuration, misra checking is incomplete. There can be false negatives! Variable '__ATOMIC_RELAXED' is unknown	428ce4d4032536360d88a2f32830bffce8eaf6eaefb8dea3e497797b33a8ba1c
@@ -4302,8 +4309,8 @@ Cppcheck	nullPointerRedundantCheck	src/runtime/channels.c	187	9	Either the condi
 Cppcheck	nullPointerRedundantCheck	src/runtime/channels.c	393	9	Either the condition '!ch' is redundant or there is possible null pointer dereference: ch.	2311941e19c684c9dfed8fe038878b080ad3dd7ce16a6b677e075a73906460c4
 Cppcheck	redundantCondition	src/types/type_checker.c	4894	81	Redundant condition: The condition 'tag_type->kind != 33' is redundant since 'tag_type->kind == 21' is sufficient.	7ef73f069a198f1a0b26d1fb394d43130781384e9ac0c716fcd1cc34b2f64f7b
 Cppcheck	shadowVariable	src/codegen/runtime_integration.c	68	17	Local variable 'i64_type' shadows outer variable	86ffbabcee1caf95a7c23e187fe5fa7d21ab8363590d0efc898801be1431994a
-Cppcheck	swapcontextCalled	src/runtime/concurrency.c	293	9	Obsolescent function 'swapcontext' called. Applications are recommended to be rewritten to use POSIX threads.	6340d712d07688800e9d68cd4a57284d86150af22d16d7ac713a74d89411bf80
-Cppcheck	swapcontextCalled	src/runtime/concurrency.c	601	17	Obsolescent function 'swapcontext' called. Applications are recommended to be rewritten to use POSIX threads.	fa1641e22082d5cc84cd6b3b743332c14b7e73dcbc33b0e3a1352c27449aaa77
+Cppcheck	swapcontextCalled	src/runtime/concurrency.c	430	9	Obsolescent function 'swapcontext' called. Applications are recommended to be rewritten to use POSIX threads.	6340d712d07688800e9d68cd4a57284d86150af22d16d7ac713a74d89411bf80
+Cppcheck	swapcontextCalled	src/runtime/concurrency.c	742	17	Obsolescent function 'swapcontext' called. Applications are recommended to be rewritten to use POSIX threads.	fa1641e22082d5cc84cd6b3b743332c14b7e73dcbc33b0e3a1352c27449aaa77
 Cppcheck	unreadVariable	src/lexer/lexer.c	148	26	Variable 'current_pos' is assigned a value that is never used.	57b85eda18ee52a9b75b133cc4490aa6f71bf461595365f5d25c0387d0d17e2b
 GNU C23	-Wanalyzer-allocation-size	src/runtime/runtime.c	905	13	allocated buffer size is not a multiple of the pointee's size	45915de80350ffdeb38b9665c17514c16f40a7cb90f2da3975e3756b0136a29e
 GNU C23	-Wanalyzer-malloc-leak	src/compiler/goo.c	1219	28	leak of ‘<unknown>’	45be2f5c192fa7921d8341bb5a68e0f721e52143bae1d14421477b4fd9447bf3
@@ -4660,8 +4667,8 @@ clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	
 clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/channels.c	577	9	Call to function 'memcpy' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'memcpy_s' in case of C11	a6d4587be4b116cfe04214e8af99f4748d54dc6ccdda949de21aa0b6cc583336
 clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/channels.c	603	9	Call to function 'memset' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'memset_s' in case of C11	98de17bffcded8e22bcd8281ebb015617b7e39ffd2e3a4d1f6b5853c1ad79e69
 clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/channels.c	611	5	Call to function 'memset' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'memset_s' in case of C11	98de17bffcded8e22bcd8281ebb015617b7e39ffd2e3a4d1f6b5853c1ad79e69
-clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/concurrency.c	105	5	Call to function 'memset' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'memset_s' in case of C11	a0575e4f396f8dabc0d7f60f0ce19f176a4d32ef54a587b8dcf501cfb3616c0d
-clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/concurrency.c	227	5	Call to function 'memset' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'memset_s' in case of C11	4fa0a261160838eec3a1894fbce120675332a0f921f590bfff825bab5af87026
+clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/concurrency.c	237	5	Call to function 'memset' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'memset_s' in case of C11	a0575e4f396f8dabc0d7f60f0ce19f176a4d32ef54a587b8dcf501cfb3616c0d
+clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/concurrency.c	365	5	Call to function 'memset' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'memset_s' in case of C11	4fa0a261160838eec3a1894fbce120675332a0f921f590bfff825bab5af87026
 clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/deadlock.c	44	5	Call to function 'fprintf' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'fprintf_s' in case of C11	0c085522dcee581d9c61f2e93dccffdc4f3c805974597021767a93c6c3264866
 clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/qir_sim.c	33	5	Call to function 'memset' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'memset_s' in case of C11	1490e194a3e2362bfb2937a6a7a5d57a316d9e2b9c14dc675a108b41d1c92c63
 clang-tidy	clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling	src/runtime/runtime.c	1057	5	Call to function 'snprintf' is insecure as it does not provide security checks introduced in the C11 standard. Replace with analogous functions that support length arguments or provides boundary checks such as 'snprintf_s' in case of C11	d33cbc3ca7f561fed487687de7f330f79a8b25a662fb41bca85dccf45dd01af7

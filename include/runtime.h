@@ -792,8 +792,12 @@ struct goo_goroutine {
     goo_goroutine_state_t state;
     void (*function)(void*);
     void* arg;
-    void* stack;
-    size_t stack_size;
+    void* stack;          // lowest USABLE byte, just above the guard
+    size_t stack_size;    // usable bytes, excluding the guard
+    // H1: the whole mmap region, guard first. The guard is [stack_map, stack).
+    // The free MUST munmap exactly (stack_map, stack_map_size).
+    void* stack_map;
+    size_t stack_map_size;
     
 #ifdef GOO_PLATFORM_UNIX
     ucontext_t context;

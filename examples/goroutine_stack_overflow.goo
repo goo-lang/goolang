@@ -1,0 +1,24 @@
+// goroutine_stack_overflow (H1): an unbounded recursion in a goroutine must
+// stop on the stack guard with "fatal error: stack overflow" and exit 2,
+// not write into the heap beyond the stack (no guard before H1).
+package main
+
+import "fmt"
+
+func down(n int) int {
+	var a [64]int
+	a[n%64] = n
+	return down(n+1) + a[n%64]
+}
+
+var done chan int
+
+func worker() {
+	done <- down(0)
+}
+
+func main() {
+	done = make_chan(int)
+	go worker()
+	fmt.Println(<-done)
+}
