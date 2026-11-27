@@ -95,6 +95,7 @@ cc_library(
     hdrs = [
         "far_transport.h",
         "float_format.h",
+        "qir_sim_limits.h",
         "runtime.h",
     ],
     includes = ["."],

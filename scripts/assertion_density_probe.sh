@@ -49,10 +49,9 @@ set -u
 PROBE="assertion-density-probe"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # ASSERTION_DENSITY_ROOT overrides which tree's src/ gets scanned (the
-# self-test points it at a scratch copy). ASSERTION_DENSITY_BASELINE is kept
-# pinned to the REAL baseline by default even when ROOT is overridden, because
-# the self-test's whole point is to compare a scratch tree against the real
-# baseline, not a scratch one.
+# self-test points it at a scratch copy). ASSERTION_DENSITY_BASELINE defaults
+# to the committed file. The self-test overrides it with a temporary file that
+# it builds from its own measurement.
 ROOT="${ASSERTION_DENSITY_ROOT:-$REPO_ROOT}"
 BASELINE="${ASSERTION_DENSITY_BASELINE:-$REPO_ROOT/scripts/assertion-density-baseline.txt}"
 
@@ -134,17 +133,26 @@ find_assertion_line() {
 
 # ---------------------------------------------------------------------------
 # --self-test: the probe that refuses a density decrease must show it can
-# detect one. Three checks: remove one real assertion line from a scratch
-# copy and require RED against the real baseline; require an unmodified copy
-# to stay GREEN against that same baseline (the positive control -- without
-# it, a harness that is red for every input would look identical to a
-# working negative control); and require a baseline of "0 0" to read RED
-# against the real, unmodified tree, since a zero baseline can never be
-# passed BELOW and would otherwise pass with no real check at all.
+# detect one. The self-test measures the CURRENT tree first and builds every
+# baseline it uses from that measurement, in a temporary file. It never reads
+# scripts/assertion-density-baseline.txt, so a PR that adds code (and so moves
+# the measurement) needs no baseline edit for the self-test to pass. The
+# committed file is only the floor that the gate itself checks, and a PR
+# edits it only to raise that floor.
 #
-# The mutation in check 1 is verified to have LANDED (count dropped by
-# exactly one) before its red result is trusted: a sed that silently matched
-# nothing would otherwise read exactly like a passing probe.
+# Let A and E be the measured assertion and executable-line counts.
+#   control  baseline "A E" on the unmodified tree              -> GREEN
+#   control  baseline "A-1 E" (committed floor below measure)    -> GREEN
+#   fault    one assertion line removed from a copy, "A E"       -> RED
+#   fault    baseline "A+1 E" (measured count one below floor)   -> RED
+#   fault    baseline "A E-1" (count equal, density below floor) -> RED
+#   fault    baseline "0 0" (a zero baseline verifies nothing)   -> RED
+# The controls come first: without them, a harness that is red for every
+# input would look identical to a working fault case.
+#
+# The mutation is verified to have LANDED (count dropped by exactly one)
+# before its red result is trusted: a sed that silently matched nothing would
+# otherwise read exactly like a passing probe.
 # ---------------------------------------------------------------------------
 if [ "${1:-}" = "--self-test" ]; then
 	SELF="$PROBE --self-test"
@@ -152,64 +160,69 @@ if [ "${1:-}" = "--self-test" ]; then
 	trap 'rm -rf "$W"' EXIT
 	bad_self=0
 
-	mk() { rm -rf "$W/t"; mkdir -p "$W/t"; cp -r "$REPO_ROOT/src" "$W/t/src"; }
-	run() { ASSERTION_DENSITY_ROOT="$W/t" "$0" >"$W/out.log" 2>&1; }
-
-	# 1. Mutated copy: remove one assertion line, prove the count actually
-	#    fell by one, then require the gate to go RED against the real
-	#    baseline.
-	mk
-	if ! find_assertion_line "$W/t/src"; then
-		echo "$SELF: FAIL (no assertion line found in the copy -- cannot inject)"
-		rm -rf "$W"
+	meas="$(count_dir "$REPO_ROOT/src")"
+	A="${meas%% *}"
+	rest="${meas#* }"
+	E="${rest%% *}"
+	if ! is_positive_int "$A" || ! is_positive_int "$E" || [ "$E" -lt 2 ]; then
+		echo "$SELF: FAIL (measured '$A' assertions / '$E' executable lines -- the tree is empty or the counter is broken)"
 		exit 1
 	fi
-	before_line="$(count_dir "$W/t/src")"
-	before_assert="${before_line%% *}"
-	sed -i "${FOUND_LINE}d" "$FOUND_FILE"
-	after_line="$(count_dir "$W/t/src")"
-	after_assert="${after_line%% *}"
-	if [ "$after_assert" -ne "$((before_assert - 1))" ]; then
-		echo "$SELF: FAIL (deleting one assertion line moved the count $before_assert -> $after_assert, wanted $((before_assert - 1)))"
-		bad_self=1
-	else
-		echo "    ok: the mutated copy has exactly one fewer assertion line ($before_assert -> $after_assert)"
-	fi
+	echo "    measured: $A assertions / $E executable lines"
 
-	if [ "$bad_self" -eq 0 ]; then
-		if run; then
-			echo "$SELF: FAIL (stayed GREEN after removing an assertion line)"
+	# run_with <root> <baseline "a e"> : run the gate on <root> against a
+	# temporary baseline file written from the given pair.
+	run_with() {
+		printf '%s\n' "$2" >"$W/baseline.txt"
+		ASSERTION_DENSITY_ROOT="$1" ASSERTION_DENSITY_BASELINE="$W/baseline.txt" "$0" >"$W/out.log" 2>&1
+	}
+	expect_green() { # $1 = label, $2 = root, $3 = baseline pair
+		if run_with "$2" "$3"; then
+			echo "    ok: $1 is GREEN"
+		else
+			echo "$SELF: FAIL ($1 is RED -- the harness is broken, not the tree)"
+			sed 's/^/        /' "$W/out.log"
+			bad_self=1
+		fi
+	}
+	expect_red() { # $1 = label, $2 = root, $3 = baseline pair
+		if run_with "$2" "$3"; then
+			echo "$SELF: FAIL ($1 stayed GREEN)"
 			sed 's/^/        /' "$W/out.log"
 			bad_self=1
 		else
-			echo "    ok: the mutated copy is RED against the real baseline"
+			echo "    ok: $1 is RED"
 		fi
-	fi
+	}
 
-	# 2. Unmodified copy: the positive control.
-	mk
-	if run; then
-		echo "    ok: an unmodified copy is GREEN against the real baseline"
-	else
-		echo "$SELF: FAIL (an unmodified copy is RED -- the harness is broken, not the tree)"
-		sed 's/^/        /' "$W/out.log"
-		bad_self=1
-	fi
+	# Controls.
+	expect_green "the unchanged tree against a baseline equal to the measurement ($A $E)" "$REPO_ROOT" "$A $E"
+	expect_green "the unchanged tree against a baseline below the measurement ($((A - 1)) $E)" "$REPO_ROOT" "$((A - 1)) $E"
 
-	# 3. A baseline of 0 0 is not a real check: base_assert=0 can never read
-	#    as "below baseline", and the density compare is skipped outright
-	#    when base_exec is 0. Run this against the REAL, unmodified tree --
-	#    not a mutated copy, which would also go red for the count-drop
-	#    reason alone and prove nothing about zero handling specifically.
-	zero_baseline="$W/zero-baseline.txt"
-	printf '0 0\n' >"$zero_baseline"
-	if ASSERTION_DENSITY_BASELINE="$zero_baseline" "$0" >"$W/out.log" 2>&1; then
-		echo "$SELF: FAIL (a baseline of 0 0 passed -- zero must never verify anything)"
-		sed 's/^/        /' "$W/out.log"
+	# Fault: remove one assertion line from a copy.
+	mkdir -p "$W/t"
+	cp -r "$REPO_ROOT/src" "$W/t/src"
+	if ! find_assertion_line "$W/t/src"; then
+		echo "$SELF: FAIL (no assertion line found in the copy -- cannot inject)"
+		exit 1
+	fi
+	sed -i "${FOUND_LINE}d" "$FOUND_FILE"
+	after_line="$(count_dir "$W/t/src")"
+	after_assert="${after_line%% *}"
+	if [ "$after_assert" -ne "$((A - 1))" ]; then
+		echo "$SELF: FAIL (deleting one assertion line moved the count $A -> $after_assert, wanted $((A - 1)))"
 		bad_self=1
 	else
-		echo "    ok: a baseline of 0 0 is RED"
+		echo "    ok: the mutated copy has exactly one fewer assertion line ($A -> $after_assert)"
+		expect_red "a copy with one assertion line removed against the measurement ($A $E)" "$W/t" "$A $E"
 	fi
+
+	# Faults on the baseline side, against the unchanged tree.
+	expect_red "a baseline one assertion above the measurement ($((A + 1)) $E)" "$REPO_ROOT" "$((A + 1)) $E"
+	expect_red "a baseline with the same count and a higher density ($A $((E - 1)))" "$REPO_ROOT" "$A $((E - 1))"
+	# A baseline of 0 0 is not a real check: base_assert=0 can never read as
+	# "below baseline", and the density compare is skipped when base_exec is 0.
+	expect_red "a baseline of 0 0" "$REPO_ROOT" "0 0"
 
 	rm -rf "$W"
 	trap - EXIT

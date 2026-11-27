@@ -174,6 +174,7 @@ goo_cc_library(
     name = "qir_sim",
     srcs = ["qir_sim.c"],
     copts = NO_SANITIZE_COPTS,
+    deps = ["//include:runtime_h"],
     linkopts = ["-lm"],
     visibility = ["//tests/unit/runtime:__pkg__"],
 )

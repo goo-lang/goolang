@@ -1,7 +1,8 @@
 # Go Spec Conformance Matrix
 
-**Snapshot:** 2026-11-27 — **91% conformance**
-(52 works / 57 tested constructs, excluding 3 deliberate rejections).
+<!-- spec-conformance:headline:begin -->
+**Snapshot:** 2026-11-27, post-v1.0.0 — **91% construct coverage** (52 works / 57 tested constructs, excluding 3 deliberate rejections).
+<!-- spec-conformance:headline:end -->
 
 **Method.** One tiny fixture per Go-spec construct under `tests/spec/`,
 statuses determined **empirically** (compiled and run against `bin/goo`,
@@ -10,9 +11,9 @@ outputs checked against Go semantics), recorded in
 (in `make verify-core`). The runner is a drift gate: a `works` row that
 stops working, a `divergent` row that changes behavior, or an
 `absent`/`rejected` row that starts compiling **fails the build** until
-this matrix is updated. The percentage above is therefore a tracked,
-probe-backed figure — regenerate it with `make spec-conformance`; do not
-edit it by hand.
+this matrix is updated. `make spec-conformance` checks the headline and the
+chapter table against the manifest, and `scripts/run_spec_conformance.sh --write-doc`
+regenerates them.
 
 **Reading the number honestly.** This measures *construct coverage*, not
 "fraction of real Go programs that compile": real code hits stdlib-surface
@@ -33,18 +34,20 @@ percentage moves only with evidence.
 
 ## Matrix by chapter (from manifest.tsv — regenerate, don't hand-edit)
 
+<!-- spec-conformance:table:begin -->
 | Chapter | works | divergent | rejected | absent | Constructs |
 |---|---|---|---|---|---|
 | Lexical | 4 | – | – | – | ASI/newlines, raw strings, rune literals, hex escapes |
 | Declarations | 7 | – | – | – | grouped var, const+iota, short var, named types, tuple assign, assign and short var with three or more names, blank ident |
-| Types | 8 | – | – | 1 | arrays, slices, maps, struct embedding, pointers, closures, interfaces, channels; **absent:** complex |
-| Expressions | 6 | – | – | 1 | keyed/elided composites, type assertions, method values, conversions, shift/div/mod, user variadics; **absent:** method expressions |
+| Types | 9 | – | – | 1 | arrays, slices, maps, struct embedding, pointers, closures, interfaces, channels, an interface embedded in a struct (dynamic promotion); **absent:** complex |
+| Expressions | 7 | – | – | 1 | keyed/elided composites, type assertions, method values, conversions, conversion to a named non-struct type, shift/div/mod, user variadics; **absent:** method expressions |
 | Statements | 13 | 1 | – | – | if-init, for (3 forms), for with init/condition/post OMITTED (all seven combinations), range (slices, string→**runes**, channels), range that assigns with `=`, switch-init + type switch, fallthrough, labels/goto, defer-in-loop, go+select, empty case/default bodies (switch/type-switch/select); **divergent:** named-result defer |
 | Builtins | 5 | – | 1 | – | len/cap/make/new/append/delete, copy, panic (exit 2), min/max (Go 1.21, NaN-propagating), clear (Go 1.21, map+slice); **rejected:** recover (clean v1 diagnostic) |
 | Generics | 2 | – | – | 2 | `[T any]` inference-only funcs; explicit instantiation `f[T](...)` (single type param — Task C); **absent:** union constraints (P2.10), generic types |
-| Packages | 3 | – | 1 | – | shim-package alias imports (`import f "fmt"`, Task B); multi-file packages (a package is the union of its files); `goo test` (discovers `TestXxx` in `_test` files, synthesizes the entry point, runs them); **rejected:** `init()` — clean diagnostic since the post-v1.0.0 fix (previously compiled but silently never ran) |
+| Packages | 4 | – | 1 | – | shim-package alias imports (`import f "fmt"`, Task B); `io.Writer` with two implementations (`*os.File`, `bytes.Buffer`); multi-file packages (a package is the union of its files); `goo test` (discovers `TestXxx` in `_test` files, synthesizes the entry point, runs them); **rejected:** `init()` — clean diagnostic since the post-v1.0.0 fix (previously compiled but silently never ran) |
 | Errors | 1 | – | – | – | (T, error) ↔ !T bridging, e.Error() |
 | System | – | – | 1 | – | **rejected:** unsafe (v1 Non-goal) |
+<!-- spec-conformance:table:end -->
 
 ## Known divergences (pinned by fixtures — changing them fails the gate)
 

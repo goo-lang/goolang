@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "embedding.h"
+#include "runtime.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -2446,6 +2447,17 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     }
                     uint64_t const_id = 0;
                     if (goo_fold_const_int_ctx(checker, call->args, &const_id)) {
+                        uint64_t sim_limit = is_qubit ? GOO_QIR_SIM_MAX_QUBITS
+                                                      : GOO_QIR_SIM_MAX_RESULTS;
+                        if (codegen->qir_sim_linked && const_id >= sim_limit) {
+                            codegen_error(codegen, call->args->pos,
+                                          "qir.%s(%llu) is out of range for the embedded simulator "
+                                          "(%llu %s); use --emit-qasm3 or --emit-qir for a larger device",
+                                          sel->selector, (unsigned long long)const_id,
+                                          (unsigned long long)sim_limit,
+                                          is_qubit ? "qubits" : "results");
+                            return NULL;
+                        }
                         if (is_qubit) {
                             if (const_id + 1U > codegen->qir_num_qubits) {
                                 codegen->qir_num_qubits = const_id + 1U;
