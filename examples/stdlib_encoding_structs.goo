@@ -1,0 +1,22 @@
+package main
+
+import (
+	"encoding"
+	"fmt"
+	"structs"
+)
+
+type Name struct {
+	_ structs.HostLayout
+	v string
+}
+
+func (n Name) MarshalText() ([]byte, error) {
+	return []byte("name:" + n.v), nil
+}
+
+func main() {
+	var m encoding.TextMarshaler = Name{v: "goo"}
+	b, err := m.MarshalText()
+	fmt.Println(string(b), err == nil)
+}
