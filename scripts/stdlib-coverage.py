@@ -50,6 +50,11 @@ GOOSTD_DIRMAP = {
     "io": "io",
     "sort": "sort",
     "filepath": "path/filepath",
+    # Nested goostd directories: the key is the path below goostd/.
+    "container/list": "container/list",
+    "container/ring": "container/ring",
+    "encoding": "encoding",
+    "structs": "structs",
 }
 # NOT mapped, deliberately: lanes/ is Goo-specific (no Go counterpart), and
 # cpkg, fwdref, kinds, mypkg, pkgcheck, shapes are test fixtures for the
