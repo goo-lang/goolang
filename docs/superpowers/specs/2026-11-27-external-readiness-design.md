@@ -107,9 +107,13 @@ The README (352 lines) is the first page that a reader sees. The rewrite:
   one job ID say that it was one batched job.
 - The superset claim uses the measured numbers of `superset-probe` (L1, L2 and
   L3 out of 794), not "Go-compatible".
-- The coord task `goolang:Doc-readme-truth` lists more items: drop
-  `lanes.Map`, fix "Law 5" for `[N]qir.Qubit`, and the superset definition.
-  This part closes that task.
+- The coord task `goolang:Doc-readme-truth` gives these items: drop
+  `lanes.Map`, fix "Law 5" for `[N]qir.Qubit`, the superset definition with
+  the probe numbers, and label live QPU jobs "external, not gated". This part
+  does all of them and closes that task.
+- Controller call: a small gate, `readme-claims-probe`, checks that each row of
+  the README feature table names a Make target or a fixture that exists. Rule 0
+  asks for this. It needs its self-test, census line and parity count.
 - `docs/GO_SPEC_CONFORMANCE.md` shows a snapshot from 2026-07-27. It must show
   the numbers that `make spec-conformance` gives today.
 
@@ -117,16 +121,30 @@ The README (352 lines) is the first page that a reader sees. The rewrite:
 
 ### 2a. The first release
 
-Implement sub-project A of ADR 0006, as specified in
-`docs/superpowers/specs/2026-08-20-toolchain-distribution-design.md`: the
-`goop` installer, the tarball layout, the release pipeline, the version
-injection, and its gate. Use the reproducible podman build that `repro-build`
-already proves. Add build provenance with `actions/attest-build-provenance`, so
-that a reader can verify that a binary came from this source. The first tag is
-`v0.1.0` unless the owner says otherwise.
+**The owner decided (2026-11-27): `v0.1.0` is a GitHub Release.** It has no
+Cloudflare R2, no `dist.goolang.org` and no minisign signature yet. Those, and
+the `goop` installer, come in a later release, as ADR 0006 sub-project A
+describes. From that spec, take the tarball layout
+(`docs/superpowers/specs/2026-08-20-toolchain-distribution-design.md`, "The
+layout" and "What ships in a tarball"), the version injection, and the gate.
 
-Platforms for the first release: Linux x86_64, which the pinned container
-builds. Other platforms are later work and the release notes say so.
+The release workflow, on a tag push: build in the reproducible podman image that
+`repro-build` already proves, make the tarball and a `SHA256SUMS` file, attest
+the build provenance with `actions/attest-build-provenance`, and attach all of
+them to a GitHub Release. The README gives the install command (download,
+`sha256sum -c`, untar, put `bin/` on `PATH`) and the `gh attestation verify`
+command.
+
+The first run is a pre-release tag, `v0.1.0-rc.1`, so that the first real run
+of the pipeline is not the public `v0.1.0`. The release workflow then tests the
+published files: it downloads them, checks the sums, and runs the quickstart.
+
+Platforms (the owner decided, 2026-11-27): Linux x86_64 natively. On macOS,
+the quickstart runs in the pinned container with one `podman run` or
+`docker run` command, which the quickstart gives. A native macOS build needs a
+compiler change (the exe-directory lookup is inside `#ifdef __linux__`) and is
+later work. The release notes say so. The toolchain needs a system C compiler,
+and the quickstart lists it as a prerequisite.
 
 ### 2b. A quantum quickstart
 
@@ -136,12 +154,17 @@ follow on a laptop with no IBM account:
 1. Install the release.
 2. Compile `examples/qir_teleport_probe.goo` and run it on the embedded
    simulator.
-3. Show the compile-time ownership check: a short program that clones a qubit
-   and the diagnostic that the compiler gives.
+3. Show the compile-time ownership check: an existing reject fixture for the
+   linear-qubit rules (for example the `qir_discard` family in
+   `tests/diag_format/help/`, or a `tests/golden/reject/` fixture), with its
+   exact diagnostic. Reuse a fixture that a gate already pins. Do not write a
+   new one for the README.
 4. Emit OpenQASM 3 and QIR from the same program.
 
-Each step is a command with its expected output, and a gate runs the same
-commands (the builder can add a quickstart probe or extend an existing one).
+Each step is a command with its expected output. A gate in `verify-core` runs
+the same commands on a tarball that it builds locally (a `quickstart-probe`
+with its self-test). The release workflow runs them again on the published
+files after each tag.
 
 ## Part 3: tidy
 
@@ -154,7 +177,12 @@ commands (the builder can add a quickstart probe or extend an existing one).
   22 hits in the Makefile, scripts, Bazel files and workflows). The builder
   reads each reference. A directory that only dead targets use moves to
   `attic/` with those targets. A directory that a live target uses stays.
-- Option B for the AI-workflow files (see Constraints).
+- Option B for the AI-workflow files (see Constraints). Controller call:
+  `.claude/skills/` STAYS in git, because the `goo-grammar` skill is project
+  tooling that `CLAUDE.md` and `scripts/grammar-tripwire.sh` name. Only the
+  other `.claude/` content leaves git.
+- Controller call: `CLAUDE.md` stays, with one cut: the task-master command
+  reference, which its own status note calls out of date.
 
 ### 3b. `docs/`
 
@@ -165,7 +193,8 @@ commands (the builder can add a quickstart probe or extend an existing one).
   `docs/history/`, with a short `README.md` there that says what they are.
 - Before any move, search for each old path in the whole tree, `CLAUDE.md`
   included, and update each reference in the same commit. A link-check step
-  proves that no Markdown link in the repo points at a missing file.
+  proves that no Markdown link in the repo points at a missing file. It checks
+  only links inside the repo. Links to URLs are out of its scope.
 - Add a `docs/README.md` index for a new reader.
 
 ### 3c. Community files
@@ -188,7 +217,8 @@ For a partner reader. Sections:
    statement that Qiskit transpiled each circuit.
 4. What is not done: no native submission yet, no routing, a 16-qubit
    simulator, and the known limits.
-5. The roadmap: QPU project 1 (scope A), with a link to its design.
+5. The roadmap: QPU project 1 (scope A), with a link to its design. The design
+   is a draft PR under review, so the page links to that PR.
 6. What a partnership could add: API and backend access for a pinned backend
    description, review of the native-gate translation, recorded responses for
    offline gates, and a backend to test against.
@@ -200,7 +230,16 @@ For a partner reader. Sections:
 - The split of each part into PRs. Small PRs are preferred.
 - Whether a directory in 3a moves or stays, by the rule given there.
 
+## Decisions recorded
+
+- 2026-11-27, owner: approach 1 with the quantum page; option B for the
+  AI-workflow files; `v0.1.0` as a GitHub Release with no R2, domain or
+  minisign; Linux natively and the container on macOS.
+- Controller calls (marked in the text): `.claude/skills/` stays in git; the
+  task-master cut in `CLAUDE.md`; reuse of an existing ownership fixture; the
+  link to the draft PR; the `readme-claims-probe` gate; the quickstart gate on a
+  local tarball and on the published files.
+
 ## Open items for the owner
 
-- The first version number (`v0.1.0` is the default).
-- The repository description and topics text.
+- The repository description and topics text (the builder proposes it).
