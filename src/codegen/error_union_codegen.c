@@ -128,7 +128,7 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
     // doc comment (types.c). The operand was evaluated exactly ONCE above;
     // everything below branches on `is_tuple` to run the identical
     // propagate/continue control flow the !T path already established,
-    // keying the error test on field 1's nullable is_null flag (nil ⟺ no
+    // keying the error test on field 1's nullable has_value flag (nil ⟺ no
     // error) instead of the union's dedicated is_error bit.
     int is_tuple = type_is_error_result_tuple(operand_info->goo_type);
 
@@ -139,14 +139,13 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
     }
 
     // tuple_error_val: field 1 of the tuple, already the boxed `error`
-    // interface ({i1 is_null, i8* handle}) — read once here and reused both
+    // interface ({i1 has_value, i8* handle}) — read once here and reused both
     // for the is-error test and (on the propagate path) the message readback.
     LLVMValueRef tuple_error_val = NULL;
     LLVMValueRef is_error;
     if (is_tuple) {
         tuple_error_val = LLVMBuildExtractValue(codegen->builder, operand_info->llvm_value, 1, "tuple.err");
-        LLVMValueRef is_null = codegen_check_nullable_null(codegen, tuple_error_val);
-        is_error = LLVMBuildNot(codegen->builder, is_null, "tuple.is_error");
+        is_error = codegen_nullable_has_value(codegen, tuple_error_val);
     } else {
         is_error = codegen_error_union_is_error(codegen, operand_info->llvm_value);
     }
@@ -174,7 +173,7 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
         LLVMValueRef err_val;
         if (is_tuple) {
             // The tuple's error field is the BOXED `error` interface
-            // ({i1 is_null, i8* handle}) — a different LLVM shape than the
+            // ({i1 has_value, i8* handle}) — a different LLVM shape than the
             // enclosing union's raw error arm (goo_string_t {i8*,i64} by
             // default; Phase 1's only constructible arm — see
             // function_codegen.c's identical default_arm caveat). Read the
@@ -316,15 +315,14 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     }
 
     // tuple_error_val: field 1 of the tuple, already the boxed `error`
-    // interface ({i1 is_null, i8* handle}) — read once here and reused both
+    // interface ({i1 has_value, i8* handle}) — read once here and reused both
     // for the is-error test and (in the error block below) the direct
     // error-variable binding (no re-boxing needed).
     LLVMValueRef tuple_error_val = NULL;
     LLVMValueRef is_error;
     if (is_tuple) {
         tuple_error_val = LLVMBuildExtractValue(codegen->builder, operand_info->llvm_value, 1, "tuple.err");
-        LLVMValueRef is_null = codegen_check_nullable_null(codegen, tuple_error_val);
-        is_error = LLVMBuildNot(codegen->builder, is_null, "tuple.is_error");
+        is_error = codegen_nullable_has_value(codegen, tuple_error_val);
     } else {
         // Check if the operand contains an error
         is_error = codegen_error_union_is_error(codegen, operand_info->llvm_value);
@@ -356,7 +354,7 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     // correctly.
     //
     // P2-7: the type checker now binds catch_expr->error_var as the real
-    // `error` interface (type_checker_error_type — the nullable {i1 is_null,
+    // `error` interface (type_checker_error_type — the nullable {i1 has_value,
     // i8* handle} pointer, see expression_checker.c's type_check_catch_expr),
     // matching the n,err destructure path. Codegen must box the union's raw
     // error arm into that same shape via goo_error_from_string, mirroring
@@ -425,12 +423,12 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
             }
 
             // The catch error block only runs when is_error was true, so the
-            // bound variable's nullable is_null is unconditionally false here
+            // bound variable's nullable has_value is unconditionally true here
             // (unlike the destructure path, which PHIs across both branches
             // because it binds unconditionally at the call site).
-            LLVMValueRef is_null = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
             LLVMValueRef error_val = LLVMGetUndef(error_llvm);
-            error_val = LLVMBuildInsertValue(codegen->builder, error_val, is_null, 0, "catch.err.is_null");
+            error_val = LLVMBuildInsertValue(codegen->builder, error_val,
+                                             codegen_nullable_flag_const(codegen, 0), 0, "catch.err.has_value");
             error_val = LLVMBuildInsertValue(codegen->builder, error_val, handle, 1, "catch.err.ptr");
 
             LLVMValueRef error_alloca = codegen_alloc_local(

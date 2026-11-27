@@ -129,25 +129,20 @@ LLVMValueRef codegen_get_or_emit_shim_method_adapter(CodeGenerator* codegen,
 
     // Pack (int, error). The runtime reports failure as a negative value, so a
     // short write and an errno are the same test. The error slot is `error`,
-    // which is a NULLABLE pointer {i1, ptr} — a nil error is {false, null},
-    // and that is what a successful write returns.
+    // which is a NULLABLE pointer {i1 has_value, ptr} — a nil error is
+    // {false, null}, all zero bits, and that is what a successful write
+    // returns.
     //
     // A FAILED write still returns the (negative) count in field 0 here rather
     // than clamping to 0. Go's contract is that the count is meaningful only
     // alongside a nil error, and clamping would need an extra branch to
     // produce a value no correct program reads.
-    // A nil error is `{ i1 true, ptr null }`, NOT a zeroed struct. `error` is
-    // `?*int8`, and for it the i1 means "this slot holds a value" while the
-    // NULL POINTER is what makes that value nil. Read off the IR that a real
-    // `func f() (int, error) { return n, nil }` emits — a zeroinitializer
-    // compiles and runs but compares as NON-nil, which is a silently wrong
-    // program rather than a failure.
     LLVMValueRef result = LLVMGetUndef(ret_llvm);
     result = LLVMBuildInsertValue(codegen->builder, result, n, 0, "res.n");
     LLVMTypeRef err_llvm = LLVMStructGetTypeAtIndex(ret_llvm, 1);
     LLVMValueRef nil_err = LLVMGetUndef(err_llvm);
     nil_err = LLVMBuildInsertValue(codegen->builder, nil_err,
-                                   LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 1, 0),
+                                   codegen_nullable_flag_const(codegen, 1),
                                    0, "err.set");
     nil_err = LLVMBuildInsertValue(codegen->builder, nil_err,
                                    LLVMConstNull(LLVMStructGetTypeAtIndex(err_llvm, 1)),

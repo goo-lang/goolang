@@ -410,12 +410,18 @@ LLVMTypeRef codegen_get_error_union_type(CodeGenerator* codegen, const Type* typ
 LLVMTypeRef codegen_get_nullable_type(CodeGenerator* codegen, const Type* type) {
     if (!codegen || !type || type->kind != TYPE_NULLABLE) return NULL;
     
-    // Nullable type is represented as { i1, value_type } where i1 indicates if it's null
+    // Nullable type is represented as { i1 has_value, value_type }. The flag
+    // is 1 when a value is present and 0 for nil, so memory that holds only
+    // zero bytes (zeroinitializer, calloc, the runtime's memset on a map
+    // miss or a make()) is nil with no explicit store, which is Go's zero
+    // value for `error`. Read and write the flag only through
+    // codegen_nullable_flag_const / codegen_nullable_has_value /
+    // codegen_check_nullable_null, so the encoding lives in one place.
     LLVMTypeRef base_type = codegen_type_to_llvm(codegen, type->data.nullable.base_type);
     if (!base_type) return NULL;
     
     LLVMTypeRef nullable_types[] = {
-        LLVMInt1TypeInContext(codegen->context),  // is_null flag
+        LLVMInt1TypeInContext(codegen->context),  // has_value flag (0 = nil)
         base_type                                 // actual value
     };
     
@@ -481,9 +487,8 @@ LLVMValueRef codegen_create_nullable_value(CodeGenerator* codegen, LLVMTypeRef n
     // Create an undef value of the nullable type
     LLVMValueRef nullable_val = LLVMGetUndef(nullable_type);
     
-    // Set the is_null flag
-    LLVMValueRef is_null_val = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), is_null ? 1 : 0, 0);
-    nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val, is_null_val, 0, "");
+    LLVMValueRef flag = codegen_nullable_flag_const(codegen, is_null);
+    nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val, flag, 0, "");
     
     // Set the value (even if null, we still store something for memory layout consistency)
     if (value) {
@@ -500,11 +505,34 @@ LLVMValueRef codegen_extract_nullable_value(CodeGenerator* codegen, LLVMValueRef
     return LLVMBuildExtractValue(codegen->builder, nullable_value, 1, "value");
 }
 
+LLVMValueRef codegen_nullable_flag_const(CodeGenerator* codegen, int is_nil) {
+    if (!codegen) {
+        return NULL;
+    }
+    return LLVMConstInt(LLVMInt1TypeInContext(codegen->context), is_nil ? 0 : 1, 0);
+}
+
+LLVMValueRef codegen_nullable_has_value(CodeGenerator* codegen, LLVMValueRef nullable_value) {
+    if (!codegen || !nullable_value) {
+        return NULL;
+    }
+    // Field 0 is the flag only in a loaded { i1, T } aggregate. A pointer or a
+    // non-nullable value here would read some other field as the flag and
+    // invert a nil test with no diagnostic, so stop at the anomaly.
+    GOO_ASSERT((LLVMGetTypeKind(LLVMTypeOf(nullable_value)) == LLVMStructTypeKind) &&
+               (LLVMCountStructElementTypes(LLVMTypeOf(nullable_value)) == 2u) &&
+               (LLVMGetTypeKind(LLVMStructGetTypeAtIndex(LLVMTypeOf(nullable_value), 0)) ==
+                LLVMIntegerTypeKind) &&
+               (LLVMGetIntTypeWidth(LLVMStructGetTypeAtIndex(LLVMTypeOf(nullable_value), 0)) == 1u));
+    return LLVMBuildExtractValue(codegen->builder, nullable_value, 0, "has_value");
+}
+
 LLVMValueRef codegen_check_nullable_null(CodeGenerator* codegen, LLVMValueRef nullable_value) {
-    if (!codegen || !nullable_value) return NULL;
-    
-    // Extract the is_null flag (index 0)
-    return LLVMBuildExtractValue(codegen->builder, nullable_value, 0, "is_null");
+    LLVMValueRef has_value = codegen_nullable_has_value(codegen, nullable_value);
+    if (!has_value) {
+        return NULL;
+    }
+    return LLVMBuildNot(codegen->builder, has_value, "is_null");
 }
 
 // Conversion and casting
