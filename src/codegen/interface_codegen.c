@@ -455,6 +455,127 @@ static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
     return fn;
 }
 
+// The goo_string "<nil>", which fmt prints for a nil pointer operand.
+static LLVMValueRef fmt_nil_string(CodeGenerator* codegen) {
+    LLVMTypeRef string_ty = codegen_get_basic_type(codegen, TYPE_STRING);
+    LLVMValueRef text = LLVMBuildGlobalStringPtr(codegen->builder, "<nil>", "stringer.nil.text");
+    LLVMValueRef len = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 5, 0);
+    LLVMValueRef s = LLVMGetUndef(string_ty);
+    s = LLVMBuildInsertValue(codegen->builder, s, text, 0, "stringer.nil.ptr");
+    s = LLVMBuildInsertValue(codegen->builder, s, len, 1, "stringer.nil.len");
+    return s;
+}
+
+// The one-method interface `String() string` (Go's fmt.Stringer). It is built
+// once and kept for the life of the process: it holds no module state, so one
+// instance serves every module and every compile.
+static Type* stringer_iface_type(void) {
+    static Type* cached = NULL;
+    if (cached) {
+        return cached;
+    }
+    Type* iface = type_new(TYPE_INTERFACE);
+    InterfaceMethod* im = xmalloc(sizeof(InterfaceMethod));
+    GOO_ASSERT(iface != NULL);
+    im->name = xstrdup("String");
+    im->type = type_function(NULL, 0, type_string_type());
+    im->next = NULL;
+    iface->data.interface.methods = im;
+    iface->data.interface.method_count = 1;
+    iface->data.interface.name = xstrdup("Stringer");
+    cached = iface;
+    return cached;
+}
+
+// Go's fmt calls String() on an operand whose method set has `String() string`
+// (a value of type T uses a value-receiver String only, a *T uses both).
+// Returns the String() result for `val` of static type `ty`, or NULL when `ty`
+// has no such method. A nil pointer prints "<nil>" instead of calling the
+// method on a null receiver. `error` keeps priority over
+// Stringer in Go; the callers test for error first, so it never reaches here.
+LLVMValueRef codegen_stringer_string(CodeGenerator* codegen, TypeChecker* checker,
+                                     LLVMValueRef val, Type* ty, Position pos) {
+    if (!codegen || !checker || !val || !ty) {
+        return NULL;
+    }
+    if (ty->kind == TYPE_INTERFACE || type_is_error(ty)) {
+        return NULL;
+    }
+
+    Type* iface = stringer_iface_type();
+    if (!iface) {
+        return NULL;
+    }
+    const char* missing = NULL;
+    const char* reason = NULL;
+    if (!type_interface_satisfied(checker, iface, ty, &missing, &reason)) {
+        return NULL;
+    }
+
+    int is_ptr = 0;
+    if (ty->kind == TYPE_POINTER) {
+        is_ptr = 1;
+    }
+    Type* concrete = is_ptr ? ty->data.pointer.pointee_type : ty;
+    const char* cname = concrete ? type_receiver_name(concrete) : NULL;
+    if (!cname) {
+        return NULL;
+    }
+    GOO_ASSERT(iface->data.interface.methods != NULL);
+    LLVMValueRef thunk = build_thunk(codegen, checker, concrete, cname, "Stringer",
+                                     iface->data.interface.methods, pos);
+    if (!thunk) {
+        return NULL;
+    }
+
+    LLVMTypeRef ret_llvm = NULL;
+    LLVMTypeRef fnty = thunk_fn_type(codegen, iface->data.interface.methods->type, &ret_llvm);
+    if (!fnty) {
+        return NULL;
+    }
+
+    LLVMValueRef data = val;
+    if (!is_ptr) {
+        // The thunk reads the receiver through a pointer, as for a boxed value.
+        LLVMTypeRef llvm_t = codegen_type_to_llvm(codegen, concrete);
+        if (!llvm_t) {
+            return NULL;
+        }
+        data = codegen_create_entry_alloca(codegen, llvm_t, "stringer.recv");
+        LLVMBuildStore(codegen->builder, val, data);
+        LLVMValueRef args[1] = { data };
+        return LLVMBuildCall2(codegen->builder, fnty, thunk, args, 1, "stringer.s");
+    }
+
+    // Go calls String on a nil *T and prints "<nil>" when the method panics,
+    // which is the usual outcome because the method reads a field. Goo has no
+    // recover, so a nil pointer always prints "<nil>". A pointer-receiver
+    // String that handles a nil receiver itself therefore differs from Go.
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+    LLVMBasicBlockRef call_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "stringer.call");
+    LLVMBasicBlockRef nil_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "stringer.nil");
+    LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "stringer.end");
+    LLVMValueRef is_nil = LLVMBuildIsNull(codegen->builder, data, "stringer.isnil");
+    LLVMBuildCondBr(codegen->builder, is_nil, nil_bb, call_bb);
+
+    LLVMPositionBuilderAtEnd(codegen->builder, call_bb);
+    LLVMValueRef cargs[1] = { data };
+    LLVMValueRef called = LLVMBuildCall2(codegen->builder, fnty, thunk, cargs, 1, "stringer.s");
+    LLVMBasicBlockRef call_end = LLVMGetInsertBlock(codegen->builder);
+    LLVMBuildBr(codegen->builder, end_bb);
+
+    LLVMPositionBuilderAtEnd(codegen->builder, nil_bb);
+    LLVMValueRef nil_str = fmt_nil_string(codegen);
+    LLVMBuildBr(codegen->builder, end_bb);
+
+    LLVMPositionBuilderAtEnd(codegen->builder, end_bb);
+    LLVMValueRef phi = LLVMBuildPhi(codegen->builder, ret_llvm, "stringer.res");
+    LLVMValueRef in_vals[2] = { called, nil_str };
+    LLVMBasicBlockRef in_bbs[2] = { call_end, nil_bb };
+    LLVMAddIncoming(phi, in_vals, in_bbs, 2);
+    return phi;
+}
+
 // Per-type %v formatter reached via the descriptor's fmt_fn field (field
 // index 2, codegen_get_or_emit_type_desc below). Emits (or reuses, by
 // name) `goo.fmt.<T>` / `goo.fmt.$ptr$<T>` of LLVM type `goo_string(ptr)`:
@@ -525,6 +646,41 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
     LLVMValueRef data = LLVMGetParam(fn, 0);
     LLVMValueRef result = NULL;
     LLVMContextRef ctx = codegen->context;
+
+    // A boxed value whose method set has String() prints through it (Go's
+    // Stringer rule). `data` points at a T in both boxing shapes, so the same
+    // thunk serves T and *T. The method set is judged on *T for a pointer box
+    // and on T for a value box, so a pointer-receiver String is not used for
+    // a boxed T value.
+    {
+        Type* probe = pointer_form ? type_pointer(concrete) : concrete;
+        const char* sm = NULL;
+        const char* sr = NULL;
+        Type* siface = stringer_iface_type();
+        int is_stringer = 0;
+        if (siface && probe && !type_is_error(concrete) &&
+            type_interface_satisfied(checker, siface, probe, &sm, &sr)) {
+            is_stringer = 1;
+        }
+        if (pointer_form) {
+            type_free(probe);
+        }
+        if (is_stringer) {
+            LLVMValueRef sthunk = build_thunk(codegen, checker, concrete, cname, "Stringer",
+                                              siface->data.interface.methods, pos);
+            LLVMTypeRef sret = NULL;
+            LLVMTypeRef sfn = thunk_fn_type(codegen, siface->data.interface.methods->type, &sret);
+            if (sthunk && sfn) {
+                LLVMValueRef sargs[1] = { data };
+                LLVMValueRef sres = LLVMBuildCall2(codegen->builder, sfn, sthunk, sargs, 1, "fmt.str");
+                LLVMBuildRet(codegen->builder, sres);
+                if (saved) {
+                    LLVMPositionBuilderAtEnd(codegen->builder, saved);
+                }
+                return fn;
+            }
+        }
+    }
 
     int is_sint = !pointer_form && (concrete->kind == TYPE_INT8 || concrete->kind == TYPE_INT16 ||
                                     concrete->kind == TYPE_INT32 || concrete->kind == TYPE_INT64);
