@@ -1,0 +1,7 @@
+3 <nil> hel
+2 <nil>
+0 true
+3 <nil> abc
+true abcab
+[0 4] four
+4 four

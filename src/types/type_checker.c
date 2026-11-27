@@ -2590,6 +2590,110 @@ static void register_declared_names_after_failure(TypeChecker* checker,
     }
 }
 
+// The callee as Go's "assignment mismatch" text names it: `f`, `pkg.F`,
+// `x.m`. Anything else is "the call", which keeps the message honest without
+// printing a whole expression.
+static void callee_text(const ASTNode* call, char* buf, size_t cap) {
+    const ASTNode* fn = (call && call->type == AST_CALL_EXPR)
+                        ? ((const CallExprNode*)call)->function : NULL;
+    if (fn && fn->type == AST_IDENTIFIER) {
+        snprintf(buf, cap, "%s", ((const IdentifierNode*)fn)->name);
+        return;
+    }
+    if (fn && fn->type == AST_SELECTOR_EXPR) {
+        const SelectorExprNode* sel = (const SelectorExprNode*)fn;
+        if (sel->expr && sel->expr->type == AST_IDENTIFIER) {
+            snprintf(buf, cap, "%s.%s", ((const IdentifierNode*)sel->expr)->name,
+                     sel->selector);
+            return;
+        }
+    }
+    snprintf(buf, cap, "the call");
+}
+
+// A multi-value call result is an anonymous struct (see
+// seed_os_package_exports). A named struct is one value.
+static int type_is_result_list(const Type* t) {
+    return t && t->kind == TYPE_STRUCT && t->data.struct_type.name == NULL &&
+           t->data.struct_type.field_count >= 2U;
+}
+
+// Go's count rule for `names = value` and `names := value` with ONE value on
+// the right: the value must be a call with exactly `names` results (or a
+// comma-ok form, which the callers synthesize before calling this). Returns 1
+// when the shape destructures, 0 after a diagnostic. `vt` is the value's type
+// as checked, `value` its node.
+static int check_single_value_count(TypeChecker* checker, const ASTNode* value,
+                                    const Type* vt, size_t names) {
+    GOO_ASSERT(value != NULL && names >= 2U);
+    if (type_is_poison(vt)) {
+        return 1;
+    }
+    if (vt && vt->kind == TYPE_STRUCT && vt->data.struct_type.field_count == names) {
+        return 1;
+    }
+    // `n, err := <!T value>` binds the value arm and the error.
+    if (vt && vt->kind == TYPE_ERROR_UNION && names == 2U) {
+        return 1;
+    }
+    if (value->type == AST_CALL_EXPR) {
+        size_t results = type_is_result_list(vt) ? vt->data.struct_type.field_count : 1U;
+        if (vt && vt->kind == TYPE_ERROR_UNION) {
+            results = 2U;   // a !T call is Go's (T, error)
+        }
+        if (results == names) {
+            return 1;
+        }
+        char callee[128];
+        callee_text(value, callee, sizeof callee);
+        type_error(checker, value->pos,
+                   "assignment mismatch: %zu variables but %s returns %zu value%s",
+                   names, callee, results, (results == 1U) ? "" : "s");
+        return 0;
+    }
+    // A named struct VALUE spread across names is a Goo extension that
+    // predates this check (`a, b := p`); keep it while the fields suffice.
+    if (vt && vt->kind == TYPE_STRUCT && vt->data.struct_type.field_count > names &&
+        !type_is_result_list(vt)) {
+        return 1;
+    }
+    type_error(checker, value->pos,
+               "assignment mismatch: %zu variables but 1 value", names);
+    return 0;
+}
+
+// Go's comma-ok forms. Only `:=` reaches the VarDeclNode arms that build their
+// {V, bool} pair, so the `=` form is refused by name rather than counted.
+static int is_comma_ok_shape(const ASTNode* v) {
+    if (!v) {
+        return 0;
+    }
+    if (v->type == AST_TYPE_ASSERT) {
+        return 1;
+    }
+    if (v->type == AST_UNARY_EXPR && ((const UnaryExprNode*)v)->operator == TOKEN_ARROW) {
+        return 1;
+    }
+    if (v->type == AST_INDEX_EXPR) {
+        const ASTNode* base = ((const IndexExprNode*)v)->expr;
+        return base && base->node_type && base->node_type->kind == TYPE_MAP;
+    }
+    return 0;
+}
+
+// Mark the binding `name` in the CURRENT scope only (never a same-named outer
+// variable) as a for-loop variable, so a closure capture of it is refused
+// (see Variable.is_loop_var).
+static void mark_loop_var_in_scope(const TypeChecker* checker, const char* name) {
+    GOO_ASSERT(checker != NULL && name != NULL);
+    for (Variable* v = checker->current_scope->variables; v != NULL; v = v->next) {
+        if (strcmp(v->name, name) == 0) {
+            v->is_loop_var = 1;
+            return;
+        }
+    }
+}
+
 // True when the checker is inside a function or func literal body, where
 // `:=` is legal. Package scope has no function-boundary scope above it.
 static bool decl_is_in_function(const TypeChecker* checker) {
@@ -2924,6 +3028,17 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                 }
             }
         }
+    }
+
+    // Go's count rule for `a, b, c := f()`: the call must have exactly as
+    // many results as there are names. The comma-ok arms above already
+    // turned their one value into a two-field pair.
+    if (var_decl->name_count > 1 && var_decl->is_short_decl && var_decl->values &&
+        var_decl->values->next == NULL && final_type &&
+        !check_single_value_count(checker, var_decl->values, final_type,
+                                  var_decl->name_count)) {
+        register_declared_names_after_failure(checker, var_decl, NULL);
+        return 0;
     }
 
     // Store the type on the AST node for code generation
@@ -3383,17 +3498,10 @@ int type_check_concept_decl(TypeChecker* checker, ASTNode* decl) {
     return 1;
 }
 
-// F6: `a, b := v1, v2` / `a, b = v1, v2`. Two passes so RHS is evaluated in
-// the pre-assignment scope (Go semantics): pass 1 type-checks every value
-// (before any `:=` name comes into scope); pass 2 binds new names (`:=`) or
-// validates assignment compatibility against existing lvalues (`=`).
-int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
-    if (!checker || !stmt || stmt->type != AST_MULTI_ASSIGN) return 0;
-    MultiAssignNode* ma = (MultiAssignNode*)stmt;
-
-    Type* vtypes[2];   // v1 grammar produces exactly count==2
+static int type_check_multi_assign_body(TypeChecker* checker, MultiAssignNode* ma,
+                                        size_t vcount, Type** vtypes) {
     size_t n = 0;
-    for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
+    for (ASTNode* v = ma->values; v && n < vcount; v = v->next) {
         Type* vt = type_check_expression(checker, v);
         if (!vt) return 0;
         // A no-value call is not a value in any position of the list. Checked
@@ -3419,26 +3527,48 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
         vtypes[n++] = vt;
     }
 
-    // Destructuring assignment `a, b = f()`: a SINGLE multi-return value whose
-    // result is a struct is spread across the targets (the call returns a
-    // struct of the result types). Expand the one struct value into per-field
-    // value types so the target loop binds/stores each field.
-    if (n == 1 && ma->count == 2 && vtypes[0] &&
-        vtypes[0]->kind == TYPE_STRUCT &&
-        vtypes[0]->data.struct_type.field_count >= 2) {
+    // Destructuring assignment `a, b, c = f()`: a SINGLE multi-return value
+    // whose result is a struct is spread across the targets (the call returns
+    // a struct of the result types). Expand the one struct value into
+    // per-field value types so the target loop binds/stores each field.
+    if (n == 1U) {
+        if (ma->is_short_decl) {
+            // assign_list_new builds a VarDeclNode for `:=` with one value
+            // unless a target is not an identifier; name that target.
+            for (const ASTNode* t = ma->targets; t != NULL; t = t->next) {
+                if (t->type != AST_IDENTIFIER) {
+                    type_error(checker, t->pos, "Left side of := must be an identifier");
+                    return 0;
+                }
+            }
+        }
+        if (ma->count == 2U && is_comma_ok_shape(ma->values)) {
+            type_error(checker, ma->values->pos,
+                       "comma-ok assignment with = is not supported yet; use :=");
+            return 0;
+        }
+        if (!check_single_value_count(checker, ma->values, vtypes[0], ma->count)) {
+            return 0;
+        }
         Type* s = vtypes[0];
-        vtypes[0] = s->data.struct_type.fields[0].type;
-        vtypes[1] = s->data.struct_type.fields[1].type;
-        n = 2;
+        if (s && s->kind == TYPE_STRUCT) {
+            for (size_t k = 0; k < ma->count; k++) {
+                vtypes[k] = s->data.struct_type.fields[k].type;
+            }
+            n = ma->count;
+        } else {
+            // A poisoned value: every target takes the poison, so pass 2
+            // stays quiet (see the P2.8 F1 note below).
+            for (size_t k = 1; k < ma->count; k++) {
+                vtypes[k] = s;
+            }
+            n = ma->count;
+        }
     }
 
     size_t i = 0;
     for (ASTNode* t = ma->targets; t; t = t->next, i++) {
-        if (i >= n) {
-            type_error(checker, stmt->pos,
-                       "Multiple assignment: more targets than values");
-            return 0;
-        }
+        GOO_ASSERT(i < n);
         Type* vt = vtypes[i];
 
         if (ma->is_short_decl) {
@@ -3518,8 +3648,7 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
                 // (`a, b = f()`) are call results, never foldable — the
                 // core returns 0 and the plain-compatibility laxness above
                 // stands. The values walk maps target i to value i, so
-                // ma->values must be re-walked; only two targets exist (v1
-                // grammar), so the linear re-walk is constant.
+                // ma->values must be re-walked (linear in the name count).
                 ASTNode* v = ma->values;
                 for (size_t vi = 0; v && vi < i; vi++) v = v->next;
                 if (v && check_const_int_expr_fits(checker, v, tt) < 0) {
@@ -3529,6 +3658,39 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
         }
     }
     return 1;
+}
+
+// Multi-name `a, b, c := v1, v2, v3` / `a, b, c = v1, v2, v3`, and the
+// one-value destructure `p, q, r = f()`. Two passes so RHS is evaluated in
+// the pre-assignment scope (Go semantics): pass 1 type-checks every value
+// (before any `:=` name comes into scope); pass 2 binds new names (`:=`) or
+// validates assignment compatibility against existing lvalues (`=`).
+int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_MULTI_ASSIGN) return 0;
+    MultiAssignNode* ma = (MultiAssignNode*)stmt;
+    GOO_ASSERT(ma->count >= 2U && ma->targets != NULL && ma->values != NULL);
+
+    size_t vcount = 0;
+    for (const ASTNode* v = ma->values; v != NULL; v = v->next) {
+        vcount++;
+    }
+    if (vcount != 1U && vcount != ma->count) {
+        type_error(checker, ma->values->pos,
+                   "assignment mismatch: %zu variables but %zu values",
+                   ma->count, vcount);
+        return 0;
+    }
+
+    // One type per TARGET: a one-value destructure expands into ma->count
+    // field types below, so the array is sized by the targets, not the values.
+    Type** vtypes = calloc(ma->count, sizeof(Type*));
+    if (!vtypes) {
+        type_error(checker, stmt->pos, "out of memory checking an assignment");
+        return 0;
+    }
+    int ok = type_check_multi_assign_body(checker, ma, vcount, vtypes);
+    free(vtypes);
+    return ok;
 }
 
 // gofmt-syntax-b Task 1, extracted for review Fix 5b: register one label in
@@ -4012,28 +4174,24 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             // the parent-chasing scope_lookup_variable — an init decl that
             // failed to register must not mark a same-named OUTER variable)
             // finds exactly the loop-owned bindings.
-            char** names = NULL;
-            size_t name_count = 0;
-            char* multi_names[8];  // for i, j := ... — targets are identifiers (v1)
             if (for_stmt->init->type == AST_VAR_DECL) {
-                VarDeclNode* vd = (VarDeclNode*)for_stmt->init;
-                names = vd->names;
-                name_count = vd->name_count;
+                const VarDeclNode* vd = (const VarDeclNode*)for_stmt->init;
+                for (size_t i = 0; i < vd->name_count; i++) {
+                    mark_loop_var_in_scope(checker, vd->names[i]);
+                }
             } else if (for_stmt->init->type == AST_MULTI_ASSIGN &&
                        ((MultiAssignNode*)for_stmt->init)->is_short_decl) {
-                MultiAssignNode* ma = (MultiAssignNode*)for_stmt->init;
-                size_t n = 0;
-                for (ASTNode* t = ma->targets; t && n < 8; t = t->next) {
-                    if (t->type == AST_IDENTIFIER)
-                        multi_names[n++] = ((IdentifierNode*)t)->name;
+                // Every target, however many: `for a, b, c := 0, 0, 0; …`.
+                // A fixed-size name buffer here once left the names past
+                // its end capturable, which is the shared-slot result.
+                const MultiAssignNode* ma = (const MultiAssignNode*)for_stmt->init;
+                for (const ASTNode* t = ma->targets; t != NULL; t = t->next) {
+                    if (t->type == AST_IDENTIFIER) {
+                        mark_loop_var_in_scope(checker, ((const IdentifierNode*)t)->name);
+                    }
                 }
-                names = multi_names;
-                name_count = n;
-            }
-            for (size_t i = 0; i < name_count; i++) {
-                for (Variable* v = checker->current_scope->variables; v; v = v->next) {
-                    if (strcmp(v->name, names[i]) == 0) { v->is_loop_var = 1; break; }
-                }
+            } else {
+                // Other init statements declare no loop-owned name.
             }
         }
     }
