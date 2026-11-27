@@ -185,6 +185,15 @@ by one; bump `tools/parity-gate-count.txt` in the same commit.
 `BUILD` file under a scratch `.claude/worktrees/x/` and show `bazel query
 //...` does not list it.
 
+**M0. Measure the floor (no code change; do this first).** In one sitting,
+on a quiet machine: (a) the wall time of `make verify-core` as pushed today;
+(b) the summed wall time of the gates that will always run — the 7 of F16
+and the self-building gates of 5.3. If (b) alone exceeds 3 minutes, the
+target is unreachable without moving some of them to nightly or into Bazel;
+bring that list to the owner BEFORE stage 1, with the time of each gate.
+Record per-gate times in the companion TSV as a new column; every family PR
+quotes its saving against it.
+
 ## 5. Stage 1 — the build flip (D5)
 
 ### 5.1 NNG in Bazel (closes F4; the 08-25 design's phase 3c)
@@ -241,7 +250,9 @@ identical IR) passes over the golden corpus, and a byte comparison of the
 ### 5.3 The flip
 
 `make lexer` becomes: `bazel build <the two targets>`, then copy both
-outputs to `bin/` and `lib/` (copy, not symlink — a symlink into
+outputs to `bin/` and `lib/`, only when the content differs (`cmp`), so an
+unchanged binary keeps its mtime and does not re-trigger every Make gate
+that lists `$(COMPILER)` as a prerequisite (copy, not symlink — a symlink into
 `bazel-out` changes under the next build and breaks any gate that holds the
 path across a rebuild). `$(COMPILER)` and `$(RUNTIME_LIB)` become those
 copies, so every unchanged Make gate now tests the Bazel binary.
@@ -294,44 +305,102 @@ not yet migrated. Each family PR moves that family from the second part to
 the first. Both halves must pass; the recipe never reads an exit status
 through a pipe.
 
-### 6.3 The verdict-parity row
+### 6.3 The verdict-parity check
 
 `parity.sh` proves a gate has a target with a matching NAME (F8). That does
-not prove the target checks the same thing. Each family PR adds, for every
-gate it moves, a row to a committed ledger
-(`tools/parity-verdicts.tsv`, a new file): gate, target, Make verdict,
-Bazel verdict, red-control verdict, commit. The red control is a deliberate
-defect for that family (the 08-25 design's teeth fixtures are the model)
-that must turn BOTH the Make gate and the Bazel target red. A row with a
-green red-control is refused. The ledger is checked by a small script with
-its own `--self-test`, which joins `parity.sh`'s list of the gates that "only
-compare two build systems" and goes away with the Make half.
+not prove the target checks the same thing. Each family PR therefore runs
+`tools/family_parity.sh <family>` (new, with its own `--self-test`), which
+for every gate in the family:
+
+1. runs the Make gate and the Bazel target on the same tree and requires
+   both GREEN;
+2. applies the family's red control — a deliberate defect (the 08-25
+   design's teeth fixtures are the model) — and requires both RED;
+3. fails on an empty gate list, and checks each producer's exit status
+   before comparing (two crashed producers compare equal).
+
+The check is EXECUTED in the family PR's CI run, in the same PR that still
+holds both the Make recipe and the Bazel target; its output goes in the PR
+body. The Make recipe is deleted in the next commit of that PR. There is no
+committed ledger of verdicts: a committed row is a claim about a past tree
+and cannot name its own commit, while an executed check is evidence about
+this one. After the move, the red control stays as a `manual` teeth target
+with a runner (handoff rule: a `manual` tag is not a wiring plan), so the
+Bazel target's ability to fail remains tested once the Make copy is gone.
 
 ### 6.4 Declared inputs and the cache (anti-goal 1)
 
-A Bazel test result is cached against its declared inputs. Three classes of
-input are not declared today and must be before a gate moves:
+A Bazel test result is cached against its declared inputs, its command
+line and its environment. A verdict is stale when the gate read something
+outside that key. The Linux sandbox does NOT make this impossible: it
+presents declared workspace files as symlinks into the real source tree and
+leaves the host filesystem readable. The complete list of ways a gate can
+read outside its key, each with its defence:
 
-- **Files the script reads.** Every fixture, helper script and baseline is
-  a `data` dependency. The sandbox enforces this for files under the
-  workspace (a missing runfile fails loudly).
-- **Tools on PATH** (valgrind, cppcheck, clang-tidy, python3, spin, go,
-  llvm-config, gcc). A tool upgrade does not change any input, so a stale
-  verdict survives it. A repository rule records each tool's version string
-  into a generated file (the same pattern as the LLVM version assertion,
-  08-25 design D2), and each gate that uses the tool depends on that file. A
-  version change then invalidates exactly the gates that use the tool.
-- **Repository state.** A sandboxed test has no `.git`. A gate that uses
-  `git` only to find the repository root (F18) switches to the runfiles
-  root, which is already `$PWD` on entry (handoff, task 14). A gate that
-  needs history or a diff is tagged `no-cache` and counted.
-- **Machine state** that cannot be declared (CPU count for scheduling
-  tests, a running podman). Such a gate is tagged `no-cache` (or `external`)
-  and runs every time. The count of such tags is reported and kept small.
+| # | Undeclared input | How a gate reaches it | Defence |
+|---|---|---|---|
+| I1 | A workspace file not in `data` | Relative path from the runfiles root | Sandbox: the file is absent, the gate fails loudly. Already enforced |
+| I2 | A workspace file reached through a symlink | `realpath`, `readlink -f`, `cd "$(dirname "${BASH_SOURCE[0]}")/.."` resolve out of the sandbox into the real tree, where every file exists. 43 of the scripts under `scripts/` resolve their own location | See "symlink escape" below. This is the class the sandbox does not catch, and the most likely source of a stale PASS |
+| I3 | Host tools (gcc, llvm-config, valgrind, cppcheck, clang-tidy, python3, go, spin, bison, cmake) and what they load (glibc, kernel) | PATH, absolute paths | Host fingerprint, below |
+| I4 | Environment variables | `GOO_*`, `GOOROOT`, `HOME`, `PATH`, `LC_ALL`, `TMPDIR` | `--incompatible_strict_action_env` in `.bazelrc` (confirm the 9.2.0 default); every variable a gate needs is set per target with `env`, never inherited. An inherited PATH is also the main cause of cache MISSES between a terminal and an agent session |
+| I5 | Fixed paths outside the workspace | `/tmp/goo_proof_cache`, `/tmp/census.diff`, `build/oot` | Section 6.5. Note this is a cache hazard as well as a collision: a file left by an earlier run changes the verdict |
+| I6 | Repository state | `.git` | F18: runfiles root for the root-finders; a gate that needs history is `no-cache` |
+| I7 | Time, randomness, PIDs, hostname, uid | `date`, `$RANDOM`, `mktemp` names in output | Only harmful if the VERDICT depends on it. The nightly comparison finds these as flakes |
+| I8 | Machine load and core count | Timeouts, scheduling (F15) | A verdict that depends on load is a defect in the gate: fix it, or give it `cpu:N` / `exclusive` so the scheduler reserves what it needs. Never retry until green |
+| I9 | Network, podman, other daemons | — | `no-cache` (or `external`); the count is reported and kept small |
+| I10 | The Bazel-built `goo` and runtime | — | Declared by construction through the macro's `data` |
 
-Timing-dependent gates (F15) are cache-safe only if their verdict does not
-depend on load. A gate that flakes under `bazel test`'s parallelism is fixed
-or tagged `exclusive`, never retried until green.
+**Symlink escape (I2).** Two layers, both required for a migrated gate:
+
+- A lint in `verify-core` (with a `--self-test`) refuses `realpath`,
+  `readlink -f`, `pwd -P` and `git rev-parse` in any script that a Bazel
+  test runs, unless a line-level waiver gives a reason. The rule is "a
+  migrated script finds its inputs from `$PWD` / `$TEST_SRCDIR` only".
+- A SPIKE in stage 1, before any family moves:
+  `--experimental_use_hermetic_linux_sandbox` copies or hard-links the
+  declared inputs into a chroot, so an undeclared workspace file does not
+  exist at any path, and host directories exist only where
+  `--sandbox_add_mount_pair` names them. If the spike shows it works on this
+  machine and in CI for the first family, it becomes the default for
+  `//:verify_core` and I2 is closed by mechanism rather than by lint. If it
+  does not, record why, and the lint plus the nightly comparison carry I2.
+
+**Host fingerprint (I3).** A repository rule cannot be trusted for this:
+Bazel re-runs a repository rule only when its declared environment or
+watched files change, and `third_party/llvm/llvm.bzl` (`local = True`, an
+`environ` list, no `watch`) does not re-run when `llvm-config` is upgraded
+in place — so the build itself can be stale after a system update today.
+`rules_cc`'s autodetected toolchain has the same gap for gcc. The sound
+baseline is coarse and lives in the wrapper:
+
+- `make lexer` / `make verify-core` compute a fingerprint — the version
+  line of every tool in the companion TSV's `external_tools` column, plus
+  `uname -r` and the glibc version — and pass it as
+  `--action_env=GOO_HOST_FP=<hash>` and `--test_env=GOO_HOST_FP=<hash>`.
+  Any tool or kernel change then invalidates every action and test.
+  That over-invalidates (a cppcheck update re-runs the golden suites), and
+  it is correct. System updates are rare next to pushes.
+- A bare `bazel test` has no fingerprint and so shares one key across host
+  states. `.bazelrc` therefore gives `--config=local` (the only config with
+  the shared disk cache) a marker that a wrapper-less run lacks, and the
+  disk cache is not enabled outside the wrapper. A bare `bazel test` still
+  works; it uses only its own output base.
+- Refinement, only if measured invalidation is too frequent: per-tool
+  files from a repository rule that calls `rctx.watch()` on each resolved
+  tool binary, as `data` of the gates that use that tool. Apply the same
+  `watch` to the LLVM rule in stage 1 regardless — it fixes a staleness
+  that exists today.
+
+**The kill switch.** `make verify-core NOCACHE=1` adds
+`--nocache_test_results`. Any doubt about a verdict is one flag away from
+a fresh run, and CLAUDE.md says so.
+
+**Proof that the cache hits.** Soundness is half; the target needs hits.
+A stage 1 check, re-run after each family: two worktrees at the same
+commit, a full run in the first, then a run in the second must report 100%
+cached tests (read from the build event output, not from wall time). A
+miss names an input that differs between worktrees — usually an absolute
+path or an inherited variable.
 
 ### 6.5 Shared write paths
 
@@ -368,19 +437,38 @@ its family's PR.
   worktrees that is many resident servers. Set `--max_idle_secs` in
   `common:local` so idle servers exit; measure resident memory with five
   worktrees before and after.
+- Each worktree's output base lives under `~/.cache/bazel` and outlives
+  the worktree. Removing a worktree leaves it behind; add the cleanup
+  (`bazel clean --expunge` before removal, or a sweep of output bases whose
+  workspace no longer exists) to the worktree removal procedure and measure
+  the disk use of five worktrees.
+- Parallelism: bound `--local_test_jobs` in `common:local` from a
+  measurement, not from `nproc`; 51 gates are timing-sensitive (F15) and
+  several agents may push at once.
 - Nightly (`nightly.yml`): job 1 runs `bazel test //:verify_core` with the
   CI cache; job 2 runs it with `--nocache_test_results` on the same commit;
-  a comparison step diffs the per-target verdicts (from the test logs or
-  the BEP JSON) and fails on any difference. The comparison has its own
-  self-test: a fixture pair that differs in one verdict must fail, and an
-  empty verdict list must fail (memory note: a differential harness must
-  check its producers).
+  a comparison step diffs the per-target verdicts (from the build event
+  JSON) and fails on any difference. The comparison has its own self-test:
+  a fixture pair that differs in one verdict must fail, and an empty
+  verdict list must fail. On a difference, job 2 re-runs that target twice
+  more uncached: three agreeing uncached results against a different
+  cached one is a STALE verdict (an undeclared input — fix the
+  declaration); disagreeing uncached results are a FLAKE (fix the gate).
+  The two have different owners and must not share a label.
+- **What the nightly does not cover.** It checks CI's cache on CI's
+  machine. It finds under-declared repository inputs (I1, I2, I5-I7),
+  which are machine-independent. It cannot find a stale verdict caused by
+  the WORKSTATION's host state; the host fingerprint (6.4) is the only
+  defence there. So: a weekly scheduled local `make verify-core NOCACHE=1`,
+  compared the same way, until the fingerprint has survived two system
+  updates without a difference.
 
 ## 9. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Stale cached PASS (anti-goal 1) | Declared inputs (6.4), tool-version stamps, nightly uncached comparison (8) |
+| Stale cached PASS (anti-goal 1) | Input classes I1-I10 each with a defence (6.4), host fingerprint, nightly and weekly-local uncached comparison (8), `NOCACHE=1` |
+| The always-run gates alone exceed the 3-minute target | M0 measures them before stage 1 and returns the list to the owner (4) |
 | Flip changes behaviour through a flag difference | Flag parity first (5.2), `compiler_differential.sh`, golden N/0 |
 | NNG overlay drifts from upstream CMake | Object-list check on version bump (5.1); fall back to `cmake()` |
 | A family's Bazel target asserts less than its Make gate | Verdict-parity row with a red control (6.3) |
@@ -392,7 +480,6 @@ its family's PR.
 ## 10. Left to the builder
 
 - The exact family partition and its order after step 2 of 6.1.
-- The verdict ledger's file format and script.
 - Which `--compilation_mode` reproduces Make's flags.
 - The set of tools that get version stamps, from the companion TSV's
   `external_tools` column.
@@ -402,7 +489,10 @@ its family's PR.
 
 - Copy, not symlink, into `bin/` and `lib/` (5.3).
 - The family sequence (6.1).
-- A new verdict ledger rather than extending `parity.sh` (6.3).
+- An executed parity check per family PR, no committed ledger (6.3).
+- Host fingerprint through the wrapper, disk cache only through the wrapper (6.4).
+- Hermetic-sandbox spike in stage 1; a symlink lint either way (6.4).
+- M0 before stage 1; a weekly local uncached run (4, 8).
 - `--max_idle_secs` for idle servers (8).
 - Bazel becomes a hard requirement; Make compile rules kept until stage 3 (D5).
 - The analyser lanes move to Bazel as build actions (6.1).
