@@ -99,6 +99,12 @@ C
 }
 
 if ! command -v valgrind >/dev/null 2>&1; then
+    # A skipped gate tested nothing. The verify* targets set GOO_PROBE_NO_SKIP,
+    # and under it the skip is the failure (the arc_reassign_probe.sh rule).
+    if [ "${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then
+        echo "arc-uaf-probe: FAIL (valgrind not found, and GOO_PROBE_NO_SKIP forbids a skip)"
+        exit 1
+    fi
     echo "arc-uaf-probe: SKIPPED (valgrind not found)"
     exit 0
 fi
