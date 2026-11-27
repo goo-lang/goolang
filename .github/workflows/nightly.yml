@@ -45,7 +45,7 @@ jobs:
     # margin, so a timeout never hides a real result. The public limit is 6h.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0   # repro-build-probe builds from `git archive HEAD`
 
@@ -115,7 +115,7 @@ jobs:
 
       - name: Upload the gate log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: verify-nightly-log
           path: verify-nightly.log
@@ -125,7 +125,7 @@ jobs:
         # A runner whose toolchain signature has no committed baseline fails
         # findings-probe loudly and writes a candidate here. See tests.yml.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: findings-baseline-candidate-nightly
           path: |
