@@ -580,8 +580,9 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
             : v;
         LLVMValueRef f2s = LLVMGetNamedFunction(codegen->module, "goo_float_to_string");
         if (!f2s) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
-        LLVMValueRef args[1] = { w };
-        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(f2s), f2s, args, 1, "fmt.s");
+        LLVMValueRef args[2] = { w, LLVMConstInt(LLVMInt32TypeInContext(ctx),
+                                                 concrete->kind == TYPE_FLOAT32 ? 32 : 64, 0) };
+        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(f2s), f2s, args, 2, "fmt.s");
     } else if (is_string) {
         // `data` points at a heap goo_string_t (value-boxed) — load and
         // return it directly (a shallow {ptr,len} copy; the backing bytes
