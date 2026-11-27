@@ -1985,6 +1985,7 @@ const char* release_verdict_name(ReleaseVerdict v) {
         case RELEASE_NO_REBOUND:    return "RELEASE_NO_REBOUND";
         case RELEASE_NO_ALIASED:    return "RELEASE_NO_ALIASED";
         case RELEASE_NO_BLOCK_ESCAPE: return "RELEASE_NO_BLOCK_ESCAPE";
+        case RELEASE_NO_ADDR_TAKEN: return "RELEASE_NO_ADDR_TAKEN";
         case RELEASE_NO_NO_BINDING: return "RELEASE_NO_NO_BINDING";
         case RELEASE_NO_UNKNOWN:    return "RELEASE_NO_UNKNOWN";
     }

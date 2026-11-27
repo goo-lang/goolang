@@ -215,6 +215,10 @@ typedef enum {
     // names this one's value, or a `range` over it has a store to it in its body
     RELEASE_NO_ALIASED,
     RELEASE_NO_BLOCK_ESCAPE,    // condition 6: stored into something outliving the iteration
+    // condition 8: `&L` appears, and no named local's record holds that
+    // address, so a write through it can put into L's slot a value that no
+    // binding records -- a value someone else owns
+    RELEASE_NO_ADDR_TAKEN,
     RELEASE_NO_NO_BINDING,      // no binding site found for the name
     RELEASE_NO_UNKNOWN,         // a statement kind this module cannot read
 } ReleaseVerdict;

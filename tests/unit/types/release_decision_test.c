@@ -1419,6 +1419,92 @@ static TestRow rows[] = {
         "}\n",
         "f", { { "xs", RELEASE_OK } }, 1
     },
+
+    // ---- CONDITION 8: AN ADDRESS THAT NO RECORD HOLDS (recovery review) ---
+    //
+    // `&L` lets whoever holds the address write ANY value into L's slot, and
+    // no binding of L records it. So conditions 2 and 7, which read L's
+    // recorded values and every other record, prove nothing about L. Each row
+    // below read RELEASE_OK, and its fixture in tests/arc_uaf/addr_*.goo read
+    // freed memory under valgrind: the free released a value somebody else
+    // owned.
+    {
+        93, "set(&xs, other), then xs self-appends -> xs ADDR_TAKEN",
+        "package main\n"
+        "func set(p *[]int, v []int) {\n"
+        "    *p = v\n"
+        "}\n"
+        "func f() {\n"
+        "    other := []int{7, 8}\n"
+        "    xs := []int{1, 2}\n"
+        "    set(&xs, other)\n"
+        "    for i := 0; i < 100; i++ {\n"
+        "        xs = append(xs, i)\n"
+        "    }\n"
+        "    _ = other\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ADDR_TAKEN } }, 1
+    },
+    {
+        // The EXIT release, no append at all: a live use-after-free on main.
+        94, "set(&xs, v) with a parameter v, released at exit -> xs ADDR_TAKEN",
+        "package main\n"
+        "func set(p *[]int, v []int) {\n"
+        "    *p = v\n"
+        "}\n"
+        "func f(v []int) int {\n"
+        "    xs := []int{1, 2}\n"
+        "    set(&xs, v)\n"
+        "    return len(xs)\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ADDR_TAKEN } }, 1
+    },
+    {
+        // The STORE release of a rebound string: a live use-after-free on main.
+        95, "setS(&s, other), then s = s + \"x\" -> s ADDR_TAKEN",
+        "package main\n"
+        "func setS(p *string, v string) {\n"
+        "    *p = v\n"
+        "}\n"
+        "func f(a string) {\n"
+        "    other := a + \"-other\"\n"
+        "    s := a + \"-s\"\n"
+        "    setS(&s, other)\n"
+        "    s = s + \"x\"\n"
+        "    _ = other\n"
+        "}\n",
+        "f", { { "s", RELEASE_NO_ADDR_TAKEN } }, 1
+    },
+    {
+        // A NAMED holder of the address, bound once. has_alias would see p's
+        // value `&xs`, but condition 7 ran only for a rebound or
+        // self-appended local, so the exit release freed the caller's v.
+        // The verdict is ALIASED: the address IS in a record.
+        96, "p := &xs; *p = v, released at exit -> xs ALIASED",
+        "package main\n"
+        "func f(v []int) int {\n"
+        "    xs := []int{1, 2}\n"
+        "    p := &xs\n"
+        "    *p = v\n"
+        "    return len(xs)\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
+    {
+        // The control: the same named holder with a self-append already read
+        // ALIASED before condition 8, and must still.
+        97, "p := &xs, then xs self-appends -> xs ALIASED (unchanged)",
+        "package main\n"
+        "func f() {\n"
+        "    xs := []int{1, 2}\n"
+        "    p := &xs\n"
+        "    for i := 0; i < 100; i++ {\n"
+        "        xs = append(xs, i)\n"
+        "    }\n"
+        "    _ = p\n"
+        "}\n",
+        "f", { { "xs", RELEASE_NO_ALIASED } }, 1
+    },
 };
 
 // =============================================================================
