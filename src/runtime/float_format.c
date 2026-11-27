@@ -13,8 +13,10 @@
 // Digits that a 64-bit value can need to read back exactly, minus one for the
 // leading digit that "%e" prints before the point.
 enum { FF_SHORTEST_MAX_P64 = 16, FF_SHORTEST_MAX_P32 = 8 };
-// A caller-supplied precision above this is clamped. C prints the exact binary
-// expansion past 17 digits, and 767 significant digits cover every double.
+// A caller-supplied precision above this is clamped, which differs from Go:
+// Go prints every digit of the exact binary expansion (up to 767 significant
+// digits for a double). No Goo program can reach the clamp today. Task 17
+// (strconv.FormatFloat) must remove the clamp before it passes a precision on.
 enum { FF_MAX_PREC = 400 };
 // "-d." + FF_MAX_PREC digits + "e+308" + NUL, with slack.
 enum { FF_TMP = 512 };
