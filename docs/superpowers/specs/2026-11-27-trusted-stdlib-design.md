@@ -826,3 +826,18 @@ repeatable from a clean checkout plus Go 1.27.4 at `/usr/local/go`.
 | `a1`: `append` to a full sub-slice | abort, `realloc(): invalid pointer`, exit 134 | `10 11 4 99 5` |
 | `a2`: alias of a grown slice | `8 8` | `7 8` |
 | `a3`: alias of a slice grown 600 times, under valgrind | `Invalid read of size 8`, 1 error | `7 7 1` |
+
+## Decisions (owner, 2026-11-27)
+
+The owner approved the recommended answer to each question:
+
+1. The 50% goal is measured on linux/amd64 (8,433 symbols), with the application subset (3,513) reported beside it.
+2. Goo stops treating `unsafe` as a keyword. The type checker gets a real rule for it.
+3. A person who sets `$GOOROOT` to their own copy of goostd is outside the threat model. A project that does it is inside.
+4. The vendoring step may rename reserved Goo words (`match`, `arena`, `enum`, `try`) in Go source.
+5. The leak cost of rules V and P is accepted, with a daemon budget as the gate.
+6. Converting `!T` to an interface is a compile error. `?T` boxes as its `T`, or as nil.
+7. Finalizers are no-ops, recorded as a designed divergence.
+8. Real Go source replaces a goostd rewrite when it passes its upstream tests and the daemon budget.
+
+The `append` defect (finding 1) is fixed first, on branch `fix/append-no-realloc`.
