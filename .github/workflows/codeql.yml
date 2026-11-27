@@ -39,6 +39,7 @@ jobs:
         # The same packages as the verify-core job, less the ones that only
         # the gates use (valgrind, clang-tidy, cppcheck, python3-jsonschema).
         run: |
+          sudo grep -l -r 'packages.microsoft.com' /etc/apt/sources.list.d/ | xargs -r sudo rm -f -v
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             make gcc-14 bison llvm-dev clang libblocksruntime-dev cmake \
