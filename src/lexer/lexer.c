@@ -148,9 +148,9 @@ static int lexer_line_starts_with_else(Lexer* lexer) {
 
 // Hex-digit value for `\xNN` string escapes, or -1 if `c` is not a hex digit.
 static int hex_digit_value(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9') { return c - '0'; }
+    if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+    if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
     return -1;
 }
 
@@ -928,7 +928,7 @@ char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float) {
                 // Binary and octal: take every decimal digit, not only the
                 // valid ones, so lexer_number_error names `0b2` / `0o9`
                 // instead of splitting it into a literal and a stray int.
-                while (lexer_is_digit(lexer->ch)) lexer_read_char(lexer);
+                while (lexer_is_digit(lexer->ch)) { lexer_read_char(lexer); }
             }
         }
     }
@@ -953,7 +953,7 @@ char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float) {
     // so such a literal stays an integer here. The letter is still read into
     // the literal, so lexer_number_error refuses the whole token at its start.
     if (lexer->ch == 'e' || lexer->ch == 'E') {
-        if (!non_decimal) *is_float = 1;
+        if (!non_decimal) { *is_float = 1; }
         lexer_read_char(lexer); // consume 'e' or 'E'
         
         if (lexer->ch == '+' || lexer->ch == '-') {
@@ -1087,7 +1087,7 @@ int lexer_decode_char_value(const char* body, size_t len, long* out, const char*
     const char* dummy;
     if (!err) { err = &dummy; }
     *err = NULL;
-    if (!body || !out || len == 0u) return 0;
+    if (!body || !out || len == 0u) { return 0; }
     if (body[0] != '\\') {
         // Plain rune: only single-byte ASCII supported in v1.
         if (len != 1) return 0;
@@ -1116,7 +1116,7 @@ char* lexer_read_char_literal(Lexer* lexer, size_t* length) {
         // `''` is empty and `'''` holds an unescaped quote. Consume the whole
         // run so the stray quotes do not start a second literal.
         lexer_read_char(lexer);
-        if (lexer->ch == '\'') lexer_read_char(lexer);
+        if (lexer->ch == '\'') { lexer_read_char(lexer); }
         lexer->literal_error = "empty rune literal or unescaped ' in rune literal";
         return NULL;
     }
