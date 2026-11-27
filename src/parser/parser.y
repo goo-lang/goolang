@@ -1482,6 +1482,30 @@ for_stmt:
         for_node->body = $4;
         $$ = (ASTNode*)for_node;
     }
+    // `for k, v = range x`, `for k = range x`: the range clause assigns to
+    // existing lvalues. range_assign_desugar turns it into the declaring form
+    // over hidden names plus a first body statement that assigns them, so
+    // every range kind reuses the tested `:=` lowering. RANGE is not in
+    // FIRST(expression), so these arms part from the `for x = 0; …` init at
+    // RANGE with no new conflict.
+    | FOR expr_list2 ASSIGN RANGE expression block {
+        const char* why = NULL;
+        Position where = POS(@2);
+        $$ = range_assign_desugar($2, $5, $6, &why, &where);
+        if (!$$) {
+            parser_error_at(where, why);
+            YYERROR;
+        }
+    }
+    | FOR expression ASSIGN RANGE expression block {
+        const char* why = NULL;
+        Position where = POS(@2);
+        $$ = range_assign_desugar($2, $5, $6, &why, &where);
+        if (!$$) {
+            parser_error_at(where, why);
+            YYERROR;
+        }
+    }
     | FOR expr_list2 SHORT_ASSIGN RANGE expression block {
         // `for k, v := range expr { … }` — key+value form. The names are an
         // expr_list2, the same list `for i, j := 0, n; …` starts with, so the

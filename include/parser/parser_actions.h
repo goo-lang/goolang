@@ -113,6 +113,14 @@ ASTNode* assign_list_new(ASTNode* targets, ASTNode* values, int is_short_decl,
 ASTNode* range_short_decl_new(ASTNode* targets, ASTNode* range_expr, ASTNode* body,
                               const char** why, Position* where);
 
+// `for k, v = range x` / `for k = range x`: a range clause that assigns to
+// existing lvalues. Returns the declaring ForStmtNode over hidden names
+// (`.rk<N>`, `.rv<N>`, which no Go identifier can spell) whose body starts
+// with `k, v = .rk<N>, .rv<N>`. A `_` target gets no hidden name and no
+// store. Returns NULL with *why/*where set for three or more targets.
+ASTNode* range_assign_desugar(ASTNode* targets, ASTNode* range_expr, ASTNode* body,
+                              const char** why, Position* where);
+
 // Build a compound-assignment statement (`x += e`, `x &= e`, ...). `pos` is
 // the rule's own start (POS(@$)), never the lookahead token on the next line.
 ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs, Position pos);

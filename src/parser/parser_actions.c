@@ -397,6 +397,122 @@ ASTNode* range_short_decl_new(ASTNode* targets, ASTNode* range_expr, ASTNode* bo
     return (ASTNode*)for_node;
 }
 
+static int is_blank_ident(const ASTNode* n) {
+    return n->type == AST_IDENTIFIER && strcmp(((const IdentifierNode*)n)->name, "_") == 0;
+}
+
+// A hidden iteration name of a desugared `for … = range`. A '.' cannot appear
+// in a Go identifier, so no user name can collide with it. The serial keeps
+// nested loops apart in a program dump; shadowing would be correct anyway.
+static char* range_hidden_name(const char* prefix, unsigned serial) {
+    char buf[32];
+    (void)snprintf(buf, sizeof buf, "%s%u", prefix, serial);
+    return xstrdup(buf);
+}
+
+// Put `stmt` first in the block's statement list.
+static void block_prepend(ASTNode* body, ASTNode* stmt) {
+    GOO_ASSERT(body != NULL && body->type == AST_BLOCK_STMT && stmt != NULL);
+    BlockStmtNode* block = (BlockStmtNode*)body;
+    ASTNode* rest = block->statements;
+    ASTNode* last = NULL;
+    for (ASTNode* x = rest; x != NULL; x = x->next) {
+        last = x;
+    }
+    stmt->next = rest;
+    stmt->tail = last;
+    block->statements = stmt;
+}
+
+// The first body statement of a desugared range: each non-blank target
+// gets its hidden name. One pair is an ordinary assignment statement; two
+// pairs are a MultiAssignNode, so `for k, v = range m` assigns both after
+// reading both. Returns NULL when every target is `_`.
+static ASTNode* range_assign_stmt(ASTNode** targets, const char** names, size_t n) {
+    GOO_ASSERT(n <= 2U);
+    ASTNode* lhs_head = NULL;
+    ASTNode* rhs_head = NULL;
+    size_t pairs = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (names[i] == NULL) {
+            continue;
+        }
+        ASTNode* rhs = (ASTNode*)ast_identifier_new(names[i], targets[i]->pos);
+        targets[i]->next = NULL;
+        targets[i]->tail = NULL;
+        if (lhs_head == NULL) {
+            lhs_head = targets[i];
+            rhs_head = rhs;
+        } else {
+            ast_add_child(lhs_head, targets[i]);
+            ast_add_child(rhs_head, rhs);
+        }
+        pairs++;
+    }
+    if (pairs == 0U) {
+        return NULL;
+    }
+    if (pairs == 1U) {
+        return compound_assign_stmt(lhs_head, TOKEN_ASSIGN, rhs_head, lhs_head->pos);
+    }
+    return assign_list_new(lhs_head, rhs_head, 0, lhs_head->pos);
+}
+
+ASTNode* range_assign_desugar(ASTNode* targets, ASTNode* range_expr, ASTNode* body,
+                              const char** why, Position* where) {
+    GOO_ASSERT(targets != NULL && why != NULL && where != NULL);
+    size_t n = chain_length(targets);
+    if (n > 2U) {
+        *why = "range clause permits at most two iteration variables";
+        *where = targets->next->next->pos;
+        return NULL;
+    }
+    static unsigned serial = 0;
+    unsigned id = serial++;
+
+    ASTNode* tv[2] = { targets, targets->next };
+    // The iteration names: hidden for a real target, "_" for a blank key
+    // that precedes a value (the slot still has to exist), none otherwise.
+    char* key_name = NULL;
+    char* value_name = NULL;
+    const char* assigned[2] = { NULL, NULL };
+    if (!is_blank_ident(tv[0])) {
+        key_name = range_hidden_name(".rk", id);
+        assigned[0] = key_name;
+    } else if (n == 2U) {
+        key_name = xstrdup("_");
+    } else {
+        // `for _ = range x` is `for range x`.
+    }
+    if (n == 2U && !is_blank_ident(tv[1])) {
+        value_name = range_hidden_name(".rv", id);
+        assigned[1] = value_name;
+    }
+
+    ASTNode* first = range_assign_stmt(tv, assigned, n);
+    // A blank target is not kept: free it on its own (ast_node_free walks
+    // ->next, and the kept targets are now owned by `first`).
+    for (size_t i = 0; i < n; i++) {
+        if (assigned[i] == NULL) {
+            tv[i]->next = NULL;
+            tv[i]->tail = NULL;
+            ast_node_free(tv[i]);
+        }
+    }
+    if (first != NULL) {
+        block_prepend(body, first);
+    }
+
+    ForStmtNode* for_node = (ForStmtNode*)xcalloc(1, sizeof(ForStmtNode));
+    for_node->base.type = AST_FOR_STMT;
+    for_node->base.pos = get_current_position();
+    for_node->key_name = key_name;
+    for_node->value_name = value_name;
+    for_node->range_expr = range_expr;
+    for_node->body = body;
+    return (ASTNode*)for_node;
+}
+
 // Build a compound-assignment statement (`x += e`, `x &= e`, ...). The compound
 // operator token (TOKEN_PLUS_ASSIGN etc.) is kept on the BinaryExprNode and
 // lowered in codegen to load-op-store — this avoids duplicating the LHS AST

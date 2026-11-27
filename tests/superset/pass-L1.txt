@@ -27,6 +27,7 @@ devirtualization_nil_panics.go
 divide.go
 divmod.go
 env.go
+escape.go
 escape3.go
 fixedbugs/bug000.go
 fixedbugs/bug005.go
@@ -136,6 +137,7 @@ fixedbugs/bug375.go
 fixedbugs/bug401.go
 fixedbugs/bug402.go
 fixedbugs/bug405.go
+fixedbugs/bug406.go
 fixedbugs/bug409.go
 fixedbugs/bug423.go
 fixedbugs/bug428.go
@@ -187,6 +189,7 @@ fixedbugs/issue12411.go
 fixedbugs/issue12577.go
 fixedbugs/issue12621.go
 fixedbugs/issue1304.go
+fixedbugs/issue13162.go
 fixedbugs/issue13169.go
 fixedbugs/issue13171.go
 fixedbugs/issue13268.go
@@ -321,6 +324,7 @@ fixedbugs/issue40152.go
 fixedbugs/issue40367.go
 fixedbugs/issue40629.go
 fixedbugs/issue4066.go
+fixedbugs/issue4167.go
 fixedbugs/issue41780.go
 fixedbugs/issue41872.go
 fixedbugs/issue42032.go
@@ -373,6 +377,7 @@ fixedbugs/issue52953.go
 fixedbugs/issue53600.go
 fixedbugs/issue53653.go
 fixedbugs/issue53702.go
+fixedbugs/issue5373.go
 fixedbugs/issue54542.go
 fixedbugs/issue54632.go
 fixedbugs/issue5493.go
@@ -392,6 +397,7 @@ fixedbugs/issue59338.go
 fixedbugs/issue59367.go
 fixedbugs/issue59404part2.go
 fixedbugs/issue59411.go
+fixedbugs/issue59572.go
 fixedbugs/issue5963.go
 fixedbugs/issue6055.go
 fixedbugs/issue62360.go
@@ -486,6 +492,7 @@ fixedbugs/issue9006.go
 fixedbugs/issue9110.go
 fixedbugs/issue9355.go
 fixedbugs/issue9604.go
+fixedbugs/issue9691.go
 fixedbugs/issue9738.go
 fixedbugs/issue9862_run.go
 fixedbugs/shrd_zero_count.go
@@ -510,6 +517,7 @@ linkmain_run.go
 linkobj.go
 linkx_run.go
 mallocfin.go
+mapclear.go
 maplinear.go
 method3.go
 method5.go
@@ -517,6 +525,7 @@ newexpr.go
 nil.go
 nilptr2.go
 printbig.go
+range4.go
 recover1.go
 recover2.go
 recover4.go
@@ -535,6 +544,7 @@ stackobj.go
 stackobj2.go
 stackobj3.go
 string_lit.go
+stringrange.go
 tinyfin.go
 turing.go
 typeswitch.go
