@@ -1,0 +1,14 @@
+package main
+
+// Task 11: only `pkg.T{...}` is a qualified composite literal. A longer
+// selector chain as the literal type is rejected.
+
+import "fmt"
+
+type W struct{ v int }
+
+func main() {
+	w := W{}
+	x := w.v.z{}
+	fmt.Println(x)
+}

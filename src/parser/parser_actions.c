@@ -835,6 +835,22 @@ ASTNode* struct_lit_empty_new(ASTNode* type_ident) {
     return (ASTNode*)lit;
 }
 
+ASTNode* qualified_struct_lit_new(ASTNode* selector, ASTNode* inits) {
+    if (!selector || selector->type != AST_SELECTOR_EXPR) {
+        return NULL;
+    }
+    SelectorExprNode* sel = (SelectorExprNode*)selector;
+    if (!sel->expr || sel->expr->type != AST_IDENTIFIER) {
+        return NULL;
+    }
+    char* pkg = xstrdup(((IdentifierNode*)sel->expr)->name);
+    char* name = xstrdup(sel->selector);
+    ASTNode* node = struct_literal_new(name, inits);
+    ((StructLiteralNode*)node)->type_package = pkg;
+    ast_node_free(selector);
+    return node;
+}
+
 ASTNode* struct_lit_init_keyed(ASTNode* key_ident, ASTNode* value) {
     // Keyed init. Stash the owned field-name string on the init's node_type
     // slot (same parse-time piggyback map_entry_list uses for its values

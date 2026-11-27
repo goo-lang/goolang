@@ -217,6 +217,10 @@ ASTNode* array_lit_new(ASTNode* elements, ASTNode* array_type);
 // field names from, so it builds the StructLiteralNode directly rather than
 // through struct_literal_new above.
 ASTNode* struct_lit_empty_new(ASTNode* type_ident);
+// Task 11: build `pkg.T{inits}` from a parsed selector_expr. Returns NULL
+// (and frees nothing it was not given) when the operand is not exactly
+// `identifier.identifier`; the grammar then reports the parse error.
+ASTNode* qualified_struct_lit_new(ASTNode* selector, ASTNode* inits);
 
 // struct_lit_init: keyed form `name: expr`. Stashes the owned field-name
 // string on the value's node_type slot (struct_lit's reducer moves it into

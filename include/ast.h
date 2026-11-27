@@ -867,6 +867,7 @@ typedef struct {
     struct ASTNode* field_values; // expression list, parallel with field_names if keyed
     char** field_names;           // NULL if positional; otherwise parallel array
     size_t field_count;
+    char* type_package;           // Task 11: `pkg` of `pkg.T{...}`, owned; NULL for a local type (TAIL field)
 } StructLiteralNode;
 
 // Goo Extensions

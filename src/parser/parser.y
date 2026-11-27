@@ -2621,6 +2621,22 @@ struct_lit:
     | identifier LBRACE RBRACE {
         $$ = struct_lit_empty_new($1);
     }
+    /* Task 11: qualified literal `pkg.T{...}`. The operand is any
+       selector_expr so no `identifier DOT identifier LBRACE` lookahead is
+       needed (that shape measured +8 conflicts); the action keeps only
+       `identifier.identifier`. */
+    | selector_expr LBRACE struct_lit_inits RBRACE {
+        $$ = qualified_struct_lit_new($1, $3);
+        if (!$$) { parser_error_at(POS(@1), "invalid composite literal type"); YYERROR; }
+    }
+    | selector_expr LBRACE struct_lit_inits COMMA RBRACE {
+        $$ = qualified_struct_lit_new($1, $3);
+        if (!$$) { parser_error_at(POS(@1), "invalid composite literal type"); YYERROR; }
+    }
+    | selector_expr LBRACE RBRACE {
+        $$ = qualified_struct_lit_new($1, NULL);
+        if (!$$) { parser_error_at(POS(@1), "invalid composite literal type"); YYERROR; }
+    }
     ;
 
 struct_lit_inits:

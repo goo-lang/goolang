@@ -1,0 +1,11 @@
+package main
+
+// Task 11: a qualified composite literal of an unexported (lowercase)
+// type of another package is rejected, as in Go.
+
+import "shapes"
+
+func main() {
+	p := shapes.point{}
+	_ = p
+}

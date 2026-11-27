@@ -1,8 +1,9 @@
 # Bison conflict ledger
 
-Baseline: **27 shift/reduce + 0 reduce/reduce** — verified 2026-11-27 on
-`feat/go-compat-grammar` (Go-compat wave 1 Task 6: assignments and short
-declarations with N names; full justification below). Previous baseline 31/0,
+Baseline: **28 shift/reduce + 0 reduce/reduce** — verified 2026-11-27 on
+`feat/go-compat-qualified-literals` (Go-compat wave 1 Task 11: qualified
+composite literals; full justification below). Previous baseline 27/0,
+verified the same day on `feat/go-compat-grammar` (Task 6). Previous baseline 31/0,
 verified 2026-07-11 on `refactor/p5-10-rr-cleanup` (P5.10: Go-shaped statement
 termination + dead GPU/WASM grammar deletion). Previous baseline
 121/256, verified 2026-07-09 on `feat/go-syntax-grammar-b` (gofmt-syntax
@@ -30,6 +31,35 @@ delta as a stop-the-line event, not noise.
 | gofmt-syntax-b review Fix 5a (labeled empty statement) | 88 → **121** S/R (+33) | `label_stmt` gained two arms, `identifier COLON SEMICOLON` (explicit `done: ;`) and `identifier COLON` (bare `done:` immediately before whatever ends the enclosing statement list — the goto-to-end-of-block idiom). Both arms' new items land in exactly ONE pre-existing, previously-unconflicted, single-item state (state 598, `label_stmt: identifier COLON • statement` — reached ONLY from label_stmt's own predecessor states, not shared/merged with any other production). The +33 is `statement`'s own FIRST set: FOLLOW(label_stmt) overlaps FIRST(statement) because a label can be followed by another real statement in the same `statement_list`, so 33 of `statement`'s FIRST tokens are now ambiguous between "shift, keep trying to parse a real trailing statement" and "reduce, the label's target is empty" — bison's default shift-wins resolves every one of them toward the pre-existing behavior (state 598's shift table is completely unchanged; the 33 shifts area is bracketed-reduce-suppressed, not shift-suppressed), so no previously-parsing program's parse tree changes. SEMICOLON is unambiguous (shifts toward the explicit-SEMICOLON arm; not in the epsilon arm's per-state reduce lookahead here). `$default` (RBRACE, CASE, DEFAULT, and everything else outside `statement`'s FIRST set and SEMICOLON) reduces the empty form — exactly the previously-rejected shapes this fix targets. R/R unchanged (256); every OTHER pre-existing conflicted state's count is byte-identical before/after (state-diffed, see "Justification" below) — this is the whole delta. Full justification below. |
 | Go-compat wave 1 Task 6 (assignments and short declarations with N names) | 31 → **27** S/R (−4) | The identifier-prefixed two-name arms (`short_var_decl: identifier COMMA identifier SHORT_ASSIGN …`, `simple_stmt: identifier COMMA identifier ASSIGN …`, and `for_stmt: FOR identifier COMMA identifier SHORT_ASSIGN RANGE …`) became one list nonterminal, `expr_list2: expression COMMA expression \| expr_list2 COMMA expression`, used by `simple_stmt: expr_list2 ASSIGN expression_list \| expr_list2 SHORT_ASSIGN expression_list` and `for_stmt: FOR expr_list2 SHORT_ASSIGN RANGE expression block`. With no `identifier • COMMA` item left anywhere, family 3's COMMA conflict leaves all four `identifier •` dispatch states: statement start (base state 367, its only conflict), FOR (485), IF (491) and SWITCH (501). The last three keep their family-2 LBRACE conflict. The other 12 conflicted states are fingerprint-identical (core items and conflict tokens). R/R stays 0. The plan predicted 28 for this task with the FOR arm left for Task 7, but that grammar refuses `for i, j := 0, n; …` (valid Go that parsed before), so the FOR arm moved here. Full justification below. |
 | Go-compat wave 1 Task 7 (range with an assignment and N names) | **zero delta** (27) | Two new `for_stmt` arms, `FOR expr_list2 ASSIGN RANGE expression block` and `FOR expression ASSIGN RANGE expression block`, desugared by `range_assign_desugar` into the declaring form over hidden names. After `FOR expression ASSIGN` or `FOR expr_list2 ASSIGN`, RANGE is not in FIRST(expression), so the arms part from `for x = 0; …` (simple_stmt's `expression ASSIGN expression`) and from the expr_list2 init at RANGE with nothing to fight over. `bison -r all`: the same 15 conflicted states with identical core items and conflict tokens before and after. R/R stays 0. The plan's 28 → 27 for this task already happened in Task 6 (the FOR state's COMMA conflict; see that row). |
+| Go-compat wave 1 Task 11 (qualified composite literals) | 27 → **28** S/R (+1) | `struct_lit` gained `selector_expr LBRACE struct_lit_inits RBRACE`, the trailing-comma arm and `selector_expr LBRACE RBRACE`. One new conflicted state (`primary_expr: selector_expr •` against `struct_lit: selector_expr • LBRACE …`, on plain `{`). Ledger family 2, reached at one more position. Full justification below. |
+
+## Justification: Go-compat wave 1 Task 11 (27 → 28)
+
+**Grammar change.** Three `struct_lit` arms take a `selector_expr` as the
+type operand (`pkg.T{…}`, `pkg.T{…,}`, `pkg.T{}`). The action
+`qualified_struct_lit_new` accepts only `identifier.identifier` and reports
+`invalid composite literal type` for any other operand. The rejected
+alternative, `identifier DOT identifier LBRACE …`, measured +8.
+
+**The new conflict.** `bison -v` state diff, base b4300a3b vs this commit: 15
+conflicted states before, 16 after. The 15 old states keep their conflict
+counts (state numbers shift by 1 to 6). The one new state holds
+`primary_expr: selector_expr •` and the three new `selector_expr • LBRACE`
+items. It conflicts on plain `{`: shift (struct literal, bison default) or
+reduce (the selector ends a condition and `{` opens a body). Counterexample
+`if a.b • { … }` and `match a.b • { … }`.
+
+**Why no parse changes.** Same argument as family 2. The bridge turns the
+first depth-0 `{` after `if`, `for`, `switch` and `match` into `LBRACE_BODY`,
+so the plain `{` cannot follow a selector in a header. Probes (compiled, run,
+identical output on the base compiler and this one): `if w.v.X == 2 {`,
+`for w.v.X < 4 {`, `switch w.v.X {`, `match m.e {`, `if v := w.v.X; v > 1 {`
+all work. `if v == shapes.Point{} {` is a parse error, as in Go
+(`tests/golden/reject/qualified_complit_header_reject.goo`), and
+`if (shapes.Point{X: 1}).X == 1 {` works.
+
+`EXPECTED_SR=28` / `EXPECTED_RR=0` in `scripts/grammar-tripwire.sh`, updated
+in the same commit as this entry.
 
 ## Justification: Go-compat wave 1 Task 6 (31 → 27)
 

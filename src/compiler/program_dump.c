@@ -681,7 +681,11 @@ static void emit_node(JsonW* w, ASTNode* n) {
         case AST_STRUCT_LITERAL: {
             StructLiteralNode* s = (StructLiteralNode*)n;
             begin_node(w, n, "STRUCT_LITERAL");
-            emit_str(w, "type_name", s->type_name); emit_bool(w, "is_keyed", s->is_keyed);
+            emit_str(w, "type_name", s->type_name);
+            if (s->type_package) {
+                emit_str(w, "type_package", s->type_package);
+            }
+            emit_bool(w, "is_keyed", s->is_keyed);
             jw_key(w, "field_names"); jw_begin_array(w);
             if (s->field_names) for (size_t i = 0; i < s->field_count; i++) jw_string(w, s->field_names[i]);
             jw_end_array(w);
