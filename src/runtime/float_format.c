@@ -196,6 +196,7 @@ goo_string_t goo_format_float(double v, int32_t fmt, int32_t prec, int32_t bits)
             sign = 1U;
         }
         size_t total = sign + (size_t)n;
+        GOO_ASSERT(total > (size_t)n - 1U); // the sign adds at most one byte, so no wrap
         char* all = (char*)malloc(total + 1U);
         if (all == NULL) {
             goo_panic("goo_format_float: out of memory");
