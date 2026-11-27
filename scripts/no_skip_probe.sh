@@ -74,7 +74,7 @@ build_path() {
 # when every gate failed as required, 1 when any did not, and 2 for an empty
 # table (nothing was tested, so it is not a pass).
 run_table() {
-    local table="$1" rootdir="$2" bad=0 n=0
+    local table="$1" rootdir="$2" bad=0 n=0 rows
     local gate tool envs cmd work out rc start elapsed
     work="$(mktemp -d)" || { echo "$PROBE: FAIL (mktemp)"; return 1; }
     while IFS='|' read -r gate tool envs cmd; do
@@ -91,7 +91,7 @@ run_table() {
         [ "$envs" = "-" ] || extra=("$envs")
         start=$SECONDS
         out="$(cd "$rootdir" && env -i PATH="$work/bin.$n" HOME="$work" \
-            GOO_PROBE_NO_SKIP=1 "${extra[@]}" bash -c "timeout 120 $cmd" 2>&1)"
+            GOO_PROBE_NO_SKIP=1 "${extra[@]}" bash -c "timeout 120 $cmd" 2>&1 </dev/null)"
         rc=$?
         elapsed=$((SECONDS - start))
         [ -z "${NO_SKIP_PROBE_VERBOSE:-}" ] || printf '%s\n' "$out" | sed 's/^/      | /'
@@ -114,6 +114,12 @@ run_table() {
         echo "$PROBE: FAIL (the gate table is empty: nothing was tested)"
         return 2
     fi
+    # A command that read the loop's stdin would swallow rows. Count them.
+    rows="$(printf '%s\n' "$table" | grep -c .)"
+    if [ "$n" -ne "$rows" ]; then
+        echo "$PROBE: FAIL (processed $n of $rows table rows)"
+        return 1
+    fi
     if [ "$bad" -ne 0 ]; then
         echo "$PROBE: FAIL ($bad gate(s) did not fail on a missing tool)"
         return 1
@@ -129,6 +135,7 @@ self_test() {
     printf '%s\n' 'echo "valgrind not found - SKIPPED"; exit 0' > "$fx/skips.sh"
     printf '%s\n' 'echo "gate: FAIL (tool not found, and GOO_PROBE_NO_SKIP forbids a skip)"; exit 1' > "$fx/fails.sh"
     printf '%s\n' 'exit 3' > "$fx/crashes.sh"
+    printf '%s\n' 'cat >/dev/null; echo "gate: FAIL (GOO_PROBE_NO_SKIP)"; exit 1' > "$fx/reads.sh"
     printf '%s\n' 'echo "gate: FAIL (something else broke)"; exit 1' > "$fx/other.sh"
 
     # 1. A skipping gate must be reported.
@@ -164,6 +171,14 @@ self_test() {
     rc=$?
     if [ "$rc" -ne 2 ]; then
         echo "$PROBE self-test: FAIL (an empty table exited $rc, not 2)"; cat "$fx/o4"
+        rm -rf "$fx"; return 1
+    fi
+    # 4b. A gate that reads stdin must not swallow the rows after it.
+    run_table "reader|faketool|-|sh $fx/reads.sh
+second|faketool|-|sh $fx/fails.sh" "$fx" > "$fx/o4b" 2>&1
+    rc=$?
+    if [ "$rc" -ne 0 ] || ! grep -q 'second: ok' "$fx/o4b"; then
+        echo "$PROBE self-test: FAIL (a gate that reads stdin swallowed a row)"; cat "$fx/o4b"
         rm -rf "$fx"; return 1
     fi
     # 5. The tool under test must really be absent from the scrubbed PATH.

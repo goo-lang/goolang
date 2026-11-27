@@ -6029,12 +6029,6 @@ arc-map-key-local-probe: $(COMPILER) $(RUNTIME_LIB)
 arc-multi-assign-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_multi_assign_probe.sh
 
-# KNOWN-RED, AND IN NO GATE ON PURPOSE — the SECOND one, and the same rule
-# applies: not in VERIFY_ALL_DEPS, and not to be added while it fails.
-#
-# A reassigned local drops its previous value and nothing frees it — 80,000
-# bytes of bench/daemon/daemon.goo. The script's header carries the five-step
-# plan, including the alias condition that no existing rule provides.
 # A MISSING TOOL FAILS THE GATE. Runs the --self-test (teeth: a gate that exits
 # 0 without its tool must be reported), then each of the 15 gates that once
 # skipped, with its tool removed from a scrubbed PATH and GOO_PROBE_NO_SKIP=1.
@@ -6043,6 +6037,12 @@ no-skip-probe:
 	@bash scripts/no_skip_probe.sh --self-test
 	@bash scripts/no_skip_probe.sh
 
+# KNOWN-RED, AND IN NO GATE ON PURPOSE — the SECOND one, and the same rule
+# applies: not in VERIFY_ALL_DEPS, and not to be added while it fails.
+#
+# A reassigned local drops its previous value and nothing frees it — 80,000
+# bytes of bench/daemon/daemon.goo. The script's header carries the five-step
+# plan, including the alias condition that no existing rule provides.
 arc-reassign-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_reassign_probe.sh
 
