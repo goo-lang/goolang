@@ -609,3 +609,25 @@ The GitHub runner image adds an apt source `packages.microsoft.com`. That source
 13. **G3 says "one documented command".** This plan gives one block of commands (download, check, extract, `PATH`). A single `install.sh` asset is the alternative, but a reader cannot audit it as easily. Is the block enough?
 14. **Task 22** (the Microsoft apt source) needs owner approval.
 15. **Task 17** (the description and topics text) needs owner approval.
+
+## Controller rulings and owner decisions (2026-11-27)
+
+Owner decisions:
+- Version: delete the old annotated tag `v1.0.0` (tag object d00b9df4, commit c0b68068, 2026-07-11, "Goo v1.0.0"; no GitHub Release uses it), then release `v0.1.0`. The owner deletes the tag (an auto-mode rule blocks the agent). To create it again: `git tag -a v1.0.0 c0b68068 -m "Goo v1.0.0"`. Task 21 starts only after the tag is gone.
+- Task 17 is DONE: description "Goo: a Go superset with compile-time linear qubits, automatic reference counting with no GC pauses, and QIR / OpenQASM 3 output.", topics compiler, golang, llvm, memory-safety, openqasm, programming-language, qir, quantum-computing.
+- Task 22 is APPROVED and joins wave A.
+- Execution: subagent-driven, one review for each PR.
+
+Controller answers to the planner's questions:
+2. Task 3 is in scope (a silent wrong result in the quantum path, goal G2).
+3. Yes: G2 covers the 17th `Alloc` and a result index of 64 or more (Task 5).
+4. Yes: the compile-time refusal is for native builds only. `QubitAt(16)` and above stay legal for `--emit-qasm3` and `--emit-qir`.
+5. Yes: COMPCERT_AUDIT, COMPTIME_AUDIT and SELF_HOSTING_ASSESSMENT move too. docs/superpowers/ stays.
+6. Yes: the prose citations of `.handoff.md` stay. The file stays in the git history.
+7. `.env.example` and `scripts/prd.txt` stay for now.
+8. Yes: `tools/project_wizard/` and the `wizard` target move with `templates/`.
+9. Yes: `ide/` moves to `attic/` (no build, gate or workflow uses it).
+10. The live-hardware table stays in the README. The quantum page links to it.
+11. On macOS, the plain `ubuntu:24.04` image.
+12. The release workflow runs `verify-core` again through `workflow_call`.
+13. One block of install commands is enough for v0.1.0. An `install.sh` comes with `goop` later.
