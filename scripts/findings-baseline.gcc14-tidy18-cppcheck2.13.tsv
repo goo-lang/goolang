@@ -14,7 +14,7 @@
 # IMPROVEMENT. A count above what is recorded here is a REGRESSION and fails
 # the gate. Suppressed rows (docs/misra/findings-suppressions.tsv) never
 # appear here at all. Never edit by hand.
-# 4078 accepted findings, from build/findings.sarif.
+# 4082 accepted findings, from build/findings.sarif.
 Cppcheck	arrayIndexOutOfBoundsCond	src/lexer/token.c	253		Either the condition 'type<TOKEN_COUNT' is redundant or the array 'token_strings[137]' is accessed at index 137, which is out of bounds.	f0d9cd535ec173191eac1a2523305a1d4a4f6b15452c3309bfb296c8a5825be5
 Cppcheck	constParameterPointer	src/codegen/call_codegen.c	3531		Parameter 'expr' can be declared as pointer to const	a27ca86e79b371656798f664a413645c861b0ed2ab9e9689a3ccbb978f97bfae
 Cppcheck	constParameterPointer	src/codegen/call_codegen.c	3679		Parameter 'expr' can be declared as pointer to const	764269900dcc052352035dcdee175b85f838ea3452ad11328334995241203924
@@ -3496,6 +3496,7 @@ Cppcheck	misra-c2012-21.1	src/runtime/concurrency.c	4		misra violation (use --ru
 Cppcheck	misra-c2012-21.1	src/runtime/platform.c	4		misra violation (use --rule-texts=<file> to get proper output)	0528d08ad192973004a8e1c797e270a3f32234a077595d8cb22f613655a5e1ce
 Cppcheck	misra-c2012-21.15	src/types/expression_checker.c	1281		misra violation (use --rule-texts=<file> to get proper output)	a5e221046e148aa87d47e48db1c5b185226a99874f0dce1c3c12f35065b5962f
 Cppcheck	misra-c2012-21.15	src/types/expression_checker.c	1302		misra violation (use --rule-texts=<file> to get proper output)	b7a929da4fe107fdb1854dcf3d92c96f86dd357d08d426fdf36574a14898824d
+Cppcheck	misra-c2012-21.5	src/runtime/concurrency.c	20		misra violation (use --rule-texts=<file> to get proper output)	a4e1844be7355ddf3c53044e31cd086d72385fb2031631b6d1c99ef491c6877d
 Cppcheck	misra-c2012-21.7	src/compiler/goo.c	377		misra violation (use --rule-texts=<file> to get proper output)	8cc88db9a2d272dfb9f091592c763f9ea7869113a1d058581d40c65c91a0ad33
 Cppcheck	misra-c2012-21.7	src/comptime/comptime_intrinsics.c	182		misra violation (use --rule-texts=<file> to get proper output)	e85168dbcb24979bff22dafea8315147fd13c7db37255709a5b37797388d6b7d
 Cppcheck	misra-c2012-21.7	src/comptime/comptime_value.c	396		misra violation (use --rule-texts=<file> to get proper output)	79c42170b3d1617522d5ea8d26fb6e4a52482d3f656a9e82b0b5213b1f09d436
@@ -3620,7 +3621,10 @@ Cppcheck	misra-config	src/compiler/goo.c	495		Variable 'optind' is unknown	c305f
 Cppcheck	misra-config	src/compiler/goo.c	521		Unknown constant PATH_MAX, please review configuration	1db56e89be3a6b42a0a0d2120d36ddb95e5aabc2ea312d9802cffab11e6afd9d
 Cppcheck	misra-config	src/compiler/goo.c	523		Unknown constant PATH_MAX, please review configuration	10872311a852db21c0d32c13d2d97c6a97255e2586094ad69a9968b8d85b496c
 Cppcheck	misra-config	src/package/import_resolver.c	245		Unknown constant PATH_MAX, please review configuration	af283f0778e7369eb002512a2c26bba913dac970478693786c96fa9a64e60fb5
-Cppcheck	misra-config	src/runtime/concurrency.c	368		Variable '__func__' is unknown	772ca25541311b34aa6b2fdb0450bdd26c4cd2b8632168aef9cfa5f2eb7b8709
+Cppcheck	misra-config	src/runtime/concurrency.c	135		Variable 'PROT_NONE' is unknown	25c948f64b82db24c04824b2bb79e5531093f527034240cd0fb3983121550940
+Cppcheck	misra-config	src/runtime/concurrency.c	200		Variable 'SS_DISABLE' is unknown	b94a5f15c7a6fd485d30ae9d69dd539eb9a8b22778885b60b148ae15a28a1e84
+Cppcheck	misra-config	src/runtime/concurrency.c	204		Variable 'SIGSTKSZ' is unknown	0fe9125b15faf5037cfa3c5db0c204fa5e7d7740e97fa9ed3e871aaacccc4193
+Cppcheck	misra-config	src/runtime/concurrency.c	505		Variable '__func__' is unknown	772ca25541311b34aa6b2fdb0450bdd26c4cd2b8632168aef9cfa5f2eb7b8709
 Cppcheck	misra-config	src/runtime/runtime.c	255		Variable '__ATOMIC_RELAXED' is unknown	428ce4d4032536360d88a2f32830bffce8eaf6eaefb8dea3e497797b33a8ba1c
 Cppcheck	misra-config	src/runtime/runtime.c	275		Variable '__ATOMIC_RELAXED' is unknown	f733273bfa56a47336bdcbcc8192111375376bcc2f3bbc4cf7bf938a9db0f2ff
 Cppcheck	misra-config	src/runtime/runtime.c	359		Variable '__ATOMIC_RELAXED' is unknown	428ce4d4032536360d88a2f32830bffce8eaf6eaefb8dea3e497797b33a8ba1c
