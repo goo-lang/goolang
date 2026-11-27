@@ -1840,6 +1840,9 @@ ReleasePlan* release_plan_analyze(ASTNode* program) {
                                                    &c.addr_count);
         mark_block_escapes(&c, local_escape_find_summary(le, name));
 
+        // fn_count counted this same list of declarations, and plan->count
+        // rises at most once per one of them.
+        GOO_ASSERT(plan->count < fn_count);
         ReleasePlanFunction* pf = &plan->functions[plan->count];
         pf->function_name = xstrdup(name);
         pf->count = 0;
