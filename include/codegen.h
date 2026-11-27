@@ -301,6 +301,11 @@ struct CodeGenerator {
     // `"qir_profiles"="adaptive_profile"`, `"required_num_qubits"`,
     // `"required_num_results"`). Tail-appended per the no-header-deps rule.
     int emit_qir;
+    // 1 when the output is an executable that links the embedded simulator
+    // (16 qubits, 64 results), 0 for a hardware emit mode (--emit-llvm,
+    // --emit-qir, --emit-qasm3, --emit-mlir, --emit-sv). Only a native build
+    // refuses a QubitAt/ResultAt id that the simulator cannot hold.
+    int qir_sim_linked;
     uint64_t qir_num_qubits;
     uint64_t qir_num_results;
 

@@ -7,11 +7,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
-#define QIR_SIM_MAX_QUBITS 16
+#include "runtime.h"
+
+#define QIR_SIM_MAX_QUBITS GOO_QIR_SIM_MAX_QUBITS
 #define QIR_SIM_DIM        (1u << QIR_SIM_MAX_QUBITS)
-#define QIR_SIM_MAX_RES    64
+#define QIR_SIM_MAX_RES    GOO_QIR_SIM_MAX_RESULTS
 
 typedef struct {
     double re;
@@ -53,16 +56,36 @@ static double qir_sim_rand_unit(void) {
     return (double)(r >> 11) * (1.0 / 9007199254740992.0);
 }
 
+// An id that Goo source or the compiler check cannot produce used to wrap onto
+// a lower qubit or result through the mask, and the program exited 0 with a
+// wrong answer. This check panics instead. It copies the pointer bytes into an
+// integer with memcpy, because cppcheck 2.13 raises MISRA 11.6 on a pointer to
+// integer cast here, and the findings baseline must not grow.
+static unsigned qir_sim_checked_id(void* const* idp, unsigned limit, const char* kind) {
+    // The caller masks with (limit - 1u), which holds only for a power of two.
+    GOO_ASSERT(limit != 0u && (limit & (limit - 1u)) == 0u);
+    uintptr_t raw;
+    memcpy(&raw, idp, sizeof raw);
+    if (raw >= limit) {
+        char msg[128];
+        snprintf(msg, sizeof msg,
+                 "qir: %s index %llu is out of range (the embedded simulator has %u %ss)", kind,
+                 (unsigned long long)raw, limit, kind);
+        goo_panic(msg);
+    }
+    return (unsigned)raw;
+}
+
 static unsigned qir_sim_qubit_index(void* q) {
     qir_sim_ensure_init();
-    unsigned idx = (unsigned)((uintptr_t)q) & (QIR_SIM_MAX_QUBITS - 1u);
+    unsigned idx = qir_sim_checked_id(&q, QIR_SIM_MAX_QUBITS, "qubit") & (QIR_SIM_MAX_QUBITS - 1u);
     g_qir_sim.active_mask |= (uint16_t)(1u << idx);
     return idx;
 }
 
 static unsigned qir_sim_result_index(void* r) {
     qir_sim_ensure_init();
-    return (unsigned)((uintptr_t)r) & (QIR_SIM_MAX_RES - 1u);
+    return qir_sim_checked_id(&r, QIR_SIM_MAX_RES, "result") & (QIR_SIM_MAX_RES - 1u);
 }
 
 // Apply a 2x2 unitary [[u00, u01], [u10, u11]] to single qubit `q_idx`.
@@ -96,7 +119,8 @@ void* __quantum__rt__qubit_allocate(void) {
             return (void*)(uintptr_t)idx;
         }
     }
-    return (void*)(uintptr_t)0;
+    // Returning qubit 0 here aliased a live qubit and exited 0.
+    goo_panic("qir: qubit allocation failed: all 16 simulator qubits are in use");
 }
 
 void __quantum__rt__qubit_release(void* q) {

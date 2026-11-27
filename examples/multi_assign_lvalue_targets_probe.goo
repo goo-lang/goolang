@@ -1,0 +1,89 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+)
+
+var errEOF = errors.New("EOF")
+
+// A selector, index or deref target on the left of an N-name `=` with one
+// multi-value call on the right, the shapes Go's bufio and encoding/*
+// packages use (`n, b.err = b.rd.Read(p)`). The expected output comes from
+// `go run` of the same source.
+
+type reader struct {
+	data []byte
+	pos  int
+}
+
+func (r *reader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, errEOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+type bufReader struct {
+	rd  *reader
+	err error
+	buf []byte
+}
+
+type encoder struct {
+	w   io.Writer
+	err error
+	out []byte
+}
+
+func two() (int, string) {
+	return 4, "four"
+}
+
+func (b *bufReader) fill() int {
+	var n int
+	n, b.err = b.rd.Read(b.buf)
+	return n
+}
+
+func (e *encoder) write(n int) int {
+	var written int
+	written, e.err = e.w.Write(e.out[:n])
+	return written
+}
+
+func (e *encoder) flush() bool {
+	if _, e.err = e.w.Write(e.out[:2]); e.err != nil {
+		return false
+	}
+	return true
+}
+
+func main() {
+	b := &bufReader{rd: &reader{data: []byte("hello")}, buf: make([]byte, 3)}
+	fmt.Println(b.fill(), b.err, string(b.buf))
+	fmt.Println(b.fill(), b.err)
+	fmt.Println(b.fill(), b.err == errEOF)
+
+	var w bytes.Buffer
+	e := &encoder{w: &w, out: []byte{'a', 'b', 'c', 'd'}}
+	fmt.Println(e.write(3), e.err, w.String())
+	fmt.Println(e.flush(), w.String())
+
+	// Index, deref and blank targets from one call.
+	xs := []int{0, 0}
+	names := map[int]string{}
+	_ = names
+	var s string
+	ps := &s
+	xs[1], *ps = two()
+	fmt.Println(xs, s)
+	var k int
+	_, *ps = two()
+	k, _ = two()
+	fmt.Println(k, *ps)
+}

@@ -406,7 +406,30 @@ static int map_token_to_bison(TokenType type) {
     }
 }
 
-// Fetch + map the next token, setting yylval. Skips unknown tokens. Returns
+// An unmapped token must never vanish: `m := @n` once compiled as `m := n`.
+// TOKEN_ERROR and TOKEN_UNKNOWN are already counted and printed by the lexer.
+// `@` (TOKEN_DEREF) has no meaning in the grammar yet, so it is a user error.
+// Any other unmapped kind means the bridge and the lexer disagree, which is a
+// compiler defect: abort in checked builds, report loudly otherwise.
+static void bridge_refuse_unmapped(const Token* token) {
+    extern int goo_lexer_error_count;
+    GOO_ASSERT(token != NULL);
+    if (token->type == TOKEN_ERROR || token->type == TOKEN_UNKNOWN) {
+        return;
+    }
+    const char* file = token->pos.filename ? token->pos.filename : "<input>";
+    goo_lexer_error_count++;
+    if (token->type == TOKEN_DEREF) {
+        fprintf(stderr, "%s:%d:%d: error: syntax error, unexpected '@'\n",
+                file, token->pos.line, token->pos.column);
+        return;
+    }
+    GOO_ASSERT(token->type == TOKEN_DEREF);
+    fprintf(stderr, "%s:%d:%d: error: internal error: lexer token kind %d has no parser mapping\n",
+            file, token->pos.line, token->pos.column, (int)token->type);
+}
+
+// Fetch + map the next token, setting yylval. Refuses unmapped tokens. Returns
 // the bison token id (0 = EOF). This is the raw stream; the `[]` lookahead
 // in yylex() is layered on top.
 static int bridge_next_mapped(void) {
@@ -498,12 +521,15 @@ static int bridge_next_mapped(void) {
             break;
     }
 
-    token_free(token);
-
     if (bison_token == -1) {
-        // Skip unknown tokens
+        bridge_refuse_unmapped(token);
+        token_free(token);
+        // Keep parsing so later errors still surface. The error count above
+        // makes the type checker refuse to emit code.
         return bridge_next_mapped();
     }
+
+    token_free(token);
 
     return bison_token;
 }
