@@ -36,7 +36,7 @@ list_make_gates() {
     awk '/^VERIFY_ALL_DEPS[[:space:]]*:?=/{f=1} f{print} f && !/\\[[:space:]]*$/{exit}' "$MAKEFILE" \
         | sed 's/VERIFY_ALL_DEPS[[:space:]]*:\?=//' \
         | tr -d '\\' \
-        | tr ' ' '\n' \
+        | tr '[:space:]' '\n' \
         | grep -E '^[a-zA-Z0-9_-]+$' \
         | sort -u
 }
