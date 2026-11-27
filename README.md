@@ -4,7 +4,7 @@
 
 **A deterministic, no-GC superset of Go that molds to the hardware it runs on — across CPUs, QPUs, and FPGAs.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache-2.0 WITH LLVM-exception](https://img.shields.io/badge/License-Apache--2.0%20WITH%20LLVM--exception-blue.svg)](LICENSE)
 [![Implementation: C23](https://img.shields.io/badge/Implementation-C23-00599C.svg)](https://en.cppreference.com/w/c/23)
 [![Backend: LLVM 22+](https://img.shields.io/badge/Backend-LLVM%2022%2B-orange.svg)](https://llvm.org/)
 [![Quantum: QIR 1.0 & OpenQASM 3](https://img.shields.io/badge/Quantum-QIR%201.0%20%7C%20OpenQASM%203-6929C4.svg)](#quantum-computing--hardware-verification)
@@ -342,4 +342,11 @@ docs/           Language specification, ADRs, MISRA C:2023 deviations, and desig
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [Apache License v2.0 with LLVM Exceptions](LICENSE)
+(SPDX: `Apache-2.0 WITH LLVM-exception`), the licence of LLVM. The exception
+means that a program compiled with `goo` does not have to carry this notice,
+although the Goo runtime is linked into it.
+
+Third-party code keeps its own licence: the Go test corpus in
+`third_party/go-test-corpus/` is BSD-3-Clause (its `LICENSE` is beside it),
+NNG is MIT, and SPIN is BSD-3-Clause. See `third_party/README.md`.

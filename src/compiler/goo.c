@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>   // SIZE_MAX, for the read_file growth bound
 #include <unistd.h>
 #include <getopt.h>
 #include <libgen.h>
@@ -18,6 +19,7 @@
 #include "ast.h"
 #include "types.h"
 #include "program_dump.h"
+#include "json_writer.h"
 #include "diagnostic.h"
 
 // Name the synthesized `goo test` entry file carries through every phase
@@ -593,23 +595,53 @@ static char* read_file(const char* filename) {
         return NULL;
     }
     
-    // Get file size
-    fseek(file, 0, SEEK_END);
-    long size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    
-    // Allocate buffer
-    char* buffer = malloc(size + 1);
+    // A pipe or a FIFO has no size, so ftell returns -1 and cannot size the
+    // buffer. Read to EOF instead, and grow the buffer as the data arrives.
+    size_t cap = 4096;
+    size_t len = 0;
+    char* buffer = malloc(cap + 1u);
     if (!buffer) {
         fclose(file);
         diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "Out of memory reading file: %s", filename);
         return NULL;
     }
-    
-    // Read file
-    size_t read_size = fread(buffer, 1, size, file);
-    buffer[read_size] = '\0';
-    
+
+    for (;;) {
+        if (len == cap) {
+            if (cap > SIZE_MAX / 2 - 1) {
+                free(buffer);
+                fclose(file);
+                fprintf(stderr, "Error: Out of memory reading file: %s\n", filename);
+                return NULL;
+            }
+            size_t new_cap = cap * 2u;
+            char* grown = realloc(buffer, new_cap + 1u);
+            if (!grown) {
+                free(buffer);
+                fclose(file);
+                fprintf(stderr, "Error: Out of memory reading file: %s\n", filename);
+                return NULL;
+            }
+            buffer = grown;
+            cap = new_cap;
+        }
+        // fread returns a short count only at EOF or on error, so a zero
+        // count ends the loop. ferror below tells the two apart.
+        size_t want = cap - len;
+        size_t n = fread(buffer + len, 1, want, file);
+        len += n;
+        if (n < want) { break; }
+    }
+
+    if (ferror(file)) {
+        free(buffer);
+        fclose(file);
+        fprintf(stderr, "Error: Cannot read file: %s\n", filename);
+        return NULL;
+    }
+
+    GOO_ASSERT(len <= cap); // the loop only grows len up to cap
+    buffer[len] = '\0';
     fclose(file);
     return buffer;
 }
@@ -1464,8 +1496,13 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         for (size_t fi = 0; fi < nfiles; fi++) {
             dump_names[fi] = fi < options->input_file_count ? options->input_files[fi] : kTestMainName;
         }
-        program_dump_write(stdout, asts, dump_names, nfiles, NULL, PROGRAM_DUMP_PARSE);
+        int dump_rc = program_dump_write(stdout, asts, dump_names, nfiles, NULL, PROGRAM_DUMP_PARSE);
         free(dump_names);
+        if (dump_rc != 0) {
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "%s", jw_error_message(dump_rc));
+            ENTRY_CLEANUP();
+            return false;
+        }
         ENTRY_CLEANUP();
         return true;
     }
@@ -1628,7 +1665,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         if (!(arc_off && strcmp(arc_off, "0") == 0)) {
             for (size_t fi = 0; fi < nfiles; fi++) plans[fi] = release_plan_analyze(asts[fi]);
         }
-        program_dump_write(stdout, asts, dump_names, nfiles, plans, PROGRAM_DUMP_TYPED);
+        int dump_rc = program_dump_write(stdout, asts, dump_names, nfiles, plans, PROGRAM_DUMP_TYPED);
         for (size_t fi = 0; fi < nfiles; fi++) if (plans[fi]) release_plan_free(plans[fi]);
         free(plans);
         free(dump_names);
@@ -1636,6 +1673,11 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         codegen_free(codegen);
 #endif
         type_checker_free(type_checker);
+        if (dump_rc != 0) {
+            diag_emit(DIAG_ERROR, kNoPos, NULL, NULL, "%s", jw_error_message(dump_rc));
+            ENTRY_CLEANUP();
+            return false;
+        }
         ENTRY_CLEANUP();
         return true;
     }

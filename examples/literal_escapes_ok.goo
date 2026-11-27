@@ -1,0 +1,13 @@
+// M7: valid escapes and in-range numeric literals still compile after the
+// lexer began rejecting bad ones. \u/\U encode to UTF-8, \ooo is an octal byte.
+package main
+
+import "fmt"
+
+func main() {
+	s := "é\U0001F600\x41\101\t|"
+	fmt.Println(len(s), s)
+	fmt.Println('\x41', '\101', '\'', 017, 0o17, 0b101, 0xff, 1e3, 1e-999)
+	var u uint64 = 18446744073709551615
+	fmt.Println(u)
+}

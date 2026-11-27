@@ -7,6 +7,37 @@
 #include <stdio.h>
 #include <errno.h>   // literal_fits_type: ERANGE from strtoull (defensive branch)
 
+// strtod on a literal's text. errno is cleared before the call and read right
+// after it, as MISRA C:2012 22.8 and 22.9 require. `*clamped` reports ERANGE
+// and may be NULL when the caller needs only the value, which is the same
+// value a bare strtod call returns.
+static double literal_strtod(const char* text, bool* clamped) {
+    bool range_error = false;
+    errno = 0;
+    double v = strtod(text, NULL);
+    if (errno == ERANGE) {
+        range_error = true;
+    }
+    if (clamped) {
+        *clamped = range_error;
+    }
+    return v;
+}
+
+// strtoull on a literal's text, with the same errno handling as literal_strtod.
+static unsigned long long literal_strtoull(const char* text, bool* clamped) {
+    bool range_error = false;
+    errno = 0;
+    unsigned long long v = strtoull(text, NULL, 0);
+    if (errno == ERANGE) {
+        range_error = true;
+    }
+    if (clamped) {
+        *clamped = range_error;
+    }
+    return v;
+}
+
 // Forward declarations: the untyped-constant rootedness predicates and
 // adapters are defined below (near type_check_binary_expr, their primary
 // call site — see the doc comments there for the full design), but
@@ -311,8 +342,30 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
 
 // Expression type checking implementation
 
+// M3: every nested expression form (call, binary, selector, index, slice,
+// type assertion, ...) reaches its operand through type_check_expression, so
+// one counter here bounds the recursion of all of them. The parser builds long
+// chains iteratively, which is why the checker is where an unbounded depth
+// would otherwise first overflow the C stack.
+#define GOO_MAX_EXPR_DEPTH 500
+static thread_local int g_expr_check_depth = 0;
+
+static Type* type_check_expression_inner(TypeChecker* checker, ASTNode* expr);
+
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr) return NULL;
+    if (g_expr_check_depth >= GOO_MAX_EXPR_DEPTH) {
+        type_error(checker, expr->pos, "expression nesting exceeds %d levels",
+                   GOO_MAX_EXPR_DEPTH);
+        return type_checker_error_type(checker);
+    }
+    g_expr_check_depth++;
+    Type* result = type_check_expression_inner(checker, expr);
+    g_expr_check_depth--;
+    return result;
+}
+
+static Type* type_check_expression_inner(TypeChecker* checker, ASTNode* expr) {
     
     switch (expr->type) {
         case AST_IDENTIFIER:
@@ -740,6 +793,10 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 // sites; the semantics (including the #100 float->int asymmetry and the
 // task-3 range check) are identical for all four.
 static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* field_type, Type* vt) {
+    if (vt && vt->kind == TYPE_VOID) {
+        type_error(checker, v->pos, "used as value");
+        return NULL;
+    }
     // Fix 2 (comptime-param functions are not first-class values): this is
     // the one sink every composite-literal value routes through (struct
     // field, slice element, array element, map value — see the Task 3b note
@@ -1147,12 +1204,30 @@ Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
     return var->type;
 }
 
+static bool float64_is_finite(double d);
+
 Type* type_check_literal(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_LITERAL) return NULL;
     
     LiteralNode* lit = (LiteralNode*)expr;
     Type* type = NULL;
-    
+
+    // The lexer checks syntax only, so the two value overflows land here, in
+    // every context (also inside constant arithmetic, where a wrapped or NaN
+    // result would otherwise go through silently). Goo has no arbitrary-
+    // precision constants yet, so an integer above UINT64_MAX has no value to
+    // carry. The parser stores a float above DBL_MAX as the text "inf".
+    GOO_ASSERT(!lit->int_overflow || lit->literal_type == TOKEN_INT); // only INT_LITERAL sets the flag
+    if (lit->literal_type == TOKEN_INT && lit->int_overflow) {
+        // Keep going with the default type: a NULL here would leave the
+        // enclosing const or variable undeclared and add a cascade error.
+        type_error(checker, expr->pos, "integer constant overflow");
+    }
+    if (lit->literal_type == TOKEN_FLOAT && lit->value &&
+        !float64_is_finite(literal_strtod(lit->value, NULL))) {
+        type_error(checker, expr->pos, "floating-point constant overflow");
+    }
+
     switch (lit->literal_type) {
         case TOKEN_INT:
             // Go: an untyped integer constant's default type is `int` (64-bit
@@ -1975,6 +2050,32 @@ static int check_const_shift_count(TypeChecker* checker, ASTNode* count_expr,
     return 1;
 }
 
+static int is_const_zero(TypeChecker* checker, ASTNode* node) {
+    if (!node) {
+        return 0;
+    }
+    uint64_t ival = 0;
+    if (goo_fold_const_int_ctx(checker, node, &ival)) {
+        return (ival == 0u);
+    }
+    if (node->type == AST_LITERAL) {
+        const LiteralNode* lit = (const LiteralNode*)node;
+        if (lit->literal_type == TOKEN_INT) {
+            return (literal_strtoull(lit->value, NULL) == 0u);
+        }
+        if (lit->literal_type == TOKEN_FLOAT) {
+            return (literal_strtod(lit->value, NULL) == 0.0);
+        }
+    }
+    if (node->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)node;
+        if (u->operator == TOKEN_PLUS || u->operator == TOKEN_MINUS) {
+            return is_const_zero(checker, u->operand);
+        }
+    }
+    return 0;
+}
+
 // CHANGE-TOGETHER (task 2, checker/codegen hygiene): this function is the
 // SOLE place that computes a binary expression's result type, and it is the
 // SOLE place that RECORDS it, on `expr->node_type`, at each of its two
@@ -2003,6 +2104,10 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         strcmp(((IdentifierNode*)binary->left)->name, "_") == 0) {
         Type* rhs_type = type_check_expression(checker, binary->right);
         if (!rhs_type) return NULL;
+        if (rhs_type->kind == TYPE_VOID) {
+            type_error(checker, binary->right ? binary->right->pos : expr->pos, "used as value");
+            return NULL;
+        }
         expr->node_type = rhs_type;  // records — see the invariant comment above
         return rhs_type;
     }
@@ -2023,6 +2128,15 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         Type* poison = type_is_poison(left_type) ? left_type : right_type;
         expr->node_type = poison;
         return poison;
+    }
+
+    if (left_type->kind == TYPE_VOID) {
+        type_error(checker, binary->left ? binary->left->pos : expr->pos, "used as value");
+        return NULL;
+    }
+    if (right_type->kind == TYPE_VOID) {
+        type_error(checker, binary->right ? binary->right->pos : expr->pos, "used as value");
+        return NULL;
     }
 
     // Narrow integer-literal adaptation for binary ops: if exactly one operand
@@ -2205,8 +2319,14 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_PLUS:
         case TOKEN_MINUS:
         case TOKEN_MULTIPLY:
+            result_type = type_check_arithmetic_op(checker, left_type, right_type, binary->operator, expr->pos);
+            break;
         case TOKEN_DIVIDE:
         case TOKEN_MODULO:
+            if (is_const_zero(checker, binary->right)) {
+                type_error(checker, expr->pos, "division by zero");
+                return NULL;
+            }
             result_type = type_check_arithmetic_op(checker, left_type, right_type, binary->operator, expr->pos);
             break;
             
@@ -2266,6 +2386,12 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_XOR_ASSIGN:
         case TOKEN_LSHIFT_ASSIGN:
         case TOKEN_RSHIFT_ASSIGN:
+            if ((binary->operator == TOKEN_DIV_ASSIGN || binary->operator == TOKEN_MOD_ASSIGN) &&
+                is_const_zero(checker, binary->right)) {
+                type_error(checker, expr->pos, "division by zero");
+                result_type = NULL;
+                break;
+            }
             if ((binary->operator == TOKEN_LSHIFT_ASSIGN || binary->operator == TOKEN_RSHIFT_ASSIGN) &&
                 !check_const_shift_count(checker, binary->right, expr->pos)) {
                 result_type = NULL;
@@ -2346,6 +2472,11 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
     if (type_is_poison(operand_type)) {
         expr->node_type = operand_type;
         return operand_type;
+    }
+
+    if (operand_type->kind == TYPE_VOID) {
+        type_error(checker, unary->operand ? unary->operand->pos : expr->pos, "used as value");
+        return NULL;
     }
 
     Type* result_type = NULL;
@@ -2809,6 +2940,7 @@ static int type_check_capture_comptime_arg(TypeChecker* checker,
     if (!resolved) {
         ComptimeContext* raw_ctx = checker->comptime_type_ctx
             ? checker->comptime_type_ctx->comptime_ctx : NULL;
+        if (raw_ctx) { comptime_context_reset_steps(raw_ctx); }
         ComptimeResult* res = raw_ctx
             ? comptime_eval_expression(raw_ctx, arg) : NULL;
         int ok = res && res->value && !res->error &&
@@ -4495,6 +4627,11 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
 
+        if (arg_type->kind == TYPE_VOID) {
+            type_error(checker, arg->pos, "used as value");
+            return NULL;
+        }
+
         // P2.8 FIX F1 (cascade-suppression completeness): an argument bound
         // to a previously failed declaration (see
         // register_declared_names_after_failure) must not spawn a SECOND
@@ -4871,6 +5008,15 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
     Type* index_type = type_check_expression(checker, index->index);
     
     if (!expr_type || !index_type) return NULL;
+
+    if (expr_type->kind == TYPE_VOID) {
+        type_error(checker, index->expr->pos, "used as value");
+        return NULL;
+    }
+    if (index_type->kind == TYPE_VOID) {
+        type_error(checker, index->index->pos, "used as value");
+        return NULL;
+    }
     
     // Check index type — integer for array/slice/string; a map's key can be
     // any of its admitted key kinds (string, integer, bool, char, pointer —
@@ -5005,12 +5151,20 @@ Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr) {
 
     Type* base_type = type_check_expression(checker, slice->expr);
     if (!base_type) return NULL;
+    if (base_type->kind == TYPE_VOID) {
+        type_error(checker, slice->expr->pos, "used as value");
+        return NULL;
+    }
 
     // Bounds are optional (open-ended slices `s[low:]`, `s[:high]`, `s[:]`);
     // codegen defaults an omitted low to 0 and an omitted high to len.
     if (slice->low) {
         Type* low_type = type_check_expression(checker, slice->low);
         if (!low_type) return NULL;
+        if (low_type->kind == TYPE_VOID) {
+            type_error(checker, slice->low->pos, "used as value");
+            return NULL;
+        }
         if (!type_is_integer(low_type)) {
             type_error(checker, slice->low->pos,
                        "Slice low bound must be integer, got %s", type_to_string(low_type));
@@ -5020,6 +5174,10 @@ Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr) {
     if (slice->high) {
         Type* high_type = type_check_expression(checker, slice->high);
         if (!high_type) return NULL;
+        if (high_type->kind == TYPE_VOID) {
+            type_error(checker, slice->high->pos, "used as value");
+            return NULL;
+        }
         if (!type_is_integer(high_type)) {
             type_error(checker, slice->high->pos,
                        "Slice high bound must be integer, got %s", type_to_string(high_type));
@@ -5159,6 +5317,7 @@ static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position po
         s->base.pos = pos;
         s->base.node_type = NULL;
         s->base.next = NULL;
+        s->base.tail = NULL;
         s->expr = base;
         s->selector = xstrdup(r->path[i]);
         base = (ASTNode*)s;
@@ -5189,6 +5348,11 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
 
     Type* expr_type = type_check_expression(checker, selector->expr);
     if (!expr_type) return NULL;
+
+    if (expr_type->kind == TYPE_VOID) {
+        type_error(checker, selector->expr->pos, "used as value");
+        return NULL;
+    }
 
     // P2.8 FIX F1 (cascade-suppression completeness): a poisoned base
     // expression (bound to a previously failed declaration — see
@@ -5608,6 +5772,11 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
 // Channel operation type checking
 Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, ASTNode* value_expr, Position pos) {
     if (!checker || !channel_type || !value_type) return NULL;
+
+    if (value_type->kind == TYPE_VOID) {
+        type_error(checker, value_expr ? value_expr->pos : pos, "used as value");
+        return NULL;
+    }
 
     // Left operand must be a channel
     if (channel_type->kind != TYPE_CHANNEL) {

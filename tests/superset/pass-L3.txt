@@ -2,6 +2,7 @@ alias1.go
 closure1.go
 closure7.go
 compos.go
+divide.go
 fixedbugs/bug000.go
 fixedbugs/bug005.go
 fixedbugs/bug008.go
@@ -73,7 +74,6 @@ fixedbugs/bug497.go
 fixedbugs/bug501.go
 fixedbugs/issue10135.go
 fixedbugs/issue10925.go
-fixedbugs/issue11326b.go
 fixedbugs/issue11369.go
 fixedbugs/issue12133.go
 fixedbugs/issue12226.go
@@ -121,6 +121,7 @@ fixedbugs/issue47771.go
 fixedbugs/issue49100.go
 fixedbugs/issue49100b.go
 fixedbugs/issue49145.go
+fixedbugs/issue5056.go
 fixedbugs/issue50671.go
 fixedbugs/issue50854.go
 fixedbugs/issue51101.go
