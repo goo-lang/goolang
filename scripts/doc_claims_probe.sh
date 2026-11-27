@@ -99,11 +99,17 @@ PKGS="$(sed -n 's/^GOOSTD_PKG_DIRS="\(.*\)"$/\1/p' "$ROOT/scripts/check_stdlib_c
 if [ -z "$PKGS" ]; then
 	bad "could not read GOOSTD_PKG_DIRS (the stdlib list) from check_stdlib_coverage.sh"
 else
-	shipped=0; fixture=0; unclassified=0
+	shipped=0; fixture=0; vendored=0; unclassified=0
 	for d in "$ROOT"/goostd/*/; do
 		name="$(basename "$d")"
 		if printf '%s' "$PKGS" | tr ' ' '\n' | grep -q "^${name}:"; then
 			shipped=$((shipped+1)); continue
+		fi
+		# A package vendored through tools/vendor_go.py has a pristine copy,
+		# and vendor-drift-probe pins it to that copy. It is classified, and
+		# it ships only when its package task adds it to GOOSTD_PKG_DIRS.
+		if [ -d "$ROOT/third_party/go1.27.4-src/$name" ]; then
+			vendored=$((vendored+1)); continue
 		fi
 		# -R, not -r: under Bazel "$d" is a real directory of SYMLINKED
 		# files (a sh_test's data arrives as a runfiles tree), and plain
@@ -116,7 +122,7 @@ else
 		note "it would be silently absent from every released toolchain"
 		unclassified=$((unclassified+1))
 	done
-	[ "$unclassified" -eq 0 ] && note "goostd: $shipped shipped, $fixture fixtures, 0 unclassified"
+	[ "$unclassified" -eq 0 ] && note "goostd: $shipped shipped, $fixture fixtures, $vendored vendored, 0 unclassified"
 fi
 
 # --- 2. The shim package set, which ADR 0006 states as nine names. These
