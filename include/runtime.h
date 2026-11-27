@@ -558,8 +558,8 @@ int64_t goo_slice_copy_raw(void* dst, int64_t dst_len,
 //
 // NEITHER append form reallocs or frees dst's old array. Growth copies into a
 // new array and leaves the old one to every other slice that shares it, as Go
-// does. Nothing frees the replaced array: no analysis can yet prove that no
-// alias holds it, so it leaks (see goo_slice_grow_to).
+// does. Freeing the replaced array is the caller's job, and codegen does it
+// only for a release-approved `L = append(L, ...)` (see goo_slice_grow_to).
 void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
                            int64_t src_len, int64_t elem_size);
 

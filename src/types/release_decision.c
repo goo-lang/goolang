@@ -130,6 +130,14 @@ typedef struct {
     // node of its own. Poisons the rebound path on its own, because a list that
     // silently omits a value would let that value be freed unexamined.
     bool      has_unsafe_value;
+
+    // `L = append(L, ...)` was seen for this name. A self-append is not a
+    // binding, so binding_count does not move, but codegen frees the array the
+    // append replaced when the local reads RELEASE_OK
+    // (codegen_arc_release_replaced_buffer). That free happens in the MIDDLE
+    // of the function, so condition 7 must hold for this local exactly as it
+    // must for a rebound one. See decide().
+    bool      self_appended;
 } LocalRecord;
 
 typedef struct {
@@ -190,6 +198,31 @@ typedef struct {
     // The function being walked. A bare call `f()` whose name is one of its
     // parameters or named results calls that variable, not a top-level f.
     const FuncDeclNode* decl;
+
+    // CONDITION 7's OTHER TWO SOURCES. has_alias reads every record's values,
+    // which is every expression a named local was bound to. Two kinds of
+    // holder have no entry there.
+    //
+    // held_exprs: an expression that reached a local whose recorded value is
+    // NULL -- the right-hand side of a count-mismatched `a, b := f(x)`, a type
+    // switch's subject, an if-let's nullable. The local is a view of it, and
+    // NULL cannot say of what. Borrowed AST nodes.
+    ASTNode**    held_exprs;
+    size_t       held_count;
+    size_t       held_cap;
+
+    // store_log: the NAME of every binding and self-append, in walk order.
+    // Borrowed from the records, whose names never move. range_sites: each
+    // `for ... range X` with the log span its BODY covers. The range
+    // temporary is the one unnamed holder that outlives a statement: it keeps
+    // X's header for the whole loop. A store into a local that X names, inside
+    // that span, frees the value the loop still iterates.
+    const char** store_log;
+    size_t       store_count;
+    size_t       store_cap;
+    struct { ASTNode* expr; size_t begin; size_t end; } *range_sites;
+    size_t       range_count;
+    size_t       range_cap;
 } Collected;
 
 typedef struct {
@@ -236,6 +269,7 @@ static LocalRecord* intern_record(Collected* c, const char* name) {
     r->value_count = 0;
     r->value_cap = 0;
     r->has_unsafe_value = false;
+    r->self_appended = false;
     c->count++;
     return r;
 }
@@ -257,6 +291,56 @@ static bool record_value(LocalRecord* r, ASTNode* value) {
     }
     r->values[r->value_count++] = value;
     return true;
+}
+
+// Log one store into `name` for the range rule. A failed append marks the
+// function unreadable: a store missing from the log would let a range over the
+// stored local pass the rule, and that frees what the loop still reads.
+static void log_store(Collected* c, const char* name) {
+    if (c->store_count >= c->store_cap) {
+        size_t ncap = c->store_cap ? c->store_cap * 2 : 8;
+        const char** grown = realloc(c->store_log, ncap * sizeof(*c->store_log));
+        if (!grown) { c->unreadable = true; return; }
+        c->store_log = grown;
+        c->store_cap = ncap;
+    }
+    c->store_log[c->store_count++] = name;
+}
+
+// Record an expression that a NULL-valued binding is a view of. Same failure
+// rule as log_store, for the same reason: an alias source that is not recorded
+// cannot refuse anything.
+static void note_held_expr(Collected* c, ASTNode* expr) {
+    if (!expr) return;
+    if (c->held_count >= c->held_cap) {
+        size_t ncap = c->held_cap ? c->held_cap * 2 : 4;
+        ASTNode** grown = realloc(c->held_exprs, ncap * sizeof(*c->held_exprs));
+        if (!grown) { c->unreadable = true; return; }
+        c->held_exprs = grown;
+        c->held_cap = ncap;
+    }
+    c->held_exprs[c->held_count++] = expr;
+}
+
+static void note_held_list(Collected* c, ASTNode* list) {
+    for (ASTNode* e = list; e; e = e->next) note_held_expr(c, e);
+}
+
+// Record a range loop over `expr` whose body's stores are the log entries from
+// `begin` to now. Same failure rule as log_store: an unrecorded range cannot
+// refuse.
+static void note_range_site(Collected* c, ASTNode* expr, size_t begin) {
+    if (c->range_count >= c->range_cap) {
+        size_t ncap = c->range_cap ? c->range_cap * 2 : 4;
+        void* grown = realloc(c->range_sites, ncap * sizeof(*c->range_sites));
+        if (!grown) { c->unreadable = true; return; }
+        c->range_sites = grown;
+        c->range_cap = ncap;
+    }
+    c->range_sites[c->range_count].expr = expr;
+    c->range_sites[c->range_count].begin = begin;
+    c->range_sites[c->range_count].end = c->store_count;
+    c->range_count++;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,16 +479,21 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
     }
     if (!record_value(r, value)) { ctx->out->unreadable = true; return; }
     r->binding_count++;
+    log_store(ctx->out, r->name);
 }
 
 // Is this `L = append(L, ...)` -- a SELF-APPEND?
 //
 // It matters because such an assignment does not REBIND `L` to a different
 // object. It GROWS L's object: append either writes into the existing buffer or
-// copies it into a new one and leaves the old one live (it may be shared, and
-// nothing here proves it is not, so it leaks). Ownership of the buffer L holds
-// never moves, so a release at exit frees exactly the buffer `L` still holds,
-// which is correct.
+// copies it into a new one, and for an approved L codegen releases the replaced
+// buffer at the store (codegen_arc_release_replaced_buffer). One local, one live
+// buffer, and ownership never moves. So a release at exit frees exactly the
+// buffer `L` still holds, which is correct.
+//
+// NOT A BINDING, BUT A MID-FUNCTION FREE. That release is why a self-append
+// sets LocalRecord.self_appended, and why condition 7 runs for such a local
+// although its binding count did not move. See decide().
 //
 // `t := append(s, x)` is a DIFFERENT and dangerous shape, and it is NOT this
 // one. There, t and s can hold the SAME buffer when capacity suffices, and two
@@ -417,9 +506,10 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
 // self-append: that walks and frees the ELEMENTS, and the new buffer still
 // holds every one of them. When append still realloc'd, that was measured on
 // bench/daemon/daemon.goo as 7 invalid reads through goo_slice_release_elems and
-// goo_release_with, with the program printing nothing at all. ONE
-// implementation rather than a second copy in codegen: the two must agree, and
-// this is the same predicate the rebind rule uses.
+// goo_release_with, with the program printing nothing at all. Codegen releases
+// only the replaced buffer instead. ONE implementation rather than a second copy
+// in codegen: the two must agree, and this is the same predicate the rebind rule
+// uses.
 static bool is_self_append(const char* target, ASTNode* rhs);
 
 bool release_decision_is_self_append(const char* target, ASTNode* rhs) {
@@ -504,11 +594,15 @@ static void note_assignment(WalkCtx* ctx, ASTNode* lhs, ASTNode* rhs, bool plain
     if (!name || strcmp(name, "_") == 0) return;
     LocalRecord* r = intern_record(ctx->out, name);
     if (!r) { ctx->out->unreadable = true; return; }
+    // Every store reaches the log, the self-append included: each one frees
+    // what the slot held, the old value or the replaced array.
+    log_store(ctx->out, r->name);
     // A self-append grows the same object, so it is not a new binding. Only a
     // plain `=` qualifies; a compound operator is never an append.
     if (plain_assign && is_self_append(name, rhs)) {
         // ...and every argument after arg 0 is a NEW ELEMENT of that object.
         note_append_elems(ctx, r->name, rhs);
+        r->self_appended = true;
         return;
     }
     // A COMPOUND assignment (`s += x`) stores the result of `lhs op rhs`, NOT
@@ -589,6 +683,9 @@ static void seed_names(WalkCtx* ctx, char** names, size_t name_count, ASTNode* v
     // one object. condition 2 still asks the audited non_retaining row, and
     // examples/arc_release_tuple_probe.goo pins the bytes.
     ASTNode* single = (value_count == 1 && is_selector_call(values)) ? values : NULL;
+    // A NULL value says nothing about what the names now hold, so condition 7
+    // reads the right-hand side itself.
+    note_held_list(ctx->out, values);
     for (size_t i = 0; i < name_count; i++) note_declaration(ctx, names[i], single);
 }
 
@@ -638,6 +735,9 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 size_t tcount = 0, vcount = 0;
                 for (ASTNode* t = n->targets; t; t = t->next) tcount++;
                 for (ASTNode* v = n->values; v; v = v->next) vcount++;
+                // Unpaired, the targets record NULL or one shared call, so
+                // condition 7 reads the right-hand side itself. See seed_names.
+                if (tcount != vcount) note_held_list(ctx->out, n->values);
 
                 ASTNode* v = n->values;
                 for (ASTNode* t = n->targets; t; t = t->next) {
@@ -695,7 +795,12 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                     if (n->value_name) note_declaration(ctx, n->value_name, NULL);
                 }
                 ctx->in_loop_header = saved_header;
+                // The body's stores are the span the range temporary is live
+                // across. Header stores are outside it: the range expression
+                // is evaluated after the init clause and before any body.
+                size_t body_begin = ctx->out->store_count;
                 walk_stmts(ctx, n->body);
+                if (n->range_expr) note_range_site(ctx->out, n->range_expr, body_begin);
                 ctx->block_depth--;
                 break;
             }
@@ -756,6 +861,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 ctx->block_depth++;
                 if (n->bind_name && n->bind_name->type == AST_IDENTIFIER) {
                     note_declaration(ctx, ((IdentifierNode*)n->bind_name)->name, NULL);
+                    note_held_expr(ctx->out, n->expr);
                 }
                 for (ASTNode* c = n->cases; c; c = c->next) {
                     if (c->type != AST_TYPE_CASE) { ctx->out->unreadable = true; continue; }
@@ -812,7 +918,11 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                             // for it, so the values list is incomplete here. The
                             // rebound path must not read that silence as "no
                             // values, nothing unsafe".
-                            else    { r->has_unsafe_value = true; r->binding_count++; }
+                            else    {
+                                r->has_unsafe_value = true;
+                                r->binding_count++;
+                                log_store(ctx->out, r->name);
+                            }
                         }
                     }
                     walk_stmts(ctx, sc->body);
@@ -827,6 +937,7 @@ static void walk_stmts(WalkCtx* ctx, ASTNode* stmt) {
                 // bind is: the unwrapped value aliases whatever the nullable held,
                 // so NOT_OWNED is the cause that will never stop being true.
                 note_declaration(ctx, n->var_name, NULL);
+                note_held_expr(ctx->out, n->nullable_expr);
                 walk_stmts(ctx, n->then_stmt);
                 walk_stmts(ctx, n->else_stmt);
                 break;
@@ -1253,8 +1364,16 @@ static bool is_composite_value(const ASTNode* v) {
 //
 // COMPLETE BY CONSTRUCTION. Every binding in the function flows through
 // note_declaration or note_assignment, so every value another local could have
-// taken is in some record's `values`. A statement kind the walk cannot read sets
-// `unreadable` and refuses the whole function before this is ever consulted.
+// taken is in some record's `values` -- or, where that value is NULL, in
+// `held_exprs`, which holds what the NULL-valued local is a view of. A
+// statement kind the walk cannot read sets `unreadable` and refuses the whole
+// function before this is ever consulted.
+//
+// A HOLDER THAT IS NOT A LOCAL is condition 1's, not this function's. A store
+// through a field, an index or a pointer is CONTAINER_STORE, an appended
+// element is CALL_OPAQUE, and a return, a global, a channel, a closure, a `go`
+// or a `defer` argument each have a reason of their own (escape_core.c). Any
+// of them marks the local, and decide() refuses it before this runs.
 //
 // WIDER THAN A BARE IDENTIFIER, because `p := borrow(last)` aliases just as hard
 // as `p := last` when the callee returns its argument. So any MENTION inside a
@@ -1290,6 +1409,45 @@ static bool has_alias(Collected* c, const ParamEscapeResult* pe, const char* nam
             if (expr_names_local(v, name, &unknown)) return true;
             if (unknown) return true;   // fail closed
         }
+    }
+    // No prune here: the local these feed is a VIEW of the expression (a type
+    // switch's `v`, an if-let's value, one of several results), so a mention
+    // means the view may point into `name`'s memory.
+    for (size_t i = 0; i < c->held_count; i++) {
+        bool unknown = false;
+        if (expr_names_local(c->held_exprs[i], name, &unknown)) return true;
+        if (unknown) return true;   // fail closed
+    }
+    return false;
+}
+
+// Does a `for ... range X` loop store into `name` while X may hold its value?
+//
+// THE RANGE TEMPORARY. `for _, v := range xs` evaluates xs ONCE and iterates
+// that header to the end of the loop. It has no name, so no record holds it and
+// has_alias cannot see it. A store into xs inside the body frees what the slot
+// held -- the old value at a rebind, the replaced array at a self-append -- and
+// the loop then reads freed memory. Measured on both paths before this rule:
+// tests/arc_uaf/append_alias_range.goo (self-append) and
+// tests/arc_uaf/range_rebind_string.goo (rebind, invalid read in
+// goo_utf8_decode).
+//
+// ONLY THE BODY'S STORES. A store before the loop happens before the range
+// expression is evaluated, and one after it happens when the temporary is dead.
+// An enclosing loop that re-runs the range re-evaluates it, so that is the same
+// two cases again.
+//
+// A range expression this scanner cannot read counts as naming `name`.
+static bool range_rebinds_source(const Collected* c, const char* name) {
+    for (size_t i = 0; i < c->range_count; i++) {
+        bool stores = false;
+        for (size_t j = c->range_sites[i].begin; j < c->range_sites[i].end && !stores; j++) {
+            stores = strcmp(c->store_log[j], name) == 0;
+        }
+        if (!stores) continue;
+        bool unknown = false;
+        if (expr_names_local(c->range_sites[i].expr, name, &unknown)) return true;
+        if (unknown) return true;   // fail closed
     }
     return false;
 }
@@ -1392,6 +1550,15 @@ static void collected_free(Collected* c) {
     free(c->elem_sites);
     c->elem_sites = NULL;
     c->elem_count = c->elem_cap = 0;
+    free(c->held_exprs);
+    c->held_exprs = NULL;
+    c->held_count = c->held_cap = 0;
+    free(c->store_log);
+    c->store_log = NULL;
+    c->store_count = c->store_cap = 0;
+    free(c->range_sites);
+    c->range_sites = NULL;
+    c->range_count = c->range_cap = 0;
 }
 
 static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
@@ -1476,26 +1643,53 @@ static ReleaseVerdict decide(const Collected* c, const LocalRecord* r,
     // (3b4757a, 0f25db9, 9068675) so that nothing frees it -- the opposite
     // direction, and no machinery to copy.
     //
-    // TWO NEW REFUSALS, and they are different questions:
-    //
-    //   2'  all_values_release_safe -- EVERY value that reached the slot is
-    //       safe to free, because the store cannot tell them apart at run time.
-    //       This replaces condition 2 rather than joining it: the ordinary form
-    //       asks only about `bound_value`, and for `last := ""` that is a
-    //       literal, so it would refuse the very shape this path exists for.
-    //
-    //   7   has_alias -- another local holds a second pointer to the value.
-    //       local_escape cannot see it, so nothing else refuses it, and a
-    //       release at the next store dangles inside the same function.
+    // CONDITION 2' replaces condition 2 for a rebound local:
+    // all_values_release_safe -- EVERY value that reached the slot is safe to
+    // free, because the store cannot tell them apart at run time. The ordinary
+    // form asks only about `bound_value`, and for `last := ""` that is a
+    // literal, so it would refuse the very shape this path exists for.
     if (r->binding_count > 1) {
         if (!all_values_release_safe((Collected*)c, pe, r)) return RELEASE_NO_NOT_OWNED;
-        if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;
-        GOO_ASSERT(!local_escape_local_escapes(le, fn, r->name));
-        return RELEASE_OK;
+    } else if (!binding_is_owned((Collected*)c, pe, r->bound_value)) {
+        // Condition 2: it is the one that needs the callee summaries.
+        return RELEASE_NO_NOT_OWNED;
     }
 
-    // Condition 2 last: it is the one that needs the callee summaries.
-    if (!binding_is_owned((Collected*)c, pe, r->bound_value)) return RELEASE_NO_NOT_OWNED;
+    // CONDITION 7 -- no other holder reads what a MID-FUNCTION free releases.
+    //
+    // A release at scope exit needs no alias test: every local of the function
+    // dies at the same exit, and condition 6 covers a holder that outlives a
+    // loop iteration. Two codegen paths free EARLIER than that, and both free
+    // what the slot held while the function can still read it elsewhere:
+    //
+    //   a rebound local     the store releases the old value
+    //                       (codegen_arc_release_before_store)
+    //   a self-appended one the append releases the array it replaced
+    //                       (codegen_arc_release_replaced_buffer)
+    //
+    // So condition 7 runs for EITHER. Until PR #376's review it ran for the
+    // first only: a self-append is not a binding, so `u := xs;
+    // xs = append(xs, 1)` read RELEASE_OK and the release freed u's array
+    // (tests/arc_uaf/append_alias_*.goo, release-decision rows 81-88).
+    //
+    // THE ARGUMENT. When either free runs, the value it frees came from this
+    // local's slot. A pointer into it can be held in three places only:
+    //   (a) beyond a local -- a field, an index, a pointer, an appended element,
+    //       a return, a global, a channel, a closure, `go`, `defer`. Each is a
+    //       reason in local_escape, and condition 1 above refused the local.
+    //   (b) another named local -- every value bound to one is in its record,
+    //       or in held_exprs when the record has NULL. has_alias refuses any
+    //       mention that is not a fresh copy.
+    //   (c) an unnamed temporary that outlives the statement -- only a range
+    //       expression does. range_rebinds_source refuses a store in its body.
+    // A temporary inside the storing statement itself is read before the
+    // free: the right-hand side is complete when the release runs.
+    //
+    // local_escape cannot see (b) or (c), so nothing else refuses them.
+    if (r->binding_count > 1 || r->self_appended) {
+        if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;
+        if (range_rebinds_source(c, r->name)) return RELEASE_NO_ALIASED;
+    }
 
     // THE INVARIANT THIS WHOLE MODULE RESTS ON, and until now it lived only in
     // condition 1's ordering. RELEASE_OK means codegen emits a free. If the

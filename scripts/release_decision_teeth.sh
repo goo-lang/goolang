@@ -80,7 +80,9 @@ assert_src_untouched() {
 # unguarded condition.
 MUTATIONS=(
 "cond1-escapes	    if (local_escape_local_escapes(le, fn, r->name)) return RELEASE_NO_ESCAPES;"
-"cond2-owned	    if (!binding_is_owned((Collected*)c, pe, r->bound_value)) return RELEASE_NO_NOT_OWNED;"
+# Condition 2 opens an `else if` block since condition 7 moved below it, so
+# it is relaxed rather than deleted.
+"cond2-owned	    } else if (!binding_is_owned((Collected*)c, pe, r->bound_value)) {	    } else if (!binding_is_owned((Collected*)c, pe, r->bound_value) && false) {"
 "cond3-arena	    if (r->arena_depth > 0) return RELEASE_NO_ARENA;"
 "cond6-block-escape	        if (r->block_escapes) return RELEASE_NO_BLOCK_ESCAPE;"
 # CONDITION 4'S LOOP HALF IS GONE, replaced by the two rules above and below.
@@ -104,6 +106,15 @@ MUTATIONS=(
 # without making the value outlive the function, so local_escape reports nothing
 # and condition 1 passes. Row 41.
 "alias-refusal	        if (has_alias((Collected*)c, pe, r->name)) return RELEASE_NO_ALIASED;	        if (has_alias((Collected*)c, pe, r->name) && false) return RELEASE_NO_ALIASED;"
+# CONDITION 7 FOR A SELF-APPENDED LOCAL. This is the guard PR #376 shipped
+# without: condition 7 asked only of a local bound more than once, a
+# self-append is not a binding, and codegen freed the replaced array under
+# `u := xs` and seven other shapes. Restoring the old guard must turn rows
+# 81-88 RED.
+"self-append-alias	    if (r->binding_count > 1 || r->self_appended) {	    if (r->binding_count > 1) {"
+# THE RANGE TEMPORARY. No record holds it, so has_alias cannot see it, and a
+# store in the loop body frees what the loop iterates. Rows 83 and 89.
+"range-store	        if (range_rebinds_source(c, r->name)) return RELEASE_NO_ALIASED;	        if (range_rebinds_source(c, r->name) && false) return RELEASE_NO_ALIASED;"
 "unreadable	    if (c->unreadable) return RELEASE_NO_UNKNOWN;"
 # Not in decide(): the SELF-APPEND rule lives in note_assignment. Without it
 # `L = append(L, x)` counts as a rebind and row 18 must fail.
@@ -146,7 +157,7 @@ MUTATIONS=(
 # them run. A gate whose work can shrink to nothing while its verdict holds
 # still is not a gate. Change this number in the same commit that adds or
 # removes a mutation, and give the reason in the message.
-EXPECTED_MUTATIONS=12
+EXPECTED_MUTATIONS=14
 [ "${#MUTATIONS[@]}" -eq "$EXPECTED_MUTATIONS" ] \
     || die "mutation table holds ${#MUTATIONS[@]} entries, expected $EXPECTED_MUTATIONS"
 
