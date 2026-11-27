@@ -337,17 +337,29 @@ length while the block count holds. The figures in this section are for a progra
   than the bytes of the final array, plus one block for each doubling. The
   daemon's `parts` is RELEASE_OK, so the daemon is back to 4,003 blocks (the
   table above).
-- **An address-taken local is never released (condition 8).** `&L` lets a
-  callee or a pointer write into L's slot a value no binding records.
+- **A local with an explicit `&L` or a closure capture is never released
+  (condition 8).** `&L` lets a callee or a pointer write into L's slot a
+  value no binding records.
   Before fix/append-alias-sound this was a LIVE USE-AFTER-FREE ON MAIN on two
   paths that predate PR #376: the exit release (`set(&xs, v)` with
   `*p = v`, then `return len(xs)` freed the caller's v; also `p := &xs;
   *p = v`) and the store release of a rebound string (`setS(&s, other);
   s = s + "x"` freed other's buffer). tests/arc_uaf/addr_callee_*.goo and
   addr_local_exit.goo; all four fail with main's bin/goo. A named holder
-  (`p := &xs`) reads RELEASE_NO_ALIASED, every other address use reads
-  RELEASE_NO_ADDR_TAKEN. Cost on the 641-program census: RELEASE_OK 366 ->
-  360, all six value-struct literals whose slot codegen never released.
+  (`p := &xs`) reads RELEASE_NO_ALIASED, every other explicit `&L` or
+  closure capture reads RELEASE_NO_ADDR_TAKEN. An IMPLICIT address is not
+  seen (see the next bullet). Cost on the 641-program census: RELEASE_OK 366
+  -> 360, all six value-struct literals whose slot codegen never released.
+- **TWO KNOWN OPEN USE-AFTER-FREE CLASSES, on main as of 2026-11-27 and on
+  this branch; the next PR fixes them.** Both free a value someone else
+  still reads, and no gate catches either today.
+  1. A pointer-receiver METHOD VALUE takes `&s` implicitly, which condition
+     8 does not see: `s := S{1, 2}; m := s.set; m(v); return len(s)`, with
+     `func (s *S) set(o S) { *s = o }`, frees the caller's v at exit.
+  2. An INDEX STORE into a slice that owns its elements: `xs := []string{a +
+     "1", a + "2"}; xs[0] = v; return len(xs)` frees the caller's v when
+     the exit release walks the elements (`owns_elems`). The same holds for
+     `p := &xs[0]; *p = v` and `ys := xs; ys[0] = v`.
 - **An unbound temporary has no release site at all.** `return
   len(strings.ToUpper(x))` leaks 32 bytes with release OFF and ON.
 - **The residual 82,207 is a conditional hand-over** — `f` reaches
