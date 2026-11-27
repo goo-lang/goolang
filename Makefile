@@ -4891,6 +4891,13 @@ superset-selftest: $(COMPILER) $(RUNTIME_LIB)
 	./scripts/superset_probe.sh --self-test
 .PHONY: superset-selftest
 
+# Report, not a gate: group the failing programs of one level by their first
+# diagnostic, so the largest cause shows first. Not in VERIFY_ALL_DEPS.
+# Use: make superset-triage, or ./scripts/superset_probe.sh --triage --level 2 --top 50
+superset-triage: $(COMPILER) $(RUNTIME_LIB)
+	./scripts/superset_probe.sh --triage
+.PHONY: superset-triage
+
 # M2-B1: 2-rank NNG halo exchange, bit-identical to the in-fixture serial
 # reference (near mode pins Run against the same reference first).
 far-halo-probe: $(COMPILER) $(RUNTIME_LIB)
