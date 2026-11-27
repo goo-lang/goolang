@@ -116,3 +116,13 @@ __pycache__/
 # Bazel convenience symlinks
 /bazel-*
 .superpowers/
+
+# Standalone test binaries that Makefile targets build into the repo root
+/comptime_test
+/comptime_types_test
+/optimization_test
+/pgo_test
+/advanced_optimization_test
+/advanced_macro_test
+/derive_macro_test
+/template_macro_test
