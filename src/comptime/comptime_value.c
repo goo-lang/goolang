@@ -69,6 +69,9 @@ ComptimeContext* comptime_context_new(ComptimeContext* parent) {
     ctx->current_recursion_depth = 0;
     ctx->max_iterations = 10000;
     ctx->iteration_count = 0;
+    ctx->steps = 0;
+    ctx->bytes = 0;
+    ctx->root = parent ? parent->root : ctx;
     
     // Initialize generated code buffer
     ctx->generated_code = NULL;
@@ -78,9 +81,22 @@ ComptimeContext* comptime_context_new(ComptimeContext* parent) {
     return ctx;
 }
 
+bool comptime_error_is_limit(const ComptimeError* error) {
+    if (!error || !error->message) { return false; }
+    return strcmp(error->message, GOO_COMPTIME_BUDGET_ERROR) == 0
+        || strcmp(error->message, GOO_COMPTIME_BYTE_ERROR) == 0
+        || strcmp(error->message, GOO_COMPTIME_DEPTH_ERROR) == 0;
+}
+
+void comptime_context_reset_steps(ComptimeContext* ctx) {
+    if (!ctx) { return; }
+    ctx->root->steps = 0;
+    ctx->root->bytes = 0;
+}
+
 // Free a compile-time context
 void comptime_context_free(ComptimeContext* ctx) {
-    if (!ctx) return;
+    if (!ctx) { return; }
     
     // Free variable bindings
     for (size_t i = 0; i < ctx->var_count; i++) {

@@ -112,6 +112,7 @@ b7692838	expression_checker.c	copy expects exactly two arguments (dst, src)
 76b90345	expression_checker.c	delete expects exactly two arguments (map, key)
 597f3e92	expression_checker.c	delete() requires a map as its first argument
 7ad25a07	expression_checker.c	delete: cannot use %s as key of %s
+1ff74bd0	expression_checker.c	division by zero
 44872581	expression_checker.c	duplicate default arm in match
 d4a0821f	expression_checker.c	elided composite literal '{...}' has no inferable type in this context
 f55b4fcc	expression_checker.c	elided composite literal '{...}' requires a struct or slice element type, got '%s'
@@ -119,10 +120,13 @@ f55b4fcc	expression_checker.c	elided composite literal '{...}' requires a struct
 88cbf8aa	expression_checker.c	error() can only be used inside a function returning !T
 4813e230	expression_checker.c	error.Error() takes no arguments
 ec6fc387	expression_checker.c	error: argument must be a string, got %s
+cc9fd316	expression_checker.c	expression nesting exceeds %d levels
+c78f5eed	expression_checker.c	floating-point constant overflow
 aebba07d	expression_checker.c	fmt.%s: %s is not a writer (needs a Write([]byte) (int, error) method)
 82166315	expression_checker.c	fmt.%s: missing writer argument
 ad39190f	expression_checker.c	fmt.Fprintf: the format must be a string
 46f91576	expression_checker.c	impossible type assertion: %s does not implement %s (%s method %s)
+1e213422	expression_checker.c	integer constant overflow
 caee9522	expression_checker.c	invalid negative shift count: %lld
 8492db87	expression_checker.c	invalid type assertion: cannot resolve target type
 a34c7b60	expression_checker.c	invalid type assertion: operand is not an interface type
@@ -156,6 +160,7 @@ b6e496c8	expression_checker.c	try operand error type %s does not match the enclo
 6fb613a0	expression_checker.c	type parameter %s (constraint %s) does not satisfy %s
 becfcd8f	expression_checker.c	type parameter %s (constraint %s) has no method '%s'
 ae5d1e4f	expression_checker.c	type used as value
+6ce08d33	expression_checker.c	used as value
 e7bb72b0	expression_checker.c	wrong number of arguments to %s: expected %zu, got %zu
 0847afa0	expression_helpers.c	Arithmetic operation requires numeric operands
 1dba8558	expression_helpers.c	Arithmetic operation requires numeric operands — error unions must be unwrapped before arithmetic — did you mean (try f()) + 1?
@@ -169,6 +174,7 @@ b9402d7d	expression_helpers.c	Logical operation requires boolean operands
 53388339	expression_helpers.c	invalid operation: %s %s %s (struct is not comparable: has a slice/map/func/interface field)
 0f4884e7	expression_helpers.c	operator %% not defined on %s
 c96ff42e	expression_helpers.c	operator %s not defined on nullable type %s
+95d4666f	expression_helpers.c	used as value
 0a13c878	lane_ownership.c	lane body may not capture '%s' — a lane body may reach no partition state except its own *Lane context
 d86e1dc7	lane_ownership.c	lane view '%s' (derived from the *Lane context) may not be passed to another goroutine
 0caed26e	lane_ownership.c	use of '%s' after it was consumed by lanes.Run (consumed at %s:%d:%d)
@@ -218,6 +224,7 @@ dccabd09	qir_ownership.c	result of 'qir.%s' is a linear qubit and cannot be disc
 195a313c	qir_ownership.c	use of consumed linear qubit '%s' (consumed at line %d)
 0731de78	qir_ownership.c	use of moved linear qubit '%s' (moved at line %d)
 8899d8eb	type_checker.c	!void (error-only) functions are not yet supported in v1; use !T with a value type for now
+922e355c	type_checker.c	%s
 7fac0317	type_checker.c	%s does not implement %s (%s method %s)
 85d707f6	type_checker.c	Cannot assign %s to %s
 5db1c7b1	type_checker.c	Cannot assign %s to %s in multiple assignment
@@ -312,4 +319,5 @@ fae6bbfe	type_checker.c	too many labels in one function (max 64)
 37c6aa28	type_checker.c	type parameter %s is never used in a parameter; cannot be inferred
 1e3a8e86	type_checker.c	undeclared embedded interface '%s'
 0de1c716	type_checker.c	undefined label '%s'
+08b99946	type_checker.c	used as value
 4879eda1	type_checker.c	variadic parameter must be the final parameter

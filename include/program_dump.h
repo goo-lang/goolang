@@ -15,7 +15,9 @@ typedef enum {
 // or an array of `nfiles` ReleasePlan* where an entry may be NULL (ARC off).
 // Aborts, naming the kind, on any AST or type kind it does not handle: the
 // fixture gate (scripts/program_dump_probe.sh) is the coverage proof.
-void program_dump_write(FILE* out, ASTNode** files, const char** filenames,
+// Returns 0, or a JW_ERR_* code (json_writer.h) when the output nests too deep.
+// On a non-zero return the output on `out` is partial and must not be used.
+int program_dump_write(FILE* out, ASTNode** files, const char** filenames,
                         size_t nfiles, ReleasePlan** plans, ProgramDumpStage stage);
 
 #endif

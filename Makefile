@@ -803,6 +803,10 @@ constf32-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 # examples/constf64_reject.goo and float64_is_finite's doc comment in
 # expression_checker.c). Go-conformant (go run rejects with "... overflows
 # float64" too).
+# Since audit item M7 the lexer refuses 1e309 itself ("floating-point constant
+# overflow"), before the checker can print "overflows float64". Go accepts
+# 1e309 as an untyped constant; main printed inf for `const big = 1e309`, so
+# the refusal replaces a wrong value (audit ledger ruling R31).
 constf64-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== constf64-reject-probe: var f float64 = 1e309 must reject (Go-conformant) ==="
@@ -811,7 +815,7 @@ constf64-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "constf64-reject-probe: FAIL (compiled rc=0 — 1e309 silently accepted for float64)"; exit 1; fi; \
 	if [ -x build/constf64_reject ]; then echo "constf64-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
 	if grep -qiE "Module verification failed|LLVM ERROR" build/constf64_reject.err; then echo "constf64-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constf64_reject.err; exit 1; fi; \
-	if ! grep -q "overflows float64" build/constf64_reject.err; then echo "constf64-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constf64_reject.err; exit 1; fi; \
+	if ! grep -q "floating-point constant overflow" build/constf64_reject.err; then echo "constf64-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constf64_reject.err; exit 1; fi; \
 	echo "constf64-reject-probe: PASS (rejected rc=$$rc)"
 
 # Task 3b negative gate: a CONSTANT conversion whose operand overflows the

@@ -1,0 +1,1 @@
+'e' exponent requires decimal mantissa

@@ -312,12 +312,75 @@ check test-package-main       0     "~ok"         empty                sh -c "cd
 # ...and the program itself still builds and runs normally.
 check test-package-main-builds 0    "42"          empty                sh -c "cd '$WORK/mainpkg' && '$COMPILER' run ."
 
+# M2: a source file that is a pipe has no size, so the reader cannot use
+# ftell to size its buffer. The file reaches the compiler through a pipe, not
+# a regular file. bash sets pipefail so a failing cat cannot hide behind goo.
+check stdin-source-builds     0     ""            empty                bash -c "set -o pipefail; cat '$WORK/ok.goo' | timeout 10 '$COMPILER' build -o '$WORK/stdin_bin' /dev/stdin"
+check stdin-binary-runs       0     "ok"          empty                "$WORK/stdin_bin"
+
+# L5: a FIFO named like a source file must be skipped. Opening it blocks
+# forever, so every run carries timeout 10 and a hang fails the row.
+FIFO_DIR=$(mktemp -d "$WORK/fifo.XXXXXX") || { echo "  FAIL fifo-setup: mktemp"; exit 1; }
+cp "$WORK/ok.goo" "$FIFO_DIR/main.go"
+mkfifo "$FIFO_DIR/y.go" || { echo "  FAIL fifo-setup: mkfifo"; exit 1; }
+check fifo-source-skipped     0     ""            empty                sh -c "cd '$FIFO_DIR' && timeout 10 '$COMPILER' build ."
+rm -rf "$FIFO_DIR"
+
+# M4: ast_add_child appends in constant time, so the parse of a call with
+# 200,000 arguments finishes well under the 5 s deadline (0.5 s measured on
+# 2026-11-27). This row checks the parse only. A full `goo build` of the same
+# input took 41 s on 2026-11-27: a later stage is still quadratic. The
+# follow-up is coord task goolang:A-m4-build-quadratic.
+python3 -c '
+with open("'"$WORK"'/large_args.goo", "w") as f:
+    f.write("package main\n\nfunc f(a ...int) {}\n\nfunc main() {\n    f(")
+    f.write(", ".join(["1"] * 200000))
+    f.write(")\n}\n")
+'
+check large-arg-list          0     ""            empty                sh -c "timeout 5 '$COMPILER' --emit-ast-json '$WORK/large_args.goo' >/dev/null"
+
+# A long sibling list must not cost one stack frame per node when the AST is
+# freed. 200,000 statements in one block overflowed the 8 MiB stack in
+# ast_node_free (SIGSEGV, exit 139) after the dump was written.
+python3 -c '
+with open("'"$WORK"'/long_block.goo", "w") as f:
+    f.write("package main\n\nfunc main() {\n")
+    for i in range(100000):
+        f.write("    x%d := 1\n    _ = x%d\n" % (i, i))
+    f.write("}\n")
+'
+check long-block-free         0     ""            empty                sh -c "timeout 20 '$COMPILER' --emit-ast-json '$WORK/long_block.goo' >/dev/null"
+
 # A copied or moved compiler has no lib/ beside it. It must find the runtime
 # archive through GOOROOT, from a working directory that is not the repo root.
 ROOT_ABS="$(pwd)"
 mkdir -p "$WORK/moved"
 cp "$COMPILER" "$WORK/moved/goo"
 check moved-compiler-gooroot  0     ""            empty                sh -c "cd '$WORK/moved' && env -u GOO_RUNTIME GOOROOT='$ROOT_ABS' ./goo '$ROOT_ABS/$WORK/ok.goo' -o moved_bin"
+
+# The lexer checks syntax only. A literal whose VALUE is too large is valid Go
+# syntax, so --emit-ast-json (parse only) must accept it. The type checker
+# refuses it (tests/golden/reject/*_overflow*).
+cat > "$WORK/float_overflow_lit.goo" <<'EOF2'
+package main
+
+const n = 1e646456992
+
+func main() {
+	_ = n
+}
+EOF2
+cat > "$WORK/int_overflow_lit.goo" <<'EOF2'
+package main
+
+const q = 100000000000000000000
+
+func main() {
+	_ = q
+}
+EOF2
+check parse-float-overflow-lit 0 ""           empty                sh -c "'$COMPILER' --emit-ast-json '$WORK/float_overflow_lit.goo' >/dev/null"
+check parse-int-overflow-lit   0 ""           empty                sh -c "'$COMPILER' --emit-ast-json '$WORK/int_overflow_lit.goo' >/dev/null"
 
 echo "--- cli_test: $pass passed, $fail failed ---"
 [ "$fail" -eq 0 ]

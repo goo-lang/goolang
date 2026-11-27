@@ -35,6 +35,7 @@ static ASTNode* make_embedded_field(ASTNode* pkg_node, ASTNode* ident_node,
     basic->base.pos = ident->base.pos;
     basic->base.node_type = NULL;
     basic->base.next = NULL;
+    basic->base.tail = NULL;
     basic->name = strdup(ident->name);
     basic->package = pkg_node
         ? strdup(((IdentifierNode*)pkg_node)->name)
@@ -46,6 +47,7 @@ static ASTNode* make_embedded_field(ASTNode* pkg_node, ASTNode* ident_node,
         ptr->base.pos = ident->base.pos;
         ptr->base.node_type = NULL;
         ptr->base.next = NULL;
+        ptr->base.tail = NULL;
         ptr->element_type = ty;
         ty = (ASTNode*)ptr;
     }
@@ -581,6 +583,7 @@ func_decl:
         func->body = $8;
         func->return_type = NULL;
         ((ASTNode*)$3)->next = NULL;
+        ((ASTNode*)$3)->tail = NULL;
         func->params = $3;
         func->receiver = $3;
         ast_node_free($5);
@@ -593,6 +596,7 @@ func_decl:
         func->return_type = NULL;
         reinterpret_grouped_names($7); // Go grouped params `(x, y int)`
         ((ASTNode*)$3)->next = $7;
+        ((ASTNode*)$3)->tail = ($7 && ((ASTNode*)$7)->tail) ? ((ASTNode*)$7)->tail : (ASTNode*)$7;
         func->params = $3;
         func->receiver = $3;
         ast_node_free($5);
@@ -604,6 +608,7 @@ func_decl:
         func->body = $9;
         func->return_type = $8;
         ((ASTNode*)$3)->next = NULL;
+        ((ASTNode*)$3)->tail = NULL;
         func->params = $3;
         func->receiver = $3;
         ast_node_free($5);
@@ -616,6 +621,7 @@ func_decl:
         func->return_type = $9;
         reinterpret_grouped_names($7); // Go grouped params `(x, y int)`
         ((ASTNode*)$3)->next = $7;
+        ((ASTNode*)$3)->tail = ($7 && ((ASTNode*)$7)->tail) ? ((ASTNode*)$7)->tail : (ASTNode*)$7;
         func->params = $3;
         func->receiver = $3;
         ast_node_free($5);
@@ -952,6 +958,7 @@ type_decl:
         type_node->base.pos = get_current_position();
         type_node->base.node_type = NULL;
         type_node->base.next = NULL;
+        type_node->base.tail = NULL;
         
         IdentifierNode* ident = (IdentifierNode*)$2;
         type_node->name = strdup(ident->name);
@@ -995,12 +1002,7 @@ concept_requirement_list:
         $$ = $1;
     }
     | concept_requirement_list concept_requirement {
-        // Link requirements together
-        ASTNode* current = $1;
-        while (current->next) {
-            current = current->next;
-        }
-        current->next = $2;
+        ast_add_child($1, $2);
         $$ = $1;
     }
     ;
@@ -1023,12 +1025,7 @@ type_param_list:
         $$ = $1;
     }
     | type_param_list COMMA type_param {
-        // Link type parameters together
-        ASTNode* current = $1;
-        while (current->next) {
-            current = current->next;
-        }
-        current->next = $3;
+        ast_add_child($1, $3);
         $$ = $1;
     }
     ;
@@ -1213,6 +1210,7 @@ simple_stmt:
         expr_stmt->base.pos = get_current_position();
         expr_stmt->base.node_type = NULL;
         expr_stmt->base.next = NULL;
+        expr_stmt->base.tail = NULL;
         expr_stmt->expr = $1;
         $$ = (ASTNode*)expr_stmt;
     }
@@ -1230,6 +1228,7 @@ simple_stmt:
         es->base.pos = POS(@$);
         es->base.node_type = NULL;
         es->base.next = NULL;
+        es->base.tail = NULL;
         es->expr = (ASTNode*)binary;
         $$ = (ASTNode*)es;
     }
@@ -1281,6 +1280,7 @@ if_stmt:
         if_node->base.pos = get_current_position();
         if_node->base.node_type = NULL;
         if_node->base.next = NULL;
+        if_node->base.tail = NULL;
         if_node->condition = $2;
         if_node->then_stmt = $3;
         if_node->else_stmt = NULL;
@@ -1292,6 +1292,7 @@ if_stmt:
         if_node->base.pos = get_current_position();
         if_node->base.node_type = NULL;
         if_node->base.next = NULL;
+        if_node->base.tail = NULL;
         if_node->condition = $2;
         if_node->then_stmt = $3;
         if_node->else_stmt = $5;
@@ -1303,6 +1304,7 @@ if_stmt:
         if_node->base.pos = get_current_position();
         if_node->base.node_type = NULL;
         if_node->base.next = NULL;
+        if_node->base.tail = NULL;
         if_node->condition = $2;
         if_node->then_stmt = $3;
         if_node->else_stmt = $5;
@@ -1320,6 +1322,7 @@ if_stmt:
         if_node->base.pos = get_current_position();
         if_node->base.node_type = NULL;
         if_node->base.next = NULL;
+        if_node->base.tail = NULL;
         if_node->condition = $4;
         if_node->then_stmt = $5;
         if_node->else_stmt = NULL;
@@ -1334,6 +1337,7 @@ if_stmt:
         if_node->base.pos = get_current_position();
         if_node->base.node_type = NULL;
         if_node->base.next = NULL;
+        if_node->base.tail = NULL;
         if_node->condition = $4;
         if_node->then_stmt = $5;
         if_node->else_stmt = $7;
@@ -1348,6 +1352,7 @@ if_stmt:
         if_node->base.pos = get_current_position();
         if_node->base.node_type = NULL;
         if_node->base.next = NULL;
+        if_node->base.tail = NULL;
         if_node->condition = $4;
         if_node->then_stmt = $5;
         if_node->else_stmt = $7;
@@ -1522,6 +1527,7 @@ return_stmt:
         ret->base.pos = get_current_position();
         ret->base.node_type = NULL;
         ret->base.next = NULL;
+        ret->base.tail = NULL;
         ret->values = NULL;
         $$ = (ASTNode*)ret;
     }
@@ -1531,6 +1537,7 @@ return_stmt:
         ret->base.pos = get_current_position();
         ret->base.node_type = NULL;
         ret->base.next = NULL;
+        ret->base.tail = NULL;
         ret->values = $2;
         $$ = (ASTNode*)ret;
     }
@@ -1544,6 +1551,7 @@ return_stmt:
         ret->base.pos = get_current_position();
         ret->base.node_type = NULL;
         ret->base.next = NULL;
+        ret->base.tail = NULL;
         ast_add_child($2, $4);
         ret->values = $2;
         $$ = (ASTNode*)ret;
@@ -1646,12 +1654,7 @@ select_case_list:
         $$ = $1;
     }
     | select_case_list select_case {
-        // Link the cases together
-        ASTNode* current = $1;
-        while (current->next) {
-            current = current->next;
-        }
-        current->next = $2;
+        ast_add_child($1, $2);
         $$ = $1;
     }
     ;
@@ -1859,11 +1862,7 @@ type_case_list:
         $$ = $1;
     }
     | type_case_list type_case_clause {
-        ASTNode* current = $1;
-        while (current->next) {
-            current = current->next;
-        }
-        current->next = $2;
+        ast_add_child($1, $2);
         $$ = $1;
     }
     ;
@@ -1894,20 +1893,12 @@ type_list:
         $$ = (ASTNode*)lit;
     }
     | type_list COMMA type {
-        ASTNode* current = $1;
-        while (current->next) {
-            current = current->next;
-        }
-        current->next = $3;
+        ast_add_child($1, $3);
         $$ = $1;
     }
     | type_list COMMA NIL {
         LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", POS(@$));
-        ASTNode* current = $1;
-        while (current->next) {
-            current = current->next;
-        }
-        current->next = (ASTNode*)lit;
+        ast_add_child($1, (ASTNode*)lit);
         $$ = $1;
     }
     ;
@@ -1917,11 +1908,7 @@ case_clause_list:
         $$ = $1;
     }
     | case_clause_list case_clause {
-        ASTNode* current = $1;
-        while (current->next) {
-            current = current->next;
-        }
-        current->next = $2;
+        ast_add_child($1, $2);
         $$ = $1;
     }
     ;
@@ -2125,6 +2112,7 @@ primary_expr:
         conv->base.pos = POS(@$);
         conv->base.node_type = NULL;
         conv->base.next = NULL;
+        conv->base.tail = NULL;
         conv->slice_type = $1;
         conv->operand = $3;
         $$ = (ASTNode*)conv;
@@ -2259,6 +2247,7 @@ call_expr:
         // assignment does not drop a pre-existing tail — no ast_add_child
         // walk is needed.
         $3->next = $5;
+        $3->tail = ($5 && $5->tail) ? $5->tail : $5;
         $$ = call_expr_new($1, $3, 0);
     }
     // Task 4: trailing comma after make()'s two-arg form, e.g.
@@ -2266,6 +2255,7 @@ call_expr:
     // the trailing COMMA before RPAREN.
     | primary_expr LPAREN type_call_arg COMMA expression_list COMMA RPAREN {
         $3->next = $5;
+        $3->tail = ($5 && $5->tail) ? $5->tail : $5;
         $$ = call_expr_new($1, $3, 0);
     }
     ;
@@ -2359,6 +2349,7 @@ struct_type:
         st->base.pos = POS(@$);
         st->base.node_type = NULL;
         st->base.next = NULL;
+        st->base.tail = NULL;
         st->fields = $3;
         st->is_result_tuple = 0;   // user-written struct type
         $$ = (ASTNode*)st;
@@ -2369,6 +2360,7 @@ struct_type:
         st->base.pos = POS(@$);
         st->base.node_type = NULL;
         st->base.next = NULL;
+        st->base.tail = NULL;
         st->fields = NULL;
         st->is_result_tuple = 0;   // user-written struct type
         $$ = (ASTNode*)st;
@@ -2580,9 +2572,7 @@ struct_field:
 field_name_tail:
     COMMA identifier { $$ = $2; }
     | field_name_tail COMMA identifier {
-        ASTNode* n = $1;
-        while (n->next) n = n->next;
-        n->next = $3;
+        ast_add_child($1, $3);
         $$ = $1;
     }
     ;
@@ -2760,6 +2750,7 @@ type_name:
         basic->base.pos = POS(@$);
         basic->base.node_type = NULL;
         basic->base.next = NULL;
+        basic->base.tail = NULL;
 
         IdentifierNode* ident = (IdentifierNode*)$1;
         basic->name = strdup(ident->name);
@@ -2778,6 +2769,7 @@ type_name:
         basic->base.pos = POS(@$);
         basic->base.node_type = NULL;
         basic->base.next = NULL;
+        basic->base.tail = NULL;
 
         IdentifierNode* pkg_ident = (IdentifierNode*)$1;
         IdentifierNode* name_ident = (IdentifierNode*)$3;
@@ -2796,6 +2788,7 @@ array_type:
         array->base.pos = POS(@$);
         array->base.node_type = NULL;
         array->base.next = NULL;
+        array->base.tail = NULL;
         array->length = $2;
         array->element_type = $4;
         $$ = (ASTNode*)array;
@@ -2813,6 +2806,7 @@ slice_type:
         slice->base.pos = POS(@$);
         slice->base.node_type = NULL;
         slice->base.next = NULL;
+        slice->base.tail = NULL;
         slice->element_type = $3;
         $$ = (ASTNode*)slice;
     }
@@ -2825,6 +2819,7 @@ map_type:
         map->base.pos = POS(@$);
         map->base.node_type = NULL;
         map->base.next = NULL;
+        map->base.tail = NULL;
         map->key_type = $3;
         map->value_type = $5;
         $$ = (ASTNode*)map;
@@ -2863,6 +2858,7 @@ func_type:
         func_type_node->base.pos = POS(@$);
         func_type_node->base.node_type = NULL;
         func_type_node->base.next = NULL;
+        func_type_node->base.tail = NULL;
         func_type_node->params = g_func_signature_params;
         func_type_node->return_type = g_func_signature_result;
         g_func_signature_params = NULL;
@@ -2878,6 +2874,7 @@ pointer_type:
         ptr->base.pos = POS(@$);
         ptr->base.node_type = NULL;
         ptr->base.next = NULL;
+        ptr->base.tail = NULL;
         ptr->element_type = $2;
         $$ = (ASTNode*)ptr;
     }
@@ -3142,6 +3139,7 @@ literal:
         char int_str[32];
         snprintf(int_str, sizeof(int_str), "%lld", $1);
         LiteralNode* lit = ast_literal_new(TOKEN_INT, int_str, POS(@1));
+        if (lit) lit->int_overflow = bridge_int_literal_overflowed(@1.first_line, @1.first_column);
         $$ = (ASTNode*)lit;
     }
     | FLOAT_LITERAL {
