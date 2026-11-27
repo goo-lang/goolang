@@ -1,6 +1,6 @@
 // Command vendor_go renames Goo keywords that Go source uses as identifiers.
 //
-// usage: go run tools/vendor_go/main.go -out <dir> <file.go>...
+// usage: go run tools/vendor_go/main.go -keywords a,b -out <dir> <file.go>...
 //
 // All files of one package go in one call, because a package-level name must
 // be renamed the same way in every file. The tool writes each renamed file
@@ -27,9 +27,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
-var keywords = map[string]bool{"match": true, "arena": true, "enum": true, "try": true}
+// keywords is filled from -keywords, which tools/vendor_go.py reads from the Goo
+// lexer table (tools/goo_reserved.py), so the set has one source.
+var keywords = map[string]bool{}
 
 type edit struct {
 	off       int
@@ -39,8 +42,14 @@ type edit struct {
 
 func main() {
 	out := flag.String("out", "", "directory for the renamed files")
+	kw := flag.String("keywords", "", "comma-separated Goo reserved words to rename")
 	flag.Parse()
-	if *out == "" || flag.NArg() == 0 {
+	for _, k := range strings.Split(*kw, ",") {
+		if k != "" {
+			keywords[k] = true
+		}
+	}
+	if *out == "" || len(keywords) == 0 || flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: vendor_go -out <dir> <file.go>...")
 		os.Exit(2)
 	}
@@ -92,6 +101,11 @@ func run(outDir string, files []string) error {
 				}
 				pos := fset.Position(x.Pos())
 				u.edits = append(u.edits, edit{off: pos.Offset, line: pos.Line, col: pos.Column, old: x.Name})
+			case *ast.FuncDecl:
+				// A body-less function was supplied by an assembly file.
+				if x.Body == nil {
+					fmt.Printf("%s\tbodyless:%s\n", filepath.Base(p), x.Name.Name)
+				}
 			case *ast.SelectorExpr:
 				if id, ok := x.X.(*ast.Ident); ok && imports[id.Name] && keywords[x.Sel.Name] {
 					visitErr = fmt.Errorf("%s: selector %s.%s names a keyword in another package", p, id.Name, x.Sel.Name)

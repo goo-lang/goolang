@@ -28,6 +28,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import goo_reserved  # noqa: E402  (one source for the reserved words)
+
 GO_VERSION = "go1.27.4"
 FORBIDDEN_EXACT = {"unsafe", "reflect", "runtime", "sync/atomic"}
 ASM_BACKED_SUFFIXES = ("_asm.go", "_amd64.go")
@@ -56,8 +59,8 @@ def go_env(goroot):
 
 
 def forbidden(path):
-    return path in FORBIDDEN_EXACT or path == "internal" or path.startswith("internal/") \
-        or "/internal/" in path or path.endswith("/internal")
+    return path in FORBIDDEN_EXACT or path == "runtime" or path.startswith("runtime/") \
+        or "internal" in path.split("/")
 
 
 def stem(name):
@@ -89,7 +92,10 @@ def main():
     pkg = args.path
     if pkg.startswith("/") or ".." in pkg.split("/"):
         die("bad import path: " + pkg)
+    if "internal" in pkg.split("/"):
+        die("refused: %s has an internal path element" % pkg)
     env = go_env(args.goroot)
+    reserved = goo_reserved.reserved(os.path.join(REPO, "src", "lexer", "token.c"))
 
     v = run(["go", "version"], env=env)
     if v.returncode != 0 or (GO_VERSION + " ") not in v.stdout + " ":
@@ -122,7 +128,7 @@ def main():
         vend_dir = os.path.join(REPO, "goostd", pkg)
         pris_dir = os.path.join(REPO, PRISTINE_ROOT, pkg)
 
-    rows = []
+    rows = [("-", "package", GO_VERSION)]
     for s in info.get("SFiles", []):
         rows.append((s, "drop", s))
     rows += swaps(selected, info.get("IgnoredGoFiles", []))
@@ -130,13 +136,21 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         renamed = os.path.join(tmp, "renamed")
         helper = os.path.join(REPO, "tools", "vendor_go", "main.go")
-        r = run(["go", "run", helper, "-out", renamed] + [os.path.join(src_dir, f) for f in selected],
+        r = run(["go", "run", helper, "-out", renamed, "-keywords", ",".join(reserved)] + [os.path.join(src_dir, f) for f in selected],
                 env=env, cwd=tempfile.gettempdir())
         if r.returncode != 0:
             die("rename helper failed: " + r.stderr.strip())
+        bodyless = []
         for line in r.stdout.splitlines():
             f, detail = line.split("\t")
+            if detail.startswith("bodyless:"):
+                bodyless.append(f + " " + detail[len("bodyless:"):])
+                continue
             rows.append((f, "rename", detail))
+        # A dropped .s file supplied the body. Without it the package cannot build.
+        if bodyless and any(r[1] == "drop" for r in rows):
+            die("refused: %s drops assembly files and declares body-less functions: %s"
+                % (pkg, ", ".join(bodyless)))
 
         # go vet on the renamed copy, in a module of its own (T-8).
         mod = os.path.join(tmp, "mod")
@@ -166,7 +180,8 @@ def main():
     kept = []
     if os.path.exists(ledger_path):
         with open(ledger_path, encoding="utf-8") as fh:
-            kept = [l.rstrip("\n") for l in fh if l.strip() and l.split("\t")[0] != pkg]
+            kept = [l.rstrip("\n") for l in fh if l.strip()
+                    and (l.split("\t")[0] != pkg or l.split("\t")[2] == "unshipped")]
     new = ["\t".join((pkg,) + r) for r in rows]
     allrows = sorted(set(kept + new), key=lambda s: s.encode("utf-8"))
     os.makedirs(os.path.dirname(ledger_path), exist_ok=True)

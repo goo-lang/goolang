@@ -12,10 +12,25 @@
 #   drop      file.s
 #   override  reason
 #
-# KNOWN GAP: a package is on the work list if the ledger names it or its pristine
-# directory holds a .go file. Deleting the ONLY pristine file of a package that
-# has no ledger row removes the package from the list, and this probe cannot see
-# it. The API ratchet (T-4) and the goldens of that package catch it later.
+# WORK LIST. The tool writes one `<pkg> - package go1.27.4` row for each package it
+# vendors. The work list is the union of the packages with a `package` row and
+# the directories under third_party/go1.27.4-src/ that hold a .go file. A
+# `package` row with no pristine file is NO-PRISTINE. A pristine directory with
+# no `package` row, or a row of another kind for a package with no `package`
+# row, is a LEDGER failure. `unshipped` rows (`<pkg> - unshipped <reason>`) are
+# read by scripts/doc_claims_probe.sh and need no pristine copy.
+#
+# LIMITS (stated, not hidden):
+#  - Deleting BOTH the pristine copy and the `package` row of one package in one
+#    change leaves nothing to compare. Only review sees it. The repository has
+#    no CODEOWNERS file, so no owner is forced to review third_party/go1.27.4-src/
+#    or goostd/VENDOR.tsv. This probe does not create one.
+#  - A rename row is accepted only when `old` is a reserved Goo word (read from
+#    src/lexer/token.c by tools/goo_reserved.py) and `new` is `old` plus `_`.
+#    Whether the old text was an identifier and not a comment or a string is
+#    checked only at vendor time, by the tool's go/parser and go/scanner step and
+#    by `go vet` on the renamed copy (design gate T-8). This probe checks the
+#    position and the bytes.
 #
 # VENDOR_ROOT (env) points the probe at another tree. The self-test uses it.
 # --self-test builds each fault in a temporary tree, checks that the fault
@@ -26,9 +41,10 @@ self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 run_probe() {
-    python3 -I - "${VENDOR_ROOT:-$repo}" <<'PYEOF'
+    python3 -I - "${VENDOR_ROOT:-$repo}" "$(python3 -I "$repo/tools/goo_reserved.py" "$repo/src/lexer/token.c" | tr '\n' ' ')" <<'PYEOF'
 import os, re, sys
 root = sys.argv[1]
+reserved = set(sys.argv[2].split())
 ledger_path = os.path.join(root, "goostd", "VENDOR.tsv")
 pris_root = os.path.join(root, "third_party", "go1.27.4-src")
 vend_root = os.path.join(root, "goostd")
@@ -52,18 +68,33 @@ for n, l in enumerate(lines, 1):
     if len(c) != 4 or not all(c):
         fail("LEDGER", "row %d needs four non-empty tab-separated columns: %r" % (n, l))
         continue
-    if c[2] not in ("rename", "swap", "drop", "override"):
+    if c[2] not in ("package", "rename", "swap", "drop", "override", "unshipped"):
         fail("LEDGER", "row %d has unknown kind %r" % (n, c[2]))
+        continue
+    if c[2] in ("package", "unshipped") and c[1] != "-":
+        fail("LEDGER", "row %d: a %s row has '-' in the file column" % (n, c[2]))
+        continue
+    if c[2] == "package" and c[3] != "go1.27.4":
+        fail("LEDGER", "row %d: a package row names %r, not go1.27.4" % (n, c[3]))
         continue
     rows.append(c)
 
-pkgs = set(r[0] for r in rows)
+if not reserved:
+    fail("LEDGER", "no reserved Goo word read from src/lexer/token.c")
+declared = set(r[0] for r in rows if r[2] == "package")
+for r in rows:
+    if r[2] not in ("package", "unshipped") and r[0] not in declared:
+        fail("LEDGER", "%s has a %s row and no package row" % (r[0], r[2]))
+pkgs = set(declared)
 for d, _, fs in os.walk(pris_root):
     if any(f.endswith(".go") for f in fs):
-        pkgs.add(os.path.relpath(d, pris_root))
+        rel = os.path.relpath(d, pris_root)
+        pkgs.add(rel)
+        if rel not in declared:
+            fail("LEDGER", "%s has a pristine copy and no package row" % rel)
 
 if not pkgs:
-    fail("EMPTY", "work list is empty: no ledger row and no pristine package")
+    fail("EMPTY", "work list is empty: no package row and no pristine package")
 
 RENAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)->([A-Za-z_][A-Za-z0-9_]*)@(\d+):(\d+)$")
 IDENT = re.compile(rb"[A-Za-z0-9_]")
@@ -75,7 +106,7 @@ def gofiles(d):
 for pkg in sorted(pkgs):
     pdir = os.path.join(pris_root, pkg)
     vdir = os.path.join(vend_root, pkg)
-    prows = [r for r in rows if r[0] == pkg]
+    prows = [r for r in rows if r[0] == pkg and r[2] not in ("package", "unshipped")]
     pfiles = gofiles(pdir)
     vfiles = gofiles(vdir)
     overrides = set(r[1] for r in prows if r[2] == "override")
@@ -87,6 +118,9 @@ for pkg in sorted(pkgs):
             if not m:
                 fail("LEDGER", "%s/%s: bad rename detail %r" % (pkg, f, det))
                 continue
+            if m.group(1) not in reserved or m.group(2) != m.group(1) + "_":
+                fail("RENAME", "%s/%s: row %s is not a reserved word renamed to word_" % (pkg, f, det))
+                continue
             renames.setdefault(f, []).append((m.group(1), m.group(2), int(m.group(3)), int(m.group(4))))
         elif kind == "drop":
             if det in vfiles:
@@ -95,7 +129,7 @@ for pkg in sorted(pkgs):
             if "->" not in det or det.split("->")[0] in vfiles or f not in vfiles:
                 fail("LEDGER", "%s: swap row %r does not match the vendored files" % (pkg, det))
     if not pfiles:
-        fail("NO-PRISTINE", "%s has ledger rows but no pristine file" % pkg)
+        fail("NO-PRISTINE", "%s has a package row but no pristine file" % pkg)
         continue
     for f in pfiles:
         if f not in vfiles:
