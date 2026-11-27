@@ -42,8 +42,8 @@ static ValueInfo* codegen_generate_far_result_call(CodeGenerator* codegen, TypeC
                                                     int arg_is_string);
 
 #if LLVM_AVAILABLE
-// Given a loaded `error` value {i1 is_null, i8* handle}, produce the goo_string
-// to display: "<nil>" when null, else goo_error_message(handle). Shared by
+// Given a loaded `error` value {i1 has_value, i8* handle}, produce the goo_string
+// to display: "<nil>" when nil, else goo_error_message(handle). Shared by
 // fmt.Println's error case and the %v verb (defined below, near fmt_emit_segments).
 static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMValueRef err_loaded, Position pos);
 
@@ -2192,15 +2192,15 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
 
                 Type* err_type = type_checker_error_type(checker);
                 LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
-                LLVMValueRef is_null = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
                 LLVMValueRef err_val = LLVMGetUndef(err_llvm);
-                err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "en.is_null");
+                err_val = LLVMBuildInsertValue(codegen->builder, err_val,
+                                               codegen_nullable_flag_const(codegen, 0), 0, "en.has_value");
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "en.ptr");
                 return value_info_new(NULL, err_val, err_type);
             }
             if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "Is") == 0) {
                 // errors.Is(err, target) -> bool. An error value is
-                // {i1 is_null, i8* handle}; the handle IS the identity, and a
+                // {i1 has_value, i8* handle}; the handle IS the identity, and a
                 // nil error carries a null handle, so passing the two handles
                 // to the runtime covers the nil cases without a separate test
                 // here. Mirrors the Unwrap arm below.
@@ -2250,7 +2250,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "Unwrap") == 0) {
                 // errors.Unwrap(error) -> error: read goo_error.cause via the runtime
-                // helper, rebuild the nullable {is_null = cause==null, ptr = cause}.
+                // helper, rebuild the nullable {has_value = cause!=null, ptr = cause}.
                 if (!call->args) {
                     codegen_error(codegen, expr->pos, "errors.Unwrap: expected an error argument");
                     return NULL;
@@ -2271,11 +2271,11 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef cause = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(unwrap_fn), unwrap_fn, uargs, 1, "unwrap.cause");
 
                 LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
-                LLVMValueRef uw_is_null = LLVMBuildICmp(codegen->builder, LLVMIntEQ, cause, LLVMConstNull(i8pt), "unwrap.isnull");
+                LLVMValueRef uw_has_value = LLVMBuildICmp(codegen->builder, LLVMIntNE, cause, LLVMConstNull(i8pt), "unwrap.hasvalue");
                 Type* uw_err_type = type_checker_error_type(checker);
                 LLVMTypeRef uw_err_llvm = codegen_type_to_llvm(codegen, uw_err_type);
                 LLVMValueRef uw_err_val = LLVMGetUndef(uw_err_llvm);
-                uw_err_val = LLVMBuildInsertValue(codegen->builder, uw_err_val, uw_is_null, 0, "uw.is_null");
+                uw_err_val = LLVMBuildInsertValue(codegen->builder, uw_err_val, uw_has_value, 0, "uw.has_value");
                 uw_err_val = LLVMBuildInsertValue(codegen->builder, uw_err_val, cause, 1, "uw.ptr");
                 return value_info_new(NULL, uw_err_val, uw_err_type);
             }
@@ -2708,8 +2708,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             value_info_free(rv);
 
-            // recv_val is the loaded nullable {i1 is_null, i8* handle}.
-            LLVMValueRef is_null = LLVMBuildExtractValue(codegen->builder, recv_val, 0, "err.is_null");
+            // recv_val is the loaded nullable {i1 has_value, i8* handle}.
+            LLVMValueRef is_null = codegen_check_nullable_null(codegen, recv_val);
             LLVMValueRef handle  = LLVMBuildExtractValue(codegen->builder, recv_val, 1, "err.handle");
             // ADR 0001: error(nil).Error() PANICS (Go parity: method call
             // on a nil interface value). Replaces the former select()'d
@@ -4976,12 +4976,12 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
 }
 
 #if LLVM_AVAILABLE
-// Given a loaded `error` value {i1 is_null, i8* handle}, produce the goo_string
-// to display: "<nil>" when null, else goo_error_message(handle). Shared by
+// Given a loaded `error` value {i1 has_value, i8* handle}, produce the goo_string
+// to display: "<nil>" when nil, else goo_error_message(handle). Shared by
 // fmt.Println's error case and the %v verb. Returns NULL (after emitting a
 // codegen_error) if a required runtime symbol is missing.
 static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMValueRef err_loaded, Position pos) {
-    LLVMValueRef is_null = LLVMBuildExtractValue(codegen->builder, err_loaded, 0, "edisp.is_null");
+    LLVMValueRef has_value = codegen_nullable_has_value(codegen, err_loaded);
     LLVMValueRef handle  = LLVMBuildExtractValue(codegen->builder, err_loaded, 1, "edisp.handle");
     LLVMValueRef msgfn = LLVMGetNamedFunction(codegen->module, "goo_error_message");
     if (!msgfn) { codegen_error(codegen, pos, "goo_error_message not found in module"); return NULL; }
@@ -4993,7 +4993,7 @@ static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMVal
     nil_str = LLVMBuildInsertValue(codegen->builder, nil_str, nil_ptr, 0, "edisp.nil.data");
     nil_str = LLVMBuildInsertValue(codegen->builder, nil_str,
         LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 5, 0), 1, "edisp.nil.len");
-    return LLVMBuildSelect(codegen->builder, is_null, nil_str, msg, "edisp.result");
+    return LLVMBuildSelect(codegen->builder, has_value, msg, nil_str, "edisp.result");
 }
 #endif
 
@@ -5724,7 +5724,7 @@ static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen,
     LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
     LLVMValueRef err_val = LLVMGetUndef(err_llvm);
     err_val = LLVMBuildInsertValue(codegen->builder, err_val,
-        LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0), 0, "ef.is_null");
+        codegen_nullable_flag_const(codegen, 0), 0, "ef.has_value");
     err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "ef.ptr");
     return value_info_new(NULL, err_val, err_type);
 #endif

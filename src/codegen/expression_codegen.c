@@ -2058,7 +2058,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     // without a context type emits an i8* null, which is the wrong LLVM
     // type to compare against a { i1, T } nullable struct. Instead, detect
     // the pattern here, evaluate ONLY the nullable operand, then read its
-    // is_null flag directly.
+    // has_value flag directly.
     if (binary->operator == TOKEN_EQ || binary->operator == TOKEN_NE) {
         ASTNode* nullable_node = NULL;
 
@@ -2096,16 +2096,15 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             }
 
-            // Read the is_null flag (struct index 0) via the header-declared helper.
-            LLVMValueRef is_null = codegen_check_nullable_null(codegen, nv->llvm_value);
+            // Read the has_value flag (struct index 0) via the header-declared helpers.
             LLVMValueRef result;
 
             if (binary->operator == TOKEN_EQ) {
-                // a == nil  →  is_null
-                result = is_null;
+                // a == nil  →  !has_value
+                result = codegen_check_nullable_null(codegen, nv->llvm_value);
             } else {
-                // a != nil  →  !is_null
-                result = LLVMBuildNot(codegen->builder, is_null, "is_not_null");
+                // a != nil  →  has_value
+                result = codegen_nullable_has_value(codegen, nv->llvm_value);
             }
 
             Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
@@ -2333,8 +2332,8 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             LLVMValueRef eq_result = NULL;
 
             if (left_nullable && right_nullable) {
-                LLVMValueRef l_null = LLVMBuildExtractValue(codegen->builder, lv->llvm_value, 0, "nulleq.lnull");
-                LLVMValueRef r_null = LLVMBuildExtractValue(codegen->builder, rv->llvm_value, 0, "nulleq.rnull");
+                LLVMValueRef l_null = codegen_check_nullable_null(codegen, lv->llvm_value);
+                LLVMValueRef r_null = codegen_check_nullable_null(codegen, rv->llvm_value);
                 LLVMValueRef l_payload = LLVMBuildExtractValue(codegen->builder, lv->llvm_value, 1, "nulleq.lpayload");
                 LLVMValueRef r_payload = LLVMBuildExtractValue(codegen->builder, rv->llvm_value, 1, "nulleq.rpayload");
                 Type* l_base = lt->data.nullable.base_type;
@@ -2363,7 +2362,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 Type* plain_type = left_nullable ? rt : lt;
                 Type* payload_type = nullable_type->data.nullable.base_type;
 
-                LLVMValueRef n_null = LLVMBuildExtractValue(codegen->builder, nv->llvm_value, 0, "nulleq.nnull");
+                LLVMValueRef n_null = codegen_check_nullable_null(codegen, nv->llvm_value);
                 LLVMValueRef n_payload = LLVMBuildExtractValue(codegen->builder, nv->llvm_value, 1, "nulleq.npayload");
                 LLVMValueRef p_value = pv->llvm_value;
 
