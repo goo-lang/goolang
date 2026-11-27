@@ -36,6 +36,8 @@ if [ "${1:-}" = "--self-test" ]; then
 		local t="$1"
 		mkdir -p "$t/scripts" "$t/src/compiler" "$t/src/codegen" "$t/src/package"
 		cp -r "$ROOT/goostd" "$t/goostd"
+		mkdir -p "$t/third_party"
+		cp -r "$ROOT/third_party/go1.27.4-src" "$t/third_party/go1.27.4-src"
 		cp "$ROOT/scripts/check_stdlib_coverage.sh" "$t/scripts/"
 		cp "$ROOT/src/compiler/goo.c" "$t/src/compiler/"
 		cp "$ROOT/src/codegen/codegen.c" "$t/src/codegen/"
