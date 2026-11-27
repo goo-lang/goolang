@@ -191,7 +191,10 @@ goo_string_t goo_format_float(double v, int32_t fmt, int32_t prec, int32_t bits)
         char big[FF_TMP + 320];
         int n = snprintf(big, sizeof(big), "%.*f", prec, v);
         GOO_ASSERT(n > 0 && (size_t)n < sizeof(big));
-        size_t sign = negative ? 1U : 0U;
+        size_t sign = 0U;
+        if (negative) {
+            sign = 1U;
+        }
         size_t total = sign + (size_t)n;
         char* all = (char*)malloc(total + 1U);
         if (all == NULL) {
