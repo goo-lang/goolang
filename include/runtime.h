@@ -10,6 +10,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "qir_sim_limits.h"
+
 // Forward declarations
 typedef struct goo_error goo_error_t;
 typedef struct goo_string goo_string_t;

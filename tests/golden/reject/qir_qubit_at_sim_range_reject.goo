@@ -1,0 +1,8 @@
+package main
+
+import "qir"
+
+func main() {
+	b := qir.QubitAt(16)
+	qir.MeasureReset(b)
+}

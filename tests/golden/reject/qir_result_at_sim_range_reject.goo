@@ -1,0 +1,10 @@
+package main
+
+import "qir"
+
+func main() {
+	r := qir.ResultAt(64)
+	a := qir.QubitAt(0)
+	qir.Mz(a, r)
+	qir.MeasureReset(a)
+}
