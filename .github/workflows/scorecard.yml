@@ -1,0 +1,47 @@
+name: scorecard
+
+# OpenSSF Scorecard: a public score for the security practices of this repo
+# (https://github.com/ossf/scorecard). It runs on main and weekly, never on a
+# pull request, because publish_results needs the default branch. The SARIF
+# goes to code scanning under the category "scorecard".
+#
+# Every action is pinned by commit SHA, which Scorecard's own Pinned-Dependencies
+# check requires. The version is in the comment beside each SHA.
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: '23 4 * * 1'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: scorecard analysis
+    runs-on: ubuntu-24.04
+    permissions:
+      security-events: write   # upload the SARIF to code scanning
+      id-token: write          # publish_results signs the result with OIDC
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: ossf/scorecard-action@23f22cd43608bae7a1f1fa2603d7314dee9538a5 # v2.6.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scorecard-sarif
+          path: scorecard.sarif
+          retention-days: 5
+
+      - uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard
