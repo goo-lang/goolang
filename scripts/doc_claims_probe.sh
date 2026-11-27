@@ -102,7 +102,9 @@ else
 	shipped=0; fixture=0; unclassified=0
 	for d in "$ROOT"/goostd/*/; do
 		name="$(basename "$d")"
-		if printf '%s' "$PKGS" | tr ' ' '\n' | grep -q "^${name}:"; then
+		# A nested package (goostd/container/list) is classified when any
+		# entry's directory sits at or below this top-level directory.
+		if printf '%s' "$PKGS" | tr ' ' '\n' | grep -Eq "^${name}:|:goostd/${name}(/|$)"; then
 			shipped=$((shipped+1)); continue
 		fi
 		# -R, not -r: under Bazel "$d" is a real directory of SYMLINKED
