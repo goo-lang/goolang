@@ -25,6 +25,7 @@ fixedbugs/bug056.go
 fixedbugs/bug058.go
 fixedbugs/bug060.go
 fixedbugs/bug061.go
+fixedbugs/bug065.go
 fixedbugs/bug067.go
 fixedbugs/bug070.go
 fixedbugs/bug078.go
@@ -70,11 +71,13 @@ fixedbugs/bug372.go
 fixedbugs/bug405.go
 fixedbugs/bug409.go
 fixedbugs/bug423.go
+fixedbugs/bug440_32.go
 fixedbugs/bug440_64.go
 fixedbugs/bug450.go
 fixedbugs/bug453.go
 fixedbugs/bug494.go
 fixedbugs/bug497.go
+fixedbugs/bug498.go
 fixedbugs/bug501.go
 fixedbugs/issue10135.go
 fixedbugs/issue10925.go
@@ -95,6 +98,7 @@ fixedbugs/issue20530.go
 fixedbugs/issue20811.go
 fixedbugs/issue21808.go
 fixedbugs/issue22683.go
+fixedbugs/issue23188.go
 fixedbugs/issue23305.go
 fixedbugs/issue24799.go
 fixedbugs/issue24817.go
@@ -177,4 +181,5 @@ int_lit.go
 printbig.go
 stack.go
 typeswitch.go
+utf.go
 varinit.go

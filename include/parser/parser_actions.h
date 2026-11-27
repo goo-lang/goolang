@@ -99,16 +99,19 @@ ASTNode* desugar_const_group(ASTNode* spec_chain);
 ASTNode* var_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value);
 ASTNode* desugar_var_group(ASTNode* spec_chain);
 
-// F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` /
-// `a,b = v1,v2`).
-ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
-                             ASTNode* v1, ASTNode* v2, int is_short_decl, Position pos);
+// Multi-name `=` and `:=` (`a, b = b, a`, `a, b, c := 1, 2, 3`,
+// `x, ok, s := f()`). `targets` (two or more) and `values` (one or more) are
+// `next` chains. A `:=` with one value and identifier targets builds the
+// VarDeclNode destructure; every other shape builds a MultiAssignNode with
+// count = number of targets. The checker enforces the counts and the `:=`
+// identifier rule.
+ASTNode* assign_list_new(ASTNode* targets, ASTNode* values, int is_short_decl,
+                         Position pos);
 
-// `a, b = f()` — tuple assignment to two existing lvalues from a SINGLE
-// multi-return call. Builds a MultiAssignNode with two targets and one value
-// (chain length 1, count 2); the type checker and codegen detect the
-// values<targets shape and destructure the call's result struct fields.
-ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call, Position pos);
+// `for k, v := range x`: the key+value ForStmtNode from expr_list2. Returns
+// NULL with *why/*where set unless the list is exactly two identifiers.
+ASTNode* range_short_decl_new(ASTNode* targets, ASTNode* range_expr, ASTNode* body,
+                              const char** why, Position* where);
 
 // Build a compound-assignment statement (`x += e`, `x &= e`, ...). `pos` is
 // the rule's own start (POS(@$)), never the lookahead token on the next line.
@@ -185,10 +188,6 @@ ASTNode* var_decl_new_3(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* nam
 
 // short_var_decl: single-name `x := expr`.
 ASTNode* short_var_decl_new_1(ASTNode* name_ident, ASTNode* value);
-
-// short_var_decl: 2-name destructuring `a, b := expr` (RHS must produce a
-// multi-field struct; destructured at codegen, not here).
-ASTNode* short_var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* value);
 
 // struct_field: the 4 single-name field arms (`name type`, `name : type`,
 // and their SEMICOLON-terminated variants) — all build the same VarDeclNode

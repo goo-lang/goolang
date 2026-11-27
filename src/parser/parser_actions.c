@@ -285,55 +285,116 @@ ASTNode* desugar_var_group(ASTNode* spec_chain) {
     return spec_chain;
 }
 
-// F6: build a 2-target/2-value MultiAssignNode. Targets and values are each
-// chained via ->next (t1->t2, v1->v2). For `:=` the targets are new names;
-// for `=` they are existing lvalues. Simultaneous-eval semantics are enforced
-// in codegen, not here.
-ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
-                             ASTNode* v1, ASTNode* v2, int is_short_decl, Position pos) {
+static size_t chain_length(const ASTNode* head) {
+    size_t n = 0;
+    for (const ASTNode* x = head; x != NULL; x = x->next) {
+        n++;
+    }
+    return n;
+}
+
+// The `:=` destructure `a, b, c := f()` is a VarDeclNode with N names and one
+// value, the shape the checker's comma-ok and multi-result arms read. The
+// identifier nodes are consumed: only their names survive.
+static ASTNode* short_var_decl_destructure_new(ASTNode* targets, ASTNode* value,
+                                               size_t count) {
+    // get_current_position(), not the rule's start: the VarDeclNode built
+    // here always carried the lookahead position, and the IR differential of
+    // the grammar change holds that position fixed.
+    GOO_ASSERT(chain_length(targets) == count);
+    char** names = xmalloc(sizeof(char*) * count);
+    ASTNode* t = targets;
+    for (size_t i = 0; i < count; i++) {
+        GOO_ASSERT(t != NULL && t->type == AST_IDENTIFIER);
+        ASTNode* next = t->next;
+        names[i] = xstrdup(((IdentifierNode*)t)->name);
+        // ast_node_free walks ->next, so free each node on its own.
+        t->next = NULL;
+        t->tail = NULL;
+        ast_node_free(t);
+        t = next;
+    }
+    VarDeclNode* var = ast_var_decl_new(get_current_position());
+    var->names = names;
+    var->name_count = count;
+    var->values = value;
+    var->is_short_decl = 1;
+    return (ASTNode*)var;
+}
+
+static int all_identifiers(const ASTNode* head) {
+    for (const ASTNode* x = head; x != NULL; x = x->next) {
+        if (x->type != AST_IDENTIFIER) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// One builder for every multi-name `=` and `:=`. The targets and values are
+// `next` chains from expr_list2 and expression_list. The checker owns the
+// count rules (assignment mismatch) and the `:=` identifier rule, so every
+// shape the grammar accepts gets a node here and a diagnostic there.
+ASTNode* assign_list_new(ASTNode* targets, ASTNode* values, int is_short_decl,
+                         Position pos) {
+    GOO_ASSERT(targets != NULL && values != NULL);
+    size_t count = chain_length(targets);
+    size_t vcount = chain_length(values);
+    GOO_ASSERT(count >= 2U && vcount >= 1U);
+
+    if (is_short_decl && vcount == 1U && all_identifiers(targets)) {
+        return short_var_decl_destructure_new(targets, values, count);
+    }
+
     MultiAssignNode* ma = (MultiAssignNode*)xmalloc(sizeof(MultiAssignNode));
     ma->base.type = AST_MULTI_ASSIGN;
     ma->base.pos = pos;
     ma->base.node_type = NULL;
     ma->base.next = NULL;
     ma->base.tail = NULL;
-
-    t1->next = t2;
-    t1->tail = t2;
-    t2->next = NULL;
-    t2->tail = NULL;
-    v1->next = v2;
-    v1->tail = v2;
-    v2->next = NULL;
-    v2->tail = NULL;
-
-    ma->targets = t1;
-    ma->values = v1;
-    ma->count = 2;
+    ma->targets = targets;
+    ma->values = values;
+    ma->count = count;
     ma->is_short_decl = is_short_decl;
     return (ASTNode*)ma;
 }
 
-ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call, Position pos) {
-    MultiAssignNode* ma = (MultiAssignNode*)xmalloc(sizeof(MultiAssignNode));
-    ma->base.type = AST_MULTI_ASSIGN;
-    ma->base.pos = pos;
-    ma->base.node_type = NULL;
-    ma->base.next = NULL;
-    ma->base.tail = NULL;
-
-    t1->next = t2;
-    t1->tail = t2;
-    t2->next = NULL;
-    t2->tail = NULL;
-    call->next = NULL;      /* single value; codegen destructures its fields */
-    call->tail = NULL;
-
-    ma->targets = t1;
-    ma->values = call;
-    ma->count = 2;
-    ma->is_short_decl = 0;
-    return (ASTNode*)ma;
+// `for k, v := range x` from the grammar's expr_list2. Builds the key+value
+// ForStmtNode when the left side is exactly two identifiers. Otherwise it
+// returns NULL with *why and *where set, and the action refuses the program.
+ASTNode* range_short_decl_new(ASTNode* targets, ASTNode* range_expr, ASTNode* body,
+                              const char** why, Position* where) {
+    GOO_ASSERT(targets != NULL && why != NULL && where != NULL);
+    ASTNode* key = targets;
+    ASTNode* value = targets->next;
+    GOO_ASSERT(value != NULL);
+    if (value->next) {
+        *why = "range clause permits at most two iteration variables";
+        *where = value->next->pos;
+        return NULL;
+    }
+    if (key->type != AST_IDENTIFIER || value->type != AST_IDENTIFIER) {
+        *why = "non-name on left side of :=";
+        *where = (key->type != AST_IDENTIFIER) ? key->pos : value->pos;
+        return NULL;
+    }
+    // The names first and the node last, with a plain cast on return: both
+    // analyser lanes then see the node handed to the caller, not leaked.
+    char* key_name = xstrdup(((IdentifierNode*)key)->name);
+    char* value_name = xstrdup(((IdentifierNode*)value)->name);
+    key->next = NULL;
+    key->tail = NULL;
+    ast_node_free(key);
+    ast_node_free(value);
+    ForStmtNode* for_node = (ForStmtNode*)xcalloc(1, sizeof(ForStmtNode));
+    for_node->base.type = AST_FOR_STMT;
+    // The lookahead position, as the two-identifier arm always stamped it.
+    for_node->base.pos = get_current_position();
+    for_node->key_name = key_name;
+    for_node->value_name = value_name;
+    for_node->range_expr = range_expr;
+    for_node->body = body;
+    return (ASTNode*)for_node;
 }
 
 // Build a compound-assignment statement (`x += e`, `x &= e`, ...). The compound
@@ -602,24 +663,6 @@ ASTNode* short_var_decl_new_1(ASTNode* name_ident, ASTNode* value) {
     var->values = value;
     var->is_short_decl = 1;
     ast_node_free(name_ident);
-    return (ASTNode*)var;
-}
-
-ASTNode* short_var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* value) {
-    // Multi-LHS short var decl `a, b := expr`. Destructuring is resolved at
-    // codegen time: the RHS must produce a TYPE_STRUCT with at least 2
-    // fields, and a/b are bound to its fields 0 and 1 respectively.
-    VarDeclNode* var = ast_var_decl_new(get_current_position());
-    IdentifierNode* i1 = (IdentifierNode*)name_ident1;
-    IdentifierNode* i2 = (IdentifierNode*)name_ident2;
-    var->names = xmalloc(sizeof(char*) * 2);
-    var->names[0] = xstrdup(i1->name);
-    var->names[1] = xstrdup(i2->name);
-    var->name_count = 2;
-    var->values = value;
-    var->is_short_decl = 1;
-    ast_node_free(name_ident1);
-    ast_node_free(name_ident2);
     return (ASTNode*)var;
 }
 

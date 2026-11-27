@@ -1,7 +1,7 @@
 # Go Spec Conformance Matrix
 
-**Snapshot:** 2026-07-27, post-v1.0.0 — **90% conformance**
-(47 works / 52 tested constructs, excluding 3 deliberate rejections).
+**Snapshot:** 2026-11-27 — **91% conformance**
+(51 works / 56 tested constructs, excluding 3 deliberate rejections).
 
 **Method.** One tiny fixture per Go-spec construct under `tests/spec/`,
 statuses determined **empirically** (compiled and run against `bin/goo`,
@@ -36,7 +36,7 @@ percentage moves only with evidence.
 | Chapter | works | divergent | rejected | absent | Constructs |
 |---|---|---|---|---|---|
 | Lexical | 4 | – | – | – | ASI/newlines, raw strings, rune literals, hex escapes |
-| Declarations | 6 | – | – | – | grouped var, const+iota, short var, named types, tuple assign, blank ident |
+| Declarations | 7 | – | – | – | grouped var, const+iota, short var, named types, tuple assign, assign and short var with three or more names, blank ident |
 | Types | 8 | – | – | 1 | arrays, slices, maps, struct embedding, pointers, closures, interfaces, channels; **absent:** complex |
 | Expressions | 6 | – | – | 1 | keyed/elided composites, type assertions, method values, conversions, shift/div/mod, user variadics; **absent:** method expressions |
 | Statements | 12 | 1 | – | – | if-init, for (3 forms), for with init/condition/post OMITTED (all seven combinations), range (slices, string→**runes**, channels), switch-init + type switch, fallthrough, labels/goto, defer-in-loop, go+select, empty case/default bodies (switch/type-switch/select); **divergent:** named-result defer |

@@ -1,0 +1,24 @@
+// Spec: Statements / Assignment — three or more names with = and :=
+package main
+
+import "fmt"
+
+func three() (int, string, bool) {
+	return 1, "two", true
+}
+
+func main() {
+	a, b, c := 1, 2, 3
+	a, b, c = c, a, b
+	fmt.Println(a, b, c)
+	x, s, ok := three()
+	fmt.Println(x, s, ok)
+	i := 0
+	xs := []int{0, 0}
+	i, xs[i] = 1, 9
+	fmt.Println(i, xs)
+	for p, q, r := 0, 10, 0; p < 3; p, q = p+1, q-1 {
+		r += q
+		fmt.Println(p, q, r)
+	}
+}

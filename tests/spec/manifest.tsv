@@ -19,6 +19,7 @@ decl_const_iota	run	works	Declarations	const group with iota
 decl_shortvar	run	works	Declarations	short var decl from multi-return call
 decl_type	run	works	Declarations	named type declaration
 decl_multi_assign	run	works	Declarations	a, b = f() tuple assignment
+decl_multi_assign_n	run	works	Declarations	three or more names with = and :=, index operands read before the stores
 type_array	run	works	Types	fixed arrays, zero value, index assign
 type_slice	run	works	Types	literals, append, len, slicing
 type_map	run	works	Types	make, write, read, delete, comma-ok

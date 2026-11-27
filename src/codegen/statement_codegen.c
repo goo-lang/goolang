@@ -121,10 +121,65 @@ static void defer_entry_store_zero(CodeGenerator* cg, LLVMValueRef flag, LLVMTyp
 }
 #endif
 
-// F6: `a, b := v1, v2` / `a, b = v1, v2`. Simultaneous-evaluation semantics:
+#if LLVM_AVAILABLE
+static int is_blank_target(const ASTNode* t) {
+    return t->type == AST_IDENTIFIER && strcmp(((const IdentifierNode*)t)->name, "_") == 0;
+}
+
+// Phase 1 of Go's assignment for the targets: "the operands of index
+// expressions and pointer indirections on the left ... are evaluated" before
+// any store. `i, x[i] = 1, 100` must store into x[0], so the address of every
+// non-identifier target is computed here, before the right-hand side and
+// before the first store. An identifier's address is its slot, which no store
+// in this statement can move, so it is resolved at its store as before (and
+// emits no IR either way). `addrs[i]` stays NULL for identifiers and `_`.
+static int multi_assign_target_addresses(CodeGenerator* codegen, TypeChecker* checker,
+                                         MultiAssignNode* ma, ValueInfo** addrs) {
+    ASTNode* t = ma->targets;
+    for (size_t i = 0; i < ma->count; i++) {
+        GOO_ASSERT(t != NULL);
+        if (t->type != AST_IDENTIFIER) {
+            ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, t);
+            if (!target || !target->is_lvalue) {
+                codegen_error(codegen, t->pos,
+                              "multi-assign target must be an addressable lvalue");
+                return 0;
+            }
+            addrs[i] = target;
+        }
+        t = t->next;
+    }
+    return 1;
+}
+
+// The address to store target `t` through: the phase-1 address for an
+// index, selector or deref target, the slot for an identifier.
+static ValueInfo* multi_assign_store_address(CodeGenerator* codegen, TypeChecker* checker,
+                                             ASTNode* t, ValueInfo* early) {
+    if (early) {
+        return early;
+    }
+    ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, t);
+    if (!target || !target->is_lvalue) {
+        codegen_error(codegen, t->pos,
+                      "multi-assign target must be an addressable lvalue");
+        return NULL;
+    }
+    return target;
+}
+
+static int codegen_generate_multi_assign_n(CodeGenerator* codegen, TypeChecker* checker,
+                                           MultiAssignNode* ma, ValueInfo** addrs,
+                                           LLVMValueRef* rvals, Type** rtypes,
+                                           ASTNode** rnodes);
+#endif
+
+// Multi-name `a, b, c := v1, v2, v3` / `a, b, c = v1, v2, v3` and the
+// one-value destructure `a, b, c = f()`. Simultaneous-evaluation semantics:
+// the target addresses are computed first (see multi_assign_target_addresses),
 // pass 1 evaluates EVERY right-hand side to an rvalue (loading lvalue operands
-// now, before any store), pass 2 binds/stores. So `a, b = b, a` swaps — both
-// rvalues are read before either target is written.
+// now, before any store), pass 2 binds/stores left to right. So `a, b = b, a`
+// swaps — both rvalues are read before either target is written.
 int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, stmt->pos, "LLVM support not available");
@@ -132,16 +187,49 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
 #else
     if (!codegen || !checker || !stmt || stmt->type != AST_MULTI_ASSIGN) return 0;
     MultiAssignNode* ma = (MultiAssignNode*)stmt;
+    GOO_ASSERT(ma->count >= 2);
 
-    // Destructuring assignment `a, b = f()`: a SINGLE multi-return value (a
-    // struct) spread across the two targets. Detected by a values chain shorter
-    // than the target count. Evaluate the struct once, ExtractValue each field,
-    // and store into the corresponding target lvalue. (The `:=` two-target
+    // One slot per target for each of the per-statement arrays. calloc so a
+    // target that has no early address (an identifier) reads NULL.
+    ValueInfo** addrs = calloc(ma->count, sizeof(ValueInfo*));
+    LLVMValueRef* rvals = calloc(ma->count, sizeof(LLVMValueRef));
+    Type** rtypes = calloc(ma->count, sizeof(Type*));
+    ASTNode** rnodes = calloc(ma->count, sizeof(ASTNode*));
+    int ok = 0;
+    if (!addrs || !rvals || !rtypes || !rnodes) {
+        codegen_error(codegen, stmt->pos, "out of memory in multi-assign");
+    } else {
+        ok = codegen_generate_multi_assign_n(codegen, checker, ma, addrs,
+                                             rvals, rtypes, rnodes);
+    }
+    free(addrs);
+    free(rvals);
+    free(rtypes);
+    free(rnodes);
+    return ok;
+#endif
+}
+
+#if LLVM_AVAILABLE
+static int codegen_generate_multi_assign_n(CodeGenerator* codegen, TypeChecker* checker,
+                                           MultiAssignNode* ma, ValueInfo** addrs,
+                                           LLVMValueRef* rvals, Type** rtypes,
+                                           ASTNode** rnodes) {
+    const ASTNode* stmt = &ma->base;
+    if (!ma->is_short_decl &&
+        !multi_assign_target_addresses(codegen, checker, ma, addrs)) {
+        return 0;
+    }
+
+    // Destructuring assignment `a, b, c = f()`: a SINGLE multi-return value
+    // (a struct) spread across the targets. Detected by a values chain shorter
+    // than the target count. Evaluate the struct once, ExtractValue each
+    // field, and store into the corresponding target lvalue. (The `:=`
     // single-value form is a VarDeclNode, handled elsewhere — this is the `=`
     // assignment form.)
     size_t vcount = 0;
     for (ASTNode* v = ma->values; v; v = v->next) vcount++;
-    if (vcount == 1 && ma->count == 2 && !ma->is_short_decl) {
+    if (vcount == 1 && !ma->is_short_decl) {
         ValueInfo* rhs = codegen_generate_expression(codegen, checker, ma->values);
         if (!rhs) {
             codegen_error(codegen, stmt->pos, "Failed to evaluate destructure RHS");
@@ -150,14 +238,11 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
         size_t i = 0;
         for (ASTNode* t = ma->targets; t; t = t->next, i++) {
             // `_` discards its field — no lvalue to resolve, no store.
-            if (t->type == AST_IDENTIFIER &&
-                strcmp(((IdentifierNode*)t)->name, "_") == 0) {
+            if (is_blank_target(t)) {
                 continue;
             }
-            ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, t);
-            if (!target || !target->is_lvalue) {
-                codegen_error(codegen, t->pos,
-                              "destructure target must be an addressable lvalue");
+            ValueInfo* target = multi_assign_store_address(codegen, checker, t, addrs[i]);
+            if (!target) {
                 value_info_free(rhs);
                 return 0;
             }
@@ -228,14 +313,11 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
     }
 
     // Pass 1: evaluate all RHS values up front (the load-bearing step).
-    LLVMValueRef rvals[2];
-    Type* rtypes[2];
-    // The value's AST node, kept for pass 2's self-append guard. The guard has
-    // to ask about the SOURCE expression, and by pass 2 only the evaluated
-    // LLVM value is in hand.
-    ASTNode* rnodes[2] = { NULL, NULL };
+    // rnodes keeps each value's AST node for pass 2's self-append guard. The
+    // guard has to ask about the SOURCE expression, and by pass 2 only the
+    // evaluated LLVM value is in hand.
     size_t n = 0;
-    for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
+    for (ASTNode* v = ma->values; v && n < ma->count; v = v->next) {
         ValueInfo* vi = codegen_generate_expression(codegen, checker, v);
         if (!vi) {
             codegen_error(codegen, stmt->pos, "Failed to evaluate multi-assign value");
@@ -290,14 +372,11 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             }
         } else {
             // `_` discards its value — no lvalue to resolve, no store.
-            if (t->type == AST_IDENTIFIER &&
-                strcmp(((IdentifierNode*)t)->name, "_") == 0) {
+            if (is_blank_target(t)) {
                 continue;
             }
-            ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, t);
-            if (!target || !target->is_lvalue) {
-                codegen_error(codegen, t->pos,
-                              "multi-assign target must be an addressable lvalue");
+            ValueInfo* target = multi_assign_store_address(codegen, checker, t, addrs[i]);
+            if (!target) {
                 return 0;
             }
             // Box a concrete implementer into the interface's {vtable, data}
@@ -365,8 +444,8 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
         }
     }
     return 1;
-#endif
 }
+#endif
 
 int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
     if (!codegen || !checker || !stmt) return 0;

@@ -6,6 +6,7 @@ bigalg.go
 chanlinear.go
 char_lit.go
 clear.go
+closedchan.go
 closure.go
 closure1.go
 closure4.go
@@ -18,6 +19,7 @@ const8.go
 convert.go
 copy.go
 ddd.go
+decl.go
 defer.go
 deferfin.go
 defernil.go
@@ -47,6 +49,7 @@ fixedbugs/bug056.go
 fixedbugs/bug058.go
 fixedbugs/bug060.go
 fixedbugs/bug061.go
+fixedbugs/bug065.go
 fixedbugs/bug067.go
 fixedbugs/bug070.go
 fixedbugs/bug075.go
@@ -74,8 +77,10 @@ fixedbugs/bug154.go
 fixedbugs/bug168.go
 fixedbugs/bug178.go
 fixedbugs/bug180.go
+fixedbugs/bug184.go
 fixedbugs/bug185.go
 fixedbugs/bug19403.go
+fixedbugs/bug196.go
 fixedbugs/bug199.go
 fixedbugs/bug201.go
 fixedbugs/bug204.go
@@ -86,6 +91,7 @@ fixedbugs/bug230.go
 fixedbugs/bug234.go
 fixedbugs/bug236.go
 fixedbugs/bug237.go
+fixedbugs/bug242.go
 fixedbugs/bug247.go
 fixedbugs/bug253.go
 fixedbugs/bug254.go
@@ -112,9 +118,13 @@ fixedbugs/bug314.go
 fixedbugs/bug320.go
 fixedbugs/bug321.go
 fixedbugs/bug328.go
+fixedbugs/bug331.go
 fixedbugs/bug336.go
 fixedbugs/bug341.go
 fixedbugs/bug343.go
+fixedbugs/bug346.go
+fixedbugs/bug347.go
+fixedbugs/bug348.go
 fixedbugs/bug352.go
 fixedbugs/bug356.go
 fixedbugs/bug364.go
@@ -131,6 +141,7 @@ fixedbugs/bug423.go
 fixedbugs/bug428.go
 fixedbugs/bug433.go
 fixedbugs/bug434.go
+fixedbugs/bug440_32.go
 fixedbugs/bug440_64.go
 fixedbugs/bug441.go
 fixedbugs/bug442.go
@@ -149,6 +160,7 @@ fixedbugs/bug484.go
 fixedbugs/bug485.go
 fixedbugs/bug494.go
 fixedbugs/bug497.go
+fixedbugs/bug498.go
 fixedbugs/bug499.go
 fixedbugs/bug500.go
 fixedbugs/bug501.go
@@ -181,6 +193,7 @@ fixedbugs/issue13268.go
 fixedbugs/issue13684.go
 fixedbugs/issue14591.go
 fixedbugs/issue14636.go
+fixedbugs/issue14646.go
 fixedbugs/issue14651.go
 fixedbugs/issue14725.go
 fixedbugs/issue15002.go
@@ -202,6 +215,7 @@ fixedbugs/issue16985.go
 fixedbugs/issue17039.go
 fixedbugs/issue17640.go
 fixedbugs/issue17752.go
+fixedbugs/issue18149.go
 fixedbugs/issue18410.go
 fixedbugs/issue18636.go
 fixedbugs/issue18725.go
@@ -231,8 +245,10 @@ fixedbugs/issue22083.go
 fixedbugs/issue22326.go
 fixedbugs/issue22605.go
 fixedbugs/issue22660.go
+fixedbugs/issue22662.go
 fixedbugs/issue22662b.go
 fixedbugs/issue22683.go
+fixedbugs/issue23188.go
 fixedbugs/issue23305.go
 fixedbugs/issue23522.go
 fixedbugs/issue23536.go
@@ -324,7 +340,9 @@ fixedbugs/issue4495.go
 fixedbugs/issue45175.go
 fixedbugs/issue4518.go
 fixedbugs/issue45242.go
+fixedbugs/issue4562.go
 fixedbugs/issue45851.go
+fixedbugs/issue4620.go
 fixedbugs/issue46304.go
 fixedbugs/issue4667.go
 fixedbugs/issue46903.go
@@ -369,6 +387,7 @@ fixedbugs/issue5809.go
 fixedbugs/issue5820.go
 fixedbugs/issue58300.go
 fixedbugs/issue58300b.go
+fixedbugs/issue5856.go
 fixedbugs/issue59338.go
 fixedbugs/issue59367.go
 fixedbugs/issue59404part2.go
@@ -394,6 +413,7 @@ fixedbugs/issue68816.go
 fixedbugs/issue6899.go
 fixedbugs/issue6902.go
 fixedbugs/issue70189.go
+fixedbugs/issue7044.go
 fixedbugs/issue70481.go
 fixedbugs/issue7050.go
 fixedbugs/issue7083.go
@@ -419,6 +439,7 @@ fixedbugs/issue75327.go
 fixedbugs/issue7550.go
 fixedbugs/issue75569.go
 fixedbugs/issue75764.go
+fixedbugs/issue76008.go
 fixedbugs/issue76709.go
 fixedbugs/issue7690.go
 fixedbugs/issue7740.go
@@ -493,6 +514,7 @@ maplinear.go
 method3.go
 method5.go
 newexpr.go
+nil.go
 nilptr2.go
 printbig.go
 recover1.go
@@ -505,6 +527,7 @@ reflectmethod4.go
 reflectmethod5.go
 reflectmethod6.go
 reflectmethod7.go
+reorder.go
 reorder2.go
 sigchld.go
 stack.go
@@ -516,5 +539,6 @@ tinyfin.go
 turing.go
 typeswitch.go
 typeswitch1.go
+utf.go
 varinit.go
 winbatch.go
