@@ -1,0 +1,29 @@
+// goroutine_deep_recursion (H1): a recursion that fits the main thread must
+// also fit a goroutine. Each rec frame measured about 1000 bytes at -O0
+// (a [64]int local is 512 bytes), so depth 500 uses about 500 KiB: half of
+// the 1 MiB goroutine stack, and ten times the old 64 KiB stack, which the
+// recursion ran off the end of with no error.
+package main
+
+import "fmt"
+
+func rec(n int) int {
+	var a [64]int
+	a[n%64] = n
+	if n == 0 {
+		return 0
+	}
+	return rec(n-1) + a[n%64] - n + 1
+}
+
+var done chan int
+
+func worker() {
+	done <- rec(500)
+}
+
+func main() {
+	done = make_chan(int)
+	go worker()
+	fmt.Println(<-done)
+}
