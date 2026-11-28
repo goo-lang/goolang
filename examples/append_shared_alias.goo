@@ -1,0 +1,20 @@
+// append grows a slice that ANOTHER slice shares.
+//
+// u := s copies the header, so both name one array of cap 2. The append needs a
+// third slot, so Go allocates a new array for s and u keeps the old one: the
+// write through s is not visible through u. Goo used to realloc in place, so u
+// saw the write (a silent `8 8`).
+//
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func main() {
+	s := make([]int, 2, 2)
+	s[0] = 7
+	u := s
+	s = append(s, 1)
+	s[0] = 8
+	fmt.Println(u[0], s[0])
+}

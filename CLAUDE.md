@@ -302,6 +302,17 @@ length while the block count holds. The figures in this section are for a progra
 - **A multi-assign target gets no store release.** `a, b = x, y` stores
   without freeing what the slots held. A LEAK, never a use-after-free, and
   untested rather than proven absent.
+- **The earlier arrays of a growing slice are not freed.** `append` never
+  frees the old array when it grows (PR #376): another slice may share it,
+  and the release plan cannot yet prove that no alias holds it (condition 7
+  runs only for a local bound more than once, and a self-append is not a
+  binding). A LEAK, never a use-after-free. MEASURED 2026-11-27, 1,024 ints
+  appended to an empty slice that is returned: 16,552 bytes in 11 blocks
+  against main's 8,208 bytes in 1 block. The bound: less than the bytes of
+  the final array, plus one block for each doubling. On
+  `bench/daemon/daemon.goo` (same sitting): 4,003 -> 10,003 blocks in use at
+  exit for 2,000 requests, and peak RSS 25,272 KB -> 107,904 KB at 400,000,
+  so the ARC table above is a pre-#376 figure.
 - **An unbound temporary has no release site at all.** `return
   len(strings.ToUpper(x))` leaks 32 bytes with release OFF and ON.
 - **The residual 82,207 is a conditional hand-over** — `f` reaches

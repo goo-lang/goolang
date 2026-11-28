@@ -203,5 +203,6 @@ script spin-bootstrap-probe
 script spin-deadlock-model-probe
 script string-literal-header-probe
 script superset-probe
+script vendor-drift-probe
 script warning-count-probe
 script workflow-targets-probe

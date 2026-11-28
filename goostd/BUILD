@@ -4,6 +4,8 @@
 # the workspace root and the resolver appends "goostd".
 filegroup(
     name = "files",
-    srcs = glob(["**/*.go", "**/*.goo"]),
+    # VENDOR.tsv is the ship ledger: doc_claims_probe classifies a vendored
+    # package as unshipped only by its row there.
+    srcs = glob(["**/*.go", "**/*.goo"]) + ["VENDOR.tsv"],
     visibility = ["//visibility:public"],
 )

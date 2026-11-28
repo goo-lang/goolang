@@ -401,9 +401,10 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
 //
 // It matters because such an assignment does not REBIND `L` to a different
 // object. It GROWS L's object: append either writes into the existing buffer or
-// reallocs it, and goo_realloc frees the old base itself. One local, one live
-// buffer, and ownership never moves. So a release at exit frees exactly the
-// buffer `L` still holds, which is correct.
+// copies it into a new one and leaves the old one live (it may be shared, and
+// nothing here proves it is not, so it leaks). Ownership of the buffer L holds
+// never moves, so a release at exit frees exactly the buffer `L` still holds,
+// which is correct.
 //
 // `t := append(s, x)` is a DIFFERENT and dangerous shape, and it is NOT this
 // one. There, t and s can hold the SAME buffer when capacity suffices, and two
@@ -413,12 +414,12 @@ static void note_declaration(WalkCtx* ctx, const char* name, ASTNode* value) {
 // The arg-0 identifier must match the assignment target by NAME. `a = append(b,
 // x)` is a rebind of `a` to b's buffer, not a self-append.
 // Exported for codegen, which must NOT emit a release-before-store at a
-// self-append. goo_slice_append reallocs, and goo_realloc frees the old base
-// itself, so by the time the store runs the old pointer in the slot is already
-// dangling -- measured on bench/daemon/daemon.goo as 7 invalid reads through
-// goo_slice_release_elems and goo_release_with, with the program printing
-// nothing at all. ONE implementation rather than a second copy in codegen: the
-// two must agree, and this is the same predicate the rebind rule uses.
+// self-append: that walks and frees the ELEMENTS, and the new buffer still
+// holds every one of them. When append still realloc'd, that was measured on
+// bench/daemon/daemon.goo as 7 invalid reads through goo_slice_release_elems and
+// goo_release_with, with the program printing nothing at all. ONE
+// implementation rather than a second copy in codegen: the two must agree, and
+// this is the same predicate the rebind rule uses.
 static bool is_self_append(const char* target, ASTNode* rhs);
 
 bool release_decision_is_self_append(const char* target, ASTNode* rhs) {
