@@ -1,0 +1,24 @@
+// PR #376 recovery review: `set(&xs, other)` writes other's header into xs's
+// slot through a pointer. No binding records that value, so xs read
+// RELEASE_OK, and the self-append release freed other's array while other
+// still read it (valgrind: invalid read). An address passed to a callee lets
+// the callee store anything into the slot.
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func set(p *[]int, v []int) {
+	*p = v
+}
+
+func f() {
+	other := []int{7, 8}
+	xs := []int{1, 2}
+	set(&xs, other)
+	for i := 0; i < 100; i++ {
+		xs = append(xs, i)
+	}
+	fmt.Println(len(xs), other[0])
+}
+func main() { f() }

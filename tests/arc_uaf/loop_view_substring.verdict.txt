@@ -1,0 +1,4 @@
+[arc?] main: outer -> RELEASE_NO_NOT_OWNED
+[arc?] main: i -> RELEASE_NO_LOOP_SCOPE
+[arc?] main: x -> RELEASE_NO_BLOCK_ESCAPE
+[arc?] main: y -> RELEASE_NO_BLOCK_ESCAPE

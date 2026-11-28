@@ -1,0 +1,23 @@
+// PR #376 recovery review, and a live use-after-free on main: `set(&xs, v)`
+// stores the CALLER's slice v into xs's slot, and the release of xs at
+// function exit freed v's array while main still read v[0].
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func set(p *[]int, v []int) {
+	*p = v
+}
+
+func f(v []int) int {
+	xs := []int{1, 2}
+	set(&xs, v)
+	return len(xs)
+}
+
+func main() {
+	v := []int{7, 8}
+	n := f(v)
+	fmt.Println(n, v[0])
+}

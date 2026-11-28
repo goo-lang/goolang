@@ -211,8 +211,14 @@ typedef enum {
     // item, which planned work against "a loop-declared rebound local" and named
     // a cause that does not exist.
     RELEASE_NO_REBOUND,         // DEAD: no producer in src/, 0 rows in the corpus
-    RELEASE_NO_ALIASED,         // condition 7: another local names this one's value
+    // condition 7, asked of a rebound or a self-appended local: another local
+    // names this one's value, or a `range` over it has a store to it in its body
+    RELEASE_NO_ALIASED,
     RELEASE_NO_BLOCK_ESCAPE,    // condition 6: stored into something outliving the iteration
+    // condition 8: `&L` appears, and no named local's record holds that
+    // address, so a write through it can put into L's slot a value that no
+    // binding records -- a value someone else owns
+    RELEASE_NO_ADDR_TAKEN,
     RELEASE_NO_NO_BINDING,      // no binding site found for the name
     RELEASE_NO_UNKNOWN,         // a statement kind this module cannot read
 } ReleaseVerdict;

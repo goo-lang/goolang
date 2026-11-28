@@ -1,0 +1,16 @@
+[arc?] aliasMove: s -> RELEASE_NO_ESCAPES
+[arc?] aliasMove: u -> RELEASE_NO_ESCAPES
+[arc?] aliasMove: big -> RELEASE_NO_ESCAPES
+[arc?] aliasMove: i -> RELEASE_NO_ESCAPES
+[arc?] subslice: s -> RELEASE_NO_ESCAPES
+[arc?] subslice: t -> RELEASE_NO_ESCAPES
+[arc?] subslice: i -> RELEASE_NO_ESCAPES
+[arc?] owned: xs -> RELEASE_OK
+[arc] owned: will release xs at function exit (field=0, dtor=none)
+[arc?] owned: i -> RELEASE_NO_ESCAPES
+[arc] owned: releases the array a self-append of xs replaced
+[arc?] rangeGrow: s -> RELEASE_NO_ESCAPES
+[arc?] rangeGrow: _ -> RELEASE_NO_NO_BINDING
+[arc?] rangeGrow: v -> RELEASE_NO_ESCAPES
+[arc?] bulkSelf: b -> RELEASE_NO_ESCAPES
+[arc?] bulkSelf: i -> RELEASE_NO_LOOP_SCOPE

@@ -1,0 +1,5 @@
+[arc?] setS: p -> RELEASE_NO_NO_BINDING
+[arc?] setS: v -> RELEASE_NO_NO_BINDING
+[arc?] f: a -> RELEASE_NO_NO_BINDING
+[arc?] f: other -> RELEASE_NO_ESCAPES
+[arc?] f: s -> RELEASE_NO_ADDR_TAKEN

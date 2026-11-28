@@ -1,0 +1,10 @@
+[arc?] main: fs -> RELEASE_NO_ESCAPES
+[arc?] main: done -> RELEASE_NO_ESCAPES
+[arc?] main: i -> RELEASE_NO_ESCAPES
+[arc?] main: n -> RELEASE_NO_ESCAPES
+[arc?] main: p -> RELEASE_NO_ESCAPES
+[arc?] __goo_lit_0: p -> RELEASE_NO_NO_BINDING
+[arc?] __goo_lit_1: done -> RELEASE_NO_NO_BINDING
+[arc?] __goo_lit_1: fs -> RELEASE_NO_NO_BINDING
+[arc?] main: _ -> RELEASE_NO_NO_BINDING
+[arc?] main: f -> RELEASE_NO_ESCAPES
