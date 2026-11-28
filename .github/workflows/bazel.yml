@@ -1,6 +1,9 @@
 name: bazel
 
 on:
+  # merge_group: the merge queue runs the required checks on the queued
+  # merge before it updates main.
+  merge_group:
   push:
     branches: [main]
   pull_request:

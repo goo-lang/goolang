@@ -11,6 +11,9 @@ name: repro
 # On an unrelated PR the job reports success and prints why. On a related PR
 # it runs the same four builds as before.
 on:
+  # merge_group: the merge queue runs the required checks on the queued
+  # merge before it updates main.
+  merge_group:
   pull_request:
   workflow_dispatch:
 
@@ -39,9 +42,11 @@ jobs:
         id: scope
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
+          # A queued merge has no pull_request payload. Its base is the main
+          # commit the queue merged onto, so the scope rule stays the same.
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
         run: |
-          if [ "$EVENT" != "pull_request" ]; then
+          if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
             echo "scope: $EVENT always runs the full check"
             echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
