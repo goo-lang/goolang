@@ -3274,6 +3274,8 @@ VERIFY_ALL_DEPS := \
     doc-claims-probe \
     probe-teeth-probe \
     census-current-probe \
+    fixed-tmp-lint \
+    fixed-tmp-lint-selftest \
     targets-current-probe \
     targets-current-selftest \
     source-drift-probe \
@@ -6849,6 +6851,15 @@ probe-teeth-probe:
 # returns before list_bazel_tests. Verified with BAZEL=/nonexistent and with
 # bazel off PATH, both identical. The Makefile stays bazel-free.
 .PHONY: census-current-probe targets-current-probe targets-current-selftest
+.PHONY: fixed-tmp-lint fixed-tmp-lint-selftest
+# A gate that names a literal /tmp path shares one file between two concurrent
+# runs. The lint refuses it; the self-test proves the lint can go red.
+fixed-tmp-lint:
+	@bash scripts/fixed_tmp_lint.sh
+
+fixed-tmp-lint-selftest:
+	@bash scripts/fixed_tmp_lint.sh --self-test
+
 census-current-probe:
 	@bash tests/probes/census_current.sh
 
