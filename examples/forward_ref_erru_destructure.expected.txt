@@ -1,0 +1,4 @@
+ok: 5
+err: divide by zero
+w: -1
+x: 3

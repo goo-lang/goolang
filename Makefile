@@ -6993,15 +6993,18 @@ analyzer-lanes-selftest:
 # database over gcc, clang-tidy, cppcheck, the pthread-return-probe ratchet
 # and the gate log those probes print, with a shrink-only gate that
 # generalises docs/misra/tools/gate.py's own (file, rule) tally into
-# (tool, rule, file) result counts across every one of them. Re-runs
-# analyzer-lanes-probe and pthread-return-probe itself (see
-# scripts/findings_probe.sh's own header on why: it must also work
-# standalone, with no Makefile dependency graph to rely on), so this adds
-# roughly another minute on top of analyzer-lanes-probe's own budget.
+# (tool, rule, file) result counts across every one of them. It reads the
+# SARIF that analyzer-lanes-probe wrote, and it runs pthread-return-probe
+# itself. It does not run the three lanes again (task 4 of the 2026-11-27
+# verify-core plan: the lanes took 252 s of the 426 s this gate used to take).
+# build/sarif/lanes.stamp, written by analyzer-lanes-probe, holds a toolchain
+# signature and a hash of every file the lanes read. The script recomputes both
+# and fails with "analyser SARIF is missing or stale" when they differ, so the
+# prerequisite below is what makes the stamp fresh. A standalone
+# `bash scripts/findings_probe.sh` with no lanes run before it needs
+# FINDINGS_RUN_LANES=1.
 # M2: findings-probe and analyzer-lanes-probe both write build/sarif/*. The
-# prerequisite below orders them, so they cannot race under `make -j`. Under
-# verify-core, analyzer-lanes-probe is already a dependency, so make runs it
-# once; the script then runs the lanes once more for its own pipeline.
+# prerequisite orders them, so they cannot race under `make -j`.
 .PHONY: findings-probe findings-probe-selftest
 findings-probe: analyzer-lanes-probe
 	@bash scripts/findings_probe.sh

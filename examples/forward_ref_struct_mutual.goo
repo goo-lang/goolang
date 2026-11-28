@@ -1,0 +1,28 @@
+// forward_ref_struct_mutual: two functions that take and return a user struct
+// and call each other, both declared after main.
+package main
+
+import "fmt"
+
+type P struct {
+	n int
+}
+
+func main() {
+	r := down(P{n: 3})
+	fmt.Println(r.n)
+}
+
+func down(p P) P {
+	if p.n <= 0 {
+		return p
+	}
+	return up(P{n: p.n - 1})
+}
+
+func up(p P) P {
+	if p.n <= 0 {
+		return p
+	}
+	return down(P{n: p.n - 1})
+}
