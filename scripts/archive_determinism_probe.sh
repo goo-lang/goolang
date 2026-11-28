@@ -160,6 +160,13 @@ if ( cd "$WORK/m" && ar x "$LIB" ) 2>/dev/null; then
     fi
 fi
 
+# A skipped round-trip tested nothing. The check is informational, but a gate
+# run under GOO_PROBE_NO_SKIP (set by the verify* targets) must not pass on it.
+if [ "${GOO_PROBE_NO_SKIP:-0}" = 1 ] && [ "${toolchain_status#SKIP}" != "$toolchain_status" ]; then
+    echo "$PROBE: FAIL ($toolchain_status, and GOO_PROBE_NO_SKIP forbids a skip)"
+    exit 1
+fi
+
 echo "$PROBE: PASS ($count members in lib/libgoo_runtime.a all carry mtime 0, uid 0, gid 0)"
 echo "  toolchain round-trip (informational only): $toolchain_status"
 exit 0

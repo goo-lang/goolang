@@ -3527,6 +3527,7 @@ VERIFY_ALL_DEPS := \
     program-dump-selftest \
     program-dump-probe \
     archive-determinism-probe \
+    no-skip-probe \
     repro-build-probe \
     compile-commands-current-probe \
     analyzer-lanes-probe \
@@ -3560,6 +3561,13 @@ NIGHTLY_EXCLUDED := v2-bootstrap-pilot
 VERIFY_NIGHTLY_DEPS := $(filter-out $(NIGHTLY_EXCLUDED),$(VERIFY_ALL_DEPS))
 
 .PHONY: verify verify-core verify-nightly
+
+# A gate whose tool is missing must FAIL, never print SKIPPED and pass: a gate
+# that tested nothing reads as green. GOO_PROBE_NO_SKIP=1 is the convention
+# every skipping gate honours (scripts/arc_reassign_probe.sh). A target-specific
+# variable reaches the prerequisites, so each gate under these three targets
+# sees it. no-skip-probe proves the 15 gates that once skipped now fail.
+verify verify-core verify-nightly: export GOO_PROBE_NO_SKIP = 1
 
 verify-nightly: $(VERIFY_NIGHTLY_DEPS)
 	@echo ""
@@ -5273,6 +5281,10 @@ vendor-drift-selftest:
 obj-header-tsan:
 	@mkdir -p $(BINDIR)
 	@if ! which clang > /dev/null 2>&1; then \
+	  if [ "$${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then \
+	    echo "obj-header-tsan: FAIL (clang not found, and GOO_PROBE_NO_SKIP forbids a skip)"; \
+	    exit 1; \
+	  fi; \
 	  echo "obj-header-tsan: SKIPPED (clang not found)"; \
 	  exit 0; \
 	fi
@@ -5935,6 +5947,10 @@ arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 arc-loop-carried-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@if ! which valgrind > /dev/null 2>&1; then \
+	  if [ "$${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then \
+	    echo "arc-loop-carried-probe: FAIL (valgrind not found, and GOO_PROBE_NO_SKIP forbids a skip)"; \
+	    exit 1; \
+	  fi; \
 	  echo "valgrind not found — SKIPPED"; \
 	  exit 0; \
 	fi
@@ -6015,6 +6031,14 @@ arc-map-key-local-probe: $(COMPILER) $(RUNTIME_LIB)
 arc-multi-assign-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./scripts/arc_multi_assign_probe.sh
 
+# A MISSING TOOL FAILS THE GATE. Runs the --self-test (teeth: a gate that exits
+# 0 without its tool must be reported), then each of the 15 gates that once
+# skipped, with its tool removed from a scrubbed PATH and GOO_PROBE_NO_SKIP=1.
+.PHONY: no-skip-probe
+no-skip-probe:
+	@bash scripts/no_skip_probe.sh --self-test
+	@bash scripts/no_skip_probe.sh
+
 # KNOWN-RED, AND IN NO GATE ON PURPOSE — the SECOND one, and the same rule
 # applies: not in VERIFY_ALL_DEPS, and not to be added while it fails.
 #
@@ -6045,6 +6069,10 @@ arc-uaf-selftest: $(COMPILER) $(RUNTIME_LIB)
 arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@if ! which valgrind > /dev/null 2>&1; then \
+	  if [ "$${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then \
+	    echo "arc-release-probe: FAIL (valgrind not found, and GOO_PROBE_NO_SKIP forbids a skip)"; \
+	    exit 1; \
+	  fi; \
 	  echo "valgrind not found — SKIPPED"; \
 	  exit 0; \
 	fi
@@ -6572,6 +6600,10 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 arena-valgrind-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@if ! which valgrind > /dev/null 2>&1; then \
+	  if [ "$${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then \
+	    echo "arena-valgrind-probe: FAIL (valgrind not found, and GOO_PROBE_NO_SKIP forbids a skip)"; \
+	    exit 1; \
+	  fi; \
 	  echo "valgrind not found — SKIPPED"; \
 	  exit 0; \
 	fi

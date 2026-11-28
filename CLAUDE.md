@@ -97,7 +97,12 @@ This project uses a Makefile for building:
 - `make test-golden` / `make test-golden-o2` - Golden fixture suites (-O0/-O2).
   Parallel since P5.8: `GOLDEN_JOBS=<n>` overrides the default of nproc.
 - `make verify-core` - Full probe net, no CompCert required. Authoritative
-  ccomp-free gate; safe for pre-push on any machine.
+  ccomp-free gate; safe for pre-push on a machine that has the required tools.
+  A missing tool FAILS the gate: `verify`, `verify-core` and `verify-nightly`
+  export `GOO_PROBE_NO_SKIP=1`, which turns every would-be SKIPPED into a FAIL
+  (`no-skip-probe` proves it for the 15 gates that once skipped). Required
+  tools: valgrind, clang, go, cmake, bison, python3, llvm-config, cppcheck,
+  clang-tidy.
 - `make verify-nightly` - `verify` minus the CompCert pilot: `verify-core` plus
   the podman reproducible-build gates. Run daily by `.github/workflows/nightly.yml`.
 - `make verify` - `verify-core` plus the CompCert bootstrap pilot

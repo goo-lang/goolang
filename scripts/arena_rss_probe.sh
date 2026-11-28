@@ -49,7 +49,9 @@ PROBES="arena_loop_reclaim_probe arena_return_reclaim_probe arena_loopexit_recla
 # /usr/bin/time -v is what reports "Maximum resident set size"; the bash builtin
 # `time` does not. Skip loudly if it (or its -v support) is unavailable rather
 # than silently pass.
-TIME_BIN="/usr/bin/time"
+# GOO_TIME_BIN lets no-skip-probe point this at a missing binary, because an
+# absolute path cannot be removed from a scrubbed PATH.
+TIME_BIN="${GOO_TIME_BIN:-/usr/bin/time}"
 [ -x "$TIME_BIN" ] || skip "/usr/bin/time not found"
 if ! "$TIME_BIN" -v true >/dev/null 2>&1; then
     skip "/usr/bin/time -v unsupported"

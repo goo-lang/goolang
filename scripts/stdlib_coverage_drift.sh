@@ -18,8 +18,8 @@
 # ignore — the same reasoning ADR 0003 gives for keeping the benchmark harness
 # a reporter rather than a gate.
 #
-# SKIPS cleanly with exit 0 when `go` is absent, matching the valgrind probes.
-# verify-core has to stay green on a clean machine.
+# SKIPS with exit 0 when `go` is absent, unless GOO_PROBE_NO_SKIP=1 (which the
+# verify* targets set): then the missing tool is a FAIL.
 
 set -u
 
@@ -27,6 +27,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMITTED="$ROOT/docs/stdlib-coverage.json"
 
 if ! command -v go >/dev/null 2>&1; then
+  # A skipped gate tested nothing: under GOO_PROBE_NO_SKIP (set by the verify*
+  # targets) the skip is the failure.
+  if [ "${GOO_PROBE_NO_SKIP:-0}" = 1 ]; then
+    echo "stdlib-coverage-drift: FAIL (no go on PATH, and GOO_PROBE_NO_SKIP forbids a skip)"
+    exit 1
+  fi
   echo "stdlib-coverage-drift: SKIPPED (no go on PATH; \$GOROOT/api is the denominator source)"
   exit 0
 fi

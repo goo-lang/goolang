@@ -190,6 +190,7 @@ script lexer-keyword-probe
 script link-flags-probe
 script misra-r3-2-probe
 script nil-deref-probe
+script no-skip-probe
 script podman-image-probe
 script probe-teeth-probe
 script program-dump-probe
