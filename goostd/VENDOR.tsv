@@ -1,0 +1,2 @@
+cmp	-	package	go1.27.4
+cmp	-	unshipped	vendored by S0.4; the S1 cmp task ships it

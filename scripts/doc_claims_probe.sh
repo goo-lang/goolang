@@ -73,6 +73,12 @@ if [ "${1:-}" = "--self-test" ]; then
 		'mkdir -p goostd/newpkg && printf "package newpkg\nfunc F() int { return 1 }\n" > goostd/newpkg/newpkg.go'
 	inject "an unlisted package nested under a listed tree" \
 		'mkdir -p goostd/container/heap && printf "package heap\nfunc F() int { return 1 }\n" > goostd/container/heap/heap.go'
+	inject "a vendored package with a pristine copy and no unshipped row" \
+		'mkdir -p goostd/newvend third_party/go1.27.4-src/newvend && printf "package newvend\nfunc F() int { return 1 }\n" > goostd/newvend/n.go && cp goostd/newvend/n.go third_party/go1.27.4-src/newvend/n.go'
+	inject "an unshipped row for the parent path only" \
+		'mkdir -p goostd/container/heap && printf "package heap\nfunc F() int { return 1 }\n" > goostd/container/heap/heap.go && printf "container\t-\tunshipped\tparent only\n" >> goostd/VENDOR.tsv'
+	inject "the unshipped row of cmp deleted" \
+		'sed -i "/^cmp\t-\tunshipped\t/d" goostd/VENDOR.tsv'
 	inject "the shim list changes" \
 		'sed -i "s/\"qir\"};/\"qir\", \"json\"};/" src/compiler/goo.c'
 	inject "a third /proc/self/exe site" \
@@ -86,7 +92,7 @@ io.open("Makefile","w").write(s)
 PY'
 
 	[ "$bad_self" -ne 0 ] && exit 1
-	echo "$SELF: PASS (control green; all 5 claims independently turn it red)"
+	echo "$SELF: PASS (control green; every claim and rule independently turns it red)"
 	exit 0
 fi
 bad()  { echo "  FAIL: $*"; fails=$((fails+1)); }
@@ -101,7 +107,7 @@ PKGS="$(sed -n 's/^GOOSTD_PKG_DIRS="\(.*\)"$/\1/p' "$ROOT/scripts/check_stdlib_c
 if [ -z "$PKGS" ]; then
 	bad "could not read GOOSTD_PKG_DIRS (the stdlib list) from check_stdlib_coverage.sh"
 else
-	shipped=0; fixture=0; unclassified=0
+	shipped=0; fixture=0; unshipped=0; unclassified=0
 	# A PACKAGE directory is one that directly holds a .go or .goo file.
 	# Walking only the top-level directories let one entry classify a whole
 	# tree, so a new goostd/container/heap passed. -L follows the symlinks of
@@ -125,11 +131,20 @@ else
 		if grep -qi 'fixture' "$pkgdir"/*.go "$pkgdir"/*.goo 2>/dev/null; then
 			fixture=$((fixture+1)); continue
 		fi
+		# A vendored package that has no ship decision yet carries an explicit
+		# ledger row `<pkg> - unshipped <reason>`. The path must match exactly.
+		# A class is NEVER inferred from a directory that exists (a pristine
+		# copy, a sibling package): only a row, a list entry or a fixture
+		# header classifies a package.
+		if [ -f "$ROOT/goostd/VENDOR.tsv" ] && \
+		   awk -F'\t' -v p="$rel" '$1==p && $2=="-" && $3=="unshipped" && $4!="" {f=1} END{exit !f}' "$ROOT/goostd/VENDOR.tsv"; then
+			unshipped=$((unshipped+1)); continue
+		fi
 		bad "goostd/$rel is neither in GOOSTD_PKG_DIRS nor self-declared a fixture"
 		note "it would be silently absent from every released toolchain"
 		unclassified=$((unclassified+1))
 	done <<< "$PKG_DIRS"
-	[ "$unclassified" -eq 0 ] && note "goostd: $shipped shipped, $fixture fixtures, 0 unclassified"
+	[ "$unclassified" -eq 0 ] && note "goostd: $shipped shipped, $fixture fixtures, $unshipped unshipped, 0 unclassified"
 fi
 
 # --- 2. The shim package set, which ADR 0006 states as nine names. These
