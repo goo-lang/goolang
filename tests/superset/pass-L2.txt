@@ -170,6 +170,7 @@ fixedbugs/issue80127.go
 fixedbugs/issue8039.go
 fixedbugs/issue80577.go
 fixedbugs/issue81863.go
+fixedbugs/issue8325.go
 fixedbugs/issue8961.go
 fixedbugs/issue9604.go
 fixedbugs/issue9691.go

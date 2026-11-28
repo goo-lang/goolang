@@ -1,0 +1,93 @@
+package main
+
+import "fmt"
+
+func classify(s string) int {
+	switch s {
+	case "Queued", "Running":
+		return 1
+	case "Done",
+		"Failed":
+		return 2
+	}
+	return 0
+}
+
+func band(a int) string {
+	switch {
+	case a < 0, a > 10:
+		return "out"
+	case a == 3, a == 4:
+		return "mid"
+	}
+	return "in"
+}
+
+func f(n int) int {
+	fmt.Println("f", n)
+	return n
+}
+
+func order(x int) string {
+	switch x {
+	case f(1), f(2), f(3):
+		return "hit"
+	case f(4), f(5):
+		return "late"
+	}
+	return "miss"
+}
+
+func fall(n int) {
+	switch n {
+	case 1, 2:
+		fmt.Println("one-or-two")
+		fallthrough
+	case 3:
+		fmt.Println("three-or-fell")
+	case 4, 5:
+		fmt.Println("four-or-five")
+	}
+}
+
+func mid(n int) string {
+	switch n {
+	case 1, 2:
+		return "a"
+	default:
+		return "d"
+	case 3, 4:
+		return "b"
+	}
+}
+
+func kind(v any) string {
+	switch t := v.(type) {
+	case int, string:
+		return fmt.Sprintf("int-or-string %v", t)
+	case bool:
+		return fmt.Sprintf("bool %v", t)
+	case float64, nil:
+		return fmt.Sprintf("float-or-nil %v", t)
+	}
+	return "other"
+}
+
+func main() {
+	fmt.Println(classify("Queued"), classify("Failed"), classify("x"))
+	fmt.Println(band(-1), band(3), band(5), band(11))
+	fmt.Println(order(2))
+	fmt.Println(order(5))
+	fmt.Println(order(9))
+	fall(1)
+	fall(2)
+	fall(3)
+	fall(5)
+	fmt.Println(mid(1), mid(2), mid(3), mid(4), mid(9))
+	fmt.Println(kind(7))
+	fmt.Println(kind("s"))
+	fmt.Println(kind(true))
+	fmt.Println(kind(2.5))
+	fmt.Println(kind(nil))
+	fmt.Println(kind([]int{}))
+}

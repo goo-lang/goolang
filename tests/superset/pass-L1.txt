@@ -334,6 +334,7 @@ fixedbugs/issue42876.go
 fixedbugs/issue4313.go
 fixedbugs/issue4316.go
 fixedbugs/issue43444.go
+fixedbugs/issue43480.go
 fixedbugs/issue4353.go
 fixedbugs/issue43570.go
 fixedbugs/issue43835.go
@@ -484,6 +485,7 @@ fixedbugs/issue8155.go
 fixedbugs/issue8158.go
 fixedbugs/issue81612.go
 fixedbugs/issue81863.go
+fixedbugs/issue8325.go
 fixedbugs/issue8336.go
 fixedbugs/issue8613.go
 fixedbugs/issue8620.go
@@ -524,6 +526,7 @@ method5.go
 newexpr.go
 nil.go
 nilptr2.go
+nosplit.go
 printbig.go
 range4.go
 recover1.go

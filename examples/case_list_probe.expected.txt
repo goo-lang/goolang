@@ -1,0 +1,30 @@
+1 2 0
+out mid in out
+f 1
+f 2
+hit
+f 1
+f 2
+f 3
+f 4
+f 5
+late
+f 1
+f 2
+f 3
+f 4
+f 5
+miss
+one-or-two
+three-or-fell
+one-or-two
+three-or-fell
+three-or-fell
+four-or-five
+a a b b d
+int-or-string 7
+int-or-string s
+bool true
+float-or-nil 2.5
+float-or-nil <nil>
+other
