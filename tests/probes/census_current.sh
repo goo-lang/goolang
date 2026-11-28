@@ -12,7 +12,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
 fresh="$(mktemp)"
-trap 'rm -f "$fresh"' EXIT
+diff_out="$(mktemp)"
+trap 'rm -f "$fresh" "$diff_out"' EXIT
 
 ./tools/probe_census.sh > "$fresh" 2>/dev/null
 rc=$?
@@ -21,12 +22,12 @@ if [ "$rc" -ne 0 ]; then
     exit 2
 fi
 
-if diff -u tests/probes/census.txt "$fresh" > /tmp/census.diff 2>&1; then
+if diff -u tests/probes/census.txt "$fresh" > "$diff_out" 2>&1; then
     echo "census_current: PASS $(grep -c . tests/probes/census.txt) probes, census is current"
     exit 0
 fi
 
 echo "census_current: FAIL tests/probes/census.txt is stale"
-head -20 /tmp/census.diff
+head -20 "$diff_out"
 echo "  regenerate with: ./tools/probe_census.sh > tests/probes/census.txt"
 exit 1

@@ -73,8 +73,8 @@ case "$MODE" in
         mkdir -p /src
         tar -x -C /src || { echo "archive extraction FAILED" >&2; exit 1; }
         cd /src
-        make CCACHE= CC=gcc-14 -j"$(nproc)" bin/goo lib/libgoo_runtime.a >/tmp/build.log 2>&1 || {
-          echo "build FAILED"; tail -40 /tmp/build.log; exit 1; }
+        make CCACHE= CC=gcc-14 -j"$(nproc)" bin/goo lib/libgoo_runtime.a >/tmp/build.log 2>&1 || { # tmp-ok: runs in a fresh --rm container, so /tmp is private to this run
+          echo "build FAILED"; tail -40 /tmp/build.log; exit 1; } # tmp-ok: same container-private /tmp
         cp bin/goo /out/goo
         cp lib/libgoo_runtime.a /out/libgoo_runtime.a' < "$TAR"
     rc=$?

@@ -3148,9 +3148,10 @@ m10-probe: $(COMPILER) $(RUNTIME_LIB)
 cwd-link-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== cwd-link-probe: compile+run from a non-repo-root cwd ==="
-	@cd /tmp && GOO_RUNTIME="" "$(abspath $(COMPILER))" "$(abspath examples/cwd_link_probe.goo)" -o /tmp/cwd_link_probe.out 2>/tmp/cwd_link_probe.err; \
-	  rc=$$?; if [ $$rc -ne 0 ]; then echo "cwd-link-probe: FAIL (compile/link rc=$$rc)"; cat /tmp/cwd_link_probe.err; exit 1; fi
-	@out=$$(/tmp/cwd_link_probe.out); if [ "$$out" = "7" ]; then echo "cwd-link-probe: PASS"; else echo "cwd-link-probe: FAIL (got '$$out' want 7)"; exit 1; fi
+	@d=$$(mktemp -d) || exit 2; trap 'rm -rf "$$d"' EXIT; \
+	  cd "$$d" && GOO_RUNTIME="" "$(abspath $(COMPILER))" "$(abspath examples/cwd_link_probe.goo)" -o "$$d/out" 2>"$$d/err"; \
+	  rc=$$?; if [ $$rc -ne 0 ]; then echo "cwd-link-probe: FAIL (compile/link rc=$$rc)"; cat "$$d/err"; exit 1; fi; \
+	  out=$$("$$d/out"); if [ "$$out" = "7" ]; then echo "cwd-link-probe: PASS"; else echo "cwd-link-probe: FAIL (got '$$out' want 7)"; exit 1; fi
 
 # port-unblockers #1: goostd resolution (GOOROOT) must be cwd-independent
 # too, not just the runtime archive (cwd-link-probe covers that half).
@@ -6903,10 +6904,11 @@ repro-build-probe:
 
 qir-runner-probe: $(COMPILER)
 	@command -v qir-runner >/dev/null || (echo "install qir-runner: cargo install qir-runner" && exit 1)
-	./bin/goo --emit-qir examples/qir_teleport_probe.goo -o /tmp/goo_teleport.ll
-	qir-runner -f /tmp/goo_teleport.ll -e main -s 100
-	./bin/goo --emit-qir examples/qir_bitflip_qec_probe.goo -o /tmp/goo_qec.ll
-	qir-runner -f /tmp/goo_qec.ll -e main -s 100
+	@d=$$(mktemp -d) || exit 2; trap 'rm -rf "$$d"' EXIT; \
+	  ./bin/goo --emit-qir examples/qir_teleport_probe.goo -o "$$d/teleport.ll" && \
+	  qir-runner -f "$$d/teleport.ll" -e main -s 100 && \
+	  ./bin/goo --emit-qir examples/qir_bitflip_qec_probe.goo -o "$$d/qec.ll" && \
+	  qir-runner -f "$$d/qec.ll" -e main -s 100
 .PHONY: qir-runner-probe
 
 .PHONY: fpga-equiv-probe fpga-equiv-selftest
