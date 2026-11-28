@@ -60,9 +60,38 @@
 # A METHOD needs no such exception either way: it is always called through a
 # receiver, so `.<Name>(` is the only spelling in every source.
 #
+# METHOD RULE (PR #379 review). A method is called through a receiver of any
+# name, so `.<Name>(` alone matched ANY type's method of that name, in any
+# fixture. A method now counts as covered only in a file that ALSO shows the
+# receiver package: the file imports "<import path>", or it is a test file
+# inside that package's own goostd directory. LIMIT: two types of one package
+# that share a method name (bytes.Buffer.Len, strings.Builder.Len) still cover
+# each other, because the rule names the package and not the type, and a file
+# that imports the package but calls a same-named method of a DIFFERENT
+# package's type still counts. A type-aware match needs the type checker.
+#
+# --emit-covered FILE writes one tab-separated line per COVERED symbol:
+#     kind  import-path  name  type  sole-caller
+# kind is func, value, type or method. `type` is set for a goostd method.
+# `sole-caller` is the one file that covers the symbol, or `*` for several.
+# scripts/stdlib-coverage.py reads this file to count the API symbols that a
+# test or golden calls (gate T-4). The emission also lists exported goostd
+# types, consts and vars covered by a qualified reference, which the missing
+# list below does not require.
+#
 # Exit 0 = every extracted symbol covered. Exit 1 = uncovered symbol(s)
 # (all listed, never truncated) or an extraction sanity check failed.
 set -u
+
+EMIT_FILE=""
+if [ "${1:-}" = "--emit-covered" ]; then
+    EMIT_FILE="${2:-}"
+    if [ -z "$EMIT_FILE" ]; then
+        echo "check-stdlib-coverage: FAIL (--emit-covered needs a file)"
+        exit 1
+    fi
+    : > "$EMIT_FILE" || exit 1
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
@@ -144,31 +173,61 @@ cat "$GOLDEN_LIST" "$GOOSTD_TEST_LIST" > "$COVERAGE_LIST"
 NON_GOLDEN_COVERABLE="os.ReadLine:readline-probe
 lanes.RunFar:far-halo-probe"
 
-covered() {
-    # $1 = extended-regex pattern. Go/Goo identifiers are [A-Za-z0-9_] only,
-    # so pkg/name tokens need no metachar escaping.
-    xargs grep -lE -- "$1" < "$COVERAGE_LIST" 2>/dev/null | grep -q .
+# covering_files PATTERN: every coverage source that matches the extended
+# regex. Go/Goo identifiers are [A-Za-z0-9_] only, so pkg/name tokens need no
+# metachar escaping.
+covering_files() {
+    xargs grep -lE -- "$1" < "$COVERAGE_LIST" 2>/dev/null
 }
 
 # A goostd package's OWN test file is IN that package, so it calls the function
 # unqualified. Scoped to that one package's test files on purpose: accepting a
 # bare `<Name>(` across every source would let an unrelated fixture's local
 # helper named `Index()` mask a genuine coverage gap.
-covered_in_own_tests() {
+own_test_files() {
     # $1 = package dir, $2 = bare-name extended-regex pattern
     find "$1" -maxdepth 1 \( -name '*_test.go' -o -name '*_test.goo' \) \
-        -exec grep -lE -- "$2" {} + 2>/dev/null | grep -q .
+        -exec grep -lE -- "$2" {} + 2>/dev/null
+}
+
+# method_files IMPORT_PATH PATTERN [OWN_DIR]: the method rule. A file covers a
+# method only when it also shows the receiver package: an import of
+# "IMPORT_PATH", or a location under OWN_DIR (the package's own tests).
+method_files() {
+    local ipath="$1" pattern="$2" own="${3:-}" f
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        if [ -n "$own" ] && [ "${f#"$own"/}" != "$f" ]; then
+            printf '%s\n' "$f"
+        elif grep -qF -- "\"$ipath\"" "$f" 2>/dev/null; then
+            printf '%s\n' "$f"
+        fi
+    done < <(covering_files "$pattern")
+}
+
+# emit KIND IPATH NAME TYPE FILES: append one line to the emission file.
+emit() {
+    [ -z "$EMIT_FILE" ] && return
+    local files="$5" sole="*"
+    if [ "$(printf '%s\n' "$files" | grep -c .)" -eq 1 ]; then
+        sole="$files"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$sole" >> "$EMIT_FILE"
 }
 
 missing=()
 skipped=()
 total=0
 
+# Set by the caller before each record: the emission fields. IPATH is the Go
+# import path, which differs from the short package name for a nested package.
+REC_KIND=func REC_IPATH="" REC_TYPE=""
+
 record() {
     # $1 = human label, $2 = regex pattern, $3 = optional "symbol key" to
     # check against NON_GOLDEN_COVERABLE (defaults to $1). $4/$5 = optional
-    # own-package test dir + bare-name pattern, set only for goostd symbols
-    # (see covered_in_own_tests).
+    # own-package test dir + bare-name pattern, set only for goostd symbols.
+    # REC_KIND=method switches to the method rule (import of REC_IPATH).
     local label="$1" pattern="$2" key="${3:-$1}" own_dir="${4:-}" own_pattern="${5:-}"
     total=$((total + 1))
     local probe
@@ -177,9 +236,20 @@ record() {
         skipped+=("$label (documented non-golden carve-out; see ${probe})")
         return
     fi
-    covered "$pattern" && return
-    [ -n "$own_dir" ] && covered_in_own_tests "$own_dir" "$own_pattern" && return
-    missing+=("$label")
+    local files=""
+    if [ "$REC_KIND" = method ]; then
+        files="$(method_files "$REC_IPATH" "$pattern" "$own_dir")"
+    else
+        files="$(covering_files "$pattern")"
+        if [ -z "$files" ] && [ -n "$own_dir" ]; then
+            files="$(own_test_files "$own_dir" "$own_pattern")"
+        fi
+    fi
+    if [ -z "$files" ]; then
+        missing+=("$label")
+        return
+    fi
+    emit "$REC_KIND" "$REC_IPATH" "${label##*.}" "$REC_TYPE" "$files"
 }
 
 # --- 1. SHIM_TABLE rows (shim_signatures.c) ------------------------------
@@ -196,6 +266,7 @@ fi
 
 while IFS=' ' read -r pkg name; do
     [ -z "$pkg" ] && continue
+    REC_KIND=func REC_IPATH="$pkg" REC_TYPE=""
     record "${pkg}.${name}" "\\b${pkg}\\.${name}\\(" "${pkg}.${name}"
 done <<< "$shim_pairs"
 
@@ -212,6 +283,7 @@ fi
 
 while IFS=' ' read -r pkg name; do
     [ -z "$pkg" ] && continue
+    REC_KIND=value REC_IPATH="$pkg" REC_TYPE=""
     record "${pkg}.${name}" "\\b${pkg}\\.${name}\\b" "${pkg}.${name}"
 done <<< "$value_pairs"
 
@@ -228,6 +300,7 @@ fi
 
 while IFS=' ' read -r pkg name; do
     [ -z "$pkg" ] && continue
+    REC_KIND=value REC_IPATH="$pkg" REC_TYPE=""
     record "${pkg}.${name}" "\\b${pkg}\\.${name}\\b" "${pkg}.${name}"
 done <<< "$time_value_pairs"
 
@@ -257,12 +330,26 @@ fi
 
 while IFS=' ' read -r pkg name; do
     [ -z "$pkg" ] && continue
+    REC_KIND=func REC_IPATH="$pkg" REC_TYPE=""
     record "${pkg}.${name}" "\\b${pkg}\\.${name}\\(" "${pkg}.${name}"
 done <<< "$time_func_pairs"
 
 # --- 5. Seeded methods (type_checker.c: sync_export_method + time_export_method) -
-method_names="$(grep -oE '(sync|time|testing)_export_method\([^,]+,[^,]+, *"[A-Za-z0-9_]+"' "$SEED_SRC" \
-    | sed -E 's/.*, *"([A-Za-z0-9_]+)"$/\1/')"
+# "pkg name" pairs. The receiver package is the one of the ENCLOSING
+# seed_<pkg>_package_exports (as in section 4), not the prefix of the export
+# call: sync_export_method also seeds os.File.Write, which has no os_ prefix.
+method_names="$(awk '
+    /^void seed_[a-z]+_package_exports/ {
+        pkg = $2; sub(/^seed_/, "", pkg); sub(/_package_exports.*/, "", pkg)
+    }
+    /(sync|time|testing)_export_method\(/ {
+        line = $0
+        if (match(line, /, *"[A-Za-z0-9_]+"/)) {
+            m = substr(line, RSTART, RLENGTH); gsub(/[^A-Za-z0-9_]/, "", m)
+            if (pkg != "") print pkg, m
+        }
+    }
+' "$SEED_SRC")"
 
 METHOD_MIN=5
 method_count="$(printf '%s\n' "$method_names" | grep -c . || true)"
@@ -271,8 +358,9 @@ if [ "${method_count:-0}" -lt "$METHOD_MIN" ]; then
     exit 1
 fi
 
-while IFS= read -r name; do
+while IFS=' ' read -r pkg name; do
     [ -z "$name" ] && continue
+    REC_KIND=method REC_IPATH="$pkg" REC_TYPE=""
     record ".${name}(" "\\.${name}\\(" ".${name}("
 done <<< "$method_names"
 
@@ -308,9 +396,11 @@ for entry in $GOOSTD_PKG_DIRS; do
     # 6a. Bare package-level funcs.
     names="$(find "$dir" -maxdepth 1 -name '*.go' -exec grep -h -oE '^func [A-Z][A-Za-z0-9_]*' {} + \
         | sed -E 's/^func //')"
+    ipath="${dir#goostd/}"
     while IFS= read -r name; do
         [ -z "$name" ] && continue
         goostd_total=$((goostd_total + 1))
+        REC_KIND=func REC_IPATH="$ipath" REC_TYPE=""
         record "${pkg}.${name}" "\\b${pkg}\\.${name}\\(" "${pkg}.${name}" \
                "$dir" "\\b${name}\\("
     done <<< "$names"
@@ -327,8 +417,28 @@ for entry in $GOOSTD_PKG_DIRS; do
         mtype="${pair%% *}"
         mname="${pair##* }"
         goostd_method_total=$((goostd_method_total + 1))
-        record "${pkg}.${mtype}.${mname}" "\\.${mname}\\(" "${pkg}.${mtype}.${mname}"
+        REC_KIND=method REC_IPATH="$ipath" REC_TYPE="$mtype"
+        record "${pkg}.${mtype}.${mname}" "\\.${mname}\\(" "${pkg}.${mtype}.${mname}" "$dir"
     done <<< "$methods"
+
+    # 6c. Exported types, consts and vars (EMISSION ONLY: not required, so the
+    # missing list does not change). Covered by a qualified `pkg.Name` in a
+    # fixture, or the bare name in the package's own tests.
+    if [ -n "$EMIT_FILE" ]; then
+        for kind_rx in "type:type" "const:value" "var:value"; do
+            decl="${kind_rx%%:*}"
+            ekind="${kind_rx##*:}"
+            tnames="$(find "$dir" -maxdepth 1 -name '*.go' -exec grep -h -oE "^${decl} [A-Z][A-Za-z0-9_]*" {} + \
+                | sed -E "s/^${decl} //")"
+            while IFS= read -r tname; do
+                [ -z "$tname" ] && continue
+                tfiles="$(covering_files "\\b${pkg}\\.${tname}\\b")"
+                [ -z "$tfiles" ] && tfiles="$(own_test_files "$dir" "\\b${tname}\\b")"
+                [ -z "$tfiles" ] && continue
+                emit "$ekind" "$ipath" "$tname" "" "$tfiles"
+            done <<< "$tnames"
+        done
+    fi
 done
 
 if [ "$goostd_total" -lt "$GOOSTD_MIN" ]; then

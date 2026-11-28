@@ -3505,6 +3505,8 @@ VERIFY_ALL_DEPS := \
     readline-probe \
     stdlib-smoke-coverage \
     stdlib-coverage-drift \
+    stdlib-api-ratchet \
+    stdlib-api-ratchet-selftest \
     far-transport-test \
     far-transport-asan \
     far-shim-probe \
@@ -4587,6 +4589,17 @@ stdlib-smoke-coverage:
 # with exit 0 when `go` is absent, so verify-core stays green on a clean box.
 stdlib-coverage-drift:
 	@bash scripts/stdlib_coverage_drift.sh
+
+# Gate T-4 (trusted-stdlib design section 7): the count of linux/amd64 API
+# symbols that a golden fixture or a goostd test calls never falls below
+# tests/stdlib/api-floor.txt. A package task raises the floor in its commit.
+# Needs python3 and bash only (the denominator is a committed snapshot), and it
+# never skips. The self-test runs four faults in a temporary copy.
+stdlib-api-ratchet:
+	@bash scripts/stdlib_api_ratchet.sh
+
+stdlib-api-ratchet-selftest:
+	@bash scripts/stdlib_api_ratchet.sh --self-test
 
 # Forward references (Go package-scope semantics): a function body may call a
 # function declared LATER in the same file/package. Requires the type checker's
@@ -6794,9 +6807,9 @@ iface-target-assert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # Regenerate the Go-stdlib coverage report (docs/stdlib-coverage.json).
 # Scores supported symbols against $GOROOT/api/go1*.txt. Needs `go` on PATH.
-.PHONY: stdlib-coverage stdlib-coverage-drift
+.PHONY: stdlib-coverage stdlib-coverage-drift stdlib-api-ratchet stdlib-api-ratchet-selftest
 stdlib-coverage:
-	python3 scripts/stdlib-coverage.py
+	python3 scripts/stdlib-coverage.py --write-snapshot
 
 # Scan the C compiler/runtime source with snare's memory-safety rules and fail on
 # any finding not in scripts/safety-baseline.txt. Local-only gate (see

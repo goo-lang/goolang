@@ -1,0 +1,27 @@
+// The Len, Less and Swap methods of sort.IntSlice, sort.StringSlice and
+// sort.Float64Slice, called through a receiver of the package's own types.
+// Gate T-4 counts a method only in a file that imports its package, so this
+// fixture is the caller of record for these nine methods.
+package main
+
+import (
+	"fmt"
+	"sort"
+)
+
+func main() {
+	var ints sort.IntSlice = []int{3, 1, 2}
+	fmt.Println(ints.Len(), ints.Less(0, 1), ints.Less(1, 0))
+	ints.Swap(0, 1)
+	fmt.Println(ints[0], ints[1], ints[2])
+
+	var strs sort.StringSlice = []string{"b", "a", "c"}
+	fmt.Println(strs.Len(), strs.Less(0, 1), strs.Less(1, 0))
+	strs.Swap(0, 1)
+	fmt.Println(strs[0], strs[1], strs[2])
+
+	var floats sort.Float64Slice = []float64{2.5, 1.5, 3.5}
+	fmt.Println(floats.Len(), floats.Less(0, 1), floats.Less(1, 0))
+	floats.Swap(0, 1)
+	fmt.Println(floats[0], floats[1], floats[2])
+}

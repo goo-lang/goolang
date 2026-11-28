@@ -1,10 +1,21 @@
 {
   "go_version": "go1.27.4",
-  "methodology": "top-level exported symbols (func/type/const/var) matched by name against $GOROOT/api/go1*.txt; conservative",
+  "methodology": "top-level exported symbols (func/type/const/var) matched by name against the linux/amd64 lines of $GOROOT/api/go1*.txt; conservative",
+  "api_coverage": {
+    "note": "symbols a golden fixture or goostd test calls, per scripts/check_stdlib_coverage.sh (gate T-4)",
+    "linux_amd64": {
+      "covered": 88,
+      "total": 8433
+    },
+    "application": {
+      "covered": 88,
+      "total": 3516
+    }
+  },
   "overall": {
     "supported_symbols": 124,
-    "total_symbols": 11453,
-    "pct": 1.08,
+    "total_symbols": 8433,
+    "pct": 1.47,
     "packages_touched": 16,
     "packages_total": 177
   },
