@@ -82,6 +82,7 @@ goo_cc_library(
     srcs = [
         "concurrency.c",
         "deadlock.c",
+        "float_format.c",
         "goo_os_posix.c",
         "platform.c",
         "runtime.c",
