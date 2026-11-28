@@ -161,6 +161,13 @@ int main(int argc, char* argv[]) {
                                 options->run_arg_count, options->verbose);
     }
 
+    // A refused or failed --emit-qasm3 run must not leave the -o file of an
+    // earlier run: it would pass for this run's circuit.
+    if (!success && options->emit_qasm3 && !options->delete_output_after_run &&
+        options->output_file != NULL) {
+        unlink(options->output_file);
+    }
+
     // P5.3: `goo run` compiles to a mkstemp temp binary; remove it even on
     // compile failure (mkstemp already created the empty file).
     if (options->delete_output_after_run) {

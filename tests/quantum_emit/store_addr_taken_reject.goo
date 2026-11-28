@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+import "qir"
+import "os"
+func hx(q qir.Qubit) { qir.X(q) }
+func cl() int { return 3 }
+
+func main() {
+	q := qir.Alloc()
+	b := len(os.Args) > 5
+	n := 2
+	p := &n
+	fmt.Println(p == nil)
+	for i := 0; i < n; i = i + 1 { qir.X(q) }
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

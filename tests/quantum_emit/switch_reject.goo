@@ -1,0 +1,15 @@
+package main
+
+import "fmt"
+import "qir"
+func flip(q qir.Qubit) { switch 1 { case 1: qir.X(q) } }
+
+func main() {
+	q := qir.Alloc()
+	flip(q)
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

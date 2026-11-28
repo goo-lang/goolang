@@ -6,6 +6,8 @@
 
 #include "codegen.h"
 #include "comptime.h"
+#include "diagnostic.h"
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,11 @@ typedef enum {
     QASM3_VAR_QUBIT = 0,
     QASM3_VAR_RESULT,
     QASM3_VAR_INT,
+    // A local or a parameter that the walker cannot model (a float, a helper
+    // result). It is recorded so that it shadows a package const of the same
+    // name: the type checker has already left every function scope, so a
+    // lookup by name would otherwise find the const and print its value.
+    QASM3_VAR_OPAQUE,
 } Qasm3VarKind;
 
 typedef struct {
@@ -35,6 +42,10 @@ typedef struct {
     size_t        func_count;
     Qasm3Var      vars[QASM3_MAX_VARS];
     size_t        var_count;
+    // Names whose address `&name` is taken somewhere in the program. A store
+    // through a pointer is invisible to the scan, so such an int is never folded.
+    char          addr_taken[QASM3_MAX_VARS][64];
+    size_t        addr_taken_count;
     uint64_t      num_qubits;
     uint64_t      num_results;
     uint64_t      num_syn_bits;
@@ -44,7 +55,22 @@ typedef struct {
     size_t        len;
     size_t        cap;
     int           indent;
+    // Set by qasm3_refuse. A refused program writes no output file.
+    int           failed;
 } Qasm3Ctx;
+
+// Refuses the program at `pos`: a positioned error through diag_emit, and no
+// output file. A wrong circuit that exits 0 is worse than no circuit.
+__attribute__((format(printf, 3, 4)))
+static void qasm3_refuse(Qasm3Ctx* ctx, Position pos, const char* fmt, ...) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(fmt != NULL);
+    va_list ap;
+    va_start(ap, fmt);
+    diag_vemit(DIAG_ERROR, pos, NULL, NULL, fmt, ap);
+    va_end(ap);
+    ctx->failed = 1;
+}
 
 static void qasm3_emit(Qasm3Ctx* ctx, const char* fmt, ...) {
     va_list ap;
@@ -83,6 +109,17 @@ static Qasm3Var* qasm3_find_var(Qasm3Ctx* ctx, const char* name) {
     return qasm3_find_var_upto(ctx, name, ctx->var_count);
 }
 
+static int qasm3_is_addr_taken(const Qasm3Ctx* ctx, const char* name) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(name != NULL);
+    for (size_t i = 0; i < ctx->addr_taken_count; i++) {
+        if (strcmp(ctx->addr_taken[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static Qasm3Var* qasm3_set_var(Qasm3Ctx* ctx, const char* name, Qasm3VarKind kind, int64_t val) {
     if (!name) return NULL;
     if (ctx->var_count >= QASM3_MAX_VARS) return NULL;
@@ -91,6 +128,9 @@ static Qasm3Var* qasm3_set_var(Qasm3Ctx* ctx, const char* name, Qasm3VarKind kin
     snprintf(v->name, sizeof(v->name), "%s", name);
     v->kind = kind;
     v->index_or_val = val;
+    if (kind == QASM3_VAR_INT && qasm3_is_addr_taken(ctx, name)) {
+        v->kind = QASM3_VAR_OPAQUE;
+    }
     return v;
 }
 
@@ -135,6 +175,11 @@ static int qasm3_eval_int(Qasm3Ctx* ctx, ASTNode* expr, int64_t* out) {
             *out = v->index_or_val;
             return 1;
         }
+        // A tracked local that is not a known int shadows a package const of
+        // the same name, so the checker lookup below would read the wrong one.
+        if (v) {
+            return 0;
+        }
         if (ctx->checker && id) {
             Variable* gvar = type_checker_lookup_variable(ctx->checker, id);
             if (gvar && gvar->comptime_value &&
@@ -175,19 +220,68 @@ static int qasm3_eval_int(Qasm3Ctx* ctx, ASTNode* expr, int64_t* out) {
     return 0;
 }
 
-static void qasm3_format_float(ASTNode* expr, char* buf, size_t n) {
-    if (!expr) { snprintf(buf, n, "0.0"); return; }
-    if (expr->type == AST_UNARY_EXPR && ((UnaryExprNode*)expr)->operator == TOKEN_MINUS) {
+// 1 when `expr` names a variable that the walker tracks. A tracked name may
+// shadow a package const, so the checker lookup must not read it.
+static int qasm3_mentions_local(Qasm3Ctx* ctx, ASTNode* expr) {
+    if (!expr) return 0;
+    switch (expr->type) {
+        case AST_IDENTIFIER:
+            return qasm3_find_var(ctx, ((IdentifierNode*)expr)->name) != NULL;
+        case AST_UNARY_EXPR:
+            return qasm3_mentions_local(ctx, ((UnaryExprNode*)expr)->operand);
+        case AST_BINARY_EXPR:
+            return qasm3_mentions_local(ctx, ((BinaryExprNode*)expr)->left) ||
+                   qasm3_mentions_local(ctx, ((BinaryExprNode*)expr)->right);
+        default:
+            return 0;
+    }
+}
+
+// 1 when the text parses back to exactly `v`.
+static int qasm3_reads_back(const char* text, double v) {
+    errno = 0;
+    double back = strtod(text, NULL);
+    return errno == 0 && back == v;
+}
+
+// A bare literal keeps its source text, so the circuits that the examples
+// pin stay byte-identical. A folded constant prints with the shortest
+// precision that reads back to the same double.
+static int qasm3_format_angle(Qasm3Ctx* ctx, const char* gate, ASTNode* expr,
+                              Position call_pos, char* buf, size_t n) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(gate != NULL);
+    GOO_ASSERT(buf != NULL && n >= 32U);
+    if (expr && expr->type == AST_UNARY_EXPR &&
+        ((UnaryExprNode*)expr)->operator == TOKEN_MINUS &&
+        ((UnaryExprNode*)expr)->operand &&
+        ((UnaryExprNode*)expr)->operand->type == AST_LITERAL) {
         char inner[64];
-        qasm3_format_float(((UnaryExprNode*)expr)->operand, inner, sizeof(inner));
+        if (!qasm3_format_angle(ctx, gate, ((UnaryExprNode*)expr)->operand, call_pos,
+                                inner, sizeof(inner))) return 0;
         snprintf(buf, n, "-%s", inner);
-        return;
+        return 1;
     }
-    if (expr->type == AST_LITERAL && ((LiteralNode*)expr)->value) {
+    if (expr && expr->type == AST_LITERAL && ((LiteralNode*)expr)->value &&
+        (((LiteralNode*)expr)->literal_type == TOKEN_FLOAT ||
+         ((LiteralNode*)expr)->literal_type == TOKEN_INT)) {
         snprintf(buf, n, "%s", ((LiteralNode*)expr)->value);
-        return;
+        return 1;
     }
-    snprintf(buf, n, "0.0");
+    double v = 0.0;
+    if (expr && !qasm3_mentions_local(ctx, expr) && ctx->checker &&
+        goo_fold_const_float_ctx(ctx->checker, expr, &v)) {
+        for (int p = 1; p <= 17; p++) {
+            snprintf(buf, n, "%.*g", p, v);
+            if (qasm3_reads_back(buf, v)) {
+                return 1;
+            }
+        }
+        return 1; // 17 digits always round-trip
+    }
+    qasm3_refuse(ctx, expr ? expr->pos : call_pos,
+                 "qir.%s angle must be a compile-time constant for --emit-qasm3", gate);
+    return 0;
 }
 
 static int qasm3_resolve_ref(Qasm3Ctx* ctx, ASTNode* expr, char* out, size_t cap) {
@@ -210,7 +304,33 @@ static int qasm3_resolve_ref(Qasm3Ctx* ctx, ASTNode* expr, char* out, size_t cap
     return 0;
 }
 
+// Resolves a qubit or result operand to its hardware index, or refuses. A name
+// that the walker does not track as that kind (a qubit that a helper returned,
+// an index that is not constant) once became index 0 here, and the circuit
+// then acted on the wrong qubit. Returns 1 and sets *idx on success.
+static int qasm3_operand(Qasm3Ctx* ctx, ASTNode* expr, Position fallback,
+                         Qasm3VarKind kind, int64_t* idx) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(idx != NULL);
+    GOO_ASSERT(kind == QASM3_VAR_QUBIT || kind == QASM3_VAR_RESULT);
+    char ref[64];
+    ref[0] = '\0';
+    if (expr && qasm3_resolve_ref(ctx, expr, ref, sizeof(ref))) {
+        Qasm3Var* v = qasm3_find_var(ctx, ref);
+        if (v && v->kind == kind) {
+            *idx = v->index_or_val;
+            return 1;
+        }
+    }
+    qasm3_refuse(ctx, expr ? expr->pos : fallback,
+                 "--emit-qasm3 cannot resolve %s '%s' to a hardware index",
+                 kind == QASM3_VAR_QUBIT ? "qubit" : "result",
+                 ref[0] != '\0' ? ref : "<expression>");
+    return 0;
+}
+
 static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt);
+static void qasm3_walk_body(Qasm3Ctx* ctx, ASTNode* body);
 
 static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs_name) {
     if (!call || !call->function) return;
@@ -227,7 +347,11 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
             }
             if (strcmp(op, "QubitAt") == 0) {
                 int64_t id = 0;
-                qasm3_eval_int(ctx, call->args, &id);
+                if (!qasm3_eval_int(ctx, call->args, &id) || id < 0 || id >= 64) {
+                    qasm3_refuse(ctx, call->args ? call->args->pos : call->base.pos,
+                                 "--emit-qasm3 cannot resolve the index of qir.QubitAt to a constant from 0 to 63");
+                    return;
+                }
                 if ((uint64_t)(id + 1) > ctx->num_qubits) ctx->num_qubits = (uint64_t)(id + 1);
                 ctx->active_qubit_mask |= (1ULL << (uint64_t)id);
                 if (lhs_name) qasm3_set_var(ctx, lhs_name, QASM3_VAR_QUBIT, id);
@@ -235,7 +359,11 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
             }
             if (strcmp(op, "ResultAt") == 0) {
                 int64_t id = 0;
-                qasm3_eval_int(ctx, call->args, &id);
+                if (!qasm3_eval_int(ctx, call->args, &id) || id < 0) {
+                    qasm3_refuse(ctx, call->args ? call->args->pos : call->base.pos,
+                                 "--emit-qasm3 cannot resolve the index of qir.ResultAt to a non-negative constant");
+                    return;
+                }
                 if (ctx->has_syndrome_reg) {
                     if ((uint64_t)(id + 1) > ctx->num_syn_bits) {
                         ctx->num_syn_bits = (uint64_t)(id + 1);
@@ -249,18 +377,15 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 return;
             }
             if (strcmp(op, "FreeZero") == 0) {
-                char ref[64];
-                if (qasm3_resolve_ref(ctx, call->args, ref, sizeof(ref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ref);
-                    if (v) qasm3_free_qubit(ctx, v->index_or_val);
+                int64_t q = 0;
+                if (qasm3_operand(ctx, call->args, call->base.pos, QASM3_VAR_QUBIT, &q)) {
+                    qasm3_free_qubit(ctx, q);
                 }
                 return;
             }
             if (strcmp(op, "MeasureReset") == 0) {
-                char ref[64];
-                if (qasm3_resolve_ref(ctx, call->args, ref, sizeof(ref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ref);
-                    int64_t q = v ? v->index_or_val : 0;
+                int64_t q = 0;
+                if (qasm3_operand(ctx, call->args, call->base.pos, QASM3_VAR_QUBIT, &q)) {
                     int64_t c = qasm3_alloc_result(ctx);
                     qasm3_emit(ctx, "c[%lld] = measure q[%lld];\n", (long long)c, (long long)q);
                     qasm3_emit(ctx, "reset q[%lld];\n", (long long)q);
@@ -272,12 +397,12 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
             if (strcmp(op, "Rx") == 0 || strcmp(op, "Ry") == 0 || strcmp(op, "Rz") == 0) {
                 const char* g = (strcmp(op, "Rx") == 0) ? "rx" : (strcmp(op, "Ry") == 0) ? "ry" : "rz";
                 char tbuf[64];
-                qasm3_format_float(call->args, tbuf, sizeof(tbuf));
+                if (!qasm3_format_angle(ctx, op, call->args, call->base.pos, tbuf, sizeof(tbuf))) {
+                    return;
+                }
                 ASTNode* qarg = call->args ? call->args->next : NULL;
-                char ref[64];
-                if (qasm3_resolve_ref(ctx, qarg, ref, sizeof(ref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, ref);
-                    int64_t q = v ? v->index_or_val : 0;
+                int64_t q = 0;
+                if (qasm3_operand(ctx, qarg, call->base.pos, QASM3_VAR_QUBIT, &q)) {
                     qasm3_emit(ctx, "%s(%s) q[%lld];\n", g, tbuf, (long long)q);
                 }
                 return;
@@ -286,14 +411,10 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 ASTNode* qarg = call->args;
                 ASTNode* rarg = qarg ? qarg->next : NULL;
                 int64_t q = 0, r = 0;
-                char qref[64], rref[64];
-                if (qasm3_resolve_ref(ctx, qarg, qref, sizeof(qref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, qref);
-                    if (v) q = v->index_or_val;
-                }
-                if (qasm3_resolve_ref(ctx, rarg, rref, sizeof(rref))) {
-                    Qasm3Var* v = qasm3_find_var(ctx, rref);
-                    if (v) r = v->index_or_val;
+                int q_ok = qasm3_operand(ctx, qarg, call->base.pos, QASM3_VAR_QUBIT, &q);
+                int r_ok = qasm3_operand(ctx, rarg, call->base.pos, QASM3_VAR_RESULT, &r);
+                if (!q_ok || !r_ok) {
+                    return;
                 }
                 if (ctx->has_syndrome_reg) {
                     qasm3_emit(ctx, "syn[%lld] = measure q[%lld];\n", (long long)r, (long long)q);
@@ -322,11 +443,9 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                 if (gate && arity >= 1 && arity <= 3) {
                     int64_t qs[3] = {0, 0, 0};
                     ASTNode* a = call->args;
-                    for (int k = 0; k < arity && a; k++, a = a->next) {
-                        char qref[64];
-                        if (qasm3_resolve_ref(ctx, a, qref, sizeof(qref))) {
-                            Qasm3Var* v = qasm3_find_var(ctx, qref);
-                            if (v) qs[k] = v->index_or_val;
+                    for (int k = 0; k < arity; k++, a = a ? a->next : NULL) {
+                        if (!qasm3_operand(ctx, a, call->base.pos, QASM3_VAR_QUBIT, &qs[k])) {
+                            return;
                         }
                     }
                     if (arity == 1) {
@@ -389,15 +508,270 @@ static void qasm3_handle_call(Qasm3Ctx* ctx, CallExprNode* call, const char* lhs
                     }
                     if (qasm3_eval_int(ctx, arg, &ival)) {
                         qasm3_set_var(ctx, pname, QASM3_VAR_INT, ival);
+                    } else {
+                        qasm3_set_var(ctx, pname, QASM3_VAR_OPAQUE, 0);
                     }
                 }
             }
-            qasm3_walk_stmt(ctx, fd->body);
+            qasm3_walk_body(ctx, fd->body);
             ctx->var_count = saved_vars;
             if (is_perturbation) {
                 qasm3_emit(ctx, "barrier q;\n");
             }
         }
+    }
+}
+
+// Records every name of a local declaration as a tracked local, so that it
+// shadows a package const of the same name. `before` is the var count before
+// the declaration's first name was handled: a first name that the caller
+// already tracked keeps that record.
+static void qasm3_shadow_names(Qasm3Ctx* ctx, char** names, size_t count, size_t before) {
+    GOO_ASSERT(ctx != NULL);
+    for (size_t i = 0; i < count && names; i++) {
+        if (names[i] != NULL && (i > 0U || ctx->var_count == before)) {
+            qasm3_set_var(ctx, names[i], QASM3_VAR_OPAQUE, 0);
+        }
+    }
+}
+
+static const char* qasm3_stmt_name(ASTNodeType t) {
+    switch (t) {
+        case AST_SWITCH_STMT:   return "a switch statement";
+        case AST_SELECT_STMT:   return "a select statement";
+        case AST_GO_STMT:       return "a go statement";
+        case AST_DEFER_STMT:    return "a defer statement";
+        case AST_RETURN_STMT:   return "a return statement";
+        case AST_BREAK_STMT:    return "a break statement";
+        case AST_CONTINUE_STMT: return "a continue statement";
+        case AST_IF_LET_STMT:   return "an if let statement";
+        default:                return "this kind of statement";
+    }
+}
+
+// Classical-only scan. Returns 1 when the walker may skip `node` without
+// changing the circuit: every node in it is a kind that this function knows,
+// none of them calls a gate, a helper function or anything unknown, and none
+// of them leaves the enclosing control flow (break, continue, return).
+// Anything else returns 0 and the caller refuses. A tracked int that the
+// skipped code assigns turns opaque, so that a later fold refuses instead of
+// reading a stale value.
+static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node);
+
+// True for `=`, `:=` and every compound assignment operator.
+static int qasm3_is_store_op(TokenType op) {
+    switch (op) {
+        case TOKEN_ASSIGN:
+        case TOKEN_SHORT_ASSIGN:
+        case TOKEN_PLUS_ASSIGN:
+        case TOKEN_MINUS_ASSIGN:
+        case TOKEN_MUL_ASSIGN:
+        case TOKEN_DIV_ASSIGN:
+        case TOKEN_MOD_ASSIGN:
+        case TOKEN_AND_ASSIGN:
+        case TOKEN_OR_ASSIGN:
+        case TOKEN_XOR_ASSIGN:
+        case TOKEN_LSHIFT_ASSIGN:
+        case TOKEN_RSHIFT_ASSIGN:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// Records every `&name` below `node` and its siblings. Kinds that the walker
+// refuses anyway are not followed.
+static void qasm3_note_addr_taken(Qasm3Ctx* ctx, ASTNode* node) {
+    GOO_ASSERT(ctx != NULL);
+    for (ASTNode* n = node; n; n = n->next) {
+        switch (n->type) {
+            case AST_UNARY_EXPR: {
+                UnaryExprNode* u = (UnaryExprNode*)n;
+                if ((u->operator == TOKEN_BIT_AND || u->operator == TOKEN_ADDR_OF) &&
+                    u->operand && u->operand->type == AST_IDENTIFIER &&
+                    ctx->addr_taken_count < sizeof(ctx->addr_taken) / sizeof(ctx->addr_taken[0])) {
+                    snprintf(ctx->addr_taken[ctx->addr_taken_count++],
+                             sizeof(ctx->addr_taken[0]), "%s",
+                             ((IdentifierNode*)u->operand)->name);
+                }
+                qasm3_note_addr_taken(ctx, u->operand);
+                break;
+            }
+            case AST_BINARY_EXPR:
+                qasm3_note_addr_taken(ctx, ((BinaryExprNode*)n)->left);
+                qasm3_note_addr_taken(ctx, ((BinaryExprNode*)n)->right);
+                break;
+            case AST_SELECTOR_EXPR:
+                qasm3_note_addr_taken(ctx, ((SelectorExprNode*)n)->expr);
+                break;
+            case AST_INDEX_EXPR:
+                qasm3_note_addr_taken(ctx, ((IndexExprNode*)n)->expr);
+                qasm3_note_addr_taken(ctx, ((IndexExprNode*)n)->index);
+                break;
+            case AST_CALL_EXPR:
+                qasm3_note_addr_taken(ctx, ((CallExprNode*)n)->function);
+                qasm3_note_addr_taken(ctx, ((CallExprNode*)n)->args);
+                break;
+            case AST_EXPR_STMT:
+                qasm3_note_addr_taken(ctx, ((ExprStmtNode*)n)->expr);
+                break;
+            case AST_VAR_DECL:
+                qasm3_note_addr_taken(ctx, ((VarDeclNode*)n)->values);
+                break;
+            case AST_BLOCK_STMT:
+                qasm3_note_addr_taken(ctx, ((BlockStmtNode*)n)->statements);
+                break;
+            case AST_IF_STMT: {
+                IfStmtNode* i = (IfStmtNode*)n;
+                qasm3_note_addr_taken(ctx, i->condition);
+                qasm3_note_addr_taken(ctx, i->then_stmt);
+                qasm3_note_addr_taken(ctx, i->else_stmt);
+                break;
+            }
+            case AST_FOR_STMT: {
+                ForStmtNode* f = (ForStmtNode*)n;
+                qasm3_note_addr_taken(ctx, f->init);
+                qasm3_note_addr_taken(ctx, f->condition);
+                qasm3_note_addr_taken(ctx, f->post);
+                qasm3_note_addr_taken(ctx, f->body);
+                break;
+            }
+            case AST_RETURN_STMT:
+                qasm3_note_addr_taken(ctx, ((ReturnStmtNode*)n)->values);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+static void qasm3_invalidate(Qasm3Ctx* ctx, ASTNode* target) {
+    GOO_ASSERT(ctx != NULL);
+    if (target && target->type == AST_IDENTIFIER) {
+        Qasm3Var* v = qasm3_find_var(ctx, ((IdentifierNode*)target)->name);
+        if (v && v->kind == QASM3_VAR_INT) {
+            v->kind = QASM3_VAR_OPAQUE;
+        }
+    }
+}
+
+static int qasm3_scan_list(Qasm3Ctx* ctx, ASTNode* head) {
+    for (ASTNode* n = head; n; n = n->next) {
+        if (!qasm3_scan_classical(ctx, n)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int qasm3_scan_call(Qasm3Ctx* ctx, CallExprNode* call) {
+    GOO_ASSERT(ctx != NULL);
+    GOO_ASSERT(call != NULL);
+    ASTNode* fn = call->function;
+    if (fn && fn->type == AST_SELECTOR_EXPR) {
+        SelectorExprNode* sel = (SelectorExprNode*)fn;
+        if (sel->expr && sel->expr->type == AST_IDENTIFIER && sel->selector) {
+            const char* pkg = ((IdentifierNode*)sel->expr)->name;
+            const bool is_qir = (strcmp(pkg, "qir") == 0);
+            if ((is_qir && strcmp(sel->selector, "ReadResult") == 0) ||
+                strcmp(pkg, "fmt") == 0) {
+                return qasm3_scan_list(ctx, call->args);
+            }
+        }
+        return 0;
+    }
+    // A user helper may hold gates. A name that is not a helper is a builtin.
+    if (fn && fn->type == AST_IDENTIFIER &&
+        qasm3_find_func(ctx, ((IdentifierNode*)fn)->name) == NULL) {
+        return qasm3_scan_list(ctx, call->args);
+    }
+    return 0;
+}
+
+static int qasm3_scan_classical(Qasm3Ctx* ctx, ASTNode* node) {
+    GOO_ASSERT(ctx != NULL);
+    if (!node) {
+        return 1;
+    }
+    switch (node->type) {
+        case AST_IDENTIFIER:
+        case AST_LITERAL:
+            return 1;
+        case AST_UNARY_EXPR:
+            return qasm3_scan_classical(ctx, ((UnaryExprNode*)node)->operand);
+        case AST_POSTFIX_EXPR:
+            qasm3_invalidate(ctx, ((PostfixExprNode*)node)->operand);
+            return qasm3_scan_classical(ctx, ((PostfixExprNode*)node)->operand);
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)node;
+            // Any operator that stores (=, +=, ...) leaves the left side unknown.
+            if (qasm3_is_store_op(b->operator)) {
+                // A store through a pointer, an index or a field cannot be tracked.
+                if (b->left == NULL || b->left->type != AST_IDENTIFIER) {
+                    return 0;
+                }
+                qasm3_invalidate(ctx, b->left);
+            }
+            return qasm3_scan_classical(ctx, b->left) && qasm3_scan_classical(ctx, b->right);
+        }
+        case AST_SELECTOR_EXPR:
+            return qasm3_scan_classical(ctx, ((SelectorExprNode*)node)->expr);
+        case AST_INDEX_EXPR:
+            return qasm3_scan_classical(ctx, ((IndexExprNode*)node)->expr) &&
+                   qasm3_scan_classical(ctx, ((IndexExprNode*)node)->index);
+        case AST_CALL_EXPR:
+            return qasm3_scan_call(ctx, (CallExprNode*)node);
+        case AST_EXPR_STMT:
+            return qasm3_scan_classical(ctx, ((ExprStmtNode*)node)->expr);
+        case AST_VAR_DECL:
+            return qasm3_scan_list(ctx, ((VarDeclNode*)node)->values);
+        case AST_BLOCK_STMT:
+            return qasm3_scan_list(ctx, ((BlockStmtNode*)node)->statements);
+        case AST_IF_STMT: {
+            IfStmtNode* i = (IfStmtNode*)node;
+            return qasm3_scan_classical(ctx, i->condition) &&
+                   qasm3_scan_classical(ctx, i->then_stmt) &&
+                   qasm3_scan_classical(ctx, i->else_stmt);
+        }
+        case AST_FOR_STMT: {
+            ForStmtNode* f = (ForStmtNode*)node;
+            return f->range_expr == NULL && qasm3_scan_classical(ctx, f->init) &&
+                   qasm3_scan_classical(ctx, f->condition) &&
+                   qasm3_scan_classical(ctx, f->post) &&
+                   qasm3_scan_classical(ctx, f->body);
+        }
+        default:
+            return 0;
+    }
+}
+
+// Walks the statements of a function body. A return that ends the body does
+// nothing to the circuit, so it is the one return the walker accepts. Its
+// result expression is walked if it calls a helper, and scanned otherwise.
+static void qasm3_walk_body(Qasm3Ctx* ctx, ASTNode* body) {
+    GOO_ASSERT(ctx != NULL);
+    if (!body) {
+        return;
+    }
+    if (body->type != AST_BLOCK_STMT) {
+        qasm3_walk_stmt(ctx, body);
+        return;
+    }
+    for (ASTNode* s = ((BlockStmtNode*)body)->statements; s; s = s->next) {
+        if (s->type == AST_RETURN_STMT && s->next == NULL) {
+            for (ASTNode* v = ((ReturnStmtNode*)s)->values; v; v = v->next) {
+                if (v->type == AST_CALL_EXPR) {
+                    qasm3_handle_call(ctx, (CallExprNode*)v, NULL);
+                } else if (!qasm3_scan_classical(ctx, v)) {
+                    qasm3_refuse(ctx, v->pos,
+                                 "--emit-qasm3 cannot emit a return value that holds a gate or an unknown form");
+                } else {
+                    // A classical result changes no gate.
+                }
+            }
+            return;
+        }
+        qasm3_walk_stmt(ctx, s);
     }
 }
 
@@ -418,14 +792,30 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
         case AST_VAR_DECL: {
             VarDeclNode* vd = (VarDeclNode*)stmt;
             const char* name = (vd->name_count > 0 && vd->names) ? vd->names[0] : NULL;
+            size_t before = ctx->var_count;
             if (vd->values && vd->values->type == AST_CALL_EXPR) {
                 qasm3_handle_call(ctx, (CallExprNode*)vd->values, name);
-                return;
+            } else {
+                int64_t ival = 0;
+                if (name && qasm3_eval_int(ctx, vd->values, &ival)) {
+                    qasm3_set_var(ctx, name, QASM3_VAR_INT, ival);
+                }
             }
+            // Every name of the declaration shadows an outer const, tracked or not.
+            qasm3_shadow_names(ctx, vd->names, vd->name_count, before);
+            return;
+        }
+        case AST_CONST_DECL: {
+            // A local const shadows a package const of the same name, as a var does.
+            ConstDeclNode* cd = (ConstDeclNode*)stmt;
+            GOO_ASSERT(cd->name_count == 0U || cd->names != NULL);
+            size_t before = ctx->var_count;
             int64_t ival = 0;
-            if (name && qasm3_eval_int(ctx, vd->values, &ival)) {
-                qasm3_set_var(ctx, name, QASM3_VAR_INT, ival);
+            if (cd->name_count > 0U && cd->names != NULL && cd->names[0] != NULL &&
+                qasm3_eval_int(ctx, cd->values, &ival)) {
+                qasm3_set_var(ctx, cd->names[0], QASM3_VAR_INT, ival);
             }
+            qasm3_shadow_names(ctx, cd->names, cd->name_count, before);
             return;
         }
         case AST_EXPR_STMT: {
@@ -445,15 +835,23 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                         return;
                     }
                     int64_t ival = 0;
+                    Qasm3Var* v = qasm3_find_var(ctx, lhs_ref);
                     if (qasm3_eval_int(ctx, bin->right, &ival)) {
-                        Qasm3Var* v = qasm3_find_var(ctx, lhs_ref);
                         if (v) v->index_or_val = ival;
+                    } else if (v && v->kind == QASM3_VAR_INT) {
+                        // The new value is unknown. Keeping the old one would fold later conditions wrongly.
+                        v->kind = QASM3_VAR_OPAQUE;
+                    } else {
+                        // A qubit or result variable keeps its record.
                     }
-                } else {
-                    for (ASTNode* a = es->expr; a; a = NULL) {
-                        if (a->type == AST_CALL_EXPR) qasm3_handle_call(ctx, (CallExprNode*)a, NULL);
-                    }
+                    return;
                 }
+            }
+            if (es->expr->type == AST_POSTFIX_EXPR) {
+                qasm3_refuse(ctx, es->expr->pos, "--emit-qasm3 cannot emit an increment or decrement statement");
+            } else {
+                qasm3_refuse(ctx, es->expr->pos,
+                             "--emit-qasm3 cannot emit this expression statement (only qir calls, helper calls and plain assignments)");
             }
             return;
         }
@@ -473,11 +871,9 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                 CallExprNode* c = (CallExprNode*)ifs->condition;
                 if (c->function && c->function->type == AST_SELECTOR_EXPR) {
                     SelectorExprNode* sel = (SelectorExprNode*)c->function;
-                    char rref[64];
-                    if (sel->selector && strcmp(sel->selector, "ReadResult") == 0 &&
-                        qasm3_resolve_ref(ctx, c->args, rref, sizeof(rref))) {
-                        Qasm3Var* rv = qasm3_find_var(ctx, rref);
-                        int64_t bit = rv ? rv->index_or_val : 0;
+                    if (sel->selector && strcmp(sel->selector, "ReadResult") == 0) {
+                        int64_t bit = 0;
+                        if (!qasm3_operand(ctx, c->args, c->base.pos, QASM3_VAR_RESULT, &bit)) return;
                         size_t saved_len = ctx->len;
                         qasm3_emit(ctx, "if (c[%lld] == true) {\n", (long long)bit);
                         size_t header_len = ctx->len;
@@ -530,15 +926,54 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                     }
                 }
             }
+            // `if qir.MeasureReset(x)` measures and resets x whatever its branches do.
+            // Skipping the whole statement once left x in its old state for the next
+            // gate. Emit the measurement, then skip a branch that holds no gate.
+            if (ifs->condition && ifs->condition->type == AST_CALL_EXPR) {
+                CallExprNode* mc = (CallExprNode*)ifs->condition;
+                if (mc->function && mc->function->type == AST_SELECTOR_EXPR &&
+                    ((SelectorExprNode*)mc->function)->selector != NULL &&
+                    strcmp(((SelectorExprNode*)mc->function)->selector, "MeasureReset") == 0) {
+                    if (qasm3_scan_classical(ctx, ifs->then_stmt) &&
+                        qasm3_scan_classical(ctx, ifs->else_stmt)) {
+                        qasm3_handle_call(ctx, mc, NULL);
+                    } else {
+                        qasm3_refuse(ctx, mc->base.pos,
+                                     "--emit-qasm3 cannot emit an if statement whose condition is qir.MeasureReset and whose branches hold a gate");
+                    }
+                    return;
+                }
+            }
+            // A branch that holds no gate cannot change the circuit, so it may stay
+            // unwalked.
+            if (qasm3_scan_classical(ctx, stmt)) {
+                return;
+            }
+            qasm3_refuse(ctx, ifs->condition ? ifs->condition->pos : stmt->pos,
+                         "--emit-qasm3 cannot emit an if statement whose condition is not a compile-time constant, a qir.ReadResult call or a syndrome comparison, and whose branches hold a gate or an unknown form");
             return;
         }
         case AST_FOR_STMT: {
             ForStmtNode* f = (ForStmtNode*)stmt;
+            if (f->range_expr) {
+                qasm3_refuse(ctx, stmt->pos, "--emit-qasm3 cannot emit a for range loop");
+                return;
+            }
             qasm3_walk_stmt(ctx, f->init);
             int guard = 0;
+            int finished = 0;
             while (guard < 64) {
                 int64_t cval = 0;
-                if (!qasm3_eval_int(ctx, f->condition, &cval) || !cval) break;
+                if (!qasm3_eval_int(ctx, f->condition, &cval)) {
+                    // A loop that holds no gate cannot change the circuit.
+                    if (qasm3_scan_classical(ctx, stmt)) {
+                        return;
+                    }
+                    qasm3_refuse(ctx, f->condition ? f->condition->pos : stmt->pos,
+                                 "--emit-qasm3 cannot emit a for loop whose condition is not a compile-time constant");
+                    return;
+                }
+                if (!cval) { finished = 1; break; }
                 // Check if loop body calls `fmt.Println(..., runTrial(f))`
                 qasm3_walk_stmt(ctx, f->body);
                 qasm3_walk_stmt(ctx, f->post);
@@ -549,13 +984,22 @@ static void qasm3_walk_stmt(Qasm3Ctx* ctx, ASTNode* stmt) {
                     BinaryExprNode* cb = (BinaryExprNode*)f->condition;
                     if (cb->left && cb->left->type == AST_IDENTIFIER &&
                         strcmp(((IdentifierNode*)cb->left)->name, "shot") == 0) {
+                        finished = 1;
                         break;
                     }
                 }
+                if (ctx->failed) {
+                    return;
+                }
+            }
+            if (!finished) {
+                qasm3_refuse(ctx, stmt->pos,
+                             "--emit-qasm3 cannot emit a for loop that runs more than 64 iterations");
             }
             return;
         }
         default:
+            qasm3_refuse(ctx, stmt->pos, "--emit-qasm3 cannot emit %s", qasm3_stmt_name(stmt->type));
             return;
     }
 }
@@ -592,8 +1036,18 @@ int codegen_emit_qasm3(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
 
+    for (ASTNode* d = prog->decls; d; d = d->next) {
+        if (d->type == AST_FUNC_DECL) {
+            qasm3_note_addr_taken(&ctx, ((FuncDeclNode*)d)->body);
+        }
+    }
     if (main_fd && main_fd->body) {
-        qasm3_walk_stmt(&ctx, main_fd->body);
+        qasm3_walk_body(&ctx, main_fd->body);
+    }
+
+    if (ctx.failed) {
+        free(ctx.buf);
+        return 0;
     }
 
     if (ctx.num_qubits == 0) ctx.num_qubits = 1;

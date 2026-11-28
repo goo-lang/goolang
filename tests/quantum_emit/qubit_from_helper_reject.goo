@@ -1,0 +1,20 @@
+package main
+
+import "fmt"
+import "qir"
+
+func fresh() qir.Qubit {
+	q := qir.Alloc()
+	qir.X(q)
+	return q
+}
+
+func main() {
+	a := qir.Alloc()
+	b := fresh()
+	r := qir.ResultAt(0)
+	qir.Mz(b, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.MeasureReset(a)
+	qir.MeasureReset(b)
+}

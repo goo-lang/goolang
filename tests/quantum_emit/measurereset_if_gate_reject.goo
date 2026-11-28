@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+import "qir"
+
+func main() {
+	a := qir.Alloc()
+	b := qir.Alloc()
+	if qir.MeasureReset(a) {
+		qir.X(b)
+	}
+	r := qir.ResultAt(0)
+	qir.Mz(b, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(b)
+	qir.FreeZero(b)
+}

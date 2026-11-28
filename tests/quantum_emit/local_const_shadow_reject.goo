@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+import "qir"
+const theta = 0.5
+
+func main() {
+	q := qir.Alloc()
+	const theta = 1.0
+	qir.Rz(theta, q)
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

@@ -1992,6 +1992,18 @@ diag-format-selftest: $(COMPILER) $(RUNTIME_LIB)
 	@bash scripts/diag_format_probe.sh --self-test
 .PHONY: diag-format-selftest
 
+# The OpenQASM 3 and QIR text that bin/goo writes: the 8 quantum examples are
+# pinned byte for byte, a refusal fixture must fail with its text and write no
+# file, and each QIR file must carry the adaptive_profile attribute. The
+# self-test feeds the checker mutated fixtures and stub compilers.
+quantum-emit-probe: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/quantum_emit_probe.sh
+.PHONY: quantum-emit-probe
+
+quantum-emit-selftest: $(COMPILER) $(RUNTIME_LIB)
+	@bash scripts/quantum_emit_probe.sh --self-test
+.PHONY: quantum-emit-selftest
+
 # fix/const-array-length: a genuinely non-constant array length (a plain
 # runtime variable, not a const) must be a clean type error — NOT a silent
 # fallback to the placeholder length, and not a crash. See
@@ -3520,6 +3532,8 @@ VERIFY_ALL_DEPS := \
     goo-test-probe \
     diag-format-selftest \
     diag-format-probe \
+    quantum-emit-selftest \
+    quantum-emit-probe \
     proof-cache-shell-probe \
     json-writer-test \
     program-dump-selftest \

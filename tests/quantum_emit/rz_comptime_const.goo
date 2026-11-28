@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+import "qir"
+
+comptime const PHI float64 = 0.25
+
+func main() {
+	q := qir.Alloc()
+	qir.Rz(PHI, q)
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

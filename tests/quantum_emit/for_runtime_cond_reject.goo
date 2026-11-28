@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+import "qir"
+func flag() bool { return true }
+
+func main() {
+	q := qir.Alloc()
+	n := 0
+	for flag() { qir.X(q); n = n + 1; if n > 2 { break } }
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}

@@ -1,4 +1,5 @@
 #include "types.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -305,6 +306,176 @@ int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out) {
             // the context-free folder (handles TOKEN_INT literals; returns 0
             // for anything else, same as here).
             return goo_fold_const_int(expr, out);
+    }
+}
+
+// Float sibling of goo_fold_const_int_ctx (see types.h). An integer-valued
+// const resolves through its cached integer, read as signed, so `const n = 2`
+// works as an angle. Every arm returns 0 rather than a guess: --emit-qasm3
+// refuses an angle that does not fold, and a wrong constant is worse than a
+// refusal.
+static int fold_float_literal(LiteralNode* lit, double* out) {
+    GOO_ASSERT(lit != NULL);
+    GOO_ASSERT(out != NULL);
+    if (lit->value == NULL) {
+        return 0;
+    }
+    if (lit->literal_type == TOKEN_INT) {
+        uint64_t u = 0;
+        if (!goo_fold_const_int(&lit->base, &u)) {
+            return 0;
+        }
+        *out = (double)(int64_t)u;
+        return 1;
+    }
+    if (lit->literal_type != TOKEN_FLOAT) {
+        return 0;
+    }
+    // Go allows `1_000.5`: strtod stops at the underscore, so copy without it.
+    // A literal too long for the buffer is refused, never cut short.
+    char clean[64];
+    size_t k = 0;
+    for (size_t i = 0; lit->value[i] != '\0'; i++) {
+        if (lit->value[i] == '_') {
+            continue;
+        }
+        if (k + 1U >= sizeof(clean)) {
+            return 0;
+        }
+        clean[k++] = lit->value[i];
+    }
+    clean[k] = '\0';
+    if (k == 0U) {
+        return 0;
+    }
+    char* end = NULL;
+    errno = 0;
+    double v = strtod(clean, &end);
+    if (errno != 0 || end == NULL || *end != '\0') {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+// The float constants of Go's math package, as float64. One table serves the
+// type checker, codegen and the fold, so the three cannot disagree on a name.
+int goo_math_const(const char* name, double* out) {
+    static const struct { const char* name; double value; } k[] = {
+        { "Pi",    3.14159265358979323846264338327950288419716939937510582097494459 },
+        { "E",     2.71828182845904523536028747135266249775724709369995957496696763 },
+        { "Sqrt2", 1.41421356237309504880168872420969807856967187537694807317667974 },
+        { "Phi",   1.61803398874989484820458683436563811772030917980576286213544862 },
+        { "Ln2",   0.693147180559945309417232121458176568075500134360255254120680009 },
+    };
+    GOO_ASSERT(out != NULL);
+    if (name == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        if (strcmp(k[i].name, name) == 0) {
+            *out = k[i].value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int fold_float_var(const Variable* var, double* out) {
+    GOO_ASSERT(out != NULL);
+    if (var == NULL) {
+        return 0;
+    }
+    if (var->has_const_float_value) {
+        *out = var->const_float_value;
+        return 1;
+    }
+    if (var->has_const_int_value) {
+        *out = (double)(int64_t)var->const_int_value;
+        return 1;
+    }
+    return 0;
+}
+
+// The fold uses float64 arithmetic, not Go's exact (arbitrary precision)
+// constant arithmetic. `0.1+0.2` folds to 0.30000000000000004 here where Go
+// gives exactly 0.3. A caller that prints the result (--emit-qasm3) prints the
+// float64 value, which can differ from Go's in the last digits.
+int goo_fold_const_float_ctx(TypeChecker* checker, ASTNode* expr, double* out) {
+    if (expr == NULL || out == NULL) {
+        return 0;
+    }
+    switch (expr->type) {
+        case AST_LITERAL:
+            return fold_float_literal((LiteralNode*)expr, out);
+        case AST_IDENTIFIER: {
+            const IdentifierNode* id = (const IdentifierNode*)expr;
+            const Variable* var = (checker != NULL) ? type_checker_lookup_variable(checker, id->name) : NULL;
+            return fold_float_var(var, out);
+        }
+        case AST_SELECTOR_EXPR: {
+            const SelectorExprNode* sel = (const SelectorExprNode*)expr;
+            if (checker != NULL && sel->expr != NULL && sel->expr->type == AST_IDENTIFIER) {
+                // The math shim exports no Variable, so its constants come from the table.
+                const Variable* marker = type_checker_lookup_variable(
+                    checker, ((const IdentifierNode*)sel->expr)->name);
+                if (marker != NULL && marker->package != NULL &&
+                    marker->package->import_path != NULL &&
+                    strcmp(marker->package->import_path, "math") == 0 &&
+                    goo_math_const(sel->selector, out)) {
+                    return 1;
+                }
+            }
+            return fold_float_var(goo_lookup_pkg_const(checker, expr), out);
+        }
+        case AST_UNARY_EXPR: {
+            UnaryExprNode* u = (UnaryExprNode*)expr;
+            double v = 0.0;
+            if (!goo_fold_const_float_ctx(checker, u->operand, &v)) {
+                return 0;
+            }
+            if (u->operator == TOKEN_MINUS) {
+                *out = -v;
+                return 1;
+            }
+            if (u->operator == TOKEN_PLUS) {
+                *out = v;
+                return 1;
+            }
+            return 0;
+        }
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            double l = 0.0;
+            double r = 0.0;
+            double v = 0.0;
+            if (!goo_fold_const_float_ctx(checker, b->left, &l) ||
+                !goo_fold_const_float_ctx(checker, b->right, &r)) {
+                return 0;
+            }
+            switch (b->operator) {
+                case TOKEN_PLUS:     v = l + r; break;
+                case TOKEN_MINUS:    v = l - r; break;
+                case TOKEN_MULTIPLY: v = l * r; break;
+                case TOKEN_DIVIDE:
+                    if (r == 0.0) {
+                        return 0;
+                    }
+                    v = l / r;
+                    break;
+                default:
+                    return 0;
+            }
+            // NaN and infinity both fail the finite test: v - v is not 0.
+            if (v - v != 0.0) {
+                return 0;
+            }
+            GOO_ASSERT(v - v == 0.0);
+            *out = v;
+            return 1;
+        }
+        default:
+            return 0;
     }
 }
 

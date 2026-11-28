@@ -1,0 +1,32 @@
+package main
+
+import "fmt"
+import "math"
+
+// A local named math must read its own fields, not the package constants.
+type M struct {
+	Pi    float64
+	E     float64
+	Sqrt2 float64
+	Phi   float64
+	Ln2   float64
+}
+
+func local() {
+	math := M{Pi: 1.5, E: 9.5, Sqrt2: 2.5, Phi: 3.5, Ln2: 4.5}
+	fmt.Println(math.Pi, math.E, math.Sqrt2, math.Phi, math.Ln2)
+}
+
+func param(math M) {
+	fmt.Println(math.Pi, math.E)
+}
+
+func pkg() {
+	fmt.Println(math.Pi > 3)
+}
+
+func main() {
+	local()
+	param(M{Pi: 7.5, E: 8.5})
+	pkg()
+}

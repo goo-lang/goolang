@@ -1,0 +1,1 @@
+cannot emit an if statement whose condition is not a compile-time constant

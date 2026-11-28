@@ -5299,7 +5299,8 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
 
     // math.Pi -> float64. A package VALUE member, not a call — the
     // returned type is the value's type, no type_function wrapper.
-    if (strcmp(package, "math") == 0 && strcmp(name, "Pi") == 0) {
+    double math_value = 0.0;
+    if (strcmp(package, "math") == 0 && goo_math_const(name, &math_value)) {
         return type_checker_get_builtin(checker, TYPE_FLOAT64);
     }
 

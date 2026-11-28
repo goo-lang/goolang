@@ -1,0 +1,18 @@
+package main
+
+import "fmt"
+import "qir"
+
+func main() {
+	q := qir.Alloc()
+	n := 0
+	for n < 100 {
+		qir.X(q)
+		n = n + 1
+	}
+	r := qir.ResultAt(0)
+	qir.Mz(q, r)
+	fmt.Println(qir.ReadResult(r))
+	qir.Reset(q)
+	qir.FreeZero(q)
+}
