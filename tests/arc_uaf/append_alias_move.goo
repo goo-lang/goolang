@@ -1,9 +1,19 @@
+// PR #376: append must allocate a new array and never free or move the old
+// one, because another slice may share it. MOST OF THIS FILE TESTS THE
+// RUNTIME, NOT THE RELEASE PLAN. aliasMove, subslice, rangeGrow and bulkSelf
+// read RELEASE_NO_ESCAPES for every slice (local_escape marks each one:
+// CALL_OPAQUE, UNCLASSIFIED or CALL_VARIADIC), so no ARC release runs there:
+// they pin goo_slice_grow_to against the old realloc, under valgrind. Only owned()
+// reaches the release path -- condition 7 passes for xs, and codegen frees
+// each array a self-append replaces. The verdict file pins both facts. The
+// alias shapes of condition 7 are tests/arc_uaf/append_alias_<shape>.goo.
+// Expected output is from `go run` of the same program.
 package main
 
 import "fmt"
 
-// u shares s's array of cap 2. Each growth of s must leave that array to u.
-// A realloc that moved the block freed it under u.
+// RUNTIME. u shares s's array of cap 2. Each growth of s must leave that
+// array to u. A realloc that moved the block freed it under u.
 func aliasMove() {
 	s := make([]int, 2, 2)
 	s[0] = 7
@@ -16,8 +26,8 @@ func aliasMove() {
 	fmt.Println(u[0], s[0], big[0])
 }
 
-// t points into the middle of s's block. Growing t must not free or move s's
-// block, and s must not see writes through the grown t.
+// RUNTIME. t points into the middle of s's block. Growing t must not free or
+// move s's block, and s must not see writes through the grown t.
 func subslice() {
 	s := make([]int, 4)
 	s[0], s[1] = 10, 11
@@ -29,8 +39,9 @@ func subslice() {
 	fmt.Println(s[0], s[1], len(t), t[0], t[102])
 }
 
-// No alias: the owned self-append path frees each replaced array. A double
-// free or a read of a freed array shows here.
+// THE RELEASE PATH. No alias: xs reads RELEASE_OK, and the owned self-append
+// path frees each replaced array. A double free or a read of a freed array
+// shows here.
 func owned() {
 	xs := []int{}
 	for i := 0; i < 600; i++ {
@@ -39,8 +50,10 @@ func owned() {
 	fmt.Println(len(xs), xs[0], xs[599])
 }
 
-// The range expression is evaluated once, so the loop reads the ORIGINAL
-// array while the body grows s. That array must still be live.
+// RUNTIME. The range expression is evaluated once, so the loop reads the
+// ORIGINAL array while the body grows s. That array must still be live. With
+// s approved, the range rule of condition 7 would refuse it
+// (append_alias_range.goo); here s already escapes.
 func rangeGrow() {
 	s := []int{1, 2, 3}
 	for _, v := range s {
@@ -49,7 +62,7 @@ func rangeGrow() {
 	fmt.Println(len(s), s[3], s[5])
 }
 
-// The bulk form with its source equal to the destination.
+// RUNTIME. The bulk form with its source equal to the destination.
 func bulkSelf() {
 	b := []int{1, 2, 3}
 	for i := 0; i < 5; i++ {

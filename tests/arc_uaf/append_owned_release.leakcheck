@@ -1,0 +1,2 @@
+# Presence makes a definite leak a valgrind error (scripts/arc_uaf_probe.sh).
+# Without the replaced-array release, 1,000 appends leave 10 arrays definitely lost.

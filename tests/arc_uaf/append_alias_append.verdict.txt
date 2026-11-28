@@ -1,0 +1,3 @@
+[arc?] appendAlias: xs -> RELEASE_NO_ALIASED
+[arc?] appendAlias: ys -> RELEASE_NO_NOT_OWNED
+[arc?] appendAlias: i -> RELEASE_NO_ESCAPES

@@ -1,0 +1,7 @@
+[arc?] main: m -> RELEASE_NO_ESCAPES
+[arc?] main: done -> RELEASE_NO_ESCAPES
+[arc?] __goo_lit_0: m -> RELEASE_NO_NO_BINDING
+[arc?] __goo_lit_0: done -> RELEASE_NO_NO_BINDING
+[arc?] __goo_lit_0: i -> RELEASE_NO_NO_BINDING
+[arc?] main: sum -> RELEASE_NO_ESCAPES
+[arc?] main: i -> RELEASE_NO_ESCAPES

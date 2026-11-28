@@ -1,0 +1,4 @@
+[arc?] yes: c -> RELEASE_NO_NO_BINDING
+[arc?] wrap: b -> RELEASE_NO_NO_BINDING
+[arc?] s: x -> RELEASE_NO_ESCAPES
+[arc?] s: h -> RELEASE_NO_NOT_OWNED

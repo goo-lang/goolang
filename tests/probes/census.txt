@@ -159,6 +159,7 @@ printf typeswitch-reject-probe
 script alloc-doors-probe
 script analyzer-lanes-probe
 script arc-concat-operand-probe
+script arc-daemon-blocks-probe
 script arc-map-key-local-probe
 script arc-multi-assign-probe
 script arc-reassign-probe

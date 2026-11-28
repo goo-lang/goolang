@@ -1,0 +1,5 @@
+[arc?] strRange: s -> RELEASE_NO_NO_BINDING
+[arc?] strRange: last -> RELEASE_NO_ALIASED
+[arc?] strRange: n -> RELEASE_OK
+[arc?] strRange: _ -> RELEASE_NO_NO_BINDING
+[arc?] strRange: c -> RELEASE_NO_LOOP_SCOPE

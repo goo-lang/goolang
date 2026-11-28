@@ -1,0 +1,3 @@
+[arc?] T__inc: t -> RELEASE_NO_NO_BINDING
+[arc?] count: t -> RELEASE_NO_ESCAPES
+[arc?] count: i -> RELEASE_NO_LOOP_SCOPE
