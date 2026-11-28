@@ -42,6 +42,9 @@ name: tests
 # already covered by a pull request. Every merge still gets a verdict, which is
 # the whole point of #271, and every PR commit gets exactly one.
 on:
+  # merge_group: the merge queue runs the required checks on the queued
+  # merge before it updates main.
+  merge_group:
   push:
     branches: [main]
   pull_request:
@@ -212,6 +215,7 @@ jobs:
           always()
           && hashFiles('build/findings.sarif') != ''
           && github.event_name != 'pull_request'
+          && github.event_name != 'merge_group'
         uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: build/findings.sarif
