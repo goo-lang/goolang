@@ -6,6 +6,7 @@ bigalg.go
 chanlinear.go
 char_lit.go
 clear.go
+closedchan.go
 closure.go
 closure1.go
 closure4.go
@@ -18,6 +19,7 @@ const8.go
 convert.go
 copy.go
 ddd.go
+decl.go
 defer.go
 deferfin.go
 defernil.go
@@ -25,6 +27,7 @@ devirtualization_nil_panics.go
 divide.go
 divmod.go
 env.go
+escape.go
 escape3.go
 fixedbugs/bug000.go
 fixedbugs/bug005.go
@@ -47,6 +50,7 @@ fixedbugs/bug056.go
 fixedbugs/bug058.go
 fixedbugs/bug060.go
 fixedbugs/bug061.go
+fixedbugs/bug065.go
 fixedbugs/bug067.go
 fixedbugs/bug070.go
 fixedbugs/bug075.go
@@ -74,8 +78,10 @@ fixedbugs/bug154.go
 fixedbugs/bug168.go
 fixedbugs/bug178.go
 fixedbugs/bug180.go
+fixedbugs/bug184.go
 fixedbugs/bug185.go
 fixedbugs/bug19403.go
+fixedbugs/bug196.go
 fixedbugs/bug199.go
 fixedbugs/bug201.go
 fixedbugs/bug204.go
@@ -86,6 +92,7 @@ fixedbugs/bug230.go
 fixedbugs/bug234.go
 fixedbugs/bug236.go
 fixedbugs/bug237.go
+fixedbugs/bug242.go
 fixedbugs/bug247.go
 fixedbugs/bug253.go
 fixedbugs/bug254.go
@@ -112,9 +119,13 @@ fixedbugs/bug314.go
 fixedbugs/bug320.go
 fixedbugs/bug321.go
 fixedbugs/bug328.go
+fixedbugs/bug331.go
 fixedbugs/bug336.go
 fixedbugs/bug341.go
 fixedbugs/bug343.go
+fixedbugs/bug346.go
+fixedbugs/bug347.go
+fixedbugs/bug348.go
 fixedbugs/bug352.go
 fixedbugs/bug356.go
 fixedbugs/bug364.go
@@ -126,11 +137,13 @@ fixedbugs/bug375.go
 fixedbugs/bug401.go
 fixedbugs/bug402.go
 fixedbugs/bug405.go
+fixedbugs/bug406.go
 fixedbugs/bug409.go
 fixedbugs/bug423.go
 fixedbugs/bug428.go
 fixedbugs/bug433.go
 fixedbugs/bug434.go
+fixedbugs/bug440_32.go
 fixedbugs/bug440_64.go
 fixedbugs/bug441.go
 fixedbugs/bug442.go
@@ -149,6 +162,7 @@ fixedbugs/bug484.go
 fixedbugs/bug485.go
 fixedbugs/bug494.go
 fixedbugs/bug497.go
+fixedbugs/bug498.go
 fixedbugs/bug499.go
 fixedbugs/bug500.go
 fixedbugs/bug501.go
@@ -175,12 +189,14 @@ fixedbugs/issue12411.go
 fixedbugs/issue12577.go
 fixedbugs/issue12621.go
 fixedbugs/issue1304.go
+fixedbugs/issue13162.go
 fixedbugs/issue13169.go
 fixedbugs/issue13171.go
 fixedbugs/issue13268.go
 fixedbugs/issue13684.go
 fixedbugs/issue14591.go
 fixedbugs/issue14636.go
+fixedbugs/issue14646.go
 fixedbugs/issue14651.go
 fixedbugs/issue14725.go
 fixedbugs/issue15002.go
@@ -202,6 +218,7 @@ fixedbugs/issue16985.go
 fixedbugs/issue17039.go
 fixedbugs/issue17640.go
 fixedbugs/issue17752.go
+fixedbugs/issue18149.go
 fixedbugs/issue18410.go
 fixedbugs/issue18636.go
 fixedbugs/issue18725.go
@@ -231,8 +248,10 @@ fixedbugs/issue22083.go
 fixedbugs/issue22326.go
 fixedbugs/issue22605.go
 fixedbugs/issue22660.go
+fixedbugs/issue22662.go
 fixedbugs/issue22662b.go
 fixedbugs/issue22683.go
+fixedbugs/issue23188.go
 fixedbugs/issue23305.go
 fixedbugs/issue23522.go
 fixedbugs/issue23536.go
@@ -305,6 +324,7 @@ fixedbugs/issue40152.go
 fixedbugs/issue40367.go
 fixedbugs/issue40629.go
 fixedbugs/issue4066.go
+fixedbugs/issue4167.go
 fixedbugs/issue41780.go
 fixedbugs/issue41872.go
 fixedbugs/issue42032.go
@@ -324,7 +344,9 @@ fixedbugs/issue4495.go
 fixedbugs/issue45175.go
 fixedbugs/issue4518.go
 fixedbugs/issue45242.go
+fixedbugs/issue4562.go
 fixedbugs/issue45851.go
+fixedbugs/issue4620.go
 fixedbugs/issue46304.go
 fixedbugs/issue4667.go
 fixedbugs/issue46903.go
@@ -355,6 +377,7 @@ fixedbugs/issue52953.go
 fixedbugs/issue53600.go
 fixedbugs/issue53653.go
 fixedbugs/issue53702.go
+fixedbugs/issue5373.go
 fixedbugs/issue54542.go
 fixedbugs/issue54632.go
 fixedbugs/issue5493.go
@@ -369,10 +392,12 @@ fixedbugs/issue5809.go
 fixedbugs/issue5820.go
 fixedbugs/issue58300.go
 fixedbugs/issue58300b.go
+fixedbugs/issue5856.go
 fixedbugs/issue59338.go
 fixedbugs/issue59367.go
 fixedbugs/issue59404part2.go
 fixedbugs/issue59411.go
+fixedbugs/issue59572.go
 fixedbugs/issue5963.go
 fixedbugs/issue6055.go
 fixedbugs/issue62360.go
@@ -394,6 +419,7 @@ fixedbugs/issue68816.go
 fixedbugs/issue6899.go
 fixedbugs/issue6902.go
 fixedbugs/issue70189.go
+fixedbugs/issue7044.go
 fixedbugs/issue70481.go
 fixedbugs/issue7050.go
 fixedbugs/issue7083.go
@@ -419,6 +445,7 @@ fixedbugs/issue75327.go
 fixedbugs/issue7550.go
 fixedbugs/issue75569.go
 fixedbugs/issue75764.go
+fixedbugs/issue76008.go
 fixedbugs/issue76709.go
 fixedbugs/issue7690.go
 fixedbugs/issue7740.go
@@ -465,6 +492,7 @@ fixedbugs/issue9006.go
 fixedbugs/issue9110.go
 fixedbugs/issue9355.go
 fixedbugs/issue9604.go
+fixedbugs/issue9691.go
 fixedbugs/issue9738.go
 fixedbugs/issue9862_run.go
 fixedbugs/shrd_zero_count.go
@@ -489,12 +517,15 @@ linkmain_run.go
 linkobj.go
 linkx_run.go
 mallocfin.go
+mapclear.go
 maplinear.go
 method3.go
 method5.go
 newexpr.go
+nil.go
 nilptr2.go
 printbig.go
+range4.go
 recover1.go
 recover2.go
 recover4.go
@@ -505,6 +536,7 @@ reflectmethod4.go
 reflectmethod5.go
 reflectmethod6.go
 reflectmethod7.go
+reorder.go
 reorder2.go
 sigchld.go
 stack.go
@@ -512,9 +544,11 @@ stackobj.go
 stackobj2.go
 stackobj3.go
 string_lit.go
+stringrange.go
 tinyfin.go
 turing.go
 typeswitch.go
 typeswitch1.go
+utf.go
 varinit.go
 winbatch.go

@@ -25,6 +25,7 @@ jobs:
       # rather than the SKIPPED line make tolerates.
       - name: Install toolchain
         run: |
+          { sudo grep -l -r 'packages.microsoft.com' /etc/apt/sources.list.d/ || true; } | xargs -r sudo rm -f -v
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             gcc-14 bison llvm-dev clang valgrind
@@ -155,6 +156,7 @@ jobs:
       # job goes red on that assertion rather than passing quietly.
       - name: Install toolchain
         run: |
+          { sudo grep -l -r 'packages.microsoft.com' /etc/apt/sources.list.d/ || true; } | xargs -r sudo rm -f -v
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bison llvm-dev clang
 
@@ -219,6 +221,7 @@ jobs:
       # address. Overriding CC would silently disarm the whole matrix.
       - name: Install toolchain
         run: |
+          { sudo grep -l -r 'packages.microsoft.com' /etc/apt/sources.list.d/ || true; } | xargs -r sudo rm -f -v
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bison llvm-dev clang
 
@@ -271,6 +274,7 @@ jobs:
       # same set.
       - name: Install toolchain
         run: |
+          { sudo grep -l -r 'packages.microsoft.com' /etc/apt/sources.list.d/ || true; } | xargs -r sudo rm -f -v
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             make gcc-14 bison llvm-dev clang \
@@ -310,8 +314,8 @@ jobs:
           ./tools/compiler_differential.sh
 
           # The golden suite on a fully Bazel-built toolchain. Asserts
-          # 512 passed / 9 failed exactly -- the 9 reach the far transport and
-          # need NNG, which is phase 3c.
+          # the split in tools/golden_bazel_known_fail.txt exactly -- those
+          # fixtures reach the far transport and need NNG, which is phase 3c.
           bazel build //src/runtime:goo_runtime_archive \
             --repo_env=CC=/usr/bin/gcc-14 \
             --repo_env=GOO_LLVM_CONFIG="$LLVMCFG"

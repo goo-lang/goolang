@@ -1,0 +1,34 @@
+package main
+
+import "fmt"
+
+type Celsius float64
+
+func (c Celsius) String() string { return fmt.Sprint(float64(c)) + "C" }
+
+type Flag bool
+
+func (f Flag) String() string {
+	if f {
+		return "on"
+	}
+	return "off"
+}
+
+type Names []string
+
+func (n Names) String() string { return fmt.Sprintf("Names(%d)", len(n)) }
+
+type Plain float64
+
+func main() {
+	fmt.Println(Celsius(21.55), Flag(true), Flag(false), Names{"a", "b"})
+	fmt.Printf("%v %s %v %v\n", Celsius(0.5), Celsius(1e21), Flag(true), Names{})
+	fmt.Println(fmt.Sprint(Celsius(3), Flag(false)))
+	fmt.Println(Plain(2.5), Plain(1e21), Plain(100000))
+	var i interface{} = Celsius(7)
+	fmt.Println(i)
+	var j interface{} = Names{"x"}
+	fmt.Println(j)
+	fmt.Println([]Celsius{1, 2.5}, [2]Flag{true, false})
+}
