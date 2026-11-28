@@ -1,0 +1,2 @@
+[arc?] main: b -> RELEASE_OK
+[arc] main: will release b at function exit (field=-1, dtor=none)

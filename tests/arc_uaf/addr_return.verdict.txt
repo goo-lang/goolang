@@ -1,0 +1,5 @@
+[arc?] f: x -> RELEASE_NO_NO_BINDING
+[arc?] fill: a -> RELEASE_NO_ESCAPES
+[arc?] fill: s -> RELEASE_NO_ESCAPES
+[arc?] fill: i -> RELEASE_NO_ESCAPES
+[arc?] main: p -> RELEASE_NO_NOT_OWNED

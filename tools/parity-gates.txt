@@ -4,6 +4,8 @@ analyzer-lanes-probe
 analyzer-lanes-selftest
 append-probe
 arc-concat-operand-probe
+arc-daemon-blocks-probe
+arc-daemon-blocks-selftest
 arc-loop-carried-probe
 arc-map-key-local-probe
 arc-multi-assign-probe

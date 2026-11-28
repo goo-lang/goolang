@@ -1,0 +1,7 @@
+[arc?] send: ch -> RELEASE_NO_NO_BINDING
+[arc?] send: x -> RELEASE_NO_ESCAPES
+[arc?] fill: a -> RELEASE_NO_ESCAPES
+[arc?] fill: s -> RELEASE_NO_ESCAPES
+[arc?] fill: i -> RELEASE_NO_ESCAPES
+[arc?] main: ch -> RELEASE_NO_ESCAPES
+[arc?] main: p -> RELEASE_NO_ESCAPES

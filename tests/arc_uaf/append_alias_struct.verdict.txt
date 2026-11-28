@@ -1,0 +1,3 @@
+[arc?] viaStruct: xs -> RELEASE_NO_ALIASED
+[arc?] viaStruct: b -> RELEASE_OK
+[arc?] viaStruct: i -> RELEASE_NO_ESCAPES

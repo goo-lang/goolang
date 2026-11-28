@@ -1,0 +1,5 @@
+[arc?] pick: p -> RELEASE_NO_NO_BINDING
+[arc?] pick: r -> RELEASE_NO_NO_BINDING
+[arc?] use: b -> RELEASE_NO_ESCAPES
+[arc?] use: r -> RELEASE_NO_NOT_OWNED
+[arc?] main: b -> RELEASE_NO_NOT_OWNED
