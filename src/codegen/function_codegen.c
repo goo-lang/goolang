@@ -1348,9 +1348,11 @@ static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
 // An error-union function IS predeclared: its return type lowers to a literal
 // struct {i1, {value, error}}, so the prototype and the later definition agree.
 // codegen_generate_error_union_function find-or-creates the same prototype.
-// The exception is an error union whose value or error type lowers to a NAMED
-// struct (see the skip below). Returns 1 on success (including a skip), 0 on
-// failure.
+// A user struct returned by value is predeclared too: the type checker holds
+// one Type* for each named type, so the prototype and the body lower it to
+// the same named LLVM struct, and an unnamed struct lowers to a uniqued
+// literal (codegen_get_struct_type). Returns 1 on success (including a skip
+// for a generic or comptime template), 0 on failure.
 // Comptime value params Task 3: does this (non-method) function declaration
 // carry any `comptime` parameter? Duplicated (not shared) with codegen.c's
 // identically-named static helper — per-TU static helper is this codebase's
@@ -1416,40 +1418,8 @@ static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* chec
         ? type_from_ast(checker, func_decl->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);
     if (!return_type) return 1;
-    if (type_is_error_union(return_type)) {
-        // The error-union struct is a literal, but a user struct nested inside
-        // it is named and keyed on the Type* pointer. The prototype's and the
-        // body's separate type_from_ast() calls give two Type* and so two
-        // named LLVM types, which fails the verifier. Leave those to the
-        // definition site, as the named-struct skip below does.
-        Type* parts[2] = { return_type->data.error_union.value_type,
-                           return_type->data.error_union.error_type };
-        for (int i = 0; i < 2; i++) {
-            if (!parts[i]) continue;
-            LLVMTypeRef lt = codegen_type_to_llvm(codegen, parts[i]);
-            if (!lt) return 1;
-            if (LLVMGetTypeKind(lt) == LLVMStructTypeKind && LLVMGetStructName(lt) != NULL) {
-                return 1;
-            }
-        }
-    }
-
-    // Skip functions returning a NAMED LLVM struct (a user struct returned by
-    // value): its LLVM type is keyed on the Type* pointer, and the prototype's
-    // and body's independent type_from_ast() results are distinct pointers, so
-    // the two would mint `anon`/`anon.1` named types and fail the verifier.
-    // Anonymous tuple/multi-return structs now lower to a uniqued LITERAL struct
-    // (codegen_get_struct_type), which is identical across calls — so those we
-    // DO predeclare, giving forward-reference support for multi-return functions
-    // (e.g. utf8 DecodeRune calling decodeRuneSlow, defined later). LLVM's own
-    // literal-vs-named distinction (LLVMGetStructName == NULL for literals) is
-    // the reliable discriminator.
     LLVMTypeRef lowered_ret = codegen_type_to_llvm(codegen, return_type);
     if (!lowered_ret) return 1;
-    if (LLVMGetTypeKind(lowered_ret) == LLVMStructTypeKind &&
-        LLVMGetStructName(lowered_ret) != NULL) {
-        return 1;
-    }
 
     // Method mangling (T__m) then package prefixing (goo_pkg__<pkg>__...).
     char* mangled = NULL;

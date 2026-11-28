@@ -1,0 +1,20 @@
+// forward_ref_struct_return: a call to a function that returns a user struct
+// by value, declared AFTER its caller. The codegen prototype pre-pass skipped
+// such functions, so the call failed with "Undefined identifier".
+package main
+
+import "fmt"
+
+type Point struct {
+	x int
+	y int
+}
+
+func main() {
+	p := makePoint(3, 4)
+	fmt.Println(p.x, p.y)
+}
+
+func makePoint(x int, y int) Point {
+	return Point{x: x, y: y}
+}

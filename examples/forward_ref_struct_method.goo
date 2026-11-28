@@ -1,0 +1,21 @@
+// forward_ref_struct_method: a struct-returning METHOD called before its
+// declaration. It failed with "method 'Shift' not found in module".
+package main
+
+import "fmt"
+
+type Point struct {
+	x int
+	y int
+}
+
+func main() {
+	p := Point{x: 1, y: 2}
+	q := p.Shift(10)
+	fmt.Println(q.x, q.y)
+	fmt.Println(p.x, p.y)
+}
+
+func (p Point) Shift(d int) Point {
+	return Point{x: p.x + d, y: p.y + d}
+}
