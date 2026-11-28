@@ -33,6 +33,7 @@ examples/*.out
 /json_writer_test
 /block_escape_test
 /obj_header_test
+/diagnostic_test
 /arena_routing_test
 /runtime_optimization_demo
 /runtime_optimization_test
