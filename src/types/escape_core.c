@@ -523,7 +523,8 @@ static TaintSet call_taint(EscapeCtx* ctx, CallExprNode* call) {
     // refused while `fields` (from strings.Split) did not.
     //
     // The truth: append reads arg 0's buffer and either writes into it or
-    // reallocs, and it stores arg 0 NOWHERE that outlives the call. What it does
+    // copies it into a new one, and it stores arg 0 NOWHERE that outlives the
+    // call. What it does
     // do is RETURN a value that may alias arg 0's buffer -- and the result taint
     // below already unions every argument's taint on the no-callee path, so if
     // that result escapes, arg 0 is marked at THAT sink instead. The information
