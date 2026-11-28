@@ -98,3 +98,12 @@ sh_test(
 )
 
 exports_files(["gen_probe_targets.py", "run_probe.sh"])
+
+# Every tools/*.sh, for //tests/probes:fixed_tmp_lint, which scans them for a
+# literal /tmp path. The lint scans what its data holds, so a script missing
+# here would be skipped without notice.
+filegroup(
+    name = "shell_scripts",
+    srcs = glob(["*.sh"]),
+    visibility = ["//tests/probes:__pkg__"],
+)

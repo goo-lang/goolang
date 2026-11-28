@@ -3148,9 +3148,10 @@ m10-probe: $(COMPILER) $(RUNTIME_LIB)
 cwd-link-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== cwd-link-probe: compile+run from a non-repo-root cwd ==="
-	@cd /tmp && GOO_RUNTIME="" "$(abspath $(COMPILER))" "$(abspath examples/cwd_link_probe.goo)" -o /tmp/cwd_link_probe.out 2>/tmp/cwd_link_probe.err; \
-	  rc=$$?; if [ $$rc -ne 0 ]; then echo "cwd-link-probe: FAIL (compile/link rc=$$rc)"; cat /tmp/cwd_link_probe.err; exit 1; fi
-	@out=$$(/tmp/cwd_link_probe.out); if [ "$$out" = "7" ]; then echo "cwd-link-probe: PASS"; else echo "cwd-link-probe: FAIL (got '$$out' want 7)"; exit 1; fi
+	@d=$$(mktemp -d) || exit 2; trap 'rm -rf "$$d"' EXIT; \
+	  cd "$$d" && GOO_RUNTIME="" "$(abspath $(COMPILER))" "$(abspath examples/cwd_link_probe.goo)" -o "$$d/out" 2>"$$d/err"; \
+	  rc=$$?; if [ $$rc -ne 0 ]; then echo "cwd-link-probe: FAIL (compile/link rc=$$rc)"; cat "$$d/err"; exit 1; fi; \
+	  out=$$("$$d/out"); if [ "$$out" = "7" ]; then echo "cwd-link-probe: PASS"; else echo "cwd-link-probe: FAIL (got '$$out' want 7)"; exit 1; fi
 
 # port-unblockers #1: goostd resolution (GOOROOT) must be cwd-independent
 # too, not just the runtime archive (cwd-link-probe covers that half).
@@ -3273,6 +3274,8 @@ VERIFY_ALL_DEPS := \
     doc-claims-probe \
     probe-teeth-probe \
     census-current-probe \
+    fixed-tmp-lint \
+    fixed-tmp-lint-selftest \
     targets-current-probe \
     targets-current-selftest \
     source-drift-probe \
@@ -6872,6 +6875,15 @@ probe-teeth-probe:
 # returns before list_bazel_tests. Verified with BAZEL=/nonexistent and with
 # bazel off PATH, both identical. The Makefile stays bazel-free.
 .PHONY: census-current-probe targets-current-probe targets-current-selftest
+.PHONY: fixed-tmp-lint fixed-tmp-lint-selftest
+# A gate that names a literal /tmp path shares one file between two concurrent
+# runs. The lint refuses it; the self-test proves the lint can go red.
+fixed-tmp-lint:
+	@bash scripts/fixed_tmp_lint.sh
+
+fixed-tmp-lint-selftest:
+	@bash scripts/fixed_tmp_lint.sh --self-test
+
 census-current-probe:
 	@bash tests/probes/census_current.sh
 
@@ -6927,10 +6939,11 @@ repro-build-probe:
 
 qir-runner-probe: $(COMPILER)
 	@command -v qir-runner >/dev/null || (echo "install qir-runner: cargo install qir-runner" && exit 1)
-	./bin/goo --emit-qir examples/qir_teleport_probe.goo -o /tmp/goo_teleport.ll
-	qir-runner -f /tmp/goo_teleport.ll -e main -s 100
-	./bin/goo --emit-qir examples/qir_bitflip_qec_probe.goo -o /tmp/goo_qec.ll
-	qir-runner -f /tmp/goo_qec.ll -e main -s 100
+	@d=$$(mktemp -d) || exit 2; trap 'rm -rf "$$d"' EXIT; \
+	  ./bin/goo --emit-qir examples/qir_teleport_probe.goo -o "$$d/teleport.ll" && \
+	  qir-runner -f "$$d/teleport.ll" -e main -s 100 && \
+	  ./bin/goo --emit-qir examples/qir_bitflip_qec_probe.goo -o "$$d/qec.ll" && \
+	  qir-runner -f "$$d/qec.ll" -e main -s 100
 .PHONY: qir-runner-probe
 
 .PHONY: fpga-equiv-probe fpga-equiv-selftest

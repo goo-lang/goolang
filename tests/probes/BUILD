@@ -345,3 +345,27 @@ goo_script_probe(
 # Declaring these without their data would give red targets, and tagging
 # them manual would give targets that never run -- both worse than
 # recording the gap here.
+
+# fixed-tmp-lint: no gate source may name a literal /tmp/<name> path. The lint
+# scans the Makefile and the .sh files under scripts/, tools/ and tests/probes/
+# from the runfiles tree, so each of those must be in `data`. The script skips
+# any directory that is absent, so a missing entry here would shrink the scan
+# without a failure.
+sh_test(
+    name = "fixed_tmp_lint",
+    size = "small",
+    srcs = ["//:scripts/fixed_tmp_lint.sh"],
+    data = [
+        "//:Makefile",
+        "//:probe_scripts",
+        "//tools:shell_scripts",
+    ] + glob(["*.sh"]),
+)
+
+# The lint must be able to go red. The self-test reads fixtures only.
+sh_test(
+    name = "fixed_tmp_lint_selftest",
+    size = "small",
+    srcs = ["//:scripts/fixed_tmp_lint.sh"],
+    args = ["--self-test"],
+)
