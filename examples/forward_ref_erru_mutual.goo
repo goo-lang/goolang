@@ -1,0 +1,32 @@
+// forward_ref_erru_mutual: two !T functions that call each other.
+// The callee is declared AFTER its caller. The type checker accepted this, but
+// codegen skipped every !T function in its prototype pre-pass, so the call
+// failed with "Undefined identifier".
+package main
+
+import "fmt"
+
+func main() {
+	e := isEven(10) catch => -6
+	o := isEven(7) catch => -6
+	fmt.Println("even:", e, o)
+	neg := isEven(-1) catch => -6
+	fmt.Println("neg:", neg)
+}
+
+func isEven(n int) !int {
+	if n < 0 {
+		return error("negative")
+	}
+	if n == 0 {
+		return 1
+	}
+	return isOdd(n - 1)
+}
+
+func isOdd(n int) !int {
+	if n == 0 {
+		return 0
+	}
+	return isEven(n - 1)
+}

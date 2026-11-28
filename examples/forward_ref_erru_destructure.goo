@@ -1,0 +1,31 @@
+// forward_ref_erru_destructure: destructure and catch => of a later !T function.
+// The callee is declared AFTER its caller. The type checker accepted this, but
+// codegen skipped every !T function in its prototype pre-pass, so the call
+// failed with "Undefined identifier".
+package main
+
+import "fmt"
+
+func main() {
+	v, err := divide(10, 2)
+	if err == nil {
+		fmt.Println("ok:", v)
+	}
+
+	_, err2 := divide(1, 0)
+	if err2 != nil {
+		fmt.Println("err:", err2)
+	}
+
+	w := divide(9, 0) catch => -1
+	fmt.Println("w:", w)
+	x := divide(9, 3) catch => -1
+	fmt.Println("x:", x)
+}
+
+func divide(a int, b int) !int {
+	if b == 0 {
+		return error("divide by zero")
+	}
+	return a / b
+}

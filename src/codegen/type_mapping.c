@@ -192,8 +192,15 @@ LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type) {
     // struct would mint distinct `anon`/`anon.1` types keyed on the (differing)
     // Type* pointer and fail the verifier. Anonymous structs cannot be recursive
     // (no name to refer back to), so the opaque-cache cycle break is unneeded.
-    if (!type->data.struct_type.name && type->data.struct_type.field_count > 0) {
+    // This includes the EMPTY anonymous struct `struct{}`: it was once left to
+    // the named path as `anon`/`anon.N`, one per Type*, which failed the
+    // verifier whenever a prototype and a body (or two locals) built it twice.
+    // A USER-named struct is different: the type checker registers one Type*
+    // for it, and type_from_ast returns that same pointer on every lookup, so
+    // the pointer-keyed cache below already gives it one LLVM type.
+    if (!type->data.struct_type.name) {
         size_t fc = type->data.struct_type.field_count;
+        if (fc == 0) return LLVMStructTypeInContext(codegen->context, NULL, 0, 0);
         LLVMTypeRef* fts = malloc(sizeof(LLVMTypeRef) * fc);
         if (!fts) return NULL;
         for (size_t i = 0; i < fc; i++) {
@@ -218,7 +225,8 @@ LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type) {
 
     // Create an opaque named struct and insert it into the cache BEFORE
     // resolving the body. This breaks potential cycles.
-    const char* name = type->data.struct_type.name ? type->data.struct_type.name : "anon";
+    // An unnamed struct returned above as a literal, so the name is set here.
+    const char* name = type->data.struct_type.name;
     LLVMTypeRef opaque = LLVMStructCreateNamed(codegen->context, name);
     if (!opaque) return NULL;
 
