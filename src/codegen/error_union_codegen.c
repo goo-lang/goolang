@@ -590,7 +590,13 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
 
     // Create the function under its emitted (possibly mangled) name so method
     // call sites, which emit a call to "T__m", resolve to this definition.
-    LLVMValueRef function = LLVMAddFunction(codegen->module, symbol_name, function_type);
+    // A forward-reference pre-pass may have declared the prototype already.
+    // Reuse it: LLVMAddFunction on an existing name would rename this one
+    // (`f.1`), and the earlier calls would target a body-less prototype.
+    LLVMValueRef function = LLVMGetNamedFunction(codegen->module, symbol_name);
+    if (!function) {
+        function = LLVMAddFunction(codegen->module, symbol_name, function_type);
+    }
 
     // Create function info
     FunctionInfo* func_info = function_info_new(symbol_name, function, return_type);

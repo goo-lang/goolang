@@ -5,6 +5,7 @@ compos.go
 const3.go
 const8.go
 divide.go
+escape3.go
 fixedbugs/bug000.go
 fixedbugs/bug005.go
 fixedbugs/bug008.go
