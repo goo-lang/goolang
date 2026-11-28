@@ -1557,25 +1557,68 @@ static size_t goo_slice_grow_capacity(size_t capacity, size_t need) {
     return new_capacity;
 }
 
+// Move `slice` onto a NEW backing array of at least `need` elements.
+//
+// NEVER goo_realloc, and NEVER a free of the old array. In Go several slices
+// share one backing array -- `u := s` copies the header, and `t := s[1:]` keeps
+// a data pointer into the MIDDLE of the block. append that outgrows the
+// capacity gives only the RESULT a new array; every other slice keeps the old
+// one. realloc broke all three shapes, measured on main before this change:
+//   - `t := s[1:]; t = append(t, 5)` handed an interior pointer to realloc,
+//     and glibc aborted with `realloc(): invalid pointer` (exit 134).
+//   - `u := s; s = append(s, 1); s[0] = 8` grew in place, so u saw the write
+//     (Goo printed `8 8`, Go prints `7 8`).
+//   - the same with 600 appends moved the block, and u read freed memory
+//     (valgrind: invalid read through u).
+// tests/arc_uaf/append_alias_move.goo and examples/append_shared_*.goo pin them.
+//
+// WHO FREES THE OLD ARRAY. Nobody, today, and that is a LEAK by choice. This
+// function cannot see who else holds the array, and no slice copy retains, so
+// a count of 1 says nothing about aliases. Nor can the release plan prove it:
+// condition 7 (no other local holds the value) runs only for a local bound
+// more than once, and a self-append is not a binding, so `u := xs;
+// xs = append(xs, 1)` reads RELEASE_OK for xs. A release of the replaced array
+// at the append was tried and freed u's array (PR #376 review,
+// tests/arc_uaf/append_alias_*.goo). Bounded: a slice grown from empty leaks
+// less than the bytes of its final array, plus one block per doubling.
+//
+// Also headerless memory (goo_zerobase, an arena block) is only READ here now,
+// never handed to the allocator, which closes trusted-stdlib case C7.
+static void goo_slice_grow_to(goo_slice_t* slice, size_t need, size_t element_size) {
+    // Both callers grow only a FULL slice. A call with room left would copy the
+    // array for nothing and give the caller a second owner to account for.
+    GOO_ASSERT(need > slice->capacity);
+    GOO_ASSERT(slice->length <= slice->capacity);
+    size_t new_capacity = goo_slice_grow_capacity(slice->capacity, need);
+    GOO_ASSERT(new_capacity >= need);
+    if (element_size > 0U && new_capacity > SIZE_MAX / element_size) {
+        goo_panic("Out of memory");
+    }
+    size_t new_bytes = new_capacity * element_size;
+    size_t used = slice->length * element_size;
+
+    unsigned char* new_data = goo_alloc(new_bytes);
+    if (used > 0U) {
+        memcpy(new_data, slice->data, used);
+    }
+    // Go zeroes the whole new array: `s[:cap(s)]` reads zero values past len.
+    if (new_bytes > used) {
+        memset(new_data + used, 0, new_bytes - used);
+    }
+
+    slice->data = new_data;
+    slice->capacity = new_capacity;
+}
+
 int goo_slice_append(goo_slice_t* slice, void* element, size_t element_size) {
     if (!slice || !element) {
         return 0;
     }
 
     if (slice->length >= slice->capacity) {
-        // Need to grow the slice
-        size_t new_capacity = goo_slice_grow_capacity(slice->capacity, slice->length + 1);
-
-        void* new_data = goo_realloc(slice->data, new_capacity * element_size);
-        if (!new_data) {
-            return 0;
-        }
-        
-        slice->data = new_data;
-        slice->capacity = new_capacity;
+        goo_slice_grow_to(slice, slice->length + 1U, element_size);
     }
-    
-    // Copy element to the slice
+
     void* dest = (char*)slice->data + (slice->length * element_size);
     memcpy(dest, element, element_size);
     slice->length++;
@@ -1595,30 +1638,37 @@ int64_t goo_slice_copy_raw(void* dst, int64_t dst_len,
 
 void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
                            int64_t src_len, int64_t elem_size) {
-    if (!dst || !src || src_len <= 0 || elem_size <= 0) {
+    if (!dst || src_len <= 0 || elem_size < 0) {
+        return;
+    }
+    // A ZERO-SIZE element (struct{}) has no bytes to copy, but the length still
+    // grows, as Go's does. Returning here before the length moved left
+    // append(fs, more...) at len 0 (examples/append_zero_size_bulk.goo).
+    if (elem_size == 0) {
+        size_t zneed = dst->length + (size_t)src_len;
+        if (zneed > dst->capacity) {
+            goo_slice_grow_to(dst, zneed, 0U);
+        }
+        dst->length = zneed;
+        GOO_ASSERT(dst->length <= dst->capacity);
+        return;
+    }
+    if (!src) {
         return;
     }
 
     size_t bytes = (size_t)src_len * (size_t)elem_size;
-    // Snapshot BEFORE growing dst: self-append (append(b, b...)) has src
-    // aliasing dst's CURRENT backing array, and the grow below may
-    // goo_realloc that exact block out from under src (freed or moved).
+    // Snapshot BEFORE growing dst. Growing no longer frees or moves the old
+    // array, but when dst has room the copy lands in dst's CURRENT array, and
+    // src may overlap the destination range: `append(b[:1], b...)`.
     void* snap = goo_alloc(bytes);
     memcpy(snap, src, bytes);
 
     size_t need = dst->length + (size_t)src_len;
     if (need > dst->capacity) {
-        // Same capacity-doubling policy as goo_slice_append, via the shared helper.
-        size_t new_capacity = goo_slice_grow_capacity(dst->capacity, need);
-
-        void* new_data = goo_realloc(dst->data, new_capacity * elem_size);
-        if (!new_data) {
-            goo_free(snap);
-            return;
-        }
-
-        dst->data = new_data;
-        dst->capacity = new_capacity;
+        // Same capacity-doubling policy and the same no-realloc rule as
+        // goo_slice_append, via the shared helper.
+        goo_slice_grow_to(dst, need, (size_t)elem_size);
     }
 
     memcpy((char*)dst->data + dst->length * (size_t)elem_size, snap, bytes);

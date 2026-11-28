@@ -2028,11 +2028,18 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         // evaluated, so `s = s + "x"` has its fresh concat in hand before the
         // old buffer goes. See codegen_arc_release_before_store.
         //
-        // EXCEPT A SELF-APPEND, which does not drop the old value at all --
-        // goo_slice_append reallocs and goo_realloc frees the old base itself,
-        // so the pointer still in the slot is ALREADY dangling by the time we
-        // get here. Measured on bench/daemon/daemon.goo before this guard: 7
-        // invalid reads and a program that printed nothing.
+        // EXCEPT A SELF-APPEND, which is not a rebind: the result keeps every
+        // element the slot holds, so a release here would free elements the
+        // result still holds. Measured on bench/daemon/daemon.goo before this
+        // guard (when append still realloc'd): 7 invalid reads and a program
+        // that printed nothing.
+        //
+        // NOR IS THE REPLACED ARRAY RELEASED here, although append no longer
+        // frees it. RELEASE_OK does not prove that nothing else holds it:
+        // condition 7 runs only for a local bound more than once, and a
+        // self-append is not a binding, so `u := xs; xs = append(xs, 1)` reads
+        // RELEASE_OK. Releasing it freed u's array (PR #376 review,
+        // tests/arc_uaf/append_alias_*.goo). The array leaks instead.
         if (!(binary->left && binary->left->type == AST_IDENTIFIER &&
               release_decision_is_self_append(((IdentifierNode*)binary->left)->name,
                                               binary->right))) {

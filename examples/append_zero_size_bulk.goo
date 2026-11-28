@@ -1,0 +1,23 @@
+// append of zero-size elements in the BULK form, append(s, x...).
+//
+// goo_slice_append_bulk returned before it changed the length when elem_size
+// was 0, so append(fs, more...) left len(fs) at 0. The one-element form is
+// examples/append_zero_size_elem.goo. Expected output is from `go run` of the
+// same program.
+package main
+
+import "fmt"
+
+type E struct{}
+
+func main() {
+	var es []E
+	for i := 0; i < 5; i++ {
+		es = append(es, E{})
+	}
+	fmt.Println(len(es), es == nil)
+	more := make([]E, 3)
+	fs := []E{}
+	fs = append(fs, more...)
+	fmt.Println(len(fs), len(append(es, more...)))
+}
