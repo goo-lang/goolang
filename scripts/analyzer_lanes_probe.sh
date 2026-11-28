@@ -227,6 +227,13 @@ cppcheck_lane_verdict() {
 #     file, so there is nothing to regenerate (task 14 and 15's reports
 #     record the same fact).
 #
+# THE STAMP (task 4 of the 2026-11-27 verify-core plan). After all three lanes
+# pass, this script writes build/sarif/lanes.stamp: one line,
+# `sig=<toolchain hash> tree=<input hash>`, both from tools/lanes_stamp.py.
+# scripts/findings_probe.sh recomputes the two values and fails when they
+# differ, so it can use these SARIF directories without running the lanes
+# again. A run that fails leaves no stamp. LANES_STAMP overrides the path.
+#
 # Usage:
 #   scripts/analyzer_lanes_probe.sh              # gate: fail on a lane error
 #   scripts/analyzer_lanes_probe.sh --self-test  # positive+negative control
@@ -268,6 +275,10 @@ COMPILE_COMMANDS_OUT="${COMPILE_COMMANDS_OUT:-$REPO_ROOT/build/compile_commands.
 SARIF_GCC_DIR="${SARIF_GCC_DIR:-$REPO_ROOT/build/sarif/gcc}"
 SARIF_TIDY_DIR="${SARIF_TIDY_DIR:-$REPO_ROOT/build/sarif/clang-tidy}"
 SARIF_CPPCHECK_DIR="${SARIF_CPPCHECK_DIR:-$REPO_ROOT/build/sarif/cppcheck}"
+# Task 4 of the 2026-11-27 verify-core plan: the stamp that tells
+# scripts/findings_probe.sh these three directories are fresh, so that script
+# does not run the lanes a second time.
+LANES_STAMP="${LANES_STAMP:-$REPO_ROOT/build/sarif/lanes.stamp}"
 # DeprecatedOrUnsafeBufferHandling is off: it asks for the C11 Annex K
 # functions (fprintf_s, memcpy_s, ...), which are optional and which glibc and
 # musl do not provide, so no change to this code can satisfy it. It gave 293
@@ -894,6 +905,13 @@ fi
 # check is one more thing to get wrong, where a fresh `make -Bn` dry run
 # costs a second or two and is always correct.
 "$COMPILE_COMMANDS_GEN" "$COMPILE_COMMANDS_OUT"
+# A failed or interrupted run must leave no stamp, so findings-probe cannot
+# read the half-written directories of this run as fresh.
+rm -f "$LANES_STAMP"
+# The tree hash is taken BEFORE the lanes run: a file edited while they run
+# then makes the stamp differ from the tree that findings-probe sees later.
+lanes_sig="$(python3 "$REPO_ROOT/tools/lanes_stamp.py" sig "$COMPILE_COMMANDS_OUT")"
+lanes_tree="$(python3 "$REPO_ROOT/tools/lanes_stamp.py" tree "$COMPILE_COMMANDS_OUT")"
 entry_count="$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$COMPILE_COMMANDS_OUT")"
 
 rm -rf "$SARIF_GCC_DIR"
@@ -983,4 +1001,6 @@ if [ "${gcc_fails:-1}" != "0" ] || [ "${tidy_fails:-1}" != "0" ] || [ "$cppcheck
 	exit 1
 fi
 
+mkdir -p "$(dirname "$LANES_STAMP")"
+echo "sig=$lanes_sig tree=$lanes_tree" >"$LANES_STAMP"
 echo "$PROBE: PASS ($COMPILE_COMMANDS_OUT: $entry_count entries; gcc $gcc_results results in $SARIF_GCC_DIR; clang-tidy $tidy_warnings warnings in $SARIF_TIDY_DIR; cppcheck $cppcheck_results findings in $SARIF_CPPCHECK_DIR)"

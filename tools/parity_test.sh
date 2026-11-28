@@ -59,7 +59,10 @@ fi
 tmp_targets="$(mktemp)"
 printf 'm10_probe\nswitch_probe\n' > "$tmp_targets"
 
-report="$(PARITY_BAZEL_TESTS="$tmp_targets" ./tools/parity.sh 2>&1)"
+# PARITY_ALLOWLIST=/dev/null keeps the real tools/parity-allowlist.txt out of
+# these counts. Otherwise a gate added to that file would move the expected
+# mapped and unmapped totals.
+report="$(PARITY_BAZEL_TESTS="$tmp_targets" PARITY_ALLOWLIST=/dev/null ./tools/parity.sh 2>&1)"
 rc=$?
 if [ "$rc" -ne 1 ]; then
     echo "parity_test: FAIL report exited $rc, expected 1 (gates remain)"
@@ -90,7 +93,7 @@ tmp_empty="$(mktemp)"
 # A gate NOT mapped by the fixture above, so the delta is attributable to the
 # allowlist alone.
 echo "enum-probe covered elsewhere, see spec 4.7" > "$tmp_allow"
-base_u="$(PARITY_BAZEL_TESTS="$tmp_empty" ./tools/parity.sh 2>/dev/null | sed -n 's/^unmapped:[[:space:]]*//p')"
+base_u="$(PARITY_BAZEL_TESTS="$tmp_empty" PARITY_ALLOWLIST=/dev/null ./tools/parity.sh 2>/dev/null | sed -n 's/^unmapped:[[:space:]]*//p')"
 allow_u="$(PARITY_BAZEL_TESTS="$tmp_empty" PARITY_ALLOWLIST="$tmp_allow" ./tools/parity.sh 2>/dev/null | sed -n 's/^unmapped:[[:space:]]*//p')"
 if [ "$((base_u - allow_u))" -ne 1 ]; then
     echo "parity_test: FAIL allowlisting one gate moved unmapped $base_u -> $allow_u (want -1)"
@@ -104,6 +107,26 @@ if [ $? -ne 2 ]; then
     fail=1
 fi
 rm -f "$tmp_allow" "$tmp_empty"
+
+# Whitespace. Make accepts a TAB as a line indent, and test-golden-poison sits
+# on a TAB-led line of VERIFY_ALL_DEPS (Makefile:3498). A reader that splits on
+# spaces alone drops that gate without any error. The fixture has three gates,
+# the middle one on a TAB-led continuation line, and all three must be listed.
+tmp_make="$(mktemp)"
+printf 'VERIFY_ALL_DEPS = alpha-probe \\\n\tbeta-probe \\\n\tgamma-probe\n' > "$tmp_make"
+fixture_gates="$(MAKEFILE="$tmp_make" ./tools/parity.sh --list-make-gates 2>/dev/null)"
+fixture_count="$(printf '%s\n' "$fixture_gates" | grep -c .)"
+if [ "$fixture_count" -ne 3 ]; then
+    echo "parity_test: FAIL TAB-led gate line: read $fixture_count gates, want 3"
+    fail=1
+fi
+for want in alpha-probe beta-probe gamma-probe; do
+    if ! printf '%s\n' "$fixture_gates" | grep -qx "$want"; then
+        echo "parity_test: FAIL TAB-led gate line: $want missing"
+        fail=1
+    fi
+done
+rm -f "$tmp_make"
 
 if [ "$fail" -eq 0 ]; then
     echo "parity_test: PASS $count gates (baseline $expected), mapping, arithmetic and allowlist correct"

@@ -5,5 +5,6 @@
 # here is a gate that parity.sh will stop counting, which is exactly the power
 # that needs a written justification next to it.
 #
-# Empty today. Phase 7 is expected to add the podman and CompCert gates, which
+# One entry today, for test-golden-poison. Phase 7 is expected to add the podman and CompCert gates, which
 # stay in their own CI workflow rather than moving to Bazel.
+test-golden-poison no Bazel test sets GOO_ARC_POISON=1; golden_bazel runs the golden suite without poison

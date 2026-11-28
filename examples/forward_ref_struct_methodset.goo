@@ -1,0 +1,27 @@
+// forward_ref_struct_methodset: a struct WITH a method set is returned by a
+// later function, and a method on the result is called in main.
+package main
+
+import "fmt"
+
+type Counter struct {
+	n int
+}
+
+func (c Counter) Get() int {
+	return c.n
+}
+
+func (c Counter) Add(d int) Counter {
+	return Counter{n: c.n + d}
+}
+
+func main() {
+	c := newCounter(5)
+	c = c.Add(2)
+	fmt.Println(c.Get())
+}
+
+func newCounter(start int) Counter {
+	return Counter{n: start}
+}
