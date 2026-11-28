@@ -3,7 +3,7 @@
 #
 # The Makefile is this project's gate net: VERIFY_ALL_DEPS names every gate and
 # verify-core runs all but the three in HEAVY_DEPS. The exact count moves with
-# the branch, so it lives in tools/parity-gate-count.txt rather than here.
+# the branch, so it lives as a sorted list in tools/parity-gates.txt rather than here.
 # The migration deletes the Makefile in phase 7, and
 # this script is the only thing standing between "deleted" and "silently lost
 # a gate". It must reach zero unmapped before the Makefile may be removed.

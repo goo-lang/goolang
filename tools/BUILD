@@ -16,7 +16,7 @@ sh_test(
     srcs = ["parity_test.sh"],
     data = [
         "parity-allowlist.txt",
-        "parity-gate-count.txt",
+        "parity-gates.txt",
         "parity.sh",
         "//:Makefile",
     ],

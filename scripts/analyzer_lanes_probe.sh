@@ -220,7 +220,7 @@ cppcheck_lane_verdict() {
 
 # --- companion edits (plan decision 2) ------------------------------------
 #   - this file's --self-test, below, for probe-teeth-probe
-#   - tools/parity-gate-count.txt +2 (two new VERIFY_ALL_DEPS entries --
+#   - tools/parity-gates.txt +2 lines (two new VERIFY_ALL_DEPS entries --
 #     findings-probe and findings-probe-selftest, task 17's own gate; this
 #     lane joining analyzer-lanes-probe adds no new VERIFY_ALL_DEPS entry)
 #   - tests/probes/census.txt: this branch's base (main) does not have that

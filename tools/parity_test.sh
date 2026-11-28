@@ -1,14 +1,94 @@
 #!/usr/bin/env bash
 # Gates tools/parity.sh's Makefile reader against facts measured on 2026-08-25.
 #
-# The three assertions are chosen so that a broken reader cannot pass:
-#   - the exact count, so a reader that drops or duplicates entries fails
+# The assertions are chosen so that a broken reader cannot pass:
+#   - the sorted list tools/parity-gates.txt, so a dropped, extra or duplicated gate fails
 #   - a gate KNOWN to be present, so an empty read cannot pass  (positive control)
 #   - a gate KNOWN to be absent, so a reader that returns everything fails
 set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+
+# check_list MAKE_GATES_FILE LIST_FILE
+# 0 = equal, 1 = differ (each differing gate named), 2 = tool failure.
+# The list is a sorted file of gate names rather than a count: two branches
+# that each add a different gate add two different lines and merge correctly,
+# where a count merges "cleanly" to a wrong number.
+check_list() {
+    local mk="$1" list="$2" rc=0 g
+    if [ ! -r "$list" ]; then
+        echo "parity_test: TOOL FAILURE cannot read $list"
+        return 2
+    fi
+    if ! grep -q . "$list"; then
+        echo "parity_test: TOOL FAILURE $list is empty"
+        return 2
+    fi
+    if ! LC_ALL=C sort -c "$list" 2>/dev/null; then
+        echo "parity_test: FAIL $list is not sorted under LC_ALL=C"
+        rc=1
+    fi
+    for g in $(LC_ALL=C sort "$list" | LC_ALL=C uniq -d); do
+        echo "parity_test: FAIL duplicate line: $g"
+        rc=1
+    done
+    for g in $(LC_ALL=C comm -23 <(LC_ALL=C sort -u "$mk") <(LC_ALL=C sort -u "$list")); do
+        echo "parity_test: FAIL gate only in the Makefile: $g (add a line to tools/parity-gates.txt)"
+        rc=1
+    done
+    for g in $(LC_ALL=C comm -13 <(LC_ALL=C sort -u "$mk") <(LC_ALL=C sort -u "$list")); do
+        echo "parity_test: FAIL gate only in tools/parity-gates.txt: $g (remove the line)"
+        rc=1
+    done
+    return "$rc"
+}
+
+# --- self-test (runs before anything reads the Makefile or the real list) ---
+# Proves check_list can report each failure it claims to. It scrubs PATH and
+# reads no machine state: every input is a fixture built in a temp dir.
+if [ "${1:-}" = "--self-test" ]; then
+    PATH=/usr/bin:/bin
+    export PATH
+    st_dir="$(mktemp -d)" || exit 2
+    trap 'rm -rf "$st_dir"' EXIT
+    st_fail=0
+    mk() { printf '%s' "$2" > "$st_dir/$1"; }
+    # expect NAME WANT_RC WANT_TEXT MAKE_FILE LIST_FILE
+    expect() {
+        local name="$1" want_rc="$2" want_text="$3" out rc
+        out="$(check_list "$st_dir/$4" "$st_dir/$5" 2>&1)"
+        rc=$?
+        if [ "$rc" -ne "$want_rc" ]; then
+            echo "self-test: FAIL $name: exit $rc, want $want_rc"
+            st_fail=$((st_fail + 1))
+        elif [ -n "$want_text" ] && ! printf '%s\n' "$out" | grep -qF "$want_text"; then
+            echo "self-test: FAIL $name: output lacks '$want_text'"
+            st_fail=$((st_fail + 1))
+        else
+            echo "self-test: ok   $name"
+        fi
+    }
+    mk make $'aaa-probe\nbbb-probe\nccc-probe\n'
+    mk good $'aaa-probe\nbbb-probe\nccc-probe\n'
+    mk missing $'aaa-probe\nccc-probe\n'
+    mk extra $'aaa-probe\nbbb-probe\nccc-probe\nzzz-probe\n'
+    mk dup $'aaa-probe\nbbb-probe\nbbb-probe\nccc-probe\n'
+    mk unsorted $'aaa-probe\nccc-probe\nbbb-probe\n'
+    mk empty ''
+    expect "matching list passes" 0 "" make good
+    expect "gate only in Makefile" 1 "only in the Makefile: bbb-probe" make missing
+    expect "gate only in list" 1 "only in tools/parity-gates.txt: zzz-probe" make extra
+    expect "duplicate line" 1 "duplicate line: bbb-probe" make dup
+    expect "unsorted file" 1 "not sorted" make unsorted
+    expect "empty list" 2 "empty" make empty
+    if [ "$st_fail" -ne 0 ]; then
+        echo "parity_test --self-test: FAIL $st_fail case(s)"
+        exit 1
+    fi
+    echo "parity_test --self-test: PASS"
+    exit 0
+fi
 
 gates="$(./tools/parity.sh --list-make-gates)"
 rc=$?
@@ -19,24 +99,18 @@ fi
 
 fail=0
 
-# The count is a RECORDED BASELINE, not a constant, because it moves with the
-# branch: golden-selftest is in VERIFY_ALL_DEPS on test/golden-runner-teeth
-# (5c633f6) and not on main, so main reads 216 and that branch reads 217.
-# Same idiom as scripts/grammar-tripwire.sh's EXPECTED_SR and
-# scripts/probe-teeth-baseline.txt: a changed count is stop-the-line, and
-# bumping it is a deliberate one-line edit rather than silent drift.
-expected="$(grep -oE '^[0-9]+' tools/parity-gate-count.txt 2>/dev/null | head -1)"
-if [ -z "$expected" ]; then
-    echo "parity_test: TOOL FAILURE cannot read tools/parity-gate-count.txt"
+tmp_gates="$(mktemp)"
+printf '%s\n' "$gates" > "$tmp_gates"
+check_list "$tmp_gates" tools/parity-gates.txt
+lrc=$?
+rm -f "$tmp_gates"
+if [ "$lrc" -eq 2 ]; then
     exit 2
 fi
-count="$(printf '%s\n' "$gates" | grep -c .)"
-if [ "$count" -ne "$expected" ]; then
-    echo "parity_test: FAIL gate count moved: baseline $expected, read $count"
-    echo "  If a gate was added or removed on purpose, update"
-    echo "  tools/parity-gate-count.txt in the same commit."
+if [ "$lrc" -ne 0 ]; then
     fail=1
 fi
+count="$(printf '%s\n' "$gates" | grep -c .)"
 
 # Positive control. m10-probe is in VERIFY_ALL_DEPS. If this is missing, the
 # reader returned nothing usable and the count check above proves nothing.
@@ -129,6 +203,6 @@ done
 rm -f "$tmp_make"
 
 if [ "$fail" -eq 0 ]; then
-    echo "parity_test: PASS $count gates (baseline $expected), mapping, arithmetic and allowlist correct"
+    echo "parity_test: PASS $count gates match tools/parity-gates.txt, mapping, arithmetic and allowlist correct"
 fi
 exit "$fail"
