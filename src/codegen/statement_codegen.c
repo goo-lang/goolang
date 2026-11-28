@@ -426,9 +426,10 @@ static int codegen_generate_multi_assign_n(CodeGenerator* codegen, TypeChecker* 
             //
             // THE SELF-APPEND GUARD IS NOT OPTIONAL, and it is the SAME
             // predicate, not a second copy. `a, b = append(a, x), y` is not a
-            // rebind: goo_slice_append reallocs and goo_realloc frees the old
-            // base itself, so the pointer in the slot is ALREADY dangling and
-            // releasing it is a double free. Reimplementing the test here would
+            // rebind: the result keeps a's elements, so releasing what the slot
+            // holds would free elements the result still holds. The replaced
+            // array is not released either -- see the single-assign arm for
+            // why RELEASE_OK cannot prove it unshared. Reimplementing the test here would
             // give two rules that must agree while different code maintains
             // them -- the shape that already cost this branch a use-after-free
             // in #284.

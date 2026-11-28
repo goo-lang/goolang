@@ -1,0 +1,22 @@
+// append of a ZERO-SIZE element, a side effect of the no-realloc fix.
+//
+// goo_slice_append used to grow through goo_realloc(data, cap * 0), and a size
+// of 0 made goo_realloc free the block and return NULL, so append reported
+// failure and the length stayed 0. The new growth path allocates through
+// goo_alloc, which answers 0 bytes with goo_zerobase, so the length grows as
+// Go's does.
+//
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+type E struct{}
+
+func main() {
+	es := []E{}
+	for i := 0; i < 5; i++ {
+		es = append(es, E{})
+	}
+	fmt.Println(len(es))
+}

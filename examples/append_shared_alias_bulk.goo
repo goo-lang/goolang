@@ -1,0 +1,24 @@
+// The bulk form, append(s, x...), on a slice that another slice shares.
+//
+// goo_slice_append_bulk grew with goo_realloc too, so it had the same defect as
+// the one-element form. The sub-slice case also grows from an interior pointer.
+//
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func main() {
+	s := make([]int, 2, 2)
+	s[0] = 7
+	u := s
+	s = append(s, s...)
+	s[0] = 8
+	fmt.Println(u[0], s[0], len(s), s[2])
+
+	a := []int{1, 2, 3, 4}
+	b := a[2:]
+	b = append(b, a...)
+	b[0] = 30
+	fmt.Println(a[2], b[0], len(b), b[5])
+}

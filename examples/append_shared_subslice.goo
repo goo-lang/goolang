@@ -1,0 +1,20 @@
+// append onto a SUB-SLICE whose data pointer points into the middle of a block.
+//
+// t := s[1:] has len 3 and cap 3, so the append must grow. Go allocates a new
+// array and leaves s alone. Goo used to hand t.data to goo_realloc, which
+// computed a header address inside s's block, and glibc aborted with
+// `realloc(): invalid pointer` (exit 134).
+//
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func main() {
+	s := make([]int, 4)
+	s[0], s[1] = 10, 11
+	t := s[1:]
+	t = append(t, 5)
+	t[0] = 99
+	fmt.Println(s[0], s[1], len(t), t[0], t[3])
+}
