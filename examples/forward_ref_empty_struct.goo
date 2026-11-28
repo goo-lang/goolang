@@ -1,0 +1,18 @@
+// forward_ref_empty_struct: the unnamed empty struct `struct{}` is built from
+// the AST more than once (a function's return type, a local). Each build used
+// to mint a separate named LLVM type (`anon`, `anon.N`), so the module failed
+// verification. It now lowers to one literal `{}`, which LLVM uniques.
+package main
+
+import "fmt"
+
+func main() {
+	x := mk()
+	_ = x
+	fmt.Println("ok")
+}
+
+func mk() struct{} {
+	var z struct{}
+	return z
+}
