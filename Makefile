@@ -90,7 +90,7 @@ PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SR
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/ast/json_writer.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/tc_context.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/escape_core.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/local_escape.c $(SRCDIR)/types/returns_fresh.c $(SRCDIR)/types/release_decision.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c $(SRCDIR)/types/lane_ownership.c $(SRCDIR)/types/qir_ownership.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/codegen_context.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/monomorphize.c $(SRCDIR)/codegen/qasm3_codegen.c
-RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/goo_os_posix.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c $(SRCDIR)/runtime/qir_sim.c
+RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/float_format.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/goo_os_posix.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/testing.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c $(SRCDIR)/runtime/qir_sim.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/diagnostic.c
 # Only import_resolver.c from package/ is part of the compiler. The rest of
 # the directory (IPFS/registry/p2p modules) is compiled by nothing and has
@@ -144,7 +144,7 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # the runtime entrypoints. runtime.o's goo_init/goo_exit call into
 # deadlock.o, and concurrency.o calls channels/sync/platform — leaving
 # any of these out fails the link of even a hello-world executable.
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/goo_os_posix.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/testing.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o $(BUILDDIR)/runtime/qir_sim.o
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/float_format.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/goo_os_posix.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/testing.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o $(BUILDDIR)/runtime/qir_sim.o
 
 # M2-B1: vendored NNG (far transport). Pinned tarball, static lib, merged
 # into libgoo_runtime.a below so bin/goo-linked executables need no new
@@ -3280,6 +3280,8 @@ VERIFY_ALL_DEPS := \
     frontend-diff-selftest \
     diagnostics-drift-selftest \
     diagnostics-drift-probe \
+    vendor-drift-selftest \
+    vendor-drift-probe \
     fpga-equiv-selftest \
     fpga-equiv-probe \
     assert-corpus-selftest \
@@ -4842,7 +4844,7 @@ far-transport-test: $(RUNTIME_LIB)
 far-transport-asan: $(NNG_LIB)
 	@mkdir -p $(BINDIR)
 	clang $(CFLAGS) -g -fsanitize=address -Iinclude -I$(NNG_BUILD)/include \
-	  tests/runtime/far_transport_test.c src/runtime/far_transport.c src/runtime/runtime.c src/runtime/platform.c src/runtime/goo_os_posix.c src/runtime/deadlock.c src/runtime/concurrency.c src/runtime/sync.c \
+	  tests/runtime/far_transport_test.c src/runtime/far_transport.c src/runtime/runtime.c src/runtime/float_format.c src/runtime/platform.c src/runtime/goo_os_posix.c src/runtime/deadlock.c src/runtime/concurrency.c src/runtime/sync.c \
 	  $(NNG_LIB) -o $(BINDIR)/far_transport_asan -lm -lpthread
 	@ASAN_OPTIONS=detect_leaks=0 $(BINDIR)/far_transport_asan && echo "far-transport-asan: PASS"
 .PHONY: far-transport-test far-transport-asan
@@ -5240,6 +5242,17 @@ diagnostics-drift-probe:
 diagnostics-drift-selftest:
 	@bash scripts/diagnostics_drift_probe.sh --self-test
 
+# Vendored Go source must equal its pristine copy plus the ledger
+# goostd/VENDOR.tsv (trusted-stdlib gates T-3 and T-8). CI has no Go toolchain,
+# so the pristine copy is committed under third_party/go1.27.4-src/ and this
+# probe needs only bash and python3. The selftest builds each fault in a copy.
+vendor-drift-probe:
+	@bash scripts/vendor_drift_probe.sh
+
+vendor-drift-selftest:
+	@bash scripts/vendor_drift_probe.sh --self-test
+.PHONY: vendor-drift-probe vendor-drift-selftest
+
 # ARC step 1, race gate. The ordinary build CANNOT see a data race on the
 # reference count: rows 12-14 of obj_header_test caught the non-atomic version
 # only because a lost update happened to be large enough to change a total. A
@@ -5263,7 +5276,7 @@ obj-header-tsan:
 	fi
 	@echo "=== obj-header-tsan: ARC refcount race gate (ThreadSanitizer) ==="
 	@clang $(CFLAGS) -g -fsanitize=thread -Iinclude \
-	  $(TEST_UNIT_DIR)/runtime/obj_header_test.c src/runtime/runtime.c \
+	  $(TEST_UNIT_DIR)/runtime/obj_header_test.c src/runtime/runtime.c src/runtime/float_format.c \
 	  src/runtime/platform.c src/runtime/goo_os_posix.c src/runtime/deadlock.c \
 	  src/runtime/concurrency.c src/runtime/sync.c \
 	  -o $(BINDIR)/obj_header_tsan -lm -lpthread
@@ -6088,15 +6101,21 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  append OFF: $$ap_off bytes leaked (expected)"; \
 	fi; \
-	valgrind --leak-check=full --error-exitcode=99 ./build/arc_ap_on > /dev/null 2> build/arc_ap_on.vg; \
+	: "PINNED, NOT ZERO, since PR #376: append never frees a replaced array (no" ; \
+	: "rule proves it unshared, see goo_slice_grow_to), so ON leaks exactly the 6" ; \
+	: "arrays xs grows through before its last (1..32 ints, 600 bytes with" ; \
+	: "headers) per call: 2,000 x 600 = 1,200,000. Leaks are not errors here, so" ; \
+	: "rc speaks only for invalid accesses." ; \
+	ap_expect=1200000; \
+	valgrind --leak-check=full --errors-for-leak-kinds=none --error-exitcode=99 ./build/arc_ap_on > /dev/null 2> build/arc_ap_on.vg; \
 	rc=$$?; \
 	ap_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_ap_on.vg | tr -d ,); \
 	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_ap_on.vg; then \
 	  echo "  FAIL: self-append release is not valgrind-clean (rc=$$rc)"; tail -30 build/arc_ap_on.vg; fail=1; \
-	elif [ -n "$$ap_on" ] && [ "$$ap_on" -ne 0 ]; then \
-	  echo "  FAIL: self-append release ON still leaked $$ap_on bytes"; fail=1; \
+	elif [ "$${ap_on:-0}" -ne "$$ap_expect" ]; then \
+	  echo "  FAIL: self-append release ON leaked $${ap_on:-0} bytes, expected $$ap_expect (the replaced arrays only)"; fail=1; \
 	else \
-	  echo "  append ON:   valgrind clean, 0 bytes leaked (was $$ap_off)"; \
+	  echo "  append ON:   valgrind clean, $$ap_on bytes leaked = the replaced arrays only (was $$ap_off)"; \
 	fi; \
 	valgrind --leak-check=no --error-exitcode=99 ./build/arc_sub > /dev/null 2> build/arc_sub.vg; \
 	rc=$$?; \
@@ -6276,7 +6295,12 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  slice elem OFF: $$se_off bytes leaked ($${se_d:-0} direct + $${se_i:-0} indirect)"; \
 	fi; \
-	valgrind --leak-check=full --error-exitcode=99 ./build/arc_se_on > build/arc_se_on.out 2> build/arc_se_on.vg; \
+	: "PINNED, NOT ZERO, since PR #376: each call's first parts array (one string" ; \
+	: "header, 32 bytes with the object header) is replaced by the second append" ; \
+	: "and never freed, because no rule proves it unshared. 10,000 x 32 = 320,000," ; \
+	: "all DIRECT. The elements are what this block measures: indirect must be 0." ; \
+	se_expect=320000; \
+	valgrind --leak-check=full --errors-for-leak-kinds=none --error-exitcode=99 ./build/arc_se_on > build/arc_se_on.out 2> build/arc_se_on.vg; \
 	rc=$$?; \
 	se_d2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_se_on.vg | tr -d , ); \
 	se_i2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_se_on.vg | tr -d , ); \
@@ -6284,15 +6308,15 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	: "Access first, then leak, then rc -- see the owned-key block above for why." ; \
 	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_se_on.vg; then \
 	  echo "  FAIL: the slice released an element it did not own"; tail -30 build/arc_se_on.vg; fail=1; \
-	elif [ "$$se_on" -ne 0 ]; then \
-	  echo "  FAIL: slice-elem probe still leaked $$se_on bytes — the elements were not reclaimed"; fail=1; \
+	elif [ "$${se_i2:-0}" -ne 0 ] || [ "$$se_on" -ne "$$se_expect" ]; then \
+	  echo "  FAIL: slice-elem probe leaked $$se_on bytes ($${se_i2:-0} indirect), expected $$se_expect direct — the elements were not reclaimed"; fail=1; \
 	elif [ $$rc -ne 0 ]; then \
 	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
 	  tail -30 build/arc_se_on.vg; fail=1; \
 	elif ! diff -q build/arc_se_off.out build/arc_se_on.out > /dev/null; then \
 	  echo "  FAIL: slice-elem probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
 	else \
-	  echo "  slice elem ON:  clean, 0 bytes, output matches the control (was $$se_off)"; \
+	  echo "  slice elem ON:  clean, $$se_on bytes = the replaced arrays only, output matches the control (was $$se_off)"; \
 	fi; \
 	$(COMPILER) -o build/arc_be examples/arc_release_borrowed_elem_probe.goo > build/arc_be.cerr 2>&1 \
 	  || { echo "  FAIL (compile, borrowed-elem probe)"; cat build/arc_be.cerr; exit 1; }; \
@@ -6956,15 +6980,18 @@ analyzer-lanes-selftest:
 # database over gcc, clang-tidy, cppcheck, the pthread-return-probe ratchet
 # and the gate log those probes print, with a shrink-only gate that
 # generalises docs/misra/tools/gate.py's own (file, rule) tally into
-# (tool, rule, file) result counts across every one of them. Re-runs
-# analyzer-lanes-probe and pthread-return-probe itself (see
-# scripts/findings_probe.sh's own header on why: it must also work
-# standalone, with no Makefile dependency graph to rely on), so this adds
-# roughly another minute on top of analyzer-lanes-probe's own budget.
+# (tool, rule, file) result counts across every one of them. It reads the
+# SARIF that analyzer-lanes-probe wrote, and it runs pthread-return-probe
+# itself. It does not run the three lanes again (task 4 of the 2026-11-27
+# verify-core plan: the lanes took 252 s of the 426 s this gate used to take).
+# build/sarif/lanes.stamp, written by analyzer-lanes-probe, holds a toolchain
+# signature and a hash of every file the lanes read. The script recomputes both
+# and fails with "analyser SARIF is missing or stale" when they differ, so the
+# prerequisite below is what makes the stamp fresh. A standalone
+# `bash scripts/findings_probe.sh` with no lanes run before it needs
+# FINDINGS_RUN_LANES=1.
 # M2: findings-probe and analyzer-lanes-probe both write build/sarif/*. The
-# prerequisite below orders them, so they cannot race under `make -j`. Under
-# verify-core, analyzer-lanes-probe is already a dependency, so make runs it
-# once; the script then runs the lanes once more for its own pipeline.
+# prerequisite orders them, so they cannot race under `make -j`.
 .PHONY: findings-probe findings-probe-selftest
 findings-probe: analyzer-lanes-probe
 	@bash scripts/findings_probe.sh

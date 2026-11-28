@@ -292,7 +292,7 @@ void goo_println_bool(int value);
 void goo_println_float(double value);
 void goo_print_int(int64_t value);
 void goo_print_bool(int value);
-void goo_print_float(double value);
+void goo_print_float(double value, int32_t bits);
 void goo_println_uint(uint64_t value);
 void goo_print_uint(uint64_t value);
 
@@ -311,7 +311,7 @@ int goo_string_cmp(goo_string_t a, goo_string_t b);
 // and reusable by a later strconv milestone.
 goo_string_t goo_int_to_string(int64_t value);
 goo_string_t goo_uint_to_string(uint64_t value);
-goo_string_t goo_float_to_string(double value);
+goo_string_t goo_float_to_string(double value, int32_t bits);
 goo_string_t goo_bool_to_string(int value);
 int goo_string_to_int(goo_string_t s, int64_t* out);
 // string(rune) / string(byte) conversion (Go: any integer type -> string
@@ -555,8 +555,13 @@ int64_t goo_slice_copy_raw(void* dst, int64_t dst_len,
                            const void* src, int64_t src_len, int64_t elem_size);
 // append(dst, s...) bulk arm: snapshot src, grow dst by src_len (same
 // amortized-doubling policy as goo_slice_append), then move the snapshot in.
-// The snapshot is what makes self-append (append(b, b...)) safe across the
-// grow — a realloc of dst may free/move the very block src still aliases.
+// The snapshot is what makes an overlapping in-place append
+// (append(b[:1], b...)) read src before it writes over it.
+//
+// NEITHER append form reallocs or frees dst's old array. Growth copies into a
+// new array and leaves the old one to every other slice that shares it, as Go
+// does. Nothing frees the replaced array: no analysis can yet prove that no
+// alias holds it, so it leaks (see goo_slice_grow_to).
 void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
                            int64_t src_len, int64_t elem_size);
 

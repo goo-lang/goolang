@@ -1,0 +1,28 @@
+package main
+
+import "fmt"
+
+type Q struct{ N int }
+
+func (q Q) String() string { return "Q" }
+
+type E struct{ N int }
+
+func (e E) Error() string { return "E" }
+
+func main() {
+	var q *Q
+	var j interface{} = q
+	fmt.Println(j)
+	fmt.Printf("%v\n", j)
+	fmt.Printf("%s\n", j)
+	fmt.Println(fmt.Sprint(j))
+	var e *E
+	var k interface{} = e
+	fmt.Println(k)
+	fmt.Printf("%v\n", k)
+	fmt.Println(fmt.Sprint(k))
+	v := Q{1}
+	var m interface{} = &v
+	fmt.Println(m)
+}

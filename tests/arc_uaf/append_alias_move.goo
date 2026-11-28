@@ -1,0 +1,67 @@
+package main
+
+import "fmt"
+
+// u shares s's array of cap 2. Each growth of s must leave that array to u.
+// A realloc that moved the block freed it under u.
+func aliasMove() {
+	s := make([]int, 2, 2)
+	s[0] = 7
+	u := s
+	big := make([]int, 1000)
+	big[0] = 1
+	for i := 0; i < 600; i++ {
+		s = append(s, i)
+	}
+	fmt.Println(u[0], s[0], big[0])
+}
+
+// t points into the middle of s's block. Growing t must not free or move s's
+// block, and s must not see writes through the grown t.
+func subslice() {
+	s := make([]int, 4)
+	s[0], s[1] = 10, 11
+	t := s[1:]
+	for i := 0; i < 100; i++ {
+		t = append(t, i)
+	}
+	t[0] = 99
+	fmt.Println(s[0], s[1], len(t), t[0], t[102])
+}
+
+// No alias: the owned self-append path frees each replaced array. A double
+// free or a read of a freed array shows here.
+func owned() {
+	xs := []int{}
+	for i := 0; i < 600; i++ {
+		xs = append(xs, i)
+	}
+	fmt.Println(len(xs), xs[0], xs[599])
+}
+
+// The range expression is evaluated once, so the loop reads the ORIGINAL
+// array while the body grows s. That array must still be live.
+func rangeGrow() {
+	s := []int{1, 2, 3}
+	for _, v := range s {
+		s = append(s, v*10)
+	}
+	fmt.Println(len(s), s[3], s[5])
+}
+
+// The bulk form with its source equal to the destination.
+func bulkSelf() {
+	b := []int{1, 2, 3}
+	for i := 0; i < 5; i++ {
+		b = append(b, b...)
+	}
+	fmt.Println(len(b), b[0], b[95])
+}
+
+func main() {
+	aliasMove()
+	subslice()
+	owned()
+	rangeGrow()
+	bulkSelf()
+}

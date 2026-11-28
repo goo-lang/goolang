@@ -2,6 +2,7 @@ alias1.go
 closure1.go
 closure7.go
 compos.go
+const3.go
 divide.go
 fixedbugs/bug000.go
 fixedbugs/bug005.go
