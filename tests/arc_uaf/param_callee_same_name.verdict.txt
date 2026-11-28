@@ -1,0 +1,4 @@
+[arc?] id: s -> RELEASE_NO_NO_BINDING
+[arc?] pick: id -> RELEASE_NO_NO_BINDING
+[arc?] pick: x -> RELEASE_NO_ESCAPES
+[arc?] __goo_lit_0: s -> RELEASE_NO_NO_BINDING

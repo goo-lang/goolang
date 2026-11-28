@@ -1,0 +1,4 @@
+[arc?] set: y -> RELEASE_NO_ESCAPES
+[arc?] fill: a -> RELEASE_NO_ESCAPES
+[arc?] fill: s -> RELEASE_NO_ESCAPES
+[arc?] fill: i -> RELEASE_NO_ESCAPES

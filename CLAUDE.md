@@ -247,6 +247,24 @@ Measured 2026-08-02, three builds in ONE sitting, on `bench/daemon/daemon.goo`
 96.7% of peak reclaimed; 1,433 → 41 bytes retained per request; 3.19x Go's
 peak RSS, where ADR 0002's opening measurement was 81x. valgrind: 0 errors.
 
+Re-measured 2026-11-27 for PR #376 (append allocates a new array instead of
+`realloc`), four compilers in ONE sitting, same output-path length. valgrind
+reported 0 errors on every row:
+
+| compiler | ARC on: in use at exit / 2,000 req | ARC on: peak RSS, 400,000 req | `GOO_ARC_RELEASE=0`: in use at exit | `GOO_ARC_RELEASE=0`: peak RSS |
+|---|---|---|---|---|
+| main (`realloc` in append), checkout bin/goo | 82,204 bytes / 4,003 blocks | 26,944 KB | 3,480,204 bytes / 102,003 blocks | 930,676 KB |
+| main, 939f2ffa built fresh | 82,204 bytes / 4,003 blocks | 26,496 KB | 3,480,204 bytes / 102,003 blocks | 932,992 KB |
+| 719a1c58 (no array freed after growth) | 402,204 bytes / 10,003 blocks | 107,200 KB | 3,800,204 bytes / 108,003 blocks | 1,007,552 KB |
+| fix/append-alias-sound (replaced array freed) | 82,204 bytes / 4,003 blocks | 27,008 KB | 3,800,204 bytes / 108,003 blocks | 1,007,552 KB |
+
+THE 2026-08-02 CONTROL ABOVE IS STALE. Its 88,003 blocks are not what main
+measures today: the fresh build of 939f2ffa and the checkout binary agree
+on 102,003, so the binary is not the cause. The 6,000 blocks between main and
+this branch with release OFF are the replaced arrays, which only the ARC
+release frees now. `arc-daemon-blocks-probe` gates the ARC-on block count
+(budget 4,043, the measured 4,003 + 1%).
+
 **Quote bytes, or re-measure all builds together.** A control drifted 5.6%
 between two sittings, which made cross-session percentages non-comparable.
 Read the BLOCK COUNT first — `main` reads `os.Args` and the runtime copies
@@ -302,17 +320,46 @@ length while the block count holds. The figures in this section are for a progra
 - **A multi-assign target gets no store release.** `a, b = x, y` stores
   without freeing what the slots held. A LEAK, never a use-after-free, and
   untested rather than proven absent.
-- **The earlier arrays of a growing slice are not freed.** `append` never
-  frees the old array when it grows (PR #376): another slice may share it,
-  and the release plan cannot yet prove that no alias holds it (condition 7
-  runs only for a local bound more than once, and a self-append is not a
-  binding). A LEAK, never a use-after-free. MEASURED 2026-11-27, 1,024 ints
-  appended to an empty slice that is returned: 16,552 bytes in 11 blocks
-  against main's 8,208 bytes in 1 block. The bound: less than the bytes of
-  the final array, plus one block for each doubling. On
-  `bench/daemon/daemon.goo` (same sitting): 4,003 -> 10,003 blocks in use at
-  exit for 2,000 requests, and peak RSS 25,272 KB -> 107,904 KB at 400,000,
-  so the ARC table above is a pre-#376 figure.
+- **The earlier arrays of a growing slice are freed only for a RELEASE_OK
+  local.** `append` never frees the old array when it grows (PR #376):
+  another slice may share it. Codegen frees it at `L = append(L, ...)` when L
+  reads RELEASE_OK, and condition 7 now runs for a self-appended local (no
+  other local's value names L, and no `range` over L has the append in its
+  body, and the address `&L` is not taken -- condition 8). EVERY OTHER
+  self-appended slice leaks its earlier arrays: one that escapes (is
+  returned, stored, passed to a retaining call), is aliased, or has its
+  address taken. Whether a FREE is sound rests on the condition 7 and 8
+  argument in release_decision.c's decide(), not on this bullet: the first
+  version of the free had a use-after-free that every gate passed. MEASURED
+  2026-11-27, 1,024 ints appended to
+  an empty slice that is RETURNED: 16,552 bytes in 11 blocks on this branch
+  and on 719a1c58, against main's 8,208 bytes in 1 block. The bound: less
+  than the bytes of the final array, plus one block for each doubling. The
+  daemon's `parts` is RELEASE_OK, so the daemon is back to 4,003 blocks (the
+  table above).
+- **A local with an explicit `&L` or a closure capture is never released
+  (condition 8).** `&L` lets a callee or a pointer write into L's slot a
+  value no binding records.
+  Before fix/append-alias-sound this was a LIVE USE-AFTER-FREE ON MAIN on two
+  paths that predate PR #376: the exit release (`set(&xs, v)` with
+  `*p = v`, then `return len(xs)` freed the caller's v; also `p := &xs;
+  *p = v`) and the store release of a rebound string (`setS(&s, other);
+  s = s + "x"` freed other's buffer). tests/arc_uaf/addr_callee_*.goo and
+  addr_local_exit.goo; all four fail with main's bin/goo. A named holder
+  (`p := &xs`) reads RELEASE_NO_ALIASED, every other explicit `&L` or
+  closure capture reads RELEASE_NO_ADDR_TAKEN. An IMPLICIT address is not
+  seen (see the next bullet). Cost on the 641-program census: RELEASE_OK 366
+  -> 360, all six value-struct literals whose slot codegen never released.
+- **TWO KNOWN OPEN USE-AFTER-FREE CLASSES, on main as of 2026-11-27 and on
+  this branch; the next PR fixes them.** Both free a value someone else
+  still reads, and no gate catches either today.
+  1. A pointer-receiver METHOD VALUE takes `&s` implicitly, which condition
+     8 does not see: `s := S{1, 2}; m := s.set; m(v); return len(s)`, with
+     `func (s *S) set(o S) { *s = o }`, frees the caller's v at exit.
+  2. An INDEX STORE into a slice that owns its elements: `xs := []string{a +
+     "1", a + "2"}; xs[0] = v; return len(xs)` frees the caller's v when
+     the exit release walks the elements (`owns_elems`). The same holds for
+     `p := &xs[0]; *p = v` and `ys := xs; ys[0] = v`.
 - **An unbound temporary has no release site at all.** `return
   len(strings.ToUpper(x))` leaks 32 bytes with release OFF and ON.
 - **The residual 82,207 is a conditional hand-over** — `f` reaches

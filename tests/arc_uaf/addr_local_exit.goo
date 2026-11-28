@@ -1,0 +1,22 @@
+// Found while fixing the PR #376 recovery review, and a live use-after-free
+// on main: `p := &xs; *p = v` stores the CALLER's slice v into xs's slot.
+// xs is bound once, so condition 7 did not run and has_alias never saw p,
+// and the release of xs at function exit freed v's array while main still
+// read v[0] (valgrind: invalid read).
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func f(v []int) int {
+	xs := []int{1, 2}
+	p := &xs
+	*p = v
+	return len(xs)
+}
+
+func main() {
+	v := []int{7, 8}
+	n := f(v)
+	fmt.Println(n, v[0])
+}

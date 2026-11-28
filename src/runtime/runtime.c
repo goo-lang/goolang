@@ -1572,15 +1572,17 @@ static size_t goo_slice_grow_capacity(size_t capacity, size_t need) {
 //     (valgrind: invalid read through u).
 // tests/arc_uaf/append_alias_move.goo and examples/append_shared_*.goo pin them.
 //
-// WHO FREES THE OLD ARRAY. Nobody, today, and that is a LEAK by choice. This
-// function cannot see who else holds the array, and no slice copy retains, so
-// a count of 1 says nothing about aliases. Nor can the release plan prove it:
-// condition 7 (no other local holds the value) runs only for a local bound
-// more than once, and a self-append is not a binding, so `u := xs;
-// xs = append(xs, 1)` reads RELEASE_OK for xs. A release of the replaced array
-// at the append was tried and freed u's array (PR #376 review,
-// tests/arc_uaf/append_alias_*.goo). Bounded: a slice grown from empty leaks
-// less than the bytes of its final array, plus one block per doubling.
+// WHO FREES THE OLD ARRAY. Not this function: it cannot see who else holds the
+// array, and no slice copy retains (a count of 1 says nothing about aliases).
+// The caller can. For `L = append(L, ...)` on a local the release plan approved
+// -- non-escaping, owned, and with no other local and no range loop holding
+// its value (condition 7, which now runs for a self-appended local too) --
+// codegen releases the replaced array after the call
+// (codegen_arc_release_replaced_buffer). Every other array stays live, which
+// leaks when nothing else frees it, and never frees memory a slice still
+// reads. The first version trusted condition 7 before it ran for a
+// self-append and freed live arrays (PR #376 review,
+// tests/arc_uaf/append_alias_*.goo).
 //
 // Also headerless memory (goo_zerobase, an arena block) is only READ here now,
 // never handed to the allocator, which closes trusted-stdlib case C7.

@@ -1,0 +1,26 @@
+// PR #376 review, found while fixing condition 7: `range last` evaluates last
+// once and iterates that string to the end of the loop, but no named local
+// holds it. The store `last = last + "x"` in the body releases the old string
+// (last is rebound, every value is fresh, and has_alias saw no other local), so
+// the loop read freed memory in goo_utf8_decode. The output stayed correct.
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func strRange(s string) {
+	last := ""
+	last = s + "a"
+	n := 0
+	for _, c := range last {
+		last = last + "x"
+		if c == 'a' {
+			n = n + 1
+		}
+	}
+	fmt.Println(n, len(last))
+}
+
+func main() {
+	strRange("abcabc")
+}

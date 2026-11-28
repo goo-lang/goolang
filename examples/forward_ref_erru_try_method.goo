@@ -1,0 +1,43 @@
+// forward_ref_erru_try_method: try in a !T caller, and a later !T method.
+// The callee is declared AFTER its caller. The type checker accepted this, but
+// codegen skipped every !T function in its prototype pre-pass, so the call
+// failed with "Undefined identifier".
+package main
+
+import "fmt"
+
+type Calc struct {
+	base int
+}
+
+func main() {
+	t := viaTry(8, 2) catch => -4
+	fmt.Println("t:", t)
+	u := viaTry(8, 0) catch => -5
+	fmt.Println("u:", u)
+
+	c := Calc{base: 20}
+	m := c.Div(4) catch => -2
+	fmt.Println("m:", m)
+	n := c.Div(0) catch => -3
+	fmt.Println("n:", n)
+}
+
+func viaTry(a int, b int) !int {
+	q := try divide(a, b)
+	return q + 100
+}
+
+func (c Calc) Div(d int) !int {
+	if d == 0 {
+		return error("method divide by zero")
+	}
+	return c.base / d
+}
+
+func divide(a int, b int) !int {
+	if b == 0 {
+		return error("divide by zero")
+	}
+	return a / b
+}

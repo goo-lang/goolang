@@ -1,0 +1,23 @@
+// The POSITIVE control for the append_alias_* fixtures. xs is self-appended
+// and nothing else holds its value, so condition 7 passes, xs reads
+// RELEASE_OK, and codegen frees each array an append replaces
+// (codegen_arc_release_replaced_buffer). The .verdict.txt file pins that the
+// release is emitted, and the .leakcheck file makes a definite leak a valgrind
+// error: without the release, the 10 replaced arrays of 1,000 appends are
+// definitely lost (8,344 bytes, measured on 719a1c58).
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func grow() {
+	xs := []int{}
+	for i := 0; i < 1000; i++ {
+		xs = append(xs, i)
+	}
+	fmt.Println(len(xs), xs[0], xs[999])
+}
+
+func main() {
+	grow()
+}

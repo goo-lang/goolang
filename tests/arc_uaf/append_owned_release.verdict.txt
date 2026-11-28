@@ -1,0 +1,4 @@
+[arc?] grow: xs -> RELEASE_OK
+[arc] grow: will release xs at function exit (field=0, dtor=none)
+[arc?] grow: i -> RELEASE_NO_ESCAPES
+[arc] grow: releases the array a self-append of xs replaced

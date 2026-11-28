@@ -1,0 +1,21 @@
+// PR #376 recovery review, and a live use-after-free on main: `setS(&s,
+// other)` stores other's string into s's slot. s is rebound, so the store
+// `s = s + "x"` released what the slot held -- other's buffer -- and the read
+// of other was a read of freed memory (valgrind: 3 invalid reads).
+// Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func setS(p *string, v string) {
+	*p = v
+}
+
+func f(a string) {
+	other := a + "-other"
+	s := a + "-s"
+	setS(&s, other)
+	s = s + "x"
+	fmt.Println(len(s), other)
+}
+func main() { f("abc") }
