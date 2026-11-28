@@ -6101,15 +6101,21 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  append OFF: $$ap_off bytes leaked (expected)"; \
 	fi; \
-	valgrind --leak-check=full --error-exitcode=99 ./build/arc_ap_on > /dev/null 2> build/arc_ap_on.vg; \
+	: "PINNED, NOT ZERO, since PR #376: append never frees a replaced array (no" ; \
+	: "rule proves it unshared, see goo_slice_grow_to), so ON leaks exactly the 6" ; \
+	: "arrays xs grows through before its last (1..32 ints, 600 bytes with" ; \
+	: "headers) per call: 2,000 x 600 = 1,200,000. Leaks are not errors here, so" ; \
+	: "rc speaks only for invalid accesses." ; \
+	ap_expect=1200000; \
+	valgrind --leak-check=full --errors-for-leak-kinds=none --error-exitcode=99 ./build/arc_ap_on > /dev/null 2> build/arc_ap_on.vg; \
 	rc=$$?; \
 	ap_on=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_ap_on.vg | tr -d ,); \
 	if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_ap_on.vg; then \
 	  echo "  FAIL: self-append release is not valgrind-clean (rc=$$rc)"; tail -30 build/arc_ap_on.vg; fail=1; \
-	elif [ -n "$$ap_on" ] && [ "$$ap_on" -ne 0 ]; then \
-	  echo "  FAIL: self-append release ON still leaked $$ap_on bytes"; fail=1; \
+	elif [ "$${ap_on:-0}" -ne "$$ap_expect" ]; then \
+	  echo "  FAIL: self-append release ON leaked $${ap_on:-0} bytes, expected $$ap_expect (the replaced arrays only)"; fail=1; \
 	else \
-	  echo "  append ON:   valgrind clean, 0 bytes leaked (was $$ap_off)"; \
+	  echo "  append ON:   valgrind clean, $$ap_on bytes leaked = the replaced arrays only (was $$ap_off)"; \
 	fi; \
 	valgrind --leak-check=no --error-exitcode=99 ./build/arc_sub > /dev/null 2> build/arc_sub.vg; \
 	rc=$$?; \
@@ -6289,7 +6295,12 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	else \
 	  echo "  slice elem OFF: $$se_off bytes leaked ($${se_d:-0} direct + $${se_i:-0} indirect)"; \
 	fi; \
-	valgrind --leak-check=full --error-exitcode=99 ./build/arc_se_on > build/arc_se_on.out 2> build/arc_se_on.vg; \
+	: "PINNED, NOT ZERO, since PR #376: each call's first parts array (one string" ; \
+	: "header, 32 bytes with the object header) is replaced by the second append" ; \
+	: "and never freed, because no rule proves it unshared. 10,000 x 32 = 320,000," ; \
+	: "all DIRECT. The elements are what this block measures: indirect must be 0." ; \
+	se_expect=320000; \
+	valgrind --leak-check=full --errors-for-leak-kinds=none --error-exitcode=99 ./build/arc_se_on > build/arc_se_on.out 2> build/arc_se_on.vg; \
 	rc=$$?; \
 	se_d2=$$(grep -oP "definitely lost: \K[0-9,]+" build/arc_se_on.vg | tr -d , ); \
 	se_i2=$$(grep -oP "indirectly lost: \K[0-9,]+" build/arc_se_on.vg | tr -d , ); \
@@ -6297,15 +6308,15 @@ arc-release-probe: $(COMPILER) $(RUNTIME_LIB)
 	: "Access first, then leak, then rc -- see the owned-key block above for why." ; \
 	if grep -qE "Invalid read|Invalid write|Invalid free|double free" build/arc_se_on.vg; then \
 	  echo "  FAIL: the slice released an element it did not own"; tail -30 build/arc_se_on.vg; fail=1; \
-	elif [ "$$se_on" -ne 0 ]; then \
-	  echo "  FAIL: slice-elem probe still leaked $$se_on bytes — the elements were not reclaimed"; fail=1; \
+	elif [ "$${se_i2:-0}" -ne 0 ] || [ "$$se_on" -ne "$$se_expect" ]; then \
+	  echo "  FAIL: slice-elem probe leaked $$se_on bytes ($${se_i2:-0} indirect), expected $$se_expect direct — the elements were not reclaimed"; fail=1; \
 	elif [ $$rc -ne 0 ]; then \
 	  echo "  FAIL: valgrind exited $$rc with no leak and no invalid access — read the log"; \
 	  tail -30 build/arc_se_on.vg; fail=1; \
 	elif ! diff -q build/arc_se_off.out build/arc_se_on.out > /dev/null; then \
 	  echo "  FAIL: slice-elem probe output differs from the GOO_ARC_RELEASE=0 control"; fail=1; \
 	else \
-	  echo "  slice elem ON:  clean, 0 bytes, output matches the control (was $$se_off)"; \
+	  echo "  slice elem ON:  clean, $$se_on bytes = the replaced arrays only, output matches the control (was $$se_off)"; \
 	fi; \
 	$(COMPILER) -o build/arc_be examples/arc_release_borrowed_elem_probe.goo > build/arc_be.cerr 2>&1 \
 	  || { echo "  FAIL (compile, borrowed-elem probe)"; cat build/arc_be.cerr; exit 1; }; \

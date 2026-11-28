@@ -1,0 +1,25 @@
+// PR #376 review: the local that is self-appended reads RELEASE_OK although
+// another value still names its array, because condition 7 runs only for a
+// local with more than one binding and a self-append is not a binding. A
+// release of the replaced array at the append frees memory that the alias
+// reads. Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func rangeGrow() {
+	xs := []int{}
+	xs = append(xs, 1)
+	xs = append(xs, 2)
+	xs = append(xs, 3)
+	sum := 0
+	for _, v := range xs {
+		xs = append(xs, 10)
+		sum = sum + v
+	}
+	fmt.Println(sum, len(xs))
+}
+
+func main() {
+	rangeGrow()
+}

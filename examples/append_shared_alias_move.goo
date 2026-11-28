@@ -1,0 +1,23 @@
+// append_shared_alias with 600 appends, so the block MOVES.
+//
+// When realloc moved the block it freed the old one, and u read freed memory
+// (valgrind: invalid read). `big` sits between them so the old block cannot
+// grow in place. Go keeps the old array alive for u.
+//
+// The same program is tests/arc_uaf/append_alias_move.goo, which runs it under
+// valgrind. Expected output is from `go run` of the same program.
+package main
+
+import "fmt"
+
+func main() {
+	s := make([]int, 2, 2)
+	s[0] = 7
+	u := s
+	big := make([]int, 1000)
+	big[0] = 1
+	for i := 0; i < 600; i++ {
+		s = append(s, i)
+	}
+	fmt.Println(u[0], s[0], big[0])
+}
